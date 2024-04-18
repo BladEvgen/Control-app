@@ -1,0 +1,10 @@
+[flake8]
+max-complexity = 10
+max-line-length = 90
+ignore=E265,W503
+exclude =
+    __pycache__/,
+    ./monitoring_app/migrations/*,
+    tests.py,
+    ./backend,
+    ./venv/
