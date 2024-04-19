@@ -1,0 +1,72 @@
+{% load static %} {% load django_app_filters_and_tags %}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="{% static 'css/fontawesome/css/all.css' %}" />
+    <title>{% block title %}Rac Application{% endblock %}</title>
+  </head>
+  <header class="bg-[#123075] p-3 text-white">
+    <div class="container flex justify-between items-center">
+      <div class="flex items-center">
+        <div class="pr-2">
+          <a href="{% url 'home' %}" class="font-bold">Company Name </a>
+        </div>
+        {% if request.user.is_authenticated %}
+        <a href="{% url 'uploadFile' %}" class="text-warning mr-2">
+          <i class="fas fa-upload"></i>
+        </a>
+        {% endif %}
+      </div>
+      <div class="hidden md:flex items-center">
+        <ul class="flex space-x-4 list-none">
+          {% if request.user.is_authenticated %}
+          <li class="dropdown relative">
+            <a
+              href="#"
+              class="dropdown-toggle hover:text-gray-200 px-3 py-2 rounded focus:outline-none"
+              id="navbarDropdown"
+              role="button"
+              data-tailwind-dropdown="dropdown">
+              {{ request.user.username }}
+            </a>
+            <div
+              class="dropdown-menu absolute hidden top-0 left-0 bg-white shadow rounded mt-2 py-3 text-base z-50"
+              id="navbarDropdown-content"
+              data-tailwind-dropdown-content>
+              <a href="#" class="block px-4 py-2 hover:bg-gray-100 rounded"
+                >Profile</a
+              >
+              <hr class="h-px mx-2 bg-gray-200" />
+              <a href="logout" class="block px-4 py-2 hover:bg-gray-100 rounded"
+                >Logout</a
+              >
+            </div>
+          </li>
+          {% else %}
+          <li>
+            <a
+              href="login"
+              class="hover:text-gray-200 px-3 py-2 rounded focus:outline-none"
+              >Login</a
+            >
+          </li>
+          {% endif %}
+        </ul>
+      </div>
+      <div class="md:hidden">
+        <button class="focus:outline-none" id="menu-btn"></button>
+      </div>
+    </div>
+  </header>
+
+  <body class="bg-gray-100">
+    <div class="container mx-auto">
+      <main class="py-8 px-4 sm:px-6 md:px-8 lg:px-10">
+        {% block main %}{% endblock %}
+      </main>
+    </div>
+  </body>
+</html>
