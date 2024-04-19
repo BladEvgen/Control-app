@@ -106,7 +106,7 @@ def calculate_salaries(sender, instance, **kwargs):
     instance.calculate_salaries()
 
 
-@receiver(post_save, sender=Staff)
+@receiver(pre_save, sender=Staff)
 def update_salary(sender, instance, **kwargs):
     for salary in instance.salaries.all():
         salary.calculate_salaries()
