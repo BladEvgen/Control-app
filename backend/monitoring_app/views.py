@@ -111,6 +111,8 @@ class UploadFileView(View):
                         parent_department_name = row[3].value
                         child_department_name = row[1].value
 
+                        child_department_id = int(row[0].value)
+
                         parent_department, _ = (
                             models.ParentDepartment.objects.get_or_create(
                                 id=parent_department_id, name=parent_department_name
@@ -118,7 +120,9 @@ class UploadFileView(View):
                         )
 
                         child_department = models.ChildDepartment.objects.create(
-                            name=child_department_name, parent=parent_department
+                            id=child_department_id,
+                            name=child_department_name,
+                            parent=parent_department,
                         )
 
                         child_department.save()
