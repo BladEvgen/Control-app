@@ -44,12 +44,14 @@ ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
     "grappelli",
+    # Default
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    # Installed apps
     "drf_yasg",
     "monitoring_app",
     "rest_framework",
@@ -93,6 +95,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "monitoring_app.context_processors.current_year",
             ],
         },
     },
@@ -194,7 +197,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # * JWT LOGIC GOES HERE
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
-        # 'rest_framework.permissions.IsAdmin',
+        # "rest_framework.permissions.IsAdmin",
         "rest_framework.permissions.IsAuthenticated",
         "rest_framework.permissions.AllowAny",
     ),
