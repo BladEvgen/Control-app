@@ -1,13 +1,14 @@
 from django.contrib.auth.models import User
 from django.shortcuts import redirect, render
+from django.contrib.auth import authenticate, login, logout
 from django.views.generic import (
     View,
 )
 from rest_framework import status
 from openpyxl import load_workbook
 from rest_framework.response import Response
+from rest_framework.permissions import AllowAny, IsAdminUser
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 
 from monitoring_app import models, utils
 
@@ -76,6 +77,24 @@ def user_register(request):
     )
 
 
+def logout_view(request):
+    logout(request)
+    return redirect("login")
+
+
+def login_view(request):
+    if request.method == "POST":
+        username = request.POST.get("username")
+        password = request.POST.get("password")
+        user = authenticate(request, username=username, password=password)
+
+        if user is not None:
+            login(request, user)
+            return redirect("uploadFile")
+
+    return render(request, "login.html", context={})
+
+
 class UploadFileView(View):
     template_name = "upload_file.html"
 
@@ -88,8 +107,7 @@ class UploadFileView(View):
         file_path = request.FILES.get("file")
 
         category_slug = request.POST.get("category")
-        print(category_slug)
-        if file_path and file_path.name.endswith(".xlsx") and category_slug:
+        if file_path and category_slug:
             try:
                 wb = load_workbook(file_path)
                 ws = wb.active
@@ -99,39 +117,57 @@ class UploadFileView(View):
                 rows = list(ws.iter_rows())
                 rows.sort(key=lambda row: row[0].value, reverse=True)
 
-                for idx, row in enumerate(rows, start=1):
-                    for col_idx, cell in enumerate(row, start=1):
-                        ws.cell(row=idx, column=col_idx, value=cell.value)
+                for row in rows:
+                    if category_slug == "departments":
+                        try:
+                            parent_department_id = int(row[2].value)
+                            parent_department_name = row[3].value
+                            child_department_name = row[1].value
+                            child_department_id = int(row[0].value)
 
-                wb.save(file_path)
-
-                if category_slug == "departments":
-                    for row in ws.iter_rows(min_row=3):
-                        parent_department_id = int(row[2].value)
-                        parent_department_name = row[3].value
-                        child_department_name = row[1].value
-
-                        child_department_id = int(row[0].value)
-
-                        parent_department, _ = (
-                            models.ParentDepartment.objects.get_or_create(
-                                id=parent_department_id, name=parent_department_name
+                            parent_department, _ = (
+                                models.ParentDepartment.objects.get_or_create(
+                                    id=parent_department_id, name=parent_department_name
+                                )
                             )
+
+                            child_department = models.ChildDepartment.objects.create(
+                                id=child_department_id,
+                                name=child_department_name,
+                                parent=parent_department,
+                            )
+
+                            child_department.save()
+                        except Exception as error:
+                            print(f"Ошибка при обработке строки: {str(error)}")
+                    elif category_slug == "staff":
+                        pin = row[0].value
+                        name = row[1].value
+                        surname = row[2].value
+                        department_id = int(row[3].value)
+                        position_name = row[5].value
+
+                        department = models.ChildDepartment.objects.get(
+                            id=department_id
                         )
 
-                        child_department = models.ChildDepartment.objects.create(
-                            id=child_department_id,
-                            name=child_department_name,
-                            parent=parent_department,
+                        staff, _ = models.Staff.objects.get_or_create(
+                            pin=pin,
+                            defaults={
+                                "name": name,
+                                "surname": surname,
+                                "department": department,
+                            },
                         )
 
-                        child_department.save()
-                elif category_slug == "staff":
-                    pass
-                else:
-                    context = {
-                        "error": "Неизвестная категория. Пожалуйста, обратитесь к Администратору."
-                    }
+                        position, _ = models.Position.objects.get_or_create(
+                            name=position_name
+                        )
+                        staff.positions.add(position)
+                    else:
+                        context = {
+                            "error": "Неизвестная категория. Пожалуйста, обратитесь к Администратору."
+                        }
 
                 context = {"message": "Файл успешно загружен"}
                 return redirect("uploadFile")
