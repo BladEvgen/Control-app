@@ -1,72 +1,59 @@
-{% load static %} {% load django_app_filters_and_tags %}
+{% load static %}
+{% load django_app_filters_and_tags %}
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="{% static 'css/fontawesome/css/all.css' %}" />
-    <title>{% block title %}Rac Application{% endblock %}</title>
-  </head>
-  <header class="bg-[#123075] p-3 text-white">
-    <div class="container flex justify-between items-center">
-      <div class="flex items-center">
-        <div class="pr-2">
-          <a href="{% url 'home' %}" class="font-bold">Company Name </a>
-        </div>
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="{% static 'css/fontawesome/css/all.css' %}" />
+  <title>{% block title %}Rac Application{% endblock %}</title>
+</head>
+
+<body class="bg-gray-100">
+  <nav class="bg-[#123075] px-6 py-4 shadow">
+    <div class="flex justify-between items-center container mx-auto md:flex-row md:items-center md:justify-between">
+      <a href="#" class="text-white text-xl font-bold md:text-2xl">Company Name</a>
+      <div class="md:flex flex-col md:flex-row md:-mx-4">
         {% if request.user.is_authenticated %}
-        <a href="{% url 'uploadFile' %}" class="text-warning mr-2">
-          <i class="fas fa-upload"></i>
-        </a>
+        <div class="relative md:mx-4">
+          <button class="my-1 text-white font-bold hover:text-blue-500 md:my-0" aria-haspopup="true"
+            aria-expanded="false" aria-controls="dropdown-menu">
+            Menu
+          </button>
+          <div class="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg z-10 hidden" id="dropdown-menu">
+            <a href="{% url 'uploadFile' %}" class="block px-4 py-2 text-gray-800 hover:bg-gray-200">Upload Files</a>
+            <a href="#" class="block px-4 py-2 text-gray-800 hover:bg-gray-200">{{request.user.username}}</a>
+            <a href="{% url 'logout' %}" class="block px-4 py-2 text-gray-800 hover:bg-gray-200">Logout</a>
+          </div>
+        </div>
+        {% else %}
+        <a href="{% url 'login' %}" class="my-1 text-white hover:text-blue-500 md:mx-4 md:my-0">Login</a>
         {% endif %}
       </div>
-      <div class="hidden md:flex items-center">
-        <ul class="flex space-x-4 list-none">
-          {% if request.user.is_authenticated %}
-          <li class="dropdown relative">
-            <a
-              href="#"
-              class="dropdown-toggle hover:text-gray-200 px-3 py-2 rounded focus:outline-none"
-              id="navbarDropdown"
-              role="button"
-              data-tailwind-dropdown="dropdown">
-              {{ request.user.username }}
-            </a>
-            <div
-              class="dropdown-menu absolute hidden top-0 left-0 bg-white shadow rounded mt-2 py-3 text-base z-50"
-              id="navbarDropdown-content"
-              data-tailwind-dropdown-content>
-              <a href="#" class="block px-4 py-2 hover:bg-gray-100 rounded"
-                >Profile</a
-              >
-              <hr class="h-px mx-2 bg-gray-200" />
-              <a href="logout" class="block px-4 py-2 hover:bg-gray-100 rounded"
-                >Logout</a
-              >
-            </div>
-          </li>
-          {% else %}
-          <li>
-            <a
-              href="login"
-              class="hover:text-gray-200 px-3 py-2 rounded focus:outline-none"
-              >Login</a
-            >
-          </li>
-          {% endif %}
-        </ul>
-      </div>
-      <div class="md:hidden">
-        <button class="focus:outline-none" id="menu-btn"></button>
-      </div>
     </div>
-  </header>
+  </nav>
+  <div class="container mx-auto">
+    <main class="py-8 px-4 sm:px-6 md:px-8 lg:px-10">
+      {% block main %}{% endblock %}
+    </main>
 
-  <body class="bg-gray-100">
-    <div class="container mx-auto">
-      <main class="py-8 px-4 sm:px-6 md:px-8 lg:px-10">
-        {% block main %}{% endblock %}
-      </main>
-    </div>
-  </body>
+  </div>
+  {% include "components/footer.html" %}
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const button = document.querySelector('[aria-haspopup="true"]');
+      const menu = document.getElementById('dropdown-menu');
+
+      button.addEventListener('click', function () {
+        const expanded = this.getAttribute('aria-expanded') === 'true' || false;
+        this.setAttribute('aria-expanded', !expanded);
+        menu.classList.toggle('hidden');
+      });
+    });
+  </script>
+</body>
+
 </html>
