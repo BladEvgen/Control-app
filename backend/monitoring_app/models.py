@@ -2,31 +2,48 @@ from decimal import Decimal
 
 from django.db import models
 from django.dispatch import receiver
-from django.db.models.signals import post_save, pre_save
+from django.db.models.signals import pre_save, m2m_changed
 
 
 class FileCategory(models.Model):
-    name = models.CharField(max_length=100)
-    slug = models.SlugField(unique=True)
+    name = models.CharField(max_length=100, verbose_name="Название шаблона")
+    slug = models.SlugField(unique=True, verbose_name="Ссылка")
 
     def __str__(self):
         return self.name
+
+    class Meta:
+        verbose_name = "Категория файла"
+        verbose_name_plural = "Категории файлов"
 
 
 class ParentDepartment(models.Model):
-    id = models.AutoField(primary_key=True)
-    name = models.CharField(max_length=255, unique=True)
-    date_of_creation = models.DateTimeField(auto_now_add=True)
+    id = models.AutoField(primary_key=True, verbose_name="Номер отдела")
+    name = models.CharField(max_length=255, unique=True, verbose_name="Название отдела")
+    date_of_creation = models.DateTimeField(
+        auto_now_add=True, verbose_name="Дата создания"
+    )
 
     def __str__(self):
         return self.name
 
+    class Meta:
+        verbose_name = "Родительский отдел"
+        verbose_name_plural = "Родительские отделы"
+
 
 class ChildDepartment(models.Model):
-    id = models.AutoField(primary_key=True)
-    name = models.CharField(max_length=255)
-    date_of_creation = models.DateTimeField(auto_now_add=True)
-    parent = models.ForeignKey(ParentDepartment, on_delete=models.CASCADE)
+    id = models.AutoField(primary_key=True, verbose_name="Номер отдела")
+    name = models.CharField(max_length=255, verbose_name="Название отдела")
+    date_of_creation = models.DateTimeField(
+        auto_now_add=True, verbose_name="Дата создания"
+    )
+    parent = models.ForeignKey(
+        ParentDepartment,
+        on_delete=models.SET_NULL,
+        null=True,
+        verbose_name="Родительский отдел",
+    )
 
     def __str__(self):
         return self.name
@@ -40,25 +57,50 @@ class ChildDepartment(models.Model):
         else:
             super().save(*args, **kwargs)
 
+    class Meta:
+        verbose_name = "Подотдел"
+        verbose_name_plural = "Подотделы"
+
 
 class Position(models.Model):
-    name = models.CharField(max_length=255, blank=False, null=False)
-    rate = models.DecimalField(max_digits=4, decimal_places=2)
+    name = models.CharField(
+        max_length=255,
+        blank=False,
+        null=False,
+        verbose_name="Профессия",
+        default="Сотрудник",
+    )
+    rate = models.DecimalField(
+        max_digits=4, decimal_places=2, verbose_name="Ставка", default=1
+    )
 
     def __str__(self):
         return f"{self.name} Ставка: {self.rate}"
 
+    class Meta:
+        verbose_name = "Должность"
+        verbose_name_plural = "Должности"
+
 
 class Staff(models.Model):
-    name = models.CharField(max_length=255, blank=False, null=False)
-    surname = models.CharField(max_length=255, blank=False, null=False)
-    patronymic = models.CharField(max_length=255, blank=True, null=True)
-    cart_id = models.IntegerField(unique=True, null=True, blank=True)
-    department = models.ForeignKey(
-        ChildDepartment, on_delete=models.SET_NULL, null=True
+    pin = models.CharField(
+        max_length=100,
+        blank=False,
+        null=False,
+        unique=True,
+        verbose_name="Id сотрудника",
     )
-    date_of_creation = models.DateTimeField(auto_now_add=True, editable=False)
-    positions = models.ManyToManyField(Position)
+    name = models.CharField(max_length=255, blank=False, null=False, verbose_name="Имя")
+    surname = models.CharField(
+        max_length=255, blank=False, null=False, verbose_name="Фамилия"
+    )
+    department = models.ForeignKey(
+        ChildDepartment, on_delete=models.SET_NULL, null=True, verbose_name="Отдел"
+    )
+    date_of_creation = models.DateTimeField(
+        auto_now_add=True, editable=False, verbose_name="Дата добавления"
+    )
+    positions = models.ManyToManyField(Position, verbose_name="Должность")
 
     def __str__(self):
         return f"ФИО {self.surname} {self.name}  {self.department.name if self.department else 'N/A'}"
@@ -67,19 +109,47 @@ class Staff(models.Model):
         self.full_clean()
         super().save(*args, **kwargs)
 
+    class Meta:
+        verbose_name = "Сотрудник"
+        verbose_name_plural = "Сотрудники"
+
 
 class Salary(models.Model):
-    staff = models.ForeignKey(Staff, on_delete=models.CASCADE, related_name="salaries")
+
+    staff = models.ForeignKey(
+        Staff,
+        on_delete=models.CASCADE,
+        related_name="salaries",
+        verbose_name="Сотрудник",
+    )
 
     clean_salary = models.DecimalField(
-        max_digits=10, decimal_places=2, blank=False, null=False
-    )  # Чистая зарплата после вычетов
-    dirty_salary = models.DecimalField(
-        max_digits=10, decimal_places=2, blank=True, null=True, editable=False
-    )  # Грязная зарплата до вычетов
-    total_salary = models.DecimalField(
-        max_digits=10, decimal_places=2, blank=True, null=True, editable=False
+        max_digits=10,
+        decimal_places=2,
+        blank=False,
+        null=False,
+        verbose_name="Чистая зарплата",
     )
+    dirty_salary = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        blank=True,
+        null=True,
+        editable=False,
+        verbose_name="Грязная зарплата",
+    )
+    total_salary = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        blank=True,
+        null=True,
+        editable=False,
+        verbose_name="Итогавая зарплата",
+    )
+
+    class Meta:
+        verbose_name = "Зарплата"
+        verbose_name_plural = "Зарплаты"
 
     @staticmethod
     def calculate_dirty_salary(clean_salary):
@@ -89,7 +159,14 @@ class Salary(models.Model):
 
         deduction_percentage = ipn_percentage + opv_percentage + vosms_percentage
 
-        return clean_salary / (Decimal("1") - deduction_percentage)
+        mrp = 3692
+        taxable_amount = clean_salary - mrp
+
+        deduction = taxable_amount * deduction_percentage
+
+        dirty_salary = taxable_amount + deduction
+
+        return dirty_salary
 
     @staticmethod
     def calculate_total_salary(clean_salary, rate):
@@ -106,8 +183,9 @@ def calculate_salaries(sender, instance, **kwargs):
     instance.calculate_salaries()
 
 
-@receiver(pre_save, sender=Staff)
-def update_salary(sender, instance, **kwargs):
-    for salary in instance.salaries.all():
-        salary.calculate_salaries()
-        salary.save(update_fields=["total_salary"])
+@receiver(m2m_changed, sender=Staff.positions.through)
+def update_salary_on_position_change(sender, instance, action, **kwargs):
+    if action in ["post_add", "post_remove", "post_clear"]:
+        for salary in instance.salaries.all():
+            salary.calculate_salaries()
+            salary.save(update_fields=["total_salary"])
