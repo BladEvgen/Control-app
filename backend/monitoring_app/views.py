@@ -10,7 +10,10 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAdminUser
 from rest_framework.decorators import api_view, permission_classes
 
+import os
+import zipfile
 from monitoring_app import models, utils
+from django.core.files.base import ContentFile
 
 
 @api_view(http_method_names=["GET"])
@@ -109,68 +112,89 @@ class UploadFileView(View):
         category_slug = request.POST.get("category")
         if file_path and category_slug:
             try:
-                wb = load_workbook(file_path)
-                ws = wb.active
+                if file_path.name.endswith(".xlsx"):
 
-                ws.delete_rows(1, 2)
+                    wb = load_workbook(file_path)
+                    ws = wb.active
 
-                rows = list(ws.iter_rows())
-                rows.sort(key=lambda row: row[0].value, reverse=True)
+                    ws.delete_rows(1, 2)
 
-                for row in rows:
-                    if category_slug == "departments":
-                        try:
-                            parent_department_id = int(row[2].value)
-                            parent_department_name = row[3].value
-                            child_department_name = row[1].value
-                            child_department_id = int(row[0].value)
+                    rows = list(ws.iter_rows())
+                    rows.sort(key=lambda row: row[0].value, reverse=True)
 
-                            parent_department, _ = (
-                                models.ParentDepartment.objects.get_or_create(
-                                    id=parent_department_id, name=parent_department_name
+                    for row in rows:
+                        if category_slug == "departments":
+                            try:
+                                parent_department_id = int(row[2].value)
+                                parent_department_name = row[3].value
+                                child_department_name = row[1].value
+                                child_department_id = int(row[0].value)
+
+                                parent_department, _ = (
+                                    models.ParentDepartment.objects.get_or_create(
+                                        id=parent_department_id,
+                                        name=parent_department_name,
+                                    )
                                 )
+
+                                child_department = (
+                                    models.ChildDepartment.objects.create(
+                                        id=child_department_id,
+                                        name=child_department_name,
+                                        parent=parent_department,
+                                    )
+                                )
+
+                                child_department.save()
+                            except Exception as error:
+                                print(f"Ошибка при обработке строки: {str(error)}")
+                        elif category_slug == "staff":
+                            pin = row[0].value
+                            name = row[1].value
+                            surname = row[2].value
+                            department_id = int(row[3].value)
+                            position_name = row[5].value
+
+                            department = models.ChildDepartment.objects.get(
+                                id=department_id
                             )
 
-                            child_department = models.ChildDepartment.objects.create(
-                                id=child_department_id,
-                                name=child_department_name,
-                                parent=parent_department,
+                            staff, _ = models.Staff.objects.get_or_create(
+                                pin=pin,
+                                defaults={
+                                    "name": name,
+                                    "surname": surname,
+                                    "department": department,
+                                },
                             )
 
-                            child_department.save()
-                        except Exception as error:
-                            print(f"Ошибка при обработке строки: {str(error)}")
-                    elif category_slug == "staff":
-                        pin = row[0].value
-                        name = row[1].value
-                        surname = row[2].value
-                        department_id = int(row[3].value)
-                        position_name = row[5].value
+                            position, _ = models.Position.objects.get_or_create(
+                                name=position_name
+                            )
+                            staff.positions.add(position)
+                        else:
+                            context = {
+                                "error": "Неизвестная категория. Пожалуйста, обратитесь к Администратору."
+                            }
 
-                        department = models.ChildDepartment.objects.get(
-                            id=department_id
-                        )
+                    context = {"message": "Файл успешно загружен"}
+                    return redirect("uploadFile")
 
-                        staff, _ = models.Staff.objects.get_or_create(
-                            pin=pin,
-                            defaults={
-                                "name": name,
-                                "surname": surname,
-                                "department": department,
-                            },
-                        )
-
-                        position, _ = models.Position.objects.get_or_create(
-                            name=position_name
-                        )
-                        staff.positions.add(position)
-                    else:
-                        context = {
-                            "error": "Неизвестная категория. Пожалуйста, обратитесь к Администратору."
-                        }
-
-                context = {"message": "Файл успешно загружен"}
-                return redirect("uploadFile")
+                elif file_path.name.endswith(".zip") and category_slug == "photo":
+                    with zipfile.ZipFile(file_path, "r") as zip_file:
+                        zip_file.extractall("/tmp")
+                        for filename in zip_file.namelist():
+                            pin = os.path.splitext(filename)[0]
+                            staff_member = models.Staff.objects.filter(pin=pin).first()
+                            if staff_member:
+                                with zip_file.open(filename) as file:
+                                    staff_member.avatar.save(
+                                        filename, ContentFile(file.read()), save=False
+                                    )
+                                    staff_member.save()
+                            else:
+                                continue
+                    return redirect("uploadFile")
 
             except Exception as error:
                 context = {"error": f"Ошибка при обработке файла: {str(error)}"}
