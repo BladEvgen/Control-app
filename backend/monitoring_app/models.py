@@ -1,8 +1,34 @@
+import os
 from decimal import Decimal
-
 from django.db import models
 from django.dispatch import receiver
-from django.db.models.signals import pre_save, m2m_changed
+from django.contrib.auth.models import User
+from django.core.validators import FileExtensionValidator
+from django.db.models.signals import pre_save, m2m_changed, post_save
+
+
+class UserProfile(models.Model):
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name="profile",
+        verbose_name="Пользователь",
+    )
+    is_banned = models.BooleanField(default=False, verbose_name="Статус Блокировки")
+    phonenumber = models.CharField(max_length=20, verbose_name="Номер телефона")
+    address = models.TextField(verbose_name="Адрес")
+
+    def __str__(self):
+        return f"{self.user.username} Profile"
+
+    class Meta:
+        verbose_name = "Профиль пользователя"
+        verbose_name_plural = "Профили пользователей"
+
+
+@receiver(post_save, sender=User)
+def create_user_profile(sender, instance, created, **kwargs):
+    UserProfile.objects.get_or_create(user=instance)
 
 
 class FileCategory(models.Model):
@@ -82,6 +108,10 @@ class Position(models.Model):
         verbose_name_plural = "Должности"
 
 
+def user_avatar_path(instance, filename):
+    return f"user_images/{instance.pin}/{instance.pin}.{filename.split('.')[-1]}"
+
+
 class Staff(models.Model):
     pin = models.CharField(
         max_length=100,
@@ -89,6 +119,7 @@ class Staff(models.Model):
         null=False,
         unique=True,
         verbose_name="Id сотрудника",
+        editable=False,
     )
     name = models.CharField(max_length=255, blank=False, null=False, verbose_name="Имя")
     surname = models.CharField(
@@ -101,6 +132,13 @@ class Staff(models.Model):
         auto_now_add=True, editable=False, verbose_name="Дата добавления"
     )
     positions = models.ManyToManyField(Position, verbose_name="Должность")
+    avatar = models.ImageField(
+        upload_to=user_avatar_path,
+        null=True,
+        blank=True,
+        verbose_name="Фото Пользователя",
+        validators=[FileExtensionValidator(allowed_extensions=["jpg"])],
+    )
 
     def __str__(self):
         return f"ФИО {self.surname} {self.name}  {self.department.name if self.department else 'N/A'}"
@@ -112,6 +150,23 @@ class Staff(models.Model):
     class Meta:
         verbose_name = "Сотрудник"
         verbose_name_plural = "Сотрудники"
+
+
+@receiver(pre_save, sender=Staff)
+def delete_old_avatar(sender, instance, **kwargs):
+    if instance.pk:
+        try:
+            old_instance = Staff.objects.get(pk=instance.pk)
+            old_avatar = old_instance.avatar
+            if old_avatar:
+                if os.path.exists(old_avatar.path):
+                    os.remove(old_avatar.path)
+        except Staff.DoesNotExist:
+            pass
+
+    new_avatar = instance.avatar
+    if new_avatar:
+        new_avatar.name = user_avatar_path(instance, new_avatar.name)
 
 
 class Salary(models.Model):
