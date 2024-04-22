@@ -16,7 +16,8 @@ if dotenv_path.exists():
     load_dotenv(dotenv_path)
 
 SECRET_KEY = os.getenv("SECRET_KEY")
-
+API_URL = os.getenv("API_URL")
+API_KEY = os.getenv("API_KEY")
 
 #! SET TO DOMAIN
 ALLOWED_HOSTS = ["*"]

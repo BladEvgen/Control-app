@@ -6,6 +6,7 @@ from .models import (
     UserProfile,
     FileCategory,
     ChildDepartment,
+    StaffAttendance,
     ParentDepartment,
 )
 
@@ -86,6 +87,16 @@ class StaffAdmin(admin.ModelAdmin):
         return ", ".join([position.name for position in obj.positions.all()])
 
     display_positions.short_description = "Должности"
+
+
+@admin.register(StaffAttendance)
+class StaffAttendanceAdmin(admin.ModelAdmin):
+    list_display = ("staff", "date_at", "first_in", "last_out")
+    list_filter = ("staff__department", "staff__pin", "staff__surname", "staff__name")
+    search_fields = ("staff__surname", "staff__name", "staff__pin")
+    date_hierarchy = "date_at"
+    list_display_links = None
+    ordering = ("-date_at", "-last_out", "staff")
 
 
 @admin.register(Salary)
