@@ -1,6 +1,8 @@
 import os
+from tkinter import NO
 from decimal import Decimal
 from django.db import models
+from django.utils import timezone
 from django.dispatch import receiver
 from django.contrib.auth.models import User
 from django.core.validators import FileExtensionValidator
@@ -129,8 +131,9 @@ class Staff(models.Model):
         ChildDepartment, on_delete=models.SET_NULL, null=True, verbose_name="Отдел"
     )
     date_of_creation = models.DateTimeField(
-        auto_now_add=True, editable=False, verbose_name="Дата добавления"
+        default=timezone.now, editable=False, verbose_name="Дата добавления"
     )
+
     positions = models.ManyToManyField(Position, verbose_name="Должность")
     avatar = models.ImageField(
         upload_to=user_avatar_path,
@@ -141,7 +144,7 @@ class Staff(models.Model):
     )
 
     def __str__(self):
-        return f"ФИО {self.surname} {self.name}  {self.department.name if self.department else 'N/A'}"
+        return f"{self.surname} {self.name}  {self.department.name if self.department else 'N/A'}"
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -167,6 +170,44 @@ def delete_old_avatar(sender, instance, **kwargs):
     new_avatar = instance.avatar
     if new_avatar:
         new_avatar.name = user_avatar_path(instance, new_avatar.name)
+
+
+class StaffAttendance(models.Model):
+    staff = models.ForeignKey(
+        Staff,
+        on_delete=models.CASCADE,
+        related_name="attendance",
+        verbose_name="Сотрудник",
+        editable=False,
+    )
+    date_at = models.DateField(
+        verbose_name="Дата добавления записи в Таблицу",
+        auto_now_add=True,
+        editable=False,
+    )
+    first_in = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name="Время первого входа",
+        editable=False,
+        default=None,
+    )
+    last_out = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name="Время последнего выхода",
+        editable=False,
+        default=None,
+    )
+
+    def __str__(self) -> str:
+        return f"{self.staff} {self.date_at.strftime('%d-%m-%Y')}"
+
+    class Meta:
+        unique_together = [["staff", "date_at"]]
+
+        verbose_name = "Посещаемость сотрудника"
+        verbose_name_plural = "Посещаемость сотрудников"
 
 
 class Salary(models.Model):
