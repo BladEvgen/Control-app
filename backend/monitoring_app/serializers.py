@@ -12,3 +12,9 @@ class ChildDepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = models.ChildDepartment
         fields = ("id", "name", "date_of_creation", "parent")
+
+
+class StaffAttendanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.StaffAttendance
+        fields = ("staff", "date_at", "first_in", "last_out")
