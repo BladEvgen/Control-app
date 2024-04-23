@@ -1,12 +1,11 @@
 import os
-from tkinter import NO
 from decimal import Decimal
 from django.db import models
 from django.utils import timezone
 from django.dispatch import receiver
 from django.contrib.auth.models import User
 from django.core.validators import FileExtensionValidator
-from django.db.models.signals import pre_save, m2m_changed, post_save
+from django.db.models.signals import pre_save, m2m_changed, post_save, post_delete
 
 
 class UserProfile(models.Model):
@@ -31,6 +30,21 @@ class UserProfile(models.Model):
 @receiver(post_save, sender=User)
 def create_user_profile(sender, instance, created, **kwargs):
     UserProfile.objects.get_or_create(user=instance)
+
+
+@receiver(post_save, sender=UserProfile)
+def update_user_active_status(sender, instance, **kwargs):
+    if instance.is_banned:
+        instance.user.is_active = False
+    else:
+        instance.user.is_active = True
+    instance.user.save()
+
+
+@receiver(post_delete, sender=UserProfile)
+def delete_user_on_profile_delete(sender, instance, **kwargs):
+    user = instance.user
+    user.delete()
 
 
 class FileCategory(models.Model):
