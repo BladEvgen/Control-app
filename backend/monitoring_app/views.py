@@ -1,25 +1,138 @@
+import os
+import random
+import zipfile
+import datetime
+
 from django.contrib.auth.models import User
 from django.shortcuts import redirect, render
+from django.core.files.base import ContentFile
 from django.contrib.auth import authenticate, login, logout
 from django.views.generic import (
     View,
 )
 from rest_framework import status
 from openpyxl import load_workbook
+from django.core.cache import caches
+from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny, IsAdminUser
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 
-import os
-import zipfile
 from monitoring_app import models, utils
-from django.core.files.base import ContentFile
+
+Cache = caches["default"]
 
 
-@api_view(http_method_names=["GET"])
-@permission_classes([AllowAny])
+def get_cache(
+    key: str, query: callable = lambda: any, timeout: int = 10, cache: any = Cache
+) -> any:
+    data = cache.get(key)
+    if data is None:
+        data = query()
+        cache.set(key, data, timeout)
+    return data
+
+
 def home(request):
-    return Response(data={"message": "ok"}, status=status.HTTP_200_OK)
+    return render(request, "home.html", context={})
+
+
+class StaffAttendanceStatsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        date_param = request.query_params.get(
+            "date", datetime.datetime.now().date().strftime("%Y-%m-%d")
+        )
+        pin_param = request.query_params.get("pin", None)
+
+        cache_key = f"staff_attendance_stats_{date_param}_{pin_param}"
+
+        def query():
+            try:
+                staff_attendance = models.StaffAttendance.objects.filter(
+                    date_at=date_param
+                )
+                total_staff_count = models.Staff.objects.count()
+                present_staff = staff_attendance.exclude(first_in__isnull=True)
+                absent_staff_count = total_staff_count - present_staff.count()
+
+                present_between_8_to_18 = present_staff.filter(
+                    first_in__time__range=["8:00", "18:00"]
+                ).count()
+
+                present_data = []
+                absent_data = []
+                for attendance in present_staff:
+                    total_minutes = 8 * 60
+                    minutes_present = (
+                        (attendance.last_out - attendance.first_in).total_seconds() / 60
+                        if attendance.last_out
+                        else 0
+                    )
+                    individual_percentage = (minutes_present / total_minutes) * 100
+                    if minutes_present < 1:
+                        absent_data.append(
+                            {
+                                "staff_pin": attendance.staff.pin,
+                                "name": f"{attendance.staff.surname} {attendance.staff.name}",
+                            }
+                        )
+                    else:
+                        present_data.append(
+                            {
+                                "staff_pin": attendance.staff.pin,
+                                "name": f"{attendance.staff.surname} {attendance.staff.name}",
+                                "minutes_present": round(minutes_present, 2),
+                                "individual_percentage": round(
+                                    individual_percentage, 2
+                                ),
+                            }
+                        )
+
+                for attendance in staff_attendance.filter(first_in__isnull=True):
+                    absent_data.append(
+                        {
+                            "staff_pin": attendance.staff.pin,
+                            "name": f"{attendance.staff.surname} {attendance.staff.name}",
+                        }
+                    )
+
+                if pin_param:
+                    present_data = [
+                        entry
+                        for entry in present_data
+                        if entry["staff_pin"] == pin_param
+                    ]
+                    absent_data = [
+                        entry
+                        for entry in absent_data
+                        if entry["staff_pin"] == pin_param
+                    ]
+
+                    response_data = {
+                        "present_data": present_data,
+                        "absent_data": absent_data,
+                    }
+                else:
+                    response_data = {
+                        "total_staff_count": total_staff_count,
+                        "present_staff_count": len(present_data),
+                        "absent_staff_count": absent_staff_count,
+                        "present_between_8_to_18": present_between_8_to_18,
+                        "present_data": present_data,
+                        "absent_data": absent_data,
+                    }
+
+                return response_data
+            except Exception as e:
+                return {"error": str(e)}
+
+        cached_data = get_cache(
+            cache_key, query=query, timeout=6 * 60 * 60, cache=Cache
+        )
+
+        return Response(cached_data)
 
 
 @api_view(http_method_names=["POST"])
