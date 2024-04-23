@@ -1,8 +1,8 @@
 import os
-import random
 import zipfile
 import datetime
 
+from django.core.cache import caches
 from django.contrib.auth.models import User
 from django.shortcuts import redirect, render
 from django.core.files.base import ContentFile
@@ -10,11 +10,12 @@ from django.contrib.auth import authenticate, login, logout
 from django.views.generic import (
     View,
 )
+from drf_yasg import openapi
 from rest_framework import status
 from openpyxl import load_workbook
-from django.core.cache import caches
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from drf_yasg.utils import swagger_auto_schema
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
 
@@ -39,14 +40,112 @@ def home(request):
 
 class StaffAttendanceStatsView(APIView):
     permission_classes = [IsAuthenticated]
+    """
+    View для получения статистики о посещаемости персонала.
 
+    Parametrs:
+    - запрос: объект HttpRequest
+
+    Returns:
+    - Объект ответа, содержащий статистику посещаемости персонала.
+
+    Usage:
+    Это представление принимает запросы GET с дополнительными параметрами запроса:
+    - дата: дата в формате «ГГГГ-ММ-ДД». По умолчанию используется текущая дата.
+    - PIN-код: PIN-код персонала для получения статистики по конкретному сотруднику.
+
+    Если пин-код не указан, возвращается общая статистика, включая общее количество сотрудников,
+    текущее количество сотрудников, количество отсутствующих сотрудников и присутствие сотрудников с 8:00 до 18:00.
+    Если указан PIN-код, возвращается статистика для конкретного сотрудника.
+
+    Данные ответа включают в себя:
+    - Для общей статистики:
+    - total_staff_count: общее количество сотрудников.
+    - present_staff_count: количество присутствующих сотрудников.
+    - absent_staff_count: количество отсутствующих сотрудников.
+    - present_between_9_to_18: количество сотрудников, присутствующих с 8:00 до 18:00.
+    - present_data: список словарей, содержащих информацию о нынешнем персонале.
+    - absent_data: список словарей, содержащих информацию об отсутствующем персонале.
+    
+    - Для статистики отдельных сотрудников:
+    - Present_data: список словарей, содержащих информацию о нынешнем персонале.
+    - absent_data: список словарей, содержащих информацию об отсутствующем персонале.
+    """
+
+    @swagger_auto_schema(
+        operation_description="View для получения статистики о посещаемости персонала.",
+        responses={
+            200: openapi.Response(
+                description="Successful response",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "total_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
+                        "present_staff_count": openapi.Schema(
+                            type=openapi.TYPE_INTEGER
+                        ),
+                        "absent_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
+                        "present_between_9_to_18": openapi.Schema(
+                            type=openapi.TYPE_INTEGER
+                        ),
+                        "present_data": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "staff_pin": openapi.Schema(
+                                        type=openapi.TYPE_STRING
+                                    ),
+                                    "name": openapi.Schema(type=openapi.TYPE_STRING),
+                                    "minutes_present": openapi.Schema(
+                                        type=openapi.TYPE_NUMBER
+                                    ),
+                                    "individual_percentage": openapi.Schema(
+                                        type=openapi.TYPE_NUMBER
+                                    ),
+                                },
+                            ),
+                        ),
+                        "absent_data": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "staff_pin": openapi.Schema(
+                                        type=openapi.TYPE_STRING
+                                    ),
+                                    "name": openapi.Schema(type=openapi.TYPE_STRING),
+                                },
+                            ),
+                        ),
+                    },
+                ),
+            ),
+            404: "Not Found",
+            500: "Internal Server Error",
+        },
+        manual_parameters=[
+            openapi.Parameter(
+                "date",
+                openapi.IN_QUERY,
+                description="Date in 'YYYY-MM-DD' format.",
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "pin",
+                openapi.IN_QUERY,
+                description="Staff PIN.",
+                type=openapi.TYPE_STRING,
+            ),
+        ],
+    )
     def get(self, request):
         date_param = request.query_params.get(
             "date", datetime.datetime.now().date().strftime("%Y-%m-%d")
         )
         pin_param = request.query_params.get("pin", None)
 
-        cache_key = f"staff_attendance_stats_{date_param}_{pin_param}"
+        cache_key: str = f"staff_attendance_stats_{date_param}_{pin_param}"
 
         def query():
             try:
@@ -54,15 +153,36 @@ class StaffAttendanceStatsView(APIView):
                     date_at=date_param
                 )
                 total_staff_count = models.Staff.objects.count()
+
                 present_staff = staff_attendance.exclude(first_in__isnull=True)
+                present_staff_pins = present_staff.values_list("staff__pin", flat=True)
                 absent_staff_count = total_staff_count - present_staff.count()
 
-                present_between_8_to_18 = present_staff.filter(
-                    first_in__time__range=["8:00", "18:00"]
+                present_between_9_to_18 = present_staff.filter(
+                    first_in__time__range=["8:00", "19:00"]
                 ).count()
 
                 present_data = []
                 absent_data = []
+
+                for staff in models.Staff.objects.all():
+                    if staff.pin in present_staff_pins:
+                        present_data.append(
+                            {
+                                "staff_pin": staff.pin,
+                                "name": f"{staff.surname} {staff.name}",
+                                "minutes_present": 0,
+                                "individual_percentage": 0,
+                            }
+                        )
+                    else:
+                        absent_data.append(
+                            {
+                                "staff_pin": staff.pin,
+                                "name": f"{staff.surname} {staff.name}",
+                            }
+                        )
+
                 for attendance in present_staff:
                     total_minutes = 8 * 60
                     minutes_present = (
@@ -71,32 +191,13 @@ class StaffAttendanceStatsView(APIView):
                         else 0
                     )
                     individual_percentage = (minutes_present / total_minutes) * 100
-                    if minutes_present < 1:
-                        absent_data.append(
-                            {
-                                "staff_pin": attendance.staff.pin,
-                                "name": f"{attendance.staff.surname} {attendance.staff.name}",
-                            }
-                        )
-                    else:
-                        present_data.append(
-                            {
-                                "staff_pin": attendance.staff.pin,
-                                "name": f"{attendance.staff.surname} {attendance.staff.name}",
-                                "minutes_present": round(minutes_present, 2),
-                                "individual_percentage": round(
-                                    individual_percentage, 2
-                                ),
-                            }
-                        )
-
-                for attendance in staff_attendance.filter(first_in__isnull=True):
-                    absent_data.append(
-                        {
-                            "staff_pin": attendance.staff.pin,
-                            "name": f"{attendance.staff.surname} {attendance.staff.name}",
-                        }
-                    )
+                    for entry in present_data:
+                        if entry["staff_pin"] == attendance.staff.pin:
+                            entry["minutes_present"] = round(minutes_present, 2)
+                            entry["individual_percentage"] = round(
+                                individual_percentage, 2
+                            )
+                            break
 
                 if pin_param:
                     present_data = [
@@ -119,14 +220,16 @@ class StaffAttendanceStatsView(APIView):
                         "total_staff_count": total_staff_count,
                         "present_staff_count": len(present_data),
                         "absent_staff_count": absent_staff_count,
-                        "present_between_8_to_18": present_between_8_to_18,
+                        "present_between_9_to_18": present_between_9_to_18,
                         "present_data": present_data,
                         "absent_data": absent_data,
                     }
 
                 return response_data
             except Exception as e:
-                return {"error": str(e)}
+                return Response(
+                    data={"error": str(e)}, status=status.HTTP_404_NOT_FOUND
+                )
 
         cached_data = get_cache(
             cache_key, query=query, timeout=6 * 60 * 60, cache=Cache
@@ -135,6 +238,30 @@ class StaffAttendanceStatsView(APIView):
         return Response(cached_data)
 
 
+@swagger_auto_schema(
+    method="post",
+    request_body=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        required=["username", "password"],
+        properties={
+            "username": openapi.Schema(type=openapi.TYPE_STRING),
+            "password": openapi.Schema(type=openapi.TYPE_STRING),
+        },
+    ),
+    responses={
+        201: "Created - Пользователь успешно зарегистрирован",
+        400: openapi.Response(
+            description="Bad Request - Ошибка в запросе",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "message": openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            ),
+        ),
+    },
+    operation_description="Регистрирует нового пользователя в системе. Разрешено только для администратора.",
+)
 @api_view(http_method_names=["POST"])
 @permission_classes([IsAdminUser])
 def user_register(request):

@@ -15,7 +15,7 @@ urlpatterns = [
     path("upload/", views.UploadFileView.as_view(), name="uploadFile"),
     path("user/register/", views.user_register, name="userRegister"),
     path(
-        "attendance/stats/",
+        "api/attendance/stats/",
         views.StaffAttendanceStatsView.as_view(),
         name="staff-attendance-stats",
     ),
