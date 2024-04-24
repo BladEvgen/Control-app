@@ -35,7 +35,7 @@ class FileCategoryAdmin(admin.ModelAdmin):
 
 @admin.register(ParentDepartment)
 class ParentDepartmentAdmin(admin.ModelAdmin):
-    list_display = ("name", "date_of_creation")
+    list_display = ("id", "name", "date_of_creation")
     search_fields = ("name",)
     ordering = (
         "name",
@@ -45,7 +45,7 @@ class ParentDepartmentAdmin(admin.ModelAdmin):
 
 @admin.register(ChildDepartment)
 class ChildDepartmentAdmin(admin.ModelAdmin):
-    list_display = ("name", "parent", "date_of_creation")
+    list_display = ("id", "name", "parent", "date_of_creation")
     search_fields = ("name", "parent__name")
     ordering = (
         "name",

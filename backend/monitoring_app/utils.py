@@ -7,6 +7,8 @@ from monitoring_app import models
 from django.db import transaction
 from concurrent.futures import ThreadPoolExecutor
 
+DAYS = 1
+
 
 def get_attendance_data(pin: str):
     """
@@ -20,7 +22,8 @@ def get_attendance_data(pin: str):
               сотрудника через систему контроля доступа за указанный день.
               Если произошла ошибка, возвращает пустой список.
     """
-    prev_date = datetime.datetime.now() - datetime.timedelta(days=1)
+    prev_date = datetime.datetime.now() - datetime.timedelta(days=DAYS)
+
     eventTime_first = prev_date.strftime("%Y-%m-%d 00:00:00")
     eventTime_last = prev_date.strftime("%Y-%m-%d 23:59:59")
     access_token = settings.API_KEY
@@ -78,12 +81,14 @@ def get_all_attendance():
             else:
                 first_event_time = None
                 last_event_time = None
+            prev_date = datetime.datetime.now() - datetime.timedelta(days=DAYS)
+            next_day = prev_date + datetime.timedelta(days=1)
 
             staff_attendance = models.StaffAttendance.objects.create(
                 staff=staff,
                 first_in=first_event_time,
                 last_out=last_event_time,
-                date_at=datetime.date.today(),
+                date_at=next_day.date(),
             )
             staff_attendance.save()
 

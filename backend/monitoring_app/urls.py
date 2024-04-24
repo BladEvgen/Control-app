@@ -19,6 +19,17 @@ urlpatterns = [
         views.StaffAttendanceStatsView.as_view(),
         name="staff-attendance-stats",
     ),
+    path(
+        "api/department/<int:parent_department_id>/",
+        views.department_summary,
+        name="department-summary",
+    ),
+    path(
+        "api/child_department/<int:child_department_id>/",
+        views.child_department_detail,
+        name="child-department-detail",
+    ),
+    path("api/staff/<str:staff_pin>/", views.staff_detail, name="staff-detail"),
     path("api/token/", TokenObtainPairView.as_view()),
     path("api/token/refresh/", TokenRefreshView.as_view()),
     path("api/token/verify/", TokenVerifyView.as_view()),

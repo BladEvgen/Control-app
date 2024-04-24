@@ -196,7 +196,6 @@ class StaffAttendance(models.Model):
     )
     date_at = models.DateField(
         verbose_name="Дата добавления записи в Таблицу",
-        auto_now_add=True,
         editable=False,
     )
     first_in = models.DateTimeField(
