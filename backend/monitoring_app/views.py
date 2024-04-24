@@ -17,9 +17,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
+from rest_framework.permissions import IsAdminUser, IsAuthenticated, AllowAny
 
-from monitoring_app import models, utils
+from monitoring_app import models, serializers, utils
 
 Cache = caches["default"]
 
@@ -34,6 +34,7 @@ def get_cache(
     return data
 
 
+@permission_classes([AllowAny])
 def home(request):
     return render(request, "home.html", context={})
 
@@ -73,6 +74,7 @@ class StaffAttendanceStatsView(APIView):
     """
 
     @swagger_auto_schema(
+        operation_summary="Получить список людей об их присутствии",
         operation_description="View для получения статистики о посещаемости персонала.",
         responses={
             200: openapi.Response(
@@ -152,6 +154,10 @@ class StaffAttendanceStatsView(APIView):
                 staff_attendance = models.StaffAttendance.objects.filter(
                     date_at=date_param
                 )
+                if not staff_attendance:
+                    response_data = {"message": f"No data found for date {date_param}"}
+                    return response_data
+
                 total_staff_count = models.Staff.objects.count()
 
                 present_staff = staff_attendance.exclude(first_in__isnull=True)
@@ -238,8 +244,176 @@ class StaffAttendanceStatsView(APIView):
         return Response(cached_data)
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+# TODO запретить брать department с id 1 либо если разрешить то child_department передавать через запятую все
+def department_summary(request, parent_department_id):
+    try:
+        parent_department = models.ParentDepartment.objects.get(id=parent_department_id)
+    except models.ParentDepartment.DoesNotExist:
+        return Response(status=status.HTTP_404_NOT_FOUND)
+
+    child_departments = models.ChildDepartment.objects.filter(parent=parent_department)
+    staff_count = models.Staff.objects.filter(
+        department__parent=parent_department
+    ).count()
+
+    child_departments_data = []
+    for child_department in child_departments:
+        staff_count_in_child_department = models.Staff.objects.filter(
+            department=child_department
+        ).count()
+        child_departments_data.append(
+            {
+                "name": child_department.name,
+                "staff_count": staff_count_in_child_department,
+            }
+        )
+
+    data = {
+        "parent_department": serializers.ParentDepartmentSerializer(
+            parent_department
+        ).data,
+        "child_departments": child_departments_data,
+        "total_staff_count": staff_count,
+    }
+
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Получить описание подотдела",
+    operation_description="Получите подробную информацию о подотделе и его сотрудниках.",
+    manual_parameters=[
+        openapi.Parameter(
+            name="child_department_id",
+            in_=openapi.IN_PATH,
+            type=openapi.TYPE_INTEGER,
+            description="ID подотдела",
+            required=True,
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Сведения о подотделе и данные о персонале",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "child_department": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        properties={
+                            "id": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "name": openapi.Schema(type=openapi.TYPE_STRING),
+                            "date_of_creation": openapi.Schema(
+                                type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME
+                            ),
+                            "parent": openapi.Schema(type=openapi.TYPE_INTEGER),
+                        },
+                    ),
+                    "staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
+                    "staff_data": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        additional_properties=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "FIO": openapi.Schema(type=openapi.TYPE_STRING),
+                                "date_of_creation": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format=openapi.FORMAT_DATETIME,
+                                ),
+                                "avatar": openapi.Schema(type=openapi.TYPE_STRING),
+                                "positions": openapi.Schema(
+                                    type=openapi.TYPE_ARRAY,
+                                    items=openapi.Schema(type=openapi.TYPE_STRING),
+                                ),
+                            },
+                        ),
+                    ),
+                },
+            ),
+        ),
+        404: "Not Found: Если подотдела не сущестует.",
+    },
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def child_department_detail(request, child_department_id):
+    """
+    Получите подробную информацию о дочернем отделе вместе с его сотрудниками.
+
+    Args:
+    запрос: объект запроса.
+    child_department_id (int): идентификатор дочернего отдела, который требуется получить.
+
+    Returns:
+    Ответ: ответ, содержащий сведения о дочернем отделе и данные о сотрудниках.
+
+    Raises:
+    Http404: Если дочерний отдел не существует.
+    """
+    try:
+        child_department = models.ChildDepartment.objects.get(id=child_department_id)
+    except models.ChildDepartment.DoesNotExist:
+        return Response(status=status.HTTP_404_NOT_FOUND)
+
+    staff_in_department = models.Staff.objects.filter(department=child_department)
+    staff_data = {}
+
+    for staff_member in staff_in_department:
+        staff_data[staff_member.pin] = {
+            "FIO": staff_member.surname + " " + staff_member.name,
+            "date_of_creation": staff_member.date_of_creation,
+            "avatar": staff_member.avatar.url if staff_member.avatar else None,
+            "positions": [position.name for position in staff_member.positions.all()],
+        }
+
+    staff_data = dict(sorted(staff_data.items(), reverse=True))
+
+    data = {
+        "child_department": serializers.ChildDepartmentSerializer(
+            child_department
+        ).data,
+        "staff_count": staff_in_department.count(),
+        "staff_data": staff_data,
+    }
+
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+# TODO: улучшить чтобы брал по умолчаниб за последнюю неделю, а также принимал для фильтрации 2 параметра по датам, также улучшить сериализатор зп, выводить только total, такжеы не выводил лишнии даныне в attendance,
+def staff_detail(request, staff_pin):
+    try:
+        staff = models.Staff.objects.get(pin=staff_pin)
+    except models.Staff.DoesNotExist:
+        return Response(status=status.HTTP_404_NOT_FOUND)
+
+    staff_attendance = models.StaffAttendance.objects.filter(staff=staff)
+    salaries = models.Salary.objects.filter(staff=staff)
+
+    attendance_data = serializers.StaffAttendanceSerializer(
+        staff_attendance, many=True
+    ).data
+    salary_data = serializers.SalarySerializer(salaries, many=True).data
+
+    data = {
+        "name": staff.name,
+        "surname": staff.surname,
+        "positions": [position.name for position in staff.positions.all()],
+        "avatar": staff.avatar.url if staff.avatar else None,
+        "department": staff.department.name if staff.department else "N/A",
+        "attendance": attendance_data,
+        "salaries": salary_data if salary_data else None,
+    }
+
+    return Response(data, status=status.HTTP_200_OK)
+
+
 @swagger_auto_schema(
     method="post",
+    operation_summary="Зарегистрировать нового пользователя доступно только isAdmin",
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         required=["username", "password"],
@@ -342,6 +516,7 @@ class UploadFileView(View):
     template_name = "upload_file.html"
 
     def get(self, request, *args, **kwargs):
+
         categories = models.FileCategory.objects.all()
         context = {"categories": categories}
         return render(request, self.template_name, context=context)
