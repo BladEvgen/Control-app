@@ -2,6 +2,7 @@ import os
 import zipfile
 import datetime
 
+from django.db.models import Count
 from django.core.cache import caches
 from django.contrib.auth.models import User
 from django.shortcuts import redirect, render
@@ -17,7 +18,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAdminUser, IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 
 from monitoring_app import models, serializers, utils
 
@@ -30,13 +31,17 @@ def get_cache(
     data = cache.get(key)
     if data is None:
         data = query()
+
         cache.set(key, data, timeout)
     return data
 
 
 @permission_classes([AllowAny])
 def home(request):
-    return render(request, "home.html", context={})
+    return render(
+        request,
+        "index.html",
+    )
 
 
 class StaffAttendanceStatsView(APIView):
@@ -246,39 +251,49 @@ class StaffAttendanceStatsView(APIView):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-# TODO запретить брать department с id 1 либо если разрешить то child_department передавать через запятую все
 def department_summary(request, parent_department_id):
-    try:
-        parent_department = models.ParentDepartment.objects.get(id=parent_department_id)
-    except models.ParentDepartment.DoesNotExist:
-        return Response(status=status.HTTP_404_NOT_FOUND)
+    cache_key = f"department_summary_{parent_department_id}"
 
-    child_departments = models.ChildDepartment.objects.filter(parent=parent_department)
-    staff_count = models.Staff.objects.filter(
-        department__parent=parent_department
-    ).count()
+    def query():
+        try:
+            parent_department = models.ParentDepartment.objects.get(
+                id=parent_department_id
+            )
+        except models.ParentDepartment.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
 
-    child_departments_data = []
-    for child_department in child_departments:
-        staff_count_in_child_department = models.Staff.objects.filter(
-            department=child_department
-        ).count()
-        child_departments_data.append(
-            {
-                "name": child_department.name,
-                "staff_count": staff_count_in_child_department,
-            }
+        def calculate_staff_count(department):
+            child_departments = models.ChildDepartment.objects.filter(parent=department)
+            staff_count = (
+                child_departments.aggregate(total_staff=Count("staff"))["total_staff"]
+                or 0
+            )
+
+            for child_dept in child_departments:
+                staff_count += calculate_staff_count(child_dept.id)
+
+            return staff_count
+
+        total_staff_count = calculate_staff_count(parent_department)
+
+        child_departments_data = models.ChildDepartment.objects.filter(
+            parent=parent_department
         )
+        child_departments_data_serialized = serializers.ChildDepartmentSerializer(
+            child_departments_data, many=True
+        ).data
 
-    data = {
-        "parent_department": serializers.ParentDepartmentSerializer(
-            parent_department
-        ).data,
-        "child_departments": child_departments_data,
-        "total_staff_count": staff_count,
-    }
+        data = {
+            "name": parent_department.name,
+            "date_of_creation": parent_department.date_of_creation,
+            "child_departments": child_departments_data_serialized,
+            "total_staff_count": total_staff_count,
+        }
 
-    return Response(data, status=status.HTTP_200_OK)
+        return data
+
+    cached_data = get_cache(cache_key, query=query, timeout=5 * 60, cache=Cache)
+    return Response(cached_data, status=status.HTTP_200_OK)
 
 
 @swagger_auto_schema(
@@ -566,7 +581,7 @@ class UploadFileView(View):
                         elif category_slug == "staff":
                             pin = row[0].value
                             name = row[1].value
-                            surname = row[2].value
+                            surname = row[2].value or "Нет фамилии"
                             department_id = int(row[3].value)
                             position_name = row[5].value
 

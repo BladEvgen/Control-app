@@ -28,6 +28,12 @@ N+3. Swagger
 N+4. Развернуться на Linux
 
 
+IMPORTANT  
+FIX 
+
+The response content must be rendered before it can be pickled.
+
+
 COMPLETED:
 1.загрузка шаблонов отдела с автосозданием родительского и ребенка (КЛАССОВОЕ view).
 2.Автовысчитывание чистой зп. (возможны правки тк чутка не правильно высчитывает)
