@@ -13,6 +13,7 @@ from django.views.generic import (
 )
 from drf_yasg import openapi
 from rest_framework import status
+from django.utils import timezone
 from openpyxl import load_workbook
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -31,8 +32,9 @@ def get_cache(
     data = cache.get(key)
     if data is None:
         data = query()
-
-        cache.set(key, data, timeout)
+        if data is not None:  # Убедимся, что данные не пустые
+            cache.set(key, data, timeout)
+        # cache.set(key, data, timeout)
     return data
 
 
@@ -249,10 +251,69 @@ class StaffAttendanceStatsView(APIView):
         return Response(cached_data)
 
 
+@swagger_auto_schema(
+    method="GET",
+    operation_summary="Сводная информация о департаменте",
+    operation_description="Метод для получения сводной информации о департаменте и его дочерних подразделениях с количеством сотрудников.",
+    responses={
+        200: openapi.Response(
+            description="Успешный запрос. Возвращается сводная информация о департаменте и его дочерних подразделениях.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "name": openapi.Schema(
+                        type=openapi.TYPE_STRING, description="Название департамента."
+                    ),
+                    "date_of_creation": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        format="date-time",
+                        description="Дата создания департамента.",
+                    ),
+                    "child_departments": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "child_id": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    description="ID дочернего подразделения.",
+                                ),
+                                "name": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="Название дочернего подразделения.",
+                                ),
+                                "date_of_creation": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format="date-time",
+                                    description="Дата создания дочернего подразделения.",
+                                ),
+                                "parent": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    description="ID родительского департамента.",
+                                ),
+                            },
+                        ),
+                        description="Список дочерних подразделений департамента.",
+                    ),
+                    "total_staff_count": openapi.Schema(
+                        type=openapi.TYPE_INTEGER,
+                        description="Общее количество сотрудников в департаменте и его дочерних подразделениях.",
+                    ),
+                },
+            ),
+        ),
+        404: "Департамент не найден.",
+    },
+)
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def department_summary(request, parent_department_id):
     cache_key = f"department_summary_{parent_department_id}"
+    if not models.ParentDepartment.objects.filter(id=parent_department_id).exists():
+        return Response(
+            status=status.HTTP_404_NOT_FOUND,
+            data={"message": f"Department with ID {parent_department_id} not found"},
+        )
 
     def query():
         try:
@@ -292,7 +353,7 @@ def department_summary(request, parent_department_id):
 
         return data
 
-    cached_data = get_cache(cache_key, query=query, timeout=5 * 60, cache=Cache)
+    cached_data = get_cache(cache_key, query=query, timeout=1 * 10, cache=Cache)
     return Response(cached_data, status=status.HTTP_200_OK)
 
 
@@ -398,20 +459,78 @@ def child_department_detail(request, child_department_id):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-# TODO: улучшить чтобы брал по умолчаниб за последнюю неделю, а также принимал для фильтрации 2 параметра по датам, также улучшить сериализатор зп, выводить только total, такжеы не выводил лишнии даныне в attendance,
 def staff_detail(request, staff_pin):
     try:
         staff = models.Staff.objects.get(pin=staff_pin)
     except models.Staff.DoesNotExist:
         return Response(status=status.HTTP_404_NOT_FOUND)
 
-    staff_attendance = models.StaffAttendance.objects.filter(staff=staff)
-    salaries = models.Salary.objects.filter(staff=staff)
+    end_date_str = request.query_params.get(
+        "end_date", timezone.now().strftime("%Y-%m-%d")
+    )
+    start_date_str = request.query_params.get(
+        "start_date", (timezone.now() - datetime.timedelta(days=6)).strftime("%Y-%m-%d")
+    )
 
-    attendance_data = serializers.StaffAttendanceSerializer(
-        staff_attendance, many=True
-    ).data
-    salary_data = serializers.SalarySerializer(salaries, many=True).data
+    end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
+    start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
+
+    if start_date > end_date:
+        return Response(
+            data={"error": "start_date cannot be greater than end_date"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    staff_attendance = models.StaffAttendance.objects.filter(
+        staff=staff, date_at__range=[start_date, end_date]
+    )
+
+    attendance_data = {}
+    total_minutes_for_period = 0
+    total_days = 0
+
+    for attendance in staff_attendance:
+        date_at = attendance.date_at
+
+        first_in = attendance.first_in
+        last_out = attendance.last_out
+
+        if first_in is None or last_out is None:
+            percent_day = 0
+        else:
+            total_minutes_expected = 8 * 60
+            total_minutes_worked = (last_out - first_in).total_seconds() / 60
+            total_minutes_for_period += total_minutes_worked
+            total_days += 1
+
+            percent_day = (total_minutes_worked / total_minutes_expected) * 100
+
+        if first_in is not None and last_out is not None:
+            correct_first_in = first_in + datetime.timedelta(hours=5)
+            correct_last_out = last_out + datetime.timedelta(hours=5)
+
+        attendance_entry = {
+            "first_in": (
+                correct_first_in.strftime("%H:%M %d-%m-%Y") if first_in else None
+            ),
+            "last_out": (
+                correct_last_out.strftime("%H:%M %d-%m-%Y") if last_out else None
+            ),
+            "percent_day": round(percent_day, 2),
+            "total_minutes": (
+                round(total_minutes_worked, 2) if first_in and last_out else 0
+            ),
+        }
+        attendance_data[date_at.strftime("%d-%m-%Y")] = attendance_entry
+    total_hours_expected = (end_date - start_date).days * 8
+
+    percent_for_period = (
+        (total_minutes_for_period / (total_hours_expected * 60)) * 100
+        if total_hours_expected > 0
+        else 0
+    )
+    salaries = models.Salary.objects.filter(staff=staff)
+    total_salary = salaries.first().total_salary if salaries.exists() else None
 
     data = {
         "name": staff.name,
@@ -420,7 +539,8 @@ def staff_detail(request, staff_pin):
         "avatar": staff.avatar.url if staff.avatar else None,
         "department": staff.department.name if staff.department else "N/A",
         "attendance": attendance_data,
-        "salaries": salary_data if salary_data else None,
+        "percent_for_period": round(percent_for_period, 2),
+        "salary": total_salary,
     }
 
     return Response(data, status=status.HTTP_200_OK)
@@ -531,7 +651,6 @@ class UploadFileView(View):
     template_name = "upload_file.html"
 
     def get(self, request, *args, **kwargs):
-
         categories = models.FileCategory.objects.all()
         context = {"categories": categories}
         return render(request, self.template_name, context=context)
