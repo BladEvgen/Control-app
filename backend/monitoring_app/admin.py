@@ -75,6 +75,10 @@ class StaffAdmin(admin.ModelAdmin):
     search_fields = ("surname", "name", "department__name")
     filter_horizontal = ("positions",)
     actions = ["clear_avatars"]
+    ordering = (
+        "surname",
+        "name",
+    )
 
     def clear_avatars(self, request, queryset):
         for staff_member in queryset:
