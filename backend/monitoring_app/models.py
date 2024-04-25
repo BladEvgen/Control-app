@@ -216,6 +216,15 @@ class StaffAttendance(models.Model):
     def __str__(self) -> str:
         return f"{self.staff} {self.date_at.strftime('%d-%m-%Y')}"
 
+    def save(self, *args, **kwargs):
+        existing_record = StaffAttendance.objects.filter(
+            staff=self.staff, date_at=self.date_at
+        ).exists()
+        if existing_record:
+            return
+        else:
+            super().save(*args, **kwargs)
+
     class Meta:
         unique_together = [["staff", "date_at"]]
 
