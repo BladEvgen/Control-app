@@ -54,6 +54,8 @@ class StaffAttendanceSerializer(serializers.ModelSerializer):
 
 
 class SalarySerializer(serializers.ModelSerializer):
+    total_salary = serializers.DecimalField(max_digits=10, decimal_places=2)
+
     class Meta:
         model = models.Salary
-        fields = "__all__"
+        fields = ("total_salary",)
