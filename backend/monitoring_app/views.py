@@ -32,9 +32,7 @@ def get_cache(
     data = cache.get(key)
     if data is None:
         data = query()
-        if data is not None:  # Убедимся, что данные не пустые
-            cache.set(key, data, timeout)
-        # cache.set(key, data, timeout)
+        cache.set(key, data, timeout)
     return data
 
 
@@ -474,7 +472,8 @@ def staff_detail(request, staff_pin):
 
     end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
     start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
-
+    end_date = end_date + datetime.timedelta(days=1)
+    start_date = start_date + datetime.timedelta(days=1)
     if start_date > end_date:
         return Response(
             data={"error": "start_date cannot be greater than end_date"},
@@ -488,9 +487,10 @@ def staff_detail(request, staff_pin):
     attendance_data = {}
     total_minutes_for_period = 0
     total_days = 0
+    percent_for_period = 0
 
     for attendance in staff_attendance:
-        date_at = attendance.date_at
+        date_at = attendance.date_at - datetime.timedelta(days=1)
 
         first_in = attendance.first_in
         last_out = attendance.last_out
@@ -521,14 +521,26 @@ def staff_detail(request, staff_pin):
                 round(total_minutes_worked, 2) if first_in and last_out else 0
             ),
         }
-        attendance_data[date_at.strftime("%d-%m-%Y")] = attendance_entry
-    total_hours_expected = (end_date - start_date).days * 8
 
-    percent_for_period = (
-        (total_minutes_for_period / (total_hours_expected * 60)) * 100
-        if total_hours_expected > 0
-        else 0
-    )
+        if date_at.weekday() >= 5:
+
+            if attendance_entry["total_minutes"] > 60:
+                percent_for_period *= 1.5
+            else:
+                percent_for_period += percent_day
+        else:
+
+            if attendance_entry["total_minutes"] == 0:
+                percent_day *= 0.75
+        total_weekend_days = 0
+        for single_date in utils.daterange(start_date, end_date):
+            if single_date.weekday() >= 5:
+                total_weekend_days += 1
+        attendance_data[date_at.strftime("%d-%m-%Y")] = attendance_entry
+
+    total_hours_expected = ((end_date - start_date).days - total_weekend_days) * 8
+    percent_for_period += (total_minutes_for_period / (total_hours_expected * 60)) * 100
+
     salaries = models.Salary.objects.filter(staff=staff)
     total_salary = salaries.first().total_salary if salaries.exists() else None
 
@@ -651,6 +663,7 @@ class UploadFileView(View):
     template_name = "upload_file.html"
 
     def get(self, request, *args, **kwargs):
+
         categories = models.FileCategory.objects.all()
         context = {"categories": categories}
         return render(request, self.template_name, context=context)
