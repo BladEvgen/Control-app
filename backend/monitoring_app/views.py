@@ -29,6 +29,22 @@ Cache = caches["default"]
 def get_cache(
     key: str, query: callable = lambda: any, timeout: int = 10, cache: any = Cache
 ) -> any:
+    """
+    Получает данные из кэша по указанному ключу `key`.
+
+    Args:
+        key (str): Строковый ключ для доступа к данным в кэше.
+        query (callable, optional): Функция, вызываемая для получения данных в случае их отсутствия в кэше.
+            По умолчанию используется `lambda: any`, возвращающая всегда `True`.
+        timeout (int, optional): Время жизни данных в кэше в секундах. По умолчанию: 10 секунд.
+        cache (any, optional): Объект кэша, используемый для хранения данных. По умолчанию: `Cache`.
+
+    Returns:
+        any: Возвращает данные из кэша, если они есть, иначе данные, полученные из запроса.
+
+    Examples:
+        >>> get_cache("my_data_key")
+    """
     data = cache.get(key)
     if data is None:
         data = query()
@@ -455,9 +471,121 @@ def child_department_detail(request, child_department_id):
     return Response(data, status=status.HTTP_200_OK)
 
 
+@swagger_auto_schema(
+    method="GET",
+    operation_summary="Получить информации об сотруднике",
+    operation_description="Получение подробной информации о сотруднике, включая данные о посещаемости и заработной плате",
+    manual_parameters=[
+        openapi.Parameter(
+            name="staff_pin",
+            in_=openapi.IN_PATH,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="Уникальный идентификатор сотрудника (PIN)",
+        ),
+        openapi.Parameter(
+            name="start_date",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="Дата начала периода для фильтрации данных о посещаемости (формат: YYYY-MM-DD)",
+        ),
+        openapi.Parameter(
+            name="end_date",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="Дата окончания периода для фильтрации данных о посещаемости (формат: YYYY-MM-DD)",
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Данные сотрудника успешно получены",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "name": openapi.Schema(
+                        type=openapi.TYPE_STRING, description="Имя сотрудника"
+                    ),
+                    "surname": openapi.Schema(
+                        type=openapi.TYPE_STRING, description="Фамилия сотрудника"
+                    ),
+                    "positions": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_STRING),
+                        description="Список должностей сотрудника",
+                    ),
+                    "avatar": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        format=openapi.FORMAT_URI,
+                        nullable=True,
+                        description="URL аватара сотрудника",
+                    ),
+                    "department": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Отдел, к которому относится сотрудник",
+                    ),
+                    "attendance": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        additional_properties=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            description="Данные о посещаемости",
+                        ),
+                    ),
+                    "percent_for_period": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        format=openapi.FORMAT_FLOAT,
+                        description="Общий процент работы за указанный период",
+                    ),
+                    "salary": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        format=openapi.FORMAT_FLOAT,
+                        nullable=True,
+                        description="Общая заработная плата сотрудника",
+                    ),
+                },
+            ),
+        ),
+        400: "Неверный запрос, дата начала не может быть позже даты окончания",
+        404: "Сотрудник не найден",
+    },
+)
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def staff_detail(request, staff_pin):
+    """
+    Эндпоинт для получения подробной информации о сотруднике,
+    включая данные о посещаемости и заработной плате.
+
+    **Запрос (GET):**
+
+    * **URL:** `/staff/<staff_pin>/`
+    * **Параметры:**
+        * `staff_pin` (обязательный, строка): Уникальный идентификатор сотрудника (PIN)
+        * `start_date` (необязательный, строка): Дата начала периода для фильтрации
+            данных о посещаемости (формат: YYYY-MM-DD). По умолчанию - за последние 6 дней.
+        * `end_date` (необязательный, строка): Дата окончания периода для фильтрации
+            данных о посещаемости (формат: YYYY-MM-DD). По умолчанию - текущая дата.
+
+    **Ответ (JSON):**
+
+    * **Код состояния 200:**
+        * `name` (строка): Имя сотрудника
+        * `surname` (строка): Фамилия сотрудника
+        * `positions` (список строк): Список должностей сотрудника
+        * `avatar` (строка, формат URI): URL аватара сотрудника (может быть null)
+        * `department` (строка): Отдел, к которому относится сотрудник
+        * `attendance` (объект): Данные о посещаемости за указанный период.
+            Ключи - даты посещаемости в формате "DD-MM-YYYY", значения - объекты:
+                * `first_in` (строка, формат ЧЧ:ММ DD-MM-YYYY): Время первого входа (может быть null)
+                * `last_out` (строка, формат ЧЧ:ММ DD-MM-YYYY): Время последнего выхода (может быть null)
+                * `percent_day` (число): Процент отработанного времени за день
+                * `total_minutes` (число): Общее количество отработанных минут за день
+        * `percent_for_period` (число): Общий процент работы за указанный период
+        * `salary` (число): Общая заработная плата сотрудника (может быть null)
+    * **Код состояния 400:** Неверный запрос, дата начала не может быть позже даты окончания
+    * **Код состояния 404:** Сотрудник не найден
+    """
     try:
         staff = models.Staff.objects.get(pin=staff_pin)
     except models.Staff.DoesNotExist:
@@ -660,15 +788,43 @@ def login_view(request):
 
 
 class UploadFileView(View):
+    """
+    Класс представления для обработки действий по загрузке файлов.
+
+    Отображает форму загрузки файла (`upload_file.html`)
+    и обрабатывает POST-запросы для импорта данных из файла.
+    """
+
     template_name = "upload_file.html"
 
     def get(self, request, *args, **kwargs):
+        """
+        Обрабатывает GET-запросы.
 
+        Retunrs:
+            HttpResponse: Отрисовывает шаблон `upload_file.html`
+            с контекстом, содержащим список всех категорий файлов (`categories`).
+        """
         categories = models.FileCategory.objects.all()
         context = {"categories": categories}
         return render(request, self.template_name, context=context)
 
     def post(self, request, *args, **kwargs):
+        """
+        Обрабатывает POST-запросы.
+
+        Args:
+            request (HttpRequest): Объект запроса.
+            *args: Аргументы.
+            **kwargs: Ключевые аргументы.
+
+        Returns:
+            HttpResponse: Возвращает редирект на страницу загрузки файла или
+            рендеринг `upload_file.html` с соответствующим контекстом.
+
+        Raises:
+            Exception: Если произошла ошибка при обработке файла.
+        """
         file_path = request.FILES.get("file")
 
         category_slug = request.POST.get("category")

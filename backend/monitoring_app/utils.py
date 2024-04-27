@@ -120,7 +120,7 @@ def password_check(password: str) -> bool:
 
 def daterange(start_date, end_date):
     """
-    Создает range дат между start_date и end_date
+    Создает диапазон дат между start_date и end_date
     """
     for n in range(int((end_date - start_date).days) + 1):
         yield start_date + datetime.timedelta(n)
