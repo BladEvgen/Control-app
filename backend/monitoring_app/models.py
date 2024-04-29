@@ -4,6 +4,7 @@ from django.db import models
 from django.utils import timezone
 from django.dispatch import receiver
 from django.contrib.auth.models import User
+from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.validators import FileExtensionValidator
 from django.db.models.signals import pre_save, m2m_changed, post_save, post_delete
 
@@ -17,7 +18,7 @@ class UserProfile(models.Model):
     )
     is_banned = models.BooleanField(default=False, verbose_name="Статус Блокировки")
     phonenumber = models.CharField(max_length=20, verbose_name="Номер телефона")
-    address = models.TextField(verbose_name="Адрес")
+    address = models.TextField(verbose_name="Адрес", null=True, blank=True)
 
     def __str__(self):
         return f"{self.user.username} Profile"
@@ -45,6 +46,13 @@ def update_user_active_status(sender, instance, **kwargs):
 def delete_user_on_profile_delete(sender, instance, **kwargs):
     user = instance.user
     user.delete()
+
+
+@receiver(post_save, sender=UserProfile)
+@receiver(post_delete, sender=UserProfile)
+def update_jwt_token(sender, instance, **kwargs):
+    user = instance.user
+    refresh = RefreshToken.for_user(user)
 
 
 class FileCategory(models.Model):

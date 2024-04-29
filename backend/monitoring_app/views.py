@@ -743,7 +743,6 @@ def user_register(request):
 
     username = request.data.get("username", None)
     password = request.data.get("password", None)
-
     if not username or not password:
         return Response(
             status=status.HTTP_400_BAD_REQUEST,
@@ -767,6 +766,14 @@ def user_register(request):
     return Response(
         status=status.HTTP_201_CREATED, data={"message": "пользователь успешно создан"}
     )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def user_profile_detail(request):
+    user_profile = models.UserProfile.objects.get(user=request.user)
+    serializer = serializers.UserProfileSerializer(user_profile)
+    return Response(serializer.data)
 
 
 def logout_view(request):

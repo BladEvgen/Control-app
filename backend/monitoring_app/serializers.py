@@ -1,9 +1,45 @@
 from monitoring_app import models
 from rest_framework import serializers
+from django.contrib.auth.models import User
+
+
+class UserSerializer(serializers.ModelSerializer):
+    date_joined = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+    last_login = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+
+    class Meta:
+        model = User
+        fields = [
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "is_staff",
+            "date_joined",
+            "last_login",
+        ]
+
+
+class UserProfileSerializer(serializers.Serializer):
+    is_banned = serializers.BooleanField()
+    user = UserSerializer()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["user"]["phonenumber"] = instance.phonenumber
+        return data
+
+
+def get_main_parent(department):
+    if department.parent is None:
+        return department.id
+    else:
+        return get_main_parent(department.id)
 
 
 class ParentDepartmentSerializer(serializers.ModelSerializer):
     child_departments = serializers.SerializerMethodField()
+    have_children = serializers.SerializerMethodField()
 
     class Meta:
         model = models.ParentDepartment
