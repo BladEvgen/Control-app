@@ -1,7 +1,7 @@
 import axios from "axios";
 import Cookies from "js-cookie";
 import { apiUrl } from "../apiConfig";
-
+import { useNavigate } from "react-router-dom";
 const axiosInstance = axios.create({
   baseURL: `${apiUrl}/api`,
   timeout: 5000,
@@ -60,6 +60,10 @@ axiosInstance.interceptors.response.use(
         originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
         return axiosInstance(originalRequest);
       } catch (refreshError) {
+        Cookies.remove("refresh_token", { path: "/" });
+        Cookies.remove("access_token", { path: "/" });
+        const navigate = useNavigate();
+        navigate("/login");
         return Promise.reject(refreshError);
       }
     } else {
