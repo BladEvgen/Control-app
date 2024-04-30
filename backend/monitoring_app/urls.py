@@ -31,6 +31,7 @@ urlpatterns = [
         name="child-department-detail",
     ),
     path("api/staff/<str:staff_pin>/", views.staff_detail, name="staff-detail"),
+    path("api/parent_department_id", views.get_parent_id, name="get-parent-ids"),
     path("api/token/", TokenObtainPairView.as_view()),
     path("api/token/refresh/", TokenRefreshView.as_view()),
     path("api/token/verify/", TokenVerifyView.as_view()),

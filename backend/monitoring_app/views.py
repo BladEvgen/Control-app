@@ -267,6 +267,35 @@ class StaffAttendanceStatsView(APIView):
 
 @swagger_auto_schema(
     method="GET",
+    operation_summary="Получить ID всех родительских департаментов",
+    operation_description="Метод для получения списка всех родительских департаментов.",
+    responses={
+        200: openapi.Response(
+            description="Успешный запрос. Возвращается список ID родительских департаментов.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_ARRAY,
+                items=openapi.Schema(
+                    type=openapi.TYPE_INTEGER,
+                    description="ID родительского департамента.",
+                ),
+            ),
+        ),
+        404: "Департаменты не найдены.",
+    },
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_parent_id(request):
+    try:
+        parent_departments = models.ParentDepartment.objects.all()
+        parent_ids = [department.id for department in parent_departments]
+        return Response(data=parent_ids, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response(data={"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
+
+
+@swagger_auto_schema(
+    method="GET",
     operation_summary="Сводная информация о департаменте",
     operation_description="Метод для получения сводной информации о департаменте и его дочерних подразделениях с количеством сотрудников.",
     responses={
