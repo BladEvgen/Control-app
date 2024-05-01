@@ -25,3 +25,22 @@ export interface IChildDepartmentData {
   staff_count: number;
   staff_data: IStaffData;
 }
+
+export interface StaffData {
+  name: string;
+  surname: string;
+  positions: string[];
+  avatar: string;
+  department: string;
+  department_id: number;
+  attendance: Record<string, AttendanceData>;
+  percent_for_period: number;
+  salary: number | null;
+}
+
+export interface AttendanceData {
+  first_in: string | null;
+  last_out: string | null;
+  percent_day: number;
+  total_minutes: number;
+}

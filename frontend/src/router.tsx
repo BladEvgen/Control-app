@@ -7,7 +7,7 @@ import FooterComponent from "./components/FooterComponent.tsx";
 import LoginPage from "./pages/LoginPage.tsx";
 import DepartmentPage from "./pages/DepartmentPage.tsx";
 import ChildDepartmentPage from "./pages/ChildDepartmentPage.tsx";
-
+import StaffDetail from "./pages/StaffDetail.tsx";
 interface LayoutProps {
   children: ReactNode;
 }
@@ -17,7 +17,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     <div>
       <HeaderComponent />
       {children}
-      <FooterComponent />
+      {/* <FooterComponent /> */}
     </div>
   );
 };
@@ -52,6 +52,14 @@ const router = createBrowserRouter([
     element: (
       <Layout>
         <ChildDepartmentPage /> {""}
+      </Layout>
+    ),
+  },
+  {
+    path: "/staffDetail/:pin",
+    element: (
+      <Layout>
+        <StaffDetail /> {""}
       </Layout>
     ),
   },

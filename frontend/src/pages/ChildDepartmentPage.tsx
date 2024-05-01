@@ -93,7 +93,7 @@ const ChildDepartmentPage = () => {
                   Object.entries(data?.staff_data).map(([pin, staff]) => (
                     <tr key={pin}>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        {staff.FIO}
+                        <Link to={`/staffDetail/${pin}`}>{staff.FIO}</Link>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         {staff.positions.join(", ")}
