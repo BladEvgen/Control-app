@@ -554,6 +554,10 @@ def child_department_detail(request, child_department_id):
                         type=openapi.TYPE_STRING,
                         description="Отдел, к которому относится сотрудник",
                     ),
+                    "department_id": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        description="Id отдела",
+                    ),
                     "attendance": openapi.Schema(
                         type=openapi.TYPE_OBJECT,
                         additional_properties=openapi.Schema(
@@ -604,6 +608,7 @@ def staff_detail(request, staff_pin):
         * `positions` (список строк): Список должностей сотрудника
         * `avatar` (строка, формат URI): URL аватара сотрудника (может быть null)
         * `department` (строка): Отдел, к которому относится сотрудник
+        * `department_id` (число): Id отдела
         * `attendance` (объект): Данные о посещаемости за указанный период.
             Ключи - даты посещаемости в формате "DD-MM-YYYY", значения - объекты:
                 * `first_in` (строка, формат ЧЧ:ММ DD-MM-YYYY): Время первого входа (может быть null)
@@ -645,7 +650,7 @@ def staff_detail(request, staff_pin):
     total_minutes_for_period = 0
     total_days = 0
     percent_for_period = 0
-
+    total_weekend_days = 0
     for attendance in staff_attendance:
         date_at = attendance.date_at - datetime.timedelta(days=1)
 
@@ -662,17 +667,9 @@ def staff_detail(request, staff_pin):
 
             percent_day = (total_minutes_worked / total_minutes_expected) * 100
 
-        if first_in is not None and last_out is not None:
-            correct_first_in = first_in + datetime.timedelta(hours=5)
-            correct_last_out = last_out + datetime.timedelta(hours=5)
-
         attendance_entry = {
-            "first_in": (
-                correct_first_in.strftime("%H:%M %d-%m-%Y") if first_in else None
-            ),
-            "last_out": (
-                correct_last_out.strftime("%H:%M %d-%m-%Y") if last_out else None
-            ),
+            "first_in": (first_in if first_in else None),
+            "last_out": (last_out if last_out else None),
             "percent_day": round(percent_day, 2),
             "total_minutes": (
                 round(total_minutes_worked, 2) if first_in and last_out else 0
@@ -689,7 +686,7 @@ def staff_detail(request, staff_pin):
 
             if attendance_entry["total_minutes"] == 0:
                 percent_day *= 0.75
-        total_weekend_days = 0
+
         for single_date in utils.daterange(start_date, end_date):
             if single_date.weekday() >= 5:
                 total_weekend_days += 1
@@ -707,6 +704,7 @@ def staff_detail(request, staff_pin):
         "positions": [position.name for position in staff.positions.all()],
         "avatar": staff.avatar.url if staff.avatar else None,
         "department": staff.department.name if staff.department else "N/A",
+        "department_id": staff.department.id if staff.department else "N/A",
         "attendance": attendance_data,
         "percent_for_period": round(percent_for_period, 2),
         "salary": total_salary,
