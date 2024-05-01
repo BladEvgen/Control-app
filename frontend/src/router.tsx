@@ -3,9 +3,11 @@ import { createBrowserRouter } from "react-router-dom";
 
 import MainPage from "./pages/MainPage.tsx";
 import HeaderComponent from "./components/HeaderComponent.tsx";
+import FooterComponent from "./components/FooterComponent.tsx";
 import LoginPage from "./pages/LoginPage.tsx";
 import DepartmentPage from "./pages/DepartmentPage.tsx";
 import ChildDepartmentPage from "./pages/ChildDepartmentPage.tsx";
+
 interface LayoutProps {
   children: ReactNode;
 }
@@ -15,6 +17,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     <div>
       <HeaderComponent />
       {children}
+      <FooterComponent />
     </div>
   );
 };
