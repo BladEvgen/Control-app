@@ -8,7 +8,6 @@ import { useParams } from "react-router-dom";
 const ChildDepartmentPage = () => {
   const { id } = useParams<{ id: string }>();
   const [showReloadMessage, setShowReloadMessage] = useState<boolean>(false);
-
   const [data, setData] = useState<IChildDepartmentData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
@@ -30,7 +29,7 @@ const ChildDepartmentPage = () => {
 
         const timeout2 = setTimeout(() => {
           window.location.reload();
-        }, 15000);
+        }, 10000);
 
         return () => {
           clearTimeout(timeout1);
@@ -71,49 +70,53 @@ const ChildDepartmentPage = () => {
             На главную страницу
           </Link>
           <p>Количество сотрудников: {data?.staff_count}</p>
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  ФИО
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Должность
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Дата создания
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Avatar
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {data?.staff_data &&
-                Object.entries(data?.staff_data).map(([pin, staff]) => (
-                  <tr key={pin}>
-                    <td className="px-6 py-4 whitespace-nowrap">{staff.FIO}</td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {staff.positions.join(", ")}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {formatDate(staff.date_of_creation)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {staff.avatar ? (
-                        <span role="img" aria-label="success">
-                          ✅
-                        </span>
-                      ) : (
-                        <span role="img" aria-label="fail">
-                          ❌
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    ФИО
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Должность
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Дата создания
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Avatar
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {data?.staff_data &&
+                  Object.entries(data?.staff_data).map(([pin, staff]) => (
+                    <tr key={pin}>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {staff.FIO}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {staff.positions.join(", ")}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {formatDate(staff.date_of_creation)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {staff.avatar ? (
+                          <span role="img" aria-label="success">
+                            ✅
+                          </span>
+                        ) : (
+                          <span role="img" aria-label="fail">
+                            ❌
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
         </>
       )}
     </div>
