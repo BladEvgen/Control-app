@@ -1,10 +1,8 @@
-import React from "react";
-
 const FooterComponent = () => {
   const currentYear = new Date().getFullYear();
 
   return (
-    <footer className="fixed bottom-0 left-0 right-0 py-3 bg-gray-200">
+    <footer className="absolute bottom-0 left-0 right-0 py-3 bg-gray-200">
       <div className="container mx-auto">
         <ul className="flex justify-center border-b pb-3 mb-3">
           <li className="mr-6">
