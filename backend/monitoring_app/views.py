@@ -596,7 +596,7 @@ def staff_detail(request, staff_pin):
     * **Параметры:**
         * `staff_pin` (обязательный, строка): Уникальный идентификатор сотрудника (PIN)
         * `start_date` (необязательный, строка): Дата начала периода для фильтрации
-            данных о посещаемости (формат: YYYY-MM-DD). По умолчанию - за последние 6 дней.
+            данных о посещаемости (формат: YYYY-MM-DD). По умолчанию - за последние 7 дней.
         * `end_date` (необязательный, строка): Дата окончания периода для фильтрации
             данных о посещаемости (формат: YYYY-MM-DD). По умолчанию - текущая дата.
 
@@ -629,7 +629,7 @@ def staff_detail(request, staff_pin):
         "end_date", timezone.now().strftime("%Y-%m-%d")
     )
     start_date_str = request.query_params.get(
-        "start_date", (timezone.now() - datetime.timedelta(days=6)).strftime("%Y-%m-%d")
+        "start_date", (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
     )
 
     end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
@@ -650,9 +650,9 @@ def staff_detail(request, staff_pin):
     total_minutes_for_period = 0
     total_days = 0
     percent_for_period = 0
-    total_weekend_days = 0
     for attendance in staff_attendance:
         date_at = attendance.date_at - datetime.timedelta(days=1)
+        is_weekend = date_at.weekday() >= 5
 
         first_in = attendance.first_in
         last_out = attendance.last_out
@@ -674,6 +674,7 @@ def staff_detail(request, staff_pin):
             "total_minutes": (
                 round(total_minutes_worked, 2) if first_in and last_out else 0
             ),
+            "is_weekend": is_weekend,
         }
 
         if date_at.weekday() >= 5:
@@ -686,6 +687,8 @@ def staff_detail(request, staff_pin):
 
             if attendance_entry["total_minutes"] == 0:
                 percent_day *= 0.75
+
+        total_weekend_days = 0
 
         for single_date in utils.daterange(start_date, end_date):
             if single_date.weekday() >= 5:
@@ -839,6 +842,7 @@ class UploadFileView(View):
             HttpResponse: Отрисовывает шаблон `upload_file.html`
             с контекстом, содержащим список всех категорий файлов (`categories`).
         """
+
         categories = models.FileCategory.objects.all()
         context = {"categories": categories}
         return render(request, self.template_name, context=context)
