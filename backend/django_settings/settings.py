@@ -72,7 +72,7 @@ ROOT_URLCONF = "django_settings.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [BASE_DIR / "templates"],
+        "DIRS": [FRONTEND_DIR / "dist", BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -98,10 +98,7 @@ else:
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.redis.RedisCache",
-            "LOCATION": f"""redis://{os.getenv("REDIS_USERNAME")}:
-            {os.getenv("REDIS_PASSWORD")}@
-            {os.getenv("REDIS_HOST")}:
-            {os.getenv("REDIS_PORT")}""",
+            "LOCATION": f"""redis://{os.getenv("REDIS_HOST")}:{os.getenv("REDIS_PORT")}""",
         }
     }
 
@@ -159,6 +156,7 @@ STATIC_ROOT = Path(BASE_DIR, "staticroot")
 # массив с папками откуда джанго "собирает" статику
 STATICFILES_DIRS = [
     Path(BASE_DIR / "static"),
+    Path(FRONTEND_DIR / "dist/assets"),
 ]
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "static/media"
