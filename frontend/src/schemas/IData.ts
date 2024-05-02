@@ -43,4 +43,5 @@ export interface AttendanceData {
   last_out: string | null;
   percent_day: number;
   total_minutes: number;
+  is_weekend: boolean;
 }
