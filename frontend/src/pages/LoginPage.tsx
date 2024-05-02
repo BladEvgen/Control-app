@@ -19,6 +19,7 @@ const LoginPage = () => {
       Cookies.set("refresh_token", res.data.refresh, { path: "/" });
 
       navigate("/");
+      window.location.reload();
     } catch (error) {
       console.error("Login error:", error);
     }

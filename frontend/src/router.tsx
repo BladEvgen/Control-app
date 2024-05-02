@@ -16,7 +16,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   return (
     <div>
       <HeaderComponent />
-      {children}
+      <div className="">{children}</div>
       <FooterComponent />
     </div>
   );
