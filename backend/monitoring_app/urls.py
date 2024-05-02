@@ -13,6 +13,7 @@ urlpatterns = [
     path("login/", views.login_view, name="login"),
     path("logout/", views.logout_view, name="logout"),
     path("upload/", views.UploadFileView.as_view(), name="uploadFile"),
+    path("fetcher/", views.fetch_data_view, name="fetcher"),
     path("api/user/register/", views.user_register, name="userRegister"),
     path("api/user/detail/", views.user_profile_detail, name="user-detail"),
     path(

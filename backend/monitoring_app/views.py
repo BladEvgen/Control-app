@@ -824,6 +824,25 @@ def login_view(request):
     return render(request, "login.html", context={})
 
 
+@api_view(["GET"])
+def fetch_data_view(request):
+
+    try:
+        fetch_data = request.GET.get("fetch_data", "").lower()
+        if fetch_data == "true":
+            utils.get_all_attendance()
+            return Response(status=status.HTTP_200_OK, data={"message": "Started"})
+        else:
+            return Response(
+                status=status.HTTP_403_FORBIDDEN,
+                data={"error": "Access denied."},
+            )
+    except Exception as e:
+        return Response(
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR, data={"error": str(e)}
+        )
+
+
 class UploadFileView(View):
     """
     Класс представления для обработки действий по загрузке файлов.
