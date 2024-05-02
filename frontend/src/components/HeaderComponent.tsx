@@ -41,7 +41,8 @@ const HeaderComponent = () => {
     Cookies.remove("refresh_token");
     Cookies.remove("sessionid");
     setIsAuthenticated(false);
-    navigate("/");
+
+    window.location.reload();
   };
 
   const toggleDropdown = () => {
@@ -54,7 +55,7 @@ const HeaderComponent = () => {
         <div className="flex items-center flex-shrink-0 text-white mr-6">
           <Link to="/">
             <span className="font-semibold text-xl tracking-tight">
-              Contracts Manager
+              Control Staff App
             </span>
           </Link>
         </div>

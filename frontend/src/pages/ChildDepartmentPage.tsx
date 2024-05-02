@@ -69,7 +69,9 @@ const ChildDepartmentPage = () => {
             className="inline-block mb-4 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600">
             На главную страницу
           </Link>
-          <p>Количество сотрудников: {data?.staff_count}</p>
+          <p>
+            <strong>Количество сотрудников:</strong> {data?.staff_count}
+          </p>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
