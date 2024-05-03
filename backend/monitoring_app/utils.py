@@ -6,6 +6,7 @@ from django.conf import settings
 from monitoring_app import models
 from django.db import transaction
 from concurrent.futures import ThreadPoolExecutor
+from django.contrib.auth.decorators import user_passes_test
 
 DAYS = 1
 
@@ -124,3 +125,11 @@ def daterange(start_date, end_date):
     """
     for n in range(int((end_date - start_date).days) + 1):
         yield start_date + datetime.timedelta(n)
+
+
+def staff_or_admin_required(function):
+    actual_decorator = user_passes_test(
+        lambda u: u.is_active and (u.is_staff or u.is_superuser),
+        login_url="/",
+    )
+    return actual_decorator(function)

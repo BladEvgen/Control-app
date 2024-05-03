@@ -10,7 +10,7 @@ from monitoring_app.swagger import urlpatterns as doc_urls
 
 urlpatterns = [
     path("", views.home, name="home"),
-    path("login/", views.login_view, name="login"),
+    path("login_view/", views.login_view, name="login_view"),
     path("logout/", views.logout_view, name="logout"),
     path("upload/", views.UploadFileView.as_view(), name="uploadFile"),
     path("fetcher/", views.fetch_data_view, name="fetcher"),

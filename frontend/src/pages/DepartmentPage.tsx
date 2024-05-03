@@ -6,7 +6,8 @@ import { apiUrl } from "../../apiConfig";
 
 const DepartmentTable = ({ data }: { data: IData }) => {
   const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(5);
+
+  const [rowsPerPage] = useState(5);
   const [searchQuery, setSearchQuery] = useState("");
 
   const handleChangePage = (newPage: number) => {

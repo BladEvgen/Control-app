@@ -808,7 +808,7 @@ def user_profile_detail(request):
 
 def logout_view(request):
     logout(request)
-    return redirect("login")
+    return redirect("home")
 
 
 def login_view(request):
