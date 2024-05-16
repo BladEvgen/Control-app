@@ -8,7 +8,7 @@ from django.db import transaction
 from concurrent.futures import ThreadPoolExecutor
 from django.contrib.auth.decorators import user_passes_test
 
-DAYS = 1
+DAYS = settings.DAYS
 
 
 def get_attendance_data(pin: str):

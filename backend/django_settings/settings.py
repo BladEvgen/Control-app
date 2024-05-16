@@ -9,7 +9,7 @@ DEBUG = True if socket.gethostname() in host_names else False
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
-
+DAYS = 1
 
 dotenv_path = BASE_DIR / ".env"
 if dotenv_path.exists():

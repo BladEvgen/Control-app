@@ -34,14 +34,14 @@ execute_command "sudo chown -R $username:www-data /var/www/app"
 
 execute_command "sudo systemctl start postgresql.service"
 
-execute_command "sudo -u postgres psql -c \"DROP DATABASE IF EXISTS storage;\"" 
-execute_command "sudo -u postgres psql -c \"DROP USER IF EXISTS django-admin;\"" 
+execute_command "sudo -u postgres psql -c \"DROP DATABASE IF EXISTS staff_control;\"" 
+execute_command "sudo -u postgres psql -c \"DROP USER IF EXISTS djangoadmin;\"" 
 
-# Change password for django-admin to real one from .env 
-execute_command "sudo -u postgres psql -c \"CREATE USER django-admin WITH PASSWORD 'django-admin';\""
-execute_command "sudo -u postgres psql -c \"CREATE DATABASE storage;\""
-execute_command "sudo -u postgres psql -c \"GRANT ALL PRIVILEGES ON DATABASE storage TO django-admin;\""
-execute_command "sudo -u postgres psql -d storage -c \"GRANT ALL PRIVILEGES ON SCHEMA public TO django-admin;\""
+# Change password for djangoadmin to real one from .env 
+execute_command "sudo -u postgres psql -c \"CREATE USER djangoadmin WITH PASSWORD 'Very_Strong_Password_123';\""
+execute_command "sudo -u postgres psql -c \"CREATE DATABASE staff_control;\""
+execute_command "sudo -u postgres psql -c \"GRANT ALL PRIVILEGES ON DATABASE staff_control TO djangoadmin;\""
+execute_command "sudo -u postgres psql -d staff_control -c \"GRANT ALL PRIVILEGES ON SCHEMA public TO djangoadmin;\""
 
 
 echo -e "\e[92mПожалуйста, перезагрузите терминал и запустите nvm_install.sh\e[0m"

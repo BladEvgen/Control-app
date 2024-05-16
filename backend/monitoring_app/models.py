@@ -169,8 +169,23 @@ class Staff(models.Model):
         return f"{self.surname} {self.name}  {self.department.name if self.department else 'N/A'}"
 
     def save(self, *args, **kwargs):
-        self.full_clean()
-        super().save(*args, **kwargs)
+        if self.pk:
+            try:
+                old_instance = Staff.objects.get(pk=self.pk)
+                old_avatar = old_instance.avatar
+                if old_avatar:
+                    if os.path.exists(old_avatar.path):
+                        os.remove(old_avatar.path)
+            except Staff.DoesNotExist:
+                pass
+
+        if self.avatar:
+            filename = os.path.basename(self.avatar.name)
+            self.avatar.name = user_avatar_path(self, filename)
+            self.full_clean()
+            super().save(*args, **kwargs)
+        else:
+            super().save(*args, **kwargs)
 
     class Meta:
         verbose_name = "Сотрудник"
