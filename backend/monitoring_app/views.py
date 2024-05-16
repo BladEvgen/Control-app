@@ -700,12 +700,13 @@ def staff_detail(request, staff_pin):
 
     salaries = models.Salary.objects.filter(staff=staff)
     total_salary = salaries.first().total_salary if salaries.exists() else None
+    avatar_url = staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
 
     data = {
         "name": staff.name,
         "surname": staff.surname,
         "positions": [position.name for position in staff.positions.all()],
-        "avatar": staff.avatar.url if staff.avatar else None,
+        "avatar": avatar_url,
         "department": staff.department.name if staff.department else "N/A",
         "department_id": staff.department.id if staff.department else "N/A",
         "attendance": attendance_data,
@@ -714,6 +715,42 @@ def staff_detail(request, staff_pin):
     }
 
     return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def staff_detail_by_department_id(request, department_id):
+    try:
+        end_date_str = request.query_params.get(
+            "end_date", timezone.now().strftime("%Y-%m-%d")
+        )
+        start_date_str = request.query_params.get(
+            "start_date",
+            (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d"),
+        )
+
+        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
+        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
+
+        if start_date > end_date:
+            return Response(
+                data={"error": "start_date cannot be greater than end_date"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        staff_attendance = models.StaffAttendance.objects.filter(
+            staff__department_id=department_id,
+            date_at__gte=start_date,
+            date_at__lte=end_date,
+        ).order_by("staff__surname", "staff__name", "date_at")
+
+        serializer = serializers.StaffAttendanceDetailSerializer(
+            staff_attendance, many=True
+        )
+
+        return Response(serializer.data)
+
+    except Exception as e:
+        return Response(status=status.HTTP_400_BAD_REQUEST, data={"error": str(e)})
 
 
 @swagger_auto_schema(
