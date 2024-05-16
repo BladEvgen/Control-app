@@ -27,12 +27,17 @@ urlpatterns = [
         name="department-summary",
     ),
     path(
+        "api/department/stats/<int:department_id>/",
+        views.staff_detail_by_department_id,
+        name="department-stats",
+    ),
+    path(
         "api/child_department/<int:child_department_id>/",
         views.child_department_detail,
         name="child-department-detail",
     ),
     path("api/staff/<str:staff_pin>/", views.staff_detail, name="staff-detail"),
-    path("api/parent_department_id", views.get_parent_id, name="get-parent-ids"),
+    path("api/parent_department_id/", views.get_parent_id, name="get-parent-ids"),
     path("api/token/", TokenObtainPairView.as_view()),
     path("api/token/refresh/", TokenRefreshView.as_view()),
     path("api/token/verify/", TokenVerifyView.as_view()),
