@@ -1,3 +1,4 @@
+import datetime
 from monitoring_app import models
 from rest_framework import serializers
 from django.contrib.auth.models import User
@@ -95,3 +96,71 @@ class SalarySerializer(serializers.ModelSerializer):
     class Meta:
         model = models.Salary
         fields = ("total_salary",)
+
+
+class StaffAttendanceDetailSerializer(serializers.Serializer):
+    department = serializers.CharField(source="staff.department.name")
+    staff_data = serializers.SerializerMethodField()
+
+    def get_staff_data(self, obj):
+        staff_data = {}
+        if isinstance(obj, dict):
+            department_id = obj["staff"].department_id
+        else:
+            department_id = obj.staff.department_id
+
+        staff_attendance = models.StaffAttendance.objects.filter(
+            staff__department_id=department_id
+        ).order_by("-date_at")
+        for attendance in staff_attendance:
+            staff_fio = attendance.staff.surname + " " + attendance.staff.name
+            date_at = attendance.date_at - datetime.timedelta(days=1)
+            date_at_str = date_at.strftime("%Y-%m-%d")
+            if staff_fio not in staff_data:
+                staff_data[staff_fio] = []
+            staff_data[staff_fio].append(
+                {
+                    "date_at": date_at_str,
+                    "first_in": attendance.first_in,
+                    "last_out": attendance.last_out,
+                }
+            )
+        return staff_data
+
+    def to_representation(self, instance):
+        if isinstance(instance, dict):
+            department_name = instance["staff"].department.name
+        else:
+            department_name = instance.staff.department.name
+
+        return {
+            "department": department_name,
+            "staff_data": self.get_staff_data(instance),
+        }
+
+
+class StaffAttendanceByDateSerializer(serializers.Serializer):
+    date_attendance = serializers.SerializerMethodField()
+
+    def get_date_attendance(self, obj):
+        date_data = {}
+        staff_attendance = models.StaffAttendance.objects.filter(
+            staff__department_id=obj.staff.department_id, date_at=obj.date_at
+        ).order_by("-date_at")
+        for attendance in staff_attendance:
+            date = attendance.date_at - datetime.timedelta(days=1)
+            date_str = date.strftime("%Y-%m-%d")
+            if date_str not in date_data:
+                date_data[date_str] = []
+            staff_fio = attendance.staff.surname + " " + attendance.staff.name
+            date_data[date_str].append(
+                {
+                    "staff_fio": staff_fio,
+                    "first_in": attendance.first_in,
+                    "last_out": attendance.last_out,
+                }
+            )
+        return date_data
+
+    def to_representation(self, instance):
+        return self.get_date_attendance(instance)
