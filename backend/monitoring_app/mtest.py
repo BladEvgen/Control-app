@@ -5,7 +5,7 @@ from datetime import datetime
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
 
-url = "http://localhost:8000/api/department/stats/10028/?end_date=2024-04-23&start_date=2024-04-21"
+url = "http://localhost:8000/api/department/stats/10038/?end_date=2024-05-17&start_date=2024-04-01"
 response = requests.get(url)
 data = response.json()
 
@@ -19,13 +19,10 @@ for attendance in data["attendance"]:
             date_obj = datetime.strptime(date, "%Y-%m-%d")
             date_str = date_obj.strftime("%d.%m.%Y")
 
-            if record["first_in"] is None and record["last_out"] is None:
-                if date_obj.weekday() < 5:
+            if date_obj.weekday() < 5:
+                if record["first_in"] is None and record["last_out"] is None:
                     attendance_info = "Отсутствие"
                 else:
-                    attendance_info = "Выходной"
-            else:
-                if date_obj.weekday() < 5:
                     first_in = (
                         datetime.strptime(
                             record["first_in"], "%Y-%m-%dT%H:%M:%S+05:00"
@@ -45,8 +42,8 @@ for attendance in data["attendance"]:
                         if first_in and last_out
                         else "Отсутствие"
                     )
-                else:
-                    attendance_info = "Отсутствие"
+            else:
+                attendance_info = "Выходной"
 
             rows.append([staff_fio, date_str, attendance_info])
 
@@ -60,14 +57,25 @@ df_pivot = df.pivot_table(
     fill_value="Отсутствие",
 )
 
+df_pivot_sorted = df_pivot.reindex(
+    sorted(
+        df_pivot.columns,
+        key=lambda x: pd.to_datetime(x, format="%d.%m.%Y"),
+        reverse=True,
+    ),
+    axis=1,
+)
+
 wb = Workbook()
 ws = wb.active
 
-# desing for all cells
+# design for all cells
 data_font = Font(name="Roboto", size=10)
 data_alignment = Alignment(horizontal="center", vertical="center")
 
-for r_idx, r in enumerate(dataframe_to_rows(df_pivot, index=True, header=True), 1):
+for r_idx, r in enumerate(
+    dataframe_to_rows(df_pivot_sorted, index=True, header=True), 1
+):
     for c_idx, value in enumerate(r, 1):
         cell = ws.cell(row=r_idx, column=c_idx, value=value)
         cell.font = data_font
