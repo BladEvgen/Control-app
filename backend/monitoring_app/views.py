@@ -718,6 +718,7 @@ def staff_detail(request, staff_pin):
 
 
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def staff_detail_by_department_id(request, department_id):
     try:
         end_date_str = request.query_params.get(
@@ -737,18 +738,30 @@ def staff_detail_by_department_id(request, department_id):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        staff_attendance = models.StaffAttendance.objects.filter(
-            staff__department_id=department_id,
-            date_at__gte=start_date,
-            date_at__lte=end_date,
-        ).order_by("staff__surname", "staff__name", "date_at")
-
-        serializer = serializers.StaffAttendanceDetailSerializer(
-            staff_attendance, many=True
+        department = models.ChildDepartment.objects.get(id=department_id)
+        staff_attendance = (
+            models.StaffAttendance.objects.filter(
+                staff__department_id=department_id,
+                date_at__gte=start_date,
+                date_at__lte=end_date,
+            )
+            .order_by("date_at", "staff__surname", "staff__name")
+            .distinct()
         )
 
-        return Response(serializer.data)
+        serializer = serializers.StaffAttendanceByDateSerializer(
+            staff_attendance, many=True, context={"department_name": department.name}
+        )
 
+        return Response(
+            {"department_name": department.name, "attendance": serializer.data}
+        )
+
+    except models.ChildDepartment.DoesNotExist:
+        return Response(
+            data={"error": "Department not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
     except Exception as e:
         return Response(status=status.HTTP_400_BAD_REQUEST, data={"error": str(e)})
 
