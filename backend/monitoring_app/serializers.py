@@ -140,27 +140,27 @@ class StaffAttendanceDetailSerializer(serializers.Serializer):
 
 
 class StaffAttendanceByDateSerializer(serializers.Serializer):
-    date_attendance = serializers.SerializerMethodField()
+    date = serializers.SerializerMethodField()
+    staff_fio = serializers.SerializerMethodField()
+    first_in = serializers.DateTimeField()
+    last_out = serializers.DateTimeField()
 
-    def get_date_attendance(self, obj):
-        date_data = {}
-        staff_attendance = models.StaffAttendance.objects.filter(
-            staff__department_id=obj.staff.department_id, date_at=obj.date_at
-        ).order_by("-date_at")
-        for attendance in staff_attendance:
-            date = attendance.date_at - datetime.timedelta(days=1)
-            date_str = date.strftime("%Y-%m-%d")
-            if date_str not in date_data:
-                date_data[date_str] = []
-            staff_fio = attendance.staff.surname + " " + attendance.staff.name
-            date_data[date_str].append(
-                {
-                    "staff_fio": staff_fio,
-                    "first_in": attendance.first_in,
-                    "last_out": attendance.last_out,
-                }
-            )
-        return date_data
+    def get_date(self, obj):
+        return (obj.date_at - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+
+    def get_staff_fio(self, obj):
+        return f"{obj.staff.surname} {obj.staff.name}"
 
     def to_representation(self, instance):
-        return self.get_date_attendance(instance)
+        data = super().to_representation(instance)
+        date = data.pop("date")
+        return {
+            date: self.context.get(date, [])
+            + [
+                {
+                    "staff_fio": data["staff_fio"],
+                    "first_in": data["first_in"],
+                    "last_out": data["last_out"],
+                }
+            ]
+        }
