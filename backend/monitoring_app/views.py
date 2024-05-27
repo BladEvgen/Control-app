@@ -721,16 +721,21 @@ def staff_detail(request, staff_pin):
 @permission_classes([AllowAny])
 def staff_detail_by_department_id(request, department_id):
     try:
-        end_date_str = request.query_params.get(
-            "end_date", timezone.now().strftime("%Y-%m-%d")
-        )
+        end_date_str = request.query_params.get("end_date", None)
         start_date_str = request.query_params.get(
             "start_date",
-            (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d"),
+            None,
         )
+        if not end_date_str or not start_date_str:
+            return Response(
+                status=status.HTTP_400_BAD_REQUEST,
+                data={"error": "no parameters provided"},
+            )
 
-        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
-        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
+        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d") + datetime.timedelta(days=1)
+        end_date = datetime.datetime.strptime(
+            end_date_str, "%Y-%m-%d"
+        ) + datetime.timedelta(days=1)
 
         if start_date > end_date:
             return Response(
@@ -738,7 +743,25 @@ def staff_detail_by_department_id(request, department_id):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        department = models.ChildDepartment.objects.get(id=department_id)
+        def get_all_child_departments(department_id):
+            child_departments = models.ChildDepartment.objects.filter(
+                parent_id=department_id
+            )
+            all_child_ids = list(child_departments.values_list("id", flat=True))
+            for child_id in all_child_ids:
+                all_child_ids.extend(get_all_child_departments(child_id))
+            return all_child_ids
+
+        try:
+            department = models.ChildDepartment.objects.get(id=department_id)
+            print(f"Found department: {department.name} (ID: {department_id})")
+        except models.ChildDepartment.DoesNotExist:
+            print(f"Department with ID {department_id} does not exist")
+            return Response(
+                data={"error": "Department not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         staff_attendance = (
             models.StaffAttendance.objects.filter(
                 staff__department_id=department_id,
@@ -749,19 +772,53 @@ def staff_detail_by_department_id(request, department_id):
             .distinct()
         )
 
-        serializer = serializers.StaffAttendanceByDateSerializer(
-            staff_attendance, many=True, context={"department_name": department.name}
+        if staff_attendance.exists():
+            serializer = serializers.StaffAttendanceByDateSerializer(
+                staff_attendance,
+                many=True,
+                context={"department_name": department.name},
+            )
+            return Response(
+                {"department_name": department.name, "attendance": serializer.data}
+            )
+
+        child_department_ids = get_all_child_departments(department_id)
+        print(
+            f"Child department IDs for department {department_id}: {child_department_ids}"
         )
 
-        return Response(
-            {"department_name": department.name, "attendance": serializer.data}
-        )
+        if child_department_ids:
+            staff_attendance = (
+                models.StaffAttendance.objects.filter(
+                    staff__department_id__in=child_department_ids,
+                    date_at__gte=start_date,
+                    date_at__lte=end_date,
+                )
+                .order_by("date_at", "staff__surname", "staff__name")
+                .distinct()
+            )
 
-    except models.ChildDepartment.DoesNotExist:
+            print(
+                f"Staff attendance count for child departments {child_department_ids}: {staff_attendance.count()}"
+            )
+
+            if staff_attendance.exists():
+                serializer = serializers.StaffAttendanceByDateSerializer(
+                    staff_attendance,
+                    many=True,
+                    context={"department_name": department.name},
+                )
+                return Response(
+                    {"department_name": department.name, "attendance": serializer.data}
+                )
+
         return Response(
-            data={"error": "Department not found"},
+            data={
+                "error": "No staff found for the given department or its child departments"
+            },
             status=status.HTTP_404_NOT_FOUND,
         )
+
     except Exception as e:
         return Response(status=status.HTTP_400_BAD_REQUEST, data={"error": str(e)})
 
