@@ -620,6 +620,7 @@ def staff_detail(request, staff_pin):
     * **Код состояния 400:** Неверный запрос, дата начала не может быть позже даты окончания
     * **Код состояния 404:** Сотрудник не найден
     """
+
     try:
         staff = models.Staff.objects.get(pin=staff_pin)
     except models.Staff.DoesNotExist:
@@ -650,6 +651,7 @@ def staff_detail(request, staff_pin):
     total_minutes_for_period = 0
     total_days = 0
     percent_for_period = 0
+    total_weekend_days = 0
     for attendance in staff_attendance:
         date_at = attendance.date_at - datetime.timedelta(days=1)
         is_weekend = date_at.weekday() >= 5
@@ -677,22 +679,17 @@ def staff_detail(request, staff_pin):
             "is_weekend": is_weekend,
         }
 
-        if date_at.weekday() >= 5:
-
+        if is_weekend:
             if attendance_entry["total_minutes"] > 60:
                 percent_for_period *= 1.5
             else:
                 percent_for_period += percent_day
         else:
-
             if attendance_entry["total_minutes"] == 0:
                 percent_day *= 0.75
 
-        total_weekend_days = 0
+        total_weekend_days += 1 if is_weekend else 0
 
-        for single_date in utils.daterange(start_date, end_date):
-            if single_date.weekday() >= 5:
-                total_weekend_days += 1
         attendance_data[date_at.strftime("%d-%m-%Y")] = attendance_entry
 
     total_hours_expected = ((end_date - start_date).days - total_weekend_days) * 8
@@ -732,7 +729,9 @@ def staff_detail_by_department_id(request, department_id):
                 data={"error": "no parameters provided"},
             )
 
-        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d") + datetime.timedelta(days=1)
+        start_date = datetime.datetime.strptime(
+            start_date_str, "%Y-%m-%d"
+        ) + datetime.timedelta(days=1)
         end_date = datetime.datetime.strptime(
             end_date_str, "%Y-%m-%d"
         ) + datetime.timedelta(days=1)
@@ -754,9 +753,9 @@ def staff_detail_by_department_id(request, department_id):
 
         try:
             department = models.ChildDepartment.objects.get(id=department_id)
-            print(f"Found department: {department.name} (ID: {department_id})")
+            # print(f"Found department: {department.name} (ID: {department_id})")
         except models.ChildDepartment.DoesNotExist:
-            print(f"Department with ID {department_id} does not exist")
+            # print(f"Department with ID {department_id} does not exist")
             return Response(
                 data={"error": "Department not found"},
                 status=status.HTTP_404_NOT_FOUND,
@@ -783,9 +782,9 @@ def staff_detail_by_department_id(request, department_id):
             )
 
         child_department_ids = get_all_child_departments(department_id)
-        print(
-            f"Child department IDs for department {department_id}: {child_department_ids}"
-        )
+        # print(
+        #     f"Child department IDs for department {department_id}: {child_department_ids}"
+        # )
 
         if child_department_ids:
             staff_attendance = (
@@ -798,9 +797,9 @@ def staff_detail_by_department_id(request, department_id):
                 .distinct()
             )
 
-            print(
-                f"Staff attendance count for child departments {child_department_ids}: {staff_attendance.count()}"
-            )
+            # print(
+            #     f"Staff attendance count for child departments {child_department_ids}: {staff_attendance.count()}"
+            # )
 
             if staff_attendance.exists():
                 serializer = serializers.StaffAttendanceByDateSerializer(
