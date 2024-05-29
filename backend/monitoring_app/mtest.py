@@ -1,3 +1,4 @@
+import re
 import requests
 import pandas as pd
 from openpyxl import Workbook
@@ -23,26 +24,31 @@ def parse_attendance_data(data: Dict[str, Any]) -> List[List[Optional[str]]]:
     try:
         for attendance in data.get("attendance", []):
             for date, records in attendance.items():
+                date_obj = datetime.strptime(date, "%Y-%m-%d")
+                date_str = date_obj.strftime("%d.%m.%Y")
+
                 for record in records:
                     department_name = data.get("department_name", "")
                     staff_fio = record.get("staff_fio", "")
-                    date_obj = datetime.strptime(date, "%Y-%m-%d")
-                    date_str = date_obj.strftime("%d.%m.%Y")
 
-                    first_in = (
-                        datetime.strptime(
-                            record["first_in"], "%Y-%m-%dT%H:%M:%S+05:00"
-                        ).strftime("%H:%M:%S")
-                        if record.get("first_in")
-                        else None
-                    )
-                    last_out = (
-                        datetime.strptime(
-                            record["last_out"], "%Y-%m-%dT%H:%M:%S+05:00"
-                        ).strftime("%H:%M:%S")
-                        if record.get("last_out")
-                        else None
-                    )
+                    timezone_pattern = re.compile(r"\+\d{2}:\d{2}")
+
+                    def parse_datetime_with_timezone(
+                        dt_str: Optional[str],
+                    ) -> Optional[str]:
+                        if not dt_str:
+                            return None
+                        match = timezone_pattern.search(dt_str)
+                        if match:
+                            timezone = match.group(0)
+                            dt_format = f"%Y-%m-%dT%H:%M:%S{timezone}"
+                            return datetime.strptime(dt_str, dt_format).strftime(
+                                "%H:%M:%S"
+                            )
+                        return None
+
+                    first_in = parse_datetime_with_timezone(record.get("first_in"))
+                    last_out = parse_datetime_with_timezone(record.get("last_out"))
 
                     if date_obj.weekday() < 5:
                         if not first_in and not last_out:
@@ -62,8 +68,10 @@ def parse_attendance_data(data: Dict[str, Any]) -> List[List[Optional[str]]]:
                     rows.append([staff_fio, date_str, attendance_info])
     except KeyError as e:
         print(f"Missing expected key: {e}")
+        return None
     except Exception as e:
         print(f"Error parsing data: {e}")
+        return None
     return rows
 
 
@@ -110,7 +118,7 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame, filename: str) -> None:
 
 
 def main() -> None:
-    url = "http://localhost:8000/api/department/stats/10038/?end_date=2024-05-23&start_date=2024-03-29"
+    url = "http://localhost:8000/api/department/stats/4958/?end_date=2024-05-29&start_date=2024-02-01"
     data = fetch_data(url)
 
     with ThreadPoolExecutor() as executor:
