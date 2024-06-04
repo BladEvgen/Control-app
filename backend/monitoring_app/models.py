@@ -1,12 +1,44 @@
 import os
 from decimal import Decimal
 from django.db import models
+from monitoring_app import utils
 from django.utils import timezone
 from django.dispatch import receiver
 from django.contrib.auth.models import User
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.validators import FileExtensionValidator
 from django.db.models.signals import pre_save, m2m_changed, post_save, post_delete
+
+
+class APIKey(models.Model):
+    key_name = models.CharField(
+        max_length=100, null=False, blank=False, verbose_name="Название ключа"
+    )
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, verbose_name="Создатель"
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
+    key = models.CharField(max_length=256, editable=False, verbose_name="Ключ")
+    is_active = models.BooleanField(
+        default=True, editable=False, verbose_name="Статус активности"
+    )
+
+    def __str__(self):
+        status = "Активен" if self.is_active else "Деактивирован"
+
+        return f"Ключ: {self.key_name}  Статус активности: {status}"
+
+    def save(self, *args, **kwargs):
+        if not self.key:
+            encrypted_key, secret_key = utils.APIKeyUtility.generate_api_key(
+                self.key_name, self.created_by
+            )
+            self.key = encrypted_key
+            super(APIKey, self).save(*args, **kwargs)
+
+    class Meta:
+        verbose_name = "API Ключ"
+        verbose_name_plural = "API Ключи"
 
 
 class UserProfile(models.Model):
