@@ -1,14 +1,65 @@
 import re
+import json
 import datetime
 import requests
 
 from django.conf import settings
 from monitoring_app import models
 from django.db import transaction
+from django.utils import timezone
+from cryptography.fernet import Fernet
 from concurrent.futures import ThreadPoolExecutor
 from django.contrib.auth.decorators import user_passes_test
 
 DAYS = settings.DAYS
+
+
+class APIKeyUtility:
+    _secret_key = None
+
+    @staticmethod
+    def get_secret_key():
+        if APIKeyUtility._secret_key is None:
+            if not settings.SECRET_API:
+                secret_key = Fernet.generate_key().decode("utf-8")
+
+                dotenv = settings.DOTENV_PATH
+
+                with open(dotenv, mode="ab") as f:
+                    f.write(f"""\nSECRET_API={secret_key}\n""".encode("utf-8"))
+
+                APIKeyUtility._secret_key = secret_key
+            else:
+                APIKeyUtility._secret_key = settings.SECRET_API
+
+        return APIKeyUtility._secret_key
+
+    @staticmethod
+    def encrypt_data(data, secret_key):
+        f = Fernet(secret_key.encode())
+        encrypted_data = f.encrypt(json.dumps(data).encode())
+        return encrypted_data.decode()
+
+    @staticmethod
+    def decrypt_data(encrypted_data, secret_key, fields=("is_active",)):
+        f = Fernet(secret_key.encode())
+        decrypted_data = f.decrypt(encrypted_data.encode())
+        data = json.loads(decrypted_data.decode())
+
+        # Return a dictionary containing only specified fields
+        return {field: data.get(field) for field in fields}
+
+    @staticmethod
+    def generate_api_key(key_name, created_by):
+        secret_key = APIKeyUtility.get_secret_key()
+        data = {
+            "key_name": key_name,
+            "created_by": created_by.username,
+            "created_at": timezone.now().isoformat(),
+            "is_activate": True,
+        }
+        encrypted_data = APIKeyUtility.encrypt_data(data, secret_key)
+        return encrypted_data, secret_key
 
 
 def get_attendance_data(pin: str):

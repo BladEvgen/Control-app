@@ -41,6 +41,7 @@ urlpatterns = [
     path("api/token/", TokenObtainPairView.as_view()),
     path("api/token/refresh/", TokenRefreshView.as_view()),
     path("api/token/verify/", TokenVerifyView.as_view()),
+    path("api/key_check/", views.APIKeyCheckView.as_view(), name="api_key_check"),
 ]
 
 urlpatterns += doc_urls

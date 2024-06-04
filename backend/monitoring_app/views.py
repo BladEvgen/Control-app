@@ -1085,3 +1085,27 @@ class UploadFileView(View):
             }
 
         return render(request, self.template_name, context=context)
+
+
+class APIKeyCheckView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        api_key = request.headers.get("X-API-KEY")
+
+        if not api_key:
+            return Response(
+                {"message": "API Key is missing"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            secret_key = utils.APIKeyUtility.get_secret_key()
+            data = utils.APIKeyUtility.decrypt_data(
+                api_key, secret_key, fields=("created_at", "is_active")
+            )
+            return Response({"data": data}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response(
+                {"message": "Invalid API Key", "error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
