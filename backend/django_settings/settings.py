@@ -11,11 +11,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 DAYS = 1
 
-dotenv_path = BASE_DIR / ".env"
-if dotenv_path.exists():
-    load_dotenv(dotenv_path)
+DOTENV_PATH = BASE_DIR / ".env"
+if DOTENV_PATH.exists():
+    load_dotenv(DOTENV_PATH)
 
 SECRET_KEY = os.getenv("SECRET_KEY")
+SECRET_API = os.getenv("SECRET_API")
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
 
@@ -68,7 +69,7 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "django_settings.urls"
 
-# TODO add in DIRS new dir when Frontend is ready
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
@@ -149,7 +150,6 @@ USE_I18N = True
 USE_TZ = True
 
 
-# TODO Change assets to another when start develop frontend
 STATIC_URL = "assets/" if DEBUG else "/static/"
 STATIC_ROOT = Path(BASE_DIR, "staticroot")
 

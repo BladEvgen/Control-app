@@ -2,6 +2,7 @@ from django.contrib import admin
 from .models import (
     Staff,
     Salary,
+    APIKey,
     Position,
     UserProfile,
     FileCategory,
@@ -13,6 +14,14 @@ from .models import (
 admin.site.site_header = "Панель управления"
 admin.site.index_title = "Администрирование сайта"
 admin.site.site_title = "Администрирование"
+
+
+@admin.register(APIKey)
+class APIKeyAdmin(admin.ModelAdmin):
+    list_display = ("key_name", "created_by", "created_at", "key", "is_active")
+    list_filter = ("created_at", "created_by")
+    search_fields = ("key_name", "created_by__username")
+    ordering = ("-created_at", "key_name")
 
 
 @admin.register(UserProfile)
