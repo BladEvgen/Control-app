@@ -9,4 +9,4 @@ execute_command() {
     fi
 }
 
-execute_command "cd .. && source venv/bin/activate && pip freeze > requirements.txt"
+execute_command "cd ../.. && source .venv/bin/activate && pip freeze > requirements.txt"

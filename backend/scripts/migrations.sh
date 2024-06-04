@@ -9,5 +9,5 @@ execute_command() {
     fi
 }
 cd ..
-execute_command " source venv/bin/activate && python manage.py makemigrations"
-execute_command " source venv/bin/activate && python manage.py migrate" 
+execute_command " source ../.venv/bin/activate && python manage.py makemigrations"
+execute_command " source ../.venv/bin/activate && python manage.py migrate" 
