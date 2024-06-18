@@ -292,3 +292,4 @@ dist
 .pnp.*
 *.xlsx
 *.xlsx
+/backend/staticroot
