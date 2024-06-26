@@ -153,7 +153,10 @@ class Position(models.Model):
         default="Сотрудник",
     )
     rate = models.DecimalField(
-        max_digits=4, decimal_places=2, verbose_name="Ставка", default=1
+        max_digits=4, 
+        decimal_places=2,
+        verbose_name="Ставка",
+        default=1
     )
 
     def __str__(self):
