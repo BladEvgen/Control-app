@@ -156,11 +156,5 @@ class StaffAttendanceByDateSerializer(serializers.Serializer):
         date = data.pop("date")
         return {
             date: self.context.get(date, [])
-            + [
-                {
-                    "staff_fio": data["staff_fio"],
-                    "first_in": data["first_in"],
-                    "last_out": data["last_out"],
-                }
-            ]
+            + [{"staff_fio": data["staff_fio"], "first_in": data["first_in"], "last_out": data["last_out"]}]
         }
