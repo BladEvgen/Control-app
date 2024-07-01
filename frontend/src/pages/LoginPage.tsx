@@ -1,17 +1,19 @@
 import { useState } from "react";
 import axiosInstance from "../api";
 import Cookies from "js-cookie";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "../RouterUtils"; 
 
 const LoginPage = () => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const navigate = useNavigate();
+  const navigate = useNavigate(); 
 
   const handleSubmit = async () => {
+    const formattedUsername = username.trim().toLowerCase();
+
     try {
       const res = await axiosInstance.post("/token/", {
-        username,
+        username: formattedUsername,
         password,
       });
 

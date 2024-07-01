@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams } from "react-router-dom";
+import { useNavigate } from "../RouterUtils";
 import { CircleLoader } from "react-spinners";
 import { StaffData, AttendanceData } from "../schemas/IData";
 
@@ -72,6 +73,7 @@ const StaffDetail = () => {
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setStartDate(e.target.value);
     setError("");
+    setEndDate(""); // Reset end date when start date changes
   };
 
   const handleEndDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -138,8 +140,8 @@ const StaffDetail = () => {
     }
   };
 
-  const formatNumber = (value: number | null): string => {
-    if (value === null) return "Не установлена";
+  const formatNumber = (value: number | undefined | null): string => {
+    if (value === undefined || value === null) return "Не установлена";
 
     const src = value.toString();
     const [out, rnd = "0"] = src.includes(".") ? src.split(".") : [src];
@@ -174,7 +176,7 @@ const StaffDetail = () => {
   }
 
   return (
-    <div className="m-8">
+    <div className="container mx-auto p-4 sm:p-8 bg-white shadow-md rounded-lg">
       {loading ? (
         <div className="flex items-center justify-center h-full">
           <CircleLoader color="#4A90E2" loading={loading} size={50} />
@@ -196,7 +198,7 @@ const StaffDetail = () => {
                   <strong>Отдел:</strong> {staffData.department}
                 </p>
                 <p>
-                  <strong>Должность:</strong> {staffData.positions.join(", ")}
+                  <strong>Должность:</strong> {staffData.positions?.join(", ") || "Нет данных"}
                 </p>
                 <p>
                   <strong>Зарплата:</strong> {formatNumber(staffData.salary)}
@@ -209,35 +211,20 @@ const StaffDetail = () => {
             </div>
 
             {bonusPercentage > 0 && (
-              <p>
+              <p className="text-green-500">
                 Сотрудник может получить дополнительную надбавку в размере{" "}
                 {bonusPercentage}% (
                 {formatNumber(
                   ((staffData.salary ?? 0) * bonusPercentage) / 100
                 )}
-                ) {}
+                )
               </p>
             )}
 
             <h2 className="text-xl font-bold mt-6 mb-4">Посещаемость</h2>
             <div className="mb-4 flex flex-wrap justify-center sm:justify-between">
               <div className="mb-2 sm:mb-0">
-                <label htmlFor="endDate" className="mr-2">
-                  Дата окончания:
-                </label>
-                <input
-                  type="date"
-                  id="endDate"
-                  value={endDate}
-                  onChange={handleEndDateChange}
-                  className="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto"
-                  placeholder="Дата окончания"
-                />
-              </div>
-              {error && <p className="text-red-500 mt-2">{error}</p>}
-
-              <div>
-                <label htmlFor="startDate" className="mr-2 sm:ml-4">
+                <label htmlFor="startDate" className="block text-sm font-medium text-gray-700 mb-1">
                   Дата начала:
                 </label>
                 <input
@@ -249,63 +236,75 @@ const StaffDetail = () => {
                   placeholder="Дата начала"
                 />
               </div>
+              {startDate && (
+                <div className="mt-2 sm:mt-0">
+                  <label htmlFor="endDate" className="block text-sm font-medium text-gray-700 mb-1">
+                    Дата окончания:
+                  </label>
+                  <input
+                    type="date"
+                    id="endDate"
+                    value={endDate}
+                    onChange={handleEndDateChange}
+                    className="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto"
+                    placeholder="Дата окончания"
+                  />
+                </div>
+              )}
             </div>
-            <div className="flex justify-center items-center space-x-4 text-sm text-gray-600 mt-4">
-              <div className="flex items-center">
-                <div className="w-4 h-4 rounded-full bg-yellow-300 mr-2"></div>
-                <span className="font-semibold">Выходной день</span>
-              </div>
-              <div className="flex items-center">
-                <div className="w-4 h-4 rounded-full bg-red-300 mr-2"></div>
-                <span className="font-semibold">Работник отсутствовал</span>
-              </div>
-              <div className="flex items-center">
-                <div className="w-4 h-4 rounded-full bg-green-300 mr-2"></div>
-                <span className="font-semibold">
-                  Работник был на работе в выходной
-                </span>
-              </div>
-            </div>
+            {error && <p className="text-red-500 mt-2">{error}</p>}
 
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Дата
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Первый вход
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Последний выход
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Процент за день на работе
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Часов
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(staffData.attendance).map(([date, data]) =>
-                    renderAttendanceRow(date, data)
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th
+                    scope="col"
+                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                  >
+                    Дата
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                  >
+                    Первое прибытие
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                  >
+                    Последний уход
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                  >
+                    Процент дня
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                  >
+                    Всего минут
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {Object.entries(staffData.attendance).map(([date, data]) =>
+                  renderAttendanceRow(date, data)
+                )}
+              </tbody>
+            </table>
+            <button
+              className="fixed bottom-4 left-4 bg-white rounded-full p-3 hover:bg-green-300 shadow-md z-10 focus:outline-none"
+              onClick={navigateToChildDepartment}>
+              <span role="img" aria-label="Back" className="text-xl">
+                🔙
+              </span>
+            </button>
           </div>
         )
       )}
-
-      <button
-        className="fixed bottom-4 left-4 bg-green-200 rounded-full p-3 hover:bg-green-300 shadow-md z-10 focus:outline-none"
-        onClick={navigateToChildDepartment}>
-        <span role="img" aria-label="Back" className="text-xl">
-          🔙
-        </span>
-      </button>
     </div>
   );
 };

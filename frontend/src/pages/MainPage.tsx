@@ -2,7 +2,7 @@ import DepartmentPage from "./DepartmentPage";
 
 const MainPage = () => {
   return (
-    <div className="m-4">
+    <div>
       <DepartmentPage />
     </div>
   );

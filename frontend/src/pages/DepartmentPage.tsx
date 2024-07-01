@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { IData, IChildDepartment } from "../schemas/IData";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
+import { Link } from "../RouterUtils"; 
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 
@@ -22,108 +23,112 @@ const DepartmentTable = ({ data }: { data: IData }) => {
     department.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  return (
-    <>
-      <input
-        type="text"
-        placeholder="Нажмите для поиска"
-        value={searchQuery}
-        onChange={(e) => setSearchQuery(e.target.value)}
-        className="border border-gray-300 px-3 py-1 rounded-md mb-4"
-      />
+return (
+  <div className="flex flex-col h-full">
+    <input
+      type="text" 
+      placeholder="Нажмите для поиска"
+      value={searchQuery}
+      onChange={(e) => setSearchQuery(e.target.value)}
+      className="border border-gray-300 px-3 py-1 rounded-md mb-4"
+    />
 
-      <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Название отдела
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Дата создания
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredDepartments
-              .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
-              .map((department: IChildDepartment) => (
-                <tr key={department.child_id}>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <Link
-                      to={`/childDepartment/${department.child_id}`}
-                      className="text-sm font-medium text-gray-900 hover:text-indigo-600">
-                      {department.name}
-                    </Link>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {new Date(department.date_of_creation).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6">
-        <div className="flex-1 flex justify-between">
-          <div className="flex">
-            <button
-              onClick={() => handleChangePage(0)}
-              disabled={page === 0}
-              className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 mr-2">
-              ⏪
-            </button>
-            <button
-              onClick={() => handleChangePage(page - 1)}
-              disabled={page === 0}
-              className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 mr-2">
-              ◀️
-            </button>
-          </div>
-          <p className="text-sm text-gray-700">
-            Показано{" "}
-            <span className="font-medium">
-              {Math.min((page + 1) * rowsPerPage, filteredDepartments.length)}
-            </span>{" "}
-            из <span className="font-medium">{filteredDepartments.length}</span>{" "}
-            результатов
-          </p>
-          <div className="flex">
-            <button
-              onClick={() => handleChangePage(page + 1)}
-              disabled={
-                page >=
-                Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
-              }
-              className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 mr-2">
-              ▶️
-            </button>
-            <button
-              onClick={() =>
-                handleChangePage(
-                  Math.max(
-                    0,
-                    Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
-                  )
+    <div className="flex-1 overflow-y-auto">
+      <table className="min-w-full divide-y divide-gray-200">
+        <thead className="bg-gray-50">
+          <tr>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Название отдела
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Дата создания
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {filteredDepartments
+            .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
+            .map((department: IChildDepartment) => (
+              <tr key={department.child_id}>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <Link
+                    to={`/childDepartment/${department.child_id}`}
+                    className="text-sm font-medium text-gray-900 hover:text-indigo-600"
+                  >
+                    {department.name}
+                  </Link>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  {new Date(department.date_of_creation).toLocaleString()}
+                </td>
+              </tr>
+            ))}
+        </tbody>
+      </table>
+    </div>
+    
+    <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6">
+      <div className="flex-1 flex justify-between">
+        <div className="flex">
+          <button
+            onClick={() => handleChangePage(0)}
+            disabled={page === 0}
+            className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 mr-2"
+          >
+            ⏪
+          </button>
+          <button
+            onClick={() => handleChangePage(page - 1)}
+            disabled={page === 0}
+            className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 mr-2"
+          >
+            ◀️
+          </button>
+        </div>
+        <p className="text-sm text-gray-700">
+          Показано{" "}
+          <span className="font-medium">
+            {Math.min((page + 1) * rowsPerPage, filteredDepartments.length)}
+          </span>{" "}
+          из <span className="font-medium">{filteredDepartments.length}</span>{" "}
+          результатов
+        </p>
+        <div className="flex">
+          <button
+            onClick={() => handleChangePage(page + 1)}
+            disabled={
+              page >= Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
+            }
+            className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 mr-2"
+          >
+            ▶️
+          </button>
+          <button
+            onClick={() =>
+              handleChangePage(
+                Math.max(
+                  0,
+                  Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
                 )
-              }
-              disabled={
-                page >=
-                Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
-              }
-              className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50">
-              ⏩
-            </button>
-          </div>
+              )
+            }
+            disabled={
+              page >= Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
+            }
+            className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50"
+          >
+            ⏩
+          </button>
         </div>
       </div>
-    </>
-  );
+    </div>
+  </div>
+);
 };
 
 const DepartmentPage = () => {
   const { id } = useParams<{ id: string }>();
-  const departmentId = id ? parseInt(id) : 4958;
+  const departmentId = id ? parseInt(id) : 1;
   const [data, setData] = useState<IData>({} as IData);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [showReloadMessage, setShowReloadMessage] = useState<boolean>(false);
@@ -160,11 +165,11 @@ const DepartmentPage = () => {
   }, [departmentId]);
 
   return (
-    <div className="m-8">
+    <div className="container mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold mb-4">
         {isLoading ? "Loading..." : data?.name}
       </h1>
-      {location.pathname !== "/" && (
+      {location.pathname !== "/app/" && (
         <Link
           to="/"
           className="inline-block mb-4 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600">
