@@ -293,3 +293,4 @@ dist
 *.xlsx
 *.xlsx
 /backend/staticroot
+one_pin_skud.py
