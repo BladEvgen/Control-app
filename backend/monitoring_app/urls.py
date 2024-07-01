@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import path,re_path
 from rest_framework_simplejwt.views import (
     TokenVerifyView,
     TokenRefreshView,
@@ -45,3 +45,7 @@ urlpatterns = [
 ]
 
 urlpatterns += doc_urls
+
+urlpatterns += [
+    re_path(r'^app/.*$', views.react_app),
+]

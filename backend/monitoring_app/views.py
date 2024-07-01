@@ -58,6 +58,9 @@ def home(request):
         request,
         "index.html",
     )
+@permission_classes([AllowAny])
+def react_app(request):
+    return render(request, 'index.html')
 
 
 class StaffAttendanceStatsView(APIView):
