@@ -73,7 +73,7 @@ const StaffDetail = () => {
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setStartDate(e.target.value);
     setError("");
-    setEndDate(""); 
+    setEndDate("");
   };
 
   const handleEndDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {

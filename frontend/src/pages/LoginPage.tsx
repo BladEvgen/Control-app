@@ -1,12 +1,12 @@
 import { useState } from "react";
 import axiosInstance from "../api";
 import Cookies from "js-cookie";
-import { useNavigate } from "../RouterUtils"; 
+import { useNavigate } from "../RouterUtils";
 
 const LoginPage = () => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const navigate = useNavigate(); 
+  const navigate = useNavigate();
 
   const handleSubmit = async () => {
     const formattedUsername = username.trim().toLowerCase();
@@ -54,7 +54,8 @@ const LoginPage = () => {
       />
       <button
         className="w-full px-4 py-2 text-lg font-semibold text-white bg-blue-500 rounded-md hover:bg-blue-600 focus:outline-none focus:bg-blue-600"
-        onClick={handleSubmit}>
+        onClick={handleSubmit}
+      >
         Login
       </button>
     </div>

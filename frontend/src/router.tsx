@@ -8,7 +8,7 @@ import LoginPage from "./pages/LoginPage.tsx";
 import DepartmentPage from "./pages/DepartmentPage.tsx";
 import ChildDepartmentPage from "./pages/ChildDepartmentPage.tsx";
 import StaffDetail from "./pages/StaffDetail.tsx";
-import {addPrefix} from "./RouterUtils.tsx"
+import { addPrefix } from "./RouterUtils.tsx";
 interface LayoutProps {
   children: ReactNode;
 }
@@ -21,7 +21,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     </div>
   );
 };
-
 
 const router = createBrowserRouter([
   {

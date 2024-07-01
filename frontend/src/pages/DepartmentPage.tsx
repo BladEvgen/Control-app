@@ -4,6 +4,7 @@ import { useParams } from "react-router-dom";
 import { Link } from "../RouterUtils";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
+import { capitalizeFirstLetter } from "../utils/utils";
 
 const DepartmentTable = ({ data }: { data: IData }) => {
   const [page, setPage] = useState(0);
@@ -58,7 +59,7 @@ const DepartmentTable = ({ data }: { data: IData }) => {
                       }
                       className="text-sm font-medium text-gray-900 hover:text-indigo-600"
                     >
-                      {department.name}
+                      {capitalizeFirstLetter(department.name)}
                     </Link>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
@@ -100,7 +101,8 @@ const DepartmentTable = ({ data }: { data: IData }) => {
             <button
               onClick={() => handleChangePage(page + 1)}
               disabled={
-                page >= Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
+                page >=
+                Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
               }
               className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 mr-2"
             >
@@ -116,7 +118,8 @@ const DepartmentTable = ({ data }: { data: IData }) => {
                 )
               }
               disabled={
-                page >= Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
+                page >=
+                Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
               }
               className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50"
             >
@@ -175,7 +178,8 @@ const DepartmentPage = () => {
       {location.pathname !== "/app/" && (
         <Link
           to="/"
-          className="inline-block mb-4 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600">
+          className="inline-block mb-4 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
+        >
           Вернуться на главную страницу
         </Link>
       )}
