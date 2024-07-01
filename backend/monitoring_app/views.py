@@ -2,18 +2,19 @@ import os
 import zipfile
 import datetime
 
+from django.db import transaction
+from django.utils import timezone
 from django.db.models import Count
 from django.core.cache import caches
 from django.contrib.auth.models import User
-from django.shortcuts import redirect, render
 from django.core.files.base import ContentFile
 from django.contrib.auth import authenticate, login, logout
+from django.shortcuts import get_object_or_404, redirect, render
 from django.views.generic import (
     View,
 )
 from drf_yasg import openapi
 from rest_framework import status
-from django.utils import timezone
 from openpyxl import load_workbook
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -357,19 +358,13 @@ def get_parent_id(request):
 @permission_classes([IsAuthenticated])
 def department_summary(request, parent_department_id):
     cache_key = f"department_summary_{parent_department_id}"
-    if not models.ParentDepartment.objects.filter(id=parent_department_id).exists():
+
+    if not models.ChildDepartment.objects.filter(id=parent_department_id).exists():
         return Response(
             status=status.HTTP_404_NOT_FOUND,
             data={"message": f"Department with ID {parent_department_id} not found"},
         )
-
-    def query():
-        try:
-            parent_department = models.ParentDepartment.objects.get(
-                id=parent_department_id
-            )
-        except models.ParentDepartment.DoesNotExist:
-            return Response(status=status.HTTP_404_NOT_FOUND)
+    try:
 
         def calculate_staff_count(department):
             child_departments = models.ChildDepartment.objects.filter(parent=department)
@@ -379,9 +374,13 @@ def department_summary(request, parent_department_id):
             )
 
             for child_dept in child_departments:
-                staff_count += calculate_staff_count(child_dept.id)
+                staff_count += calculate_staff_count(child_dept)
 
             return staff_count
+
+        parent_department = get_object_or_404(
+            models.ChildDepartment, id=parent_department_id
+        )
 
         total_staff_count = calculate_staff_count(parent_department)
 
@@ -399,10 +398,13 @@ def department_summary(request, parent_department_id):
             "total_staff_count": total_staff_count,
         }
 
-        return data
+        cached_data = get_cache(
+            cache_key, query=lambda: data, timeout=2 * 60, cache=Cache
+        )
 
-    cached_data = get_cache(cache_key, query=query, timeout=1 * 10, cache=Cache)
-    return Response(cached_data, status=status.HTTP_200_OK)
+        return Response(cached_data, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response(data={"message": str(e)}, status=status.HTTP_404_NOT_FOUND)
 
 
 @swagger_auto_schema(
@@ -457,7 +459,7 @@ def department_summary(request, parent_department_id):
                 },
             ),
         ),
-        404: "Not Found: Если подотдела не сущестует.",
+        404: "Not Found: Если подотдела не существует.",
     },
 )
 @api_view(["GET"])
@@ -481,25 +483,33 @@ def child_department_detail(request, child_department_id):
     except models.ChildDepartment.DoesNotExist:
         return Response(status=status.HTTP_404_NOT_FOUND)
 
-    staff_in_department = models.Staff.objects.filter(department=child_department)
-    staff_data = {}
+    all_departments = [child_department] + child_department.get_all_child_departments()
+    staff_in_department = models.Staff.objects.filter(department__in=all_departments)
 
+    staff_data = {}
     for staff_member in staff_in_department:
+        if staff_member.surname == "Нет фамилии":
+            fio = staff_member.name
+        else:
+            fio = f"{staff_member.surname} {staff_member.name}"
+
         staff_data[staff_member.pin] = {
-            "FIO": staff_member.surname + " " + staff_member.name,
+            "FIO": fio,
             "date_of_creation": staff_member.date_of_creation,
             "avatar": staff_member.avatar.url if staff_member.avatar else None,
             "positions": [position.name for position in staff_member.positions.all()],
         }
 
-    staff_data = dict(sorted(staff_data.items(), reverse=True))
+    sorted_staff_data = dict(
+        sorted(staff_data.items(), key=lambda item: item[1]["FIO"])
+    )
 
     data = {
         "child_department": serializers.ChildDepartmentSerializer(
             child_department
         ).data,
         "staff_count": staff_in_department.count(),
-        "staff_data": staff_data,
+        "staff_data": sorted_staff_data,
     }
 
     return Response(data, status=status.HTTP_200_OK)
@@ -706,7 +716,7 @@ def staff_detail(request, staff_pin):
 
     data = {
         "name": staff.name,
-        "surname": staff.surname,
+        "surname": staff.surname if staff.surname != "Нет фамилии" else "",
         "positions": [position.name for position in staff.positions.all()],
         "avatar": avatar_url,
         "department": staff.department.name if staff.department else "N/A",
@@ -870,9 +880,57 @@ def user_register(request):
     )
 
 
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Получить профиль пользователя",
+    operation_description="Получить профиль текущего аутентифицированного пользователя.",
+    responses={
+        200: openapi.Response(
+            description="Данные профиля пользователя",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "is_banned": openapi.Schema(type=openapi.TYPE_BOOLEAN),
+                    "user": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        properties={
+                            "username": openapi.Schema(type=openapi.TYPE_STRING),
+                            "email": openapi.Schema(
+                                type=openapi.TYPE_STRING, format=openapi.FORMAT_EMAIL
+                            ),
+                            "first_name": openapi.Schema(type=openapi.TYPE_STRING),
+                            "last_name": openapi.Schema(type=openapi.TYPE_STRING),
+                            "is_staff": openapi.Schema(type=openapi.TYPE_BOOLEAN),
+                            "date_joined": openapi.Schema(
+                                type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME
+                            ),
+                            "last_login": openapi.Schema(
+                                type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME
+                            ),
+                            "phonenumber": openapi.Schema(type=openapi.TYPE_STRING),
+                        },
+                    ),
+                },
+            ),
+        ),
+        401: "Unauthorized: Если пользователь не аутентифицирован.",
+    },
+)
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def user_profile_detail(request):
+    """
+    Получить профиль текущего аутентифицированного пользователя.
+
+    Args:
+    запрос: объект запроса.
+
+    Returns:
+    Ответ: ответ, содержащий данные профиля пользователя.
+
+    Raises:
+    Http401: Если пользователь не аутентифицирован.
+    """
     user_profile = models.UserProfile.objects.get(user=request.user)
     serializer = serializers.UserProfileSerializer(user_profile)
     return Response(serializer.data)
@@ -896,19 +954,61 @@ def login_view(request):
     return render(request, "login.html", context={})
 
 
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Запрос на получение данных с Внешнего сервера",
+    operation_description="Запрос на получение данных о посещаемости. Требует передачи заголовка X-API-KEY для аутентификации.",
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="API ключ для аутентификации запроса.",
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Запуск процесса получения данных.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "message": openapi.Schema(
+                        type=openapi.TYPE_STRING, description="Статус сообщения."
+                    ),
+                },
+            ),
+        ),
+        403: "Forbidden: Если доступ запрещен или отсутствует API ключ.",
+        500: "Internal Server Error: В случае ошибки сервера.",
+    },
+)
 @api_view(["GET"])
 def fetch_data_view(request):
+    """
+    Запрос на получение данных о посещаемости. Требует передачи заголовка X-API-KEY для аутентификации.
 
+    Args:
+    запрос: объект запроса.
+
+    Returns:
+    Ответ: статус сообщения.
+
+    Raises:
+    Http403: Если доступ запрещен или отсутствует API ключ.
+    Http500: В случае ошибки сервера.
+    """
     try:
-        fetch_data = request.GET.get("fetch_data", "").lower()
-        if fetch_data == "true":
-            utils.get_all_attendance()
-            return Response(status=status.HTTP_200_OK, data={"message": "Started"})
-        else:
+        api_key = request.headers.get("X-API-KEY")
+        if api_key is None:
             return Response(
                 status=status.HTTP_403_FORBIDDEN,
-                data={"error": "Access denied."},
+                data={"error": "Доступ запрещен. Не указан API ключ."},
             )
+
+        utils.get_all_attendance()
+        return Response(status=status.HTTP_200_OK, data={"message": "Started"})
+
     except Exception as e:
         return Response(
             status=status.HTTP_500_INTERNAL_SERVER_ERROR, data={"error": str(e)}
@@ -922,18 +1022,21 @@ class UploadFileView(View):
     Отображает форму загрузки файла (`upload_file.html`)
     и обрабатывает POST-запросы для импорта данных из файла.
     """
-
     template_name = "upload_file.html"
 
     def get(self, request, *args, **kwargs):
         """
         Обрабатывает GET-запросы.
 
-        Retunrs:
-            HttpResponse: Отрисовывает шаблон `upload_file.html`
+        Args:
+            request (HttpRequest): Объект запроса.
+            *args: Дополнительные позиционные аргументы.
+            **kwargs: Дополнительные именованные аргументы.
+
+        Returns:
+            HttpResponse: Отрисовывает шаблон `upload_file.html` 
             с контекстом, содержащим список всех категорий файлов (`categories`).
         """
-
         categories = models.FileCategory.objects.all()
         context = {"categories": categories}
         return render(request, self.template_name, context=context)
@@ -944,8 +1047,8 @@ class UploadFileView(View):
 
         Args:
             request (HttpRequest): Объект запроса.
-            *args: Аргументы.
-            **kwargs: Ключевые аргументы.
+            *args: Дополнительные позиционные аргументы.
+            **kwargs: Дополнительные именованные аргументы.
 
         Returns:
             HttpResponse: Возвращает редирект на страницу загрузки файла или
@@ -955,103 +1058,145 @@ class UploadFileView(View):
             Exception: Если произошла ошибка при обработке файла.
         """
         file_path = request.FILES.get("file")
-
         category_slug = request.POST.get("category")
+
         if file_path and category_slug:
             try:
                 if file_path.name.endswith(".xlsx"):
-
-                    wb = load_workbook(file_path)
-                    ws = wb.active
-
-                    ws.delete_rows(1, 2)
-
-                    rows = list(ws.iter_rows())
-                    rows.sort(key=lambda row: row[0].value, reverse=True)
-
-                    for row in rows:
-                        if category_slug == "departments":
-                            try:
-                                parent_department_id = int(row[2].value)
-                                parent_department_name = row[3].value
-                                child_department_name = row[1].value
-                                child_department_id = int(row[0].value)
-
-                                parent_department, _ = (
-                                    models.ParentDepartment.objects.get_or_create(
-                                        id=parent_department_id,
-                                        name=parent_department_name,
-                                    )
-                                )
-
-                                child_department = (
-                                    models.ChildDepartment.objects.create(
-                                        id=child_department_id,
-                                        name=child_department_name,
-                                        parent=parent_department,
-                                    )
-                                )
-
-                                child_department.save()
-                            except Exception as error:
-                                print(f"Ошибка при обработке строки: {str(error)}")
-                        elif category_slug == "staff":
-                            pin = row[0].value
-                            name = row[1].value
-                            surname = row[2].value or "Нет фамилии"
-                            department_id = int(row[3].value)
-                            position_name = row[5].value
-                            if not position_name:
-                                position_name = "Сотрудник"
-                            department = models.ChildDepartment.objects.get(
-                                id=department_id
-                            )
-
-                            staff, _ = models.Staff.objects.get_or_create(
-                                pin=pin,
-                                defaults={
-                                    "name": name,
-                                    "surname": surname,
-                                    "department": department,
-                                },
-                            )
-
-                            position, _ = models.Position.objects.get_or_create(
-                                name=position_name
-                            )
-                            staff.positions.add(position)
-                        else:
-                            context = {
-                                "error": "Неизвестная категория. Пожалуйста, обратитесь к Администратору."
-                            }
-
-                    context = {"message": "Файл успешно загружен"}
-                    return redirect("uploadFile")
-
+                    self.handle_excel(file_path, category_slug)
                 elif file_path.name.endswith(".zip") and category_slug == "photo":
-                    with zipfile.ZipFile(file_path, "r") as zip_file:
-                        zip_file.extractall("/tmp")
-                        for filename in zip_file.namelist():
-                            pin = os.path.splitext(filename)[0]
-                            staff_member = models.Staff.objects.filter(pin=pin).first()
-                            if staff_member:
-                                with zip_file.open(filename) as file:
-                                    staff_member.avatar.save(
-                                        filename, ContentFile(file.read()), save=False
-                                    )
-                                    staff_member.save()
-                            else:
-                                continue
-                    return redirect("uploadFile")
-
+                    self.handle_zip(file_path)
+                else:
+                    context = {"error": "Неверный формат файла или категория"}
+                    return render(request, self.template_name, context=context)
+                
+                return redirect("uploadFile")
             except Exception as error:
                 context = {"error": f"Ошибка при обработке файла: {str(error)}"}
         else:
-            context = {
-                "error": "Проверьте правильность заполненных данных, или неверный формат файла"
-            }
+            context = {"error": "Проверьте правильность заполненных данных или неверный формат файла"}
 
         return render(request, self.template_name, context=context)
+
+    @transaction.atomic
+    def handle_excel(self, file_path, category_slug):
+        """
+        Обрабатывает загрузку и импорт данных из файла Excel.
+
+        Args:
+            file_path (File): Путь к загруженному файлу.
+            category_slug (str): Категория файла для обработки.
+
+        Raises:
+            Exception: Если произошла ошибка при обработке файла Excel.
+        """
+        wb = load_workbook(file_path)
+        ws = wb.active
+        ws.delete_rows(1, 2)
+        rows = list(ws.iter_rows())
+        rows.sort(key=lambda row: row[0].value, reverse=True)
+
+        if category_slug == "departments":
+            self.process_departments(rows)
+        elif category_slug == "staff":
+            self.process_staff(rows)
+
+    def process_departments(self, rows):
+        """
+        Обрабатывает данные для категории "departments" из Excel файла.
+
+        Args:
+            rows (list): Список строк из файла Excel.
+
+        Raises:
+            Exception: Если произошла ошибка при обработке строки.
+        """
+        for row in rows:
+            try:
+                parent_department_id = int(row[2].value)
+                parent_department_name = row[3].value
+                child_department_name = row[1].value
+                child_department_id = int(row[0].value)
+
+                if child_department_id == 1:
+                    continue
+
+                if parent_department_name:
+                    parent_department, _ = models.ParentDepartment.objects.get_or_create(
+                        name=parent_department_name,
+                        defaults={"id": parent_department_id},
+                    )
+                    parent_department_as_child, _ = models.ChildDepartment.objects.get_or_create(
+                        id=parent_department.id,
+                        defaults={
+                            "name": parent_department.name,
+                            "parent": None,  
+                        },
+                    )
+                else:
+                    parent_department_as_child = models.ChildDepartment.objects.get(id=1)
+
+                models.ChildDepartment.objects.get_or_create(
+                    id=child_department_id,
+                    defaults={
+                        "name": child_department_name,
+                        "parent": parent_department_as_child,
+                    },
+                )
+            except Exception as error:
+                print(f"Ошибка при обработке строки: {str(error)}")
+
+    def process_staff(self, rows):
+        """
+        Обрабатывает данные для категории "staff" из Excel файла.
+
+        Args:
+            rows (list): Список строк из файла Excel.
+
+        Raises:
+            Exception: Если произошла ошибка при обработке строки.
+        """
+        for row in rows:
+            pin = row[0].value
+            name = row[1].value
+            surname = row[2].value or "Нет фамилии"
+            department_id = int(row[3].value)
+            position_name = row[5].value or "Сотрудник"
+            department = models.ChildDepartment.objects.get(id=department_id)
+
+            staff, _ = models.Staff.objects.get_or_create(
+                pin=pin,
+                defaults={
+                    "name": name,
+                    "surname": surname,
+                    "department": department,
+                },
+            )
+
+            position, _ = models.Position.objects.get_or_create(name=position_name)
+            staff.positions.add(position)
+
+    def handle_zip(self, file_path):
+        """
+        Обрабатывает загрузку и импорт данных из ZIP архива.
+
+        Args:
+            file_path (File): Путь к загруженному файлу.
+
+        Raises:
+            Exception: Если произошла ошибка при обработке ZIP файла.
+        """
+        with zipfile.ZipFile(file_path, "r") as zip_file:
+            zip_file.extractall("/tmp")
+            for filename in zip_file.namelist():
+                pin = os.path.splitext(filename)[0]
+                staff_member = models.Staff.objects.filter(pin=pin).first()
+                if staff_member:
+                    with zip_file.open(filename) as file:
+                        staff_member.avatar.save(
+                            filename, ContentFile(file.read()), save=False
+                        )
+                        staff_member.save()
 
 
 class APIKeyCheckView(APIView):
