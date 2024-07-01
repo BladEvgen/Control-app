@@ -73,7 +73,7 @@ const StaffDetail = () => {
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setStartDate(e.target.value);
     setError("");
-    setEndDate(""); // Reset end date when start date changes
+    setEndDate(""); 
   };
 
   const handleEndDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -198,7 +198,8 @@ const StaffDetail = () => {
                   <strong>Отдел:</strong> {staffData.department}
                 </p>
                 <p>
-                  <strong>Должность:</strong> {staffData.positions?.join(", ") || "Нет данных"}
+                  <strong>Должность:</strong>{" "}
+                  {staffData.positions?.join(", ") || "Нет данных"}
                 </p>
                 <p>
                   <strong>Зарплата:</strong> {formatNumber(staffData.salary)}
@@ -224,7 +225,10 @@ const StaffDetail = () => {
             <h2 className="text-xl font-bold mt-6 mb-4">Посещаемость</h2>
             <div className="mb-4 flex flex-wrap justify-center sm:justify-between">
               <div className="mb-2 sm:mb-0">
-                <label htmlFor="startDate" className="block text-sm font-medium text-gray-700 mb-1">
+                <label
+                  htmlFor="startDate"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
                   Дата начала:
                 </label>
                 <input
@@ -238,7 +242,10 @@ const StaffDetail = () => {
               </div>
               {startDate && (
                 <div className="mt-2 sm:mt-0">
-                  <label htmlFor="endDate" className="block text-sm font-medium text-gray-700 mb-1">
+                  <label
+                    htmlFor="endDate"
+                    className="block text-sm font-medium text-gray-700 mb-1"
+                  >
                     Дата окончания:
                   </label>
                   <input
@@ -254,50 +261,54 @@ const StaffDetail = () => {
             </div>
             {error && <p className="text-red-500 mt-2">{error}</p>}
 
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th
-                    scope="col"
-                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                  >
-                    Дата
-                  </th>
-                  <th
-                    scope="col"
-                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                  >
-                    Первое прибытие
-                  </th>
-                  <th
-                    scope="col"
-                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                  >
-                    Последний уход
-                  </th>
-                  <th
-                    scope="col"
-                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                  >
-                    Процент дня
-                  </th>
-                  <th
-                    scope="col"
-                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                  >
-                    Всего минут
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {Object.entries(staffData.attendance).map(([date, data]) =>
-                  renderAttendanceRow(date, data)
-                )}
-              </tbody>
-            </table>
+            <div className="overflow-x-auto">
+              <table className="w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th
+                      scope="col"
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                    >
+                      Дата
+                    </th>
+                    <th
+                      scope="col"
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                    >
+                      Первое прибытие
+                    </th>
+                    <th
+                      scope="col"
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                    >
+                      Последний уход
+                    </th>
+                    <th
+                      scope="col"
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                    >
+                      Процент дня
+                    </th>
+                    <th
+                      scope="col"
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                    >
+                      Всего минут
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {Object.entries(staffData.attendance).map(([date, data]) =>
+                    renderAttendanceRow(date, data)
+                  )}
+                </tbody>
+              </table>
+            </div>
+
             <button
               className="fixed bottom-4 left-4 bg-white rounded-full p-3 hover:bg-green-300 shadow-md z-10 focus:outline-none"
-              onClick={navigateToChildDepartment}>
+              onClick={navigateToChildDepartment}
+            >
               <span role="img" aria-label="Back" className="text-xl">
                 🔙
               </span>
