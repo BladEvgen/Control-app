@@ -11,7 +11,6 @@ interface CustomLinkProps {
 
 export const Link: React.FC<CustomLinkProps> = ({ to, children, ...props }) => {
   const prefixedTo = typeof to === 'string' ? addPrefix(to) : `/app/${to}`;
-  console.log("Link to:", prefixedTo); 
   return (
     <RouterLink to={prefixedTo} {...props}>
       {children}
@@ -23,7 +22,6 @@ export const useNavigate = () => {
   const navigate = useRouterNavigate();
   return (to: string | number, options?: { replace?: boolean; state?: any }) => {
     const prefixedTo = typeof to === 'string' ? addPrefix(to) : `/app/${to}`;
-    console.log("Navigating to:", prefixedTo); 
     navigate(prefixedTo, options);
   };
 };
