@@ -58,9 +58,11 @@ def home(request):
         request,
         "index.html",
     )
+
+
 @permission_classes([AllowAny])
 def react_app(request):
-    return render(request, 'index.html')
+    return render(request, "index.html")
 
 
 class StaffAttendanceStatsView(APIView):
@@ -716,25 +718,33 @@ def staff_detail(request, staff_pin):
 
     return Response(data, status=status.HTTP_200_OK)
 
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def staff_detail_by_department_id(request, department_id):
     try:
         end_date_str = request.query_params.get("end_date", None)
         start_date_str = request.query_params.get("start_date", None)
-        
+
         if not end_date_str or not start_date_str:
-            return Response(status=status.HTTP_400_BAD_REQUEST, data={"error": "no parameters provided"})
+            return Response(
+                status=status.HTTP_400_BAD_REQUEST,
+                data={"error": "no parameters provided"},
+            )
 
         start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
         end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
 
-
         if start_date > end_date:
-            return Response(data={"error": "start_date cannot be greater than end_date"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                data={"error": "start_date cannot be greater than end_date"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         def get_all_child_departments(department_id):
-            child_departments = models.ChildDepartment.objects.filter(parent_id=department_id)
+            child_departments = models.ChildDepartment.objects.filter(
+                parent_id=department_id
+            )
             all_child_ids = list(child_departments.values_list("id", flat=True))
             for child_id in all_child_ids:
                 all_child_ids.extend(get_all_child_departments(child_id))
@@ -743,7 +753,9 @@ def staff_detail_by_department_id(request, department_id):
         try:
             department = models.ChildDepartment.objects.get(id=department_id)
         except models.ChildDepartment.DoesNotExist:
-            return Response(data={"error": "Department not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                data={"error": "Department not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         def get_staff_attendance(department_ids):
             return models.StaffAttendance.objects.filter(
@@ -757,11 +769,20 @@ def staff_detail_by_department_id(request, department_id):
 
         if staff_attendance.exists():
             serializer = serializers.StaffAttendanceByDateSerializer(
-                staff_attendance, many=True, context={"department_name": department.name}
+                staff_attendance,
+                many=True,
+                context={"department_name": department.name},
             )
-            return Response({"department_name": department.name, "attendance": serializer.data})
+            return Response(
+                {"department_name": department.name, "attendance": serializer.data}
+            )
 
-        return Response(data={"error": "No staff found for the given department or its child departments"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            data={
+                "error": "No staff found for the given department or its child departments"
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     except Exception as e:
         return Response(status=status.HTTP_400_BAD_REQUEST, data={"error": str(e)})
@@ -980,7 +1001,8 @@ class UploadFileView(View):
                             surname = row[2].value or "Нет фамилии"
                             department_id = int(row[3].value)
                             position_name = row[5].value
-
+                            if not position_name:
+                                position_name = "Сотрудник"
                             department = models.ChildDepartment.objects.get(
                                 id=department_id
                             )

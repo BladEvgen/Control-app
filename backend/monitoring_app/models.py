@@ -260,14 +260,14 @@ class StaffAttendance(models.Model):
         null=True,
         blank=True,
         verbose_name="Время первого входа",
-        editable=False,
+        editable=True,
         default=None,
     )
     last_out = models.DateTimeField(
         null=True,
         blank=True,
         verbose_name="Время последнего выхода",
-        editable=False,
+        editable=True,
         default=None,
     )
 
