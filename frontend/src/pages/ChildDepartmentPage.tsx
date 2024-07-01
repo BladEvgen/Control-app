@@ -1,4 +1,4 @@
-import { Link } from "../RouterUtils"; 
+import { Link, useNavigate } from "../RouterUtils"; 
 import { useEffect, useState } from "react";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
@@ -7,6 +7,7 @@ import { useParams } from "react-router-dom";
 
 const ChildDepartmentPage = () => {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [showReloadMessage, setShowReloadMessage] = useState<boolean>(false);
   const [data, setData] = useState<IChildDepartmentData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -15,9 +16,7 @@ const ChildDepartmentPage = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const res = await axiosInstance.get(
-          `${apiUrl}/api/child_department/${id}/`
-        );
+        const res = await axiosInstance.get(`${apiUrl}/api/child_department/${id}/`);
         setData(res.data);
         setIsLoading(false);
         if (res.status === 200 || res.status === 201) {
@@ -49,6 +48,12 @@ const ChildDepartmentPage = () => {
     return date.toLocaleString();
   };
 
+  const navigateToChildDepartment = () => {
+    if (data?.child_department.parent) {
+      navigate(`/department/${data.child_department.parent}`);
+    }
+  };
+
   return (
     <div className="container mx-auto px-4 py-8">
       {isLoading ? (
@@ -63,12 +68,13 @@ const ChildDepartmentPage = () => {
       ) : (
         <>
           <h1 className="text-3xl font-bold mb-6">{data?.child_department.name}</h1>
-          <Link
-            to="/"
+          <button
+            onClick={navigateToChildDepartment}
             className="inline-block mb-6 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors duration-300 ease-in-out"
           >
-            На главную страницу
-          </Link>
+            Вернуться назад
+          </button>
+          
           <div className="mb-6">
             <input
               type="text"
@@ -102,7 +108,7 @@ const ChildDepartmentPage = () => {
               <tbody>
                 {data?.staff_data &&
                   Object.entries(data.staff_data)
-                    .filter(([ , staff]) => // Removed pin here
+                    .filter(([ , staff]) => 
                       staff.FIO.toLowerCase().includes(searchQuery.toLowerCase())
                     )
                     .map(([pin, staff]) => (
