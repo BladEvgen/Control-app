@@ -6,8 +6,8 @@ from django.conf.urls.static import static
 urlpatterns = [
     path("grappelli/", include("grappelli.urls")),
     path("api-auth/", include("rest_framework.urls", namespace="rest_framework")),
-    path("", include("monitoring_app.urls")),
     path("admin/", admin.site.urls),
+    path("", include("monitoring_app.urls")),
 ]
 
 
