@@ -1,4 +1,4 @@
-from django.urls import path,re_path
+from django.urls import path, re_path
 from rest_framework_simplejwt.views import (
     TokenVerifyView,
     TokenRefreshView,
@@ -6,10 +6,11 @@ from rest_framework_simplejwt.views import (
 )
 
 from monitoring_app import views
+from django.views.generic import RedirectView
 from monitoring_app.swagger import urlpatterns as doc_urls
 
 urlpatterns = [
-    path("", views.home, name="home"),
+    path("", RedirectView.as_view(url="/app/")),
     path("login_view/", views.login_view, name="login_view"),
     path("logout/", views.logout_view, name="logout"),
     path("upload/", views.UploadFileView.as_view(), name="uploadFile"),
@@ -47,5 +48,5 @@ urlpatterns = [
 urlpatterns += doc_urls
 
 urlpatterns += [
-    re_path(r'^app/.*$', views.react_app),
+    re_path(r"^app/.*$", views.react_app),
 ]
