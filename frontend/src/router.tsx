@@ -8,23 +8,24 @@ import LoginPage from "./pages/LoginPage.tsx";
 import DepartmentPage from "./pages/DepartmentPage.tsx";
 import ChildDepartmentPage from "./pages/ChildDepartmentPage.tsx";
 import StaffDetail from "./pages/StaffDetail.tsx";
+import {addPrefix} from "./RouterUtils.tsx"
 interface LayoutProps {
   children: ReactNode;
 }
-
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   return (
-    <div>
+    <div className="flex flex-col min-h-screen">
       <HeaderComponent />
-      <div className="">{children}</div>
+      <div className="flex-1">{children}</div>
       <FooterComponent />
     </div>
   );
 };
 
+
 const router = createBrowserRouter([
   {
-    path: "/",
+    path: addPrefix("/"),
     element: (
       <Layout>
         <MainPage />
@@ -32,7 +33,7 @@ const router = createBrowserRouter([
     ),
   },
   {
-    path: "/login",
+    path: addPrefix("/login"),
     element: (
       <Layout>
         <LoginPage />
@@ -40,7 +41,7 @@ const router = createBrowserRouter([
     ),
   },
   {
-    path: "/department/:id",
+    path: addPrefix("/department/:id"),
     element: (
       <Layout>
         <DepartmentPage />{" "}
@@ -48,7 +49,7 @@ const router = createBrowserRouter([
     ),
   },
   {
-    path: "/childDepartment/:id",
+    path: addPrefix("/childDepartment/:id"),
     element: (
       <Layout>
         <ChildDepartmentPage /> {""}
@@ -56,7 +57,7 @@ const router = createBrowserRouter([
     ),
   },
   {
-    path: "/staffDetail/:pin",
+    path: addPrefix("/staffDetail/:pin"),
     element: (
       <Layout>
         <StaffDetail /> {""}
