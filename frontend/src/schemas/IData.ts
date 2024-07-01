@@ -3,6 +3,7 @@ export interface IChildDepartment {
   name: string;
   date_of_creation: string;
   parent: number;
+  has_child_departments: boolean;
 }
 
 export interface IData {
