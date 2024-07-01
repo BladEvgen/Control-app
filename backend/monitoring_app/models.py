@@ -121,9 +121,11 @@ class ChildDepartment(models.Model):
         auto_now_add=True, verbose_name="Дата создания"
     )
     parent = models.ForeignKey(
-        ParentDepartment,
+        'self',
         on_delete=models.SET_NULL,
         null=True,
+        blank=True,
+        related_name='children',
         verbose_name="Родительский отдел",
     )
 
@@ -133,11 +135,22 @@ class ChildDepartment(models.Model):
     def save(self, *args, **kwargs):
         existing_child_department = ChildDepartment.objects.filter(
             name=self.name
-        ).exists()
+        ).first()
+
         if existing_child_department:
-            pass
+            if existing_child_department.name != self.name:
+                existing_child_department.name = self.name
+                existing_child_department.save()
+
         else:
             super().save(*args, **kwargs)
+            
+    def get_all_child_departments(self):
+        children = self.children.all()
+        all_children = list(children)
+        for child in children:
+            all_children.extend(child.get_all_child_departments())
+        return all_children
 
     class Meta:
         verbose_name = "Подотдел"
