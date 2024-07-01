@@ -59,11 +59,14 @@ class ParentDepartmentSerializer(serializers.ModelSerializer):
 
 class ChildDepartmentSerializer(serializers.ModelSerializer):
     child_id = serializers.IntegerField(source="id")
+    has_child_departments = serializers.SerializerMethodField()
 
     class Meta:
         model = models.ChildDepartment
-        fields = ["child_id", "name", "date_of_creation", "parent"]
+        fields = ["child_id", "name", "date_of_creation", "parent", "has_child_departments"]
 
+    def get_has_child_departments(self, obj):
+        return models.ChildDepartment.objects.filter(parent=obj).exists()
 
 class StaffSerializer(serializers.ModelSerializer):
     FIO = serializers.SerializerMethodField()
