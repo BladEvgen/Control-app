@@ -983,7 +983,8 @@ def login_view(request):
         500: "Internal Server Error: В случае ошибки сервера.",
     },
 )
-@api_view(["GET"])
+@api_view(http_method_names=["GET"])
+@permission_classes([AllowAny])
 def fetch_data_view(request):
     """
     Запрос на получение данных о посещаемости. Требует передачи заголовка X-API-KEY для аутентификации.
@@ -1022,6 +1023,7 @@ class UploadFileView(View):
     Отображает форму загрузки файла (`upload_file.html`)
     и обрабатывает POST-запросы для импорта данных из файла.
     """
+
     template_name = "upload_file.html"
 
     def get(self, request, *args, **kwargs):
@@ -1034,7 +1036,7 @@ class UploadFileView(View):
             **kwargs: Дополнительные именованные аргументы.
 
         Returns:
-            HttpResponse: Отрисовывает шаблон `upload_file.html` 
+            HttpResponse: Отрисовывает шаблон `upload_file.html`
             с контекстом, содержащим список всех категорий файлов (`categories`).
         """
         categories = models.FileCategory.objects.all()
@@ -1069,12 +1071,14 @@ class UploadFileView(View):
                 else:
                     context = {"error": "Неверный формат файла или категория"}
                     return render(request, self.template_name, context=context)
-                
+
                 return redirect("uploadFile")
             except Exception as error:
                 context = {"error": f"Ошибка при обработке файла: {str(error)}"}
         else:
-            context = {"error": "Проверьте правильность заполненных данных или неверный формат файла"}
+            context = {
+                "error": "Проверьте правильность заполненных данных или неверный формат файла"
+            }
 
         return render(request, self.template_name, context=context)
 
@@ -1122,19 +1126,25 @@ class UploadFileView(View):
                     continue
 
                 if parent_department_name:
-                    parent_department, _ = models.ParentDepartment.objects.get_or_create(
-                        name=parent_department_name,
-                        defaults={"id": parent_department_id},
+                    parent_department, _ = (
+                        models.ParentDepartment.objects.get_or_create(
+                            name=parent_department_name,
+                            defaults={"id": parent_department_id},
+                        )
                     )
-                    parent_department_as_child, _ = models.ChildDepartment.objects.get_or_create(
-                        id=parent_department.id,
-                        defaults={
-                            "name": parent_department.name,
-                            "parent": None,  
-                        },
+                    parent_department_as_child, _ = (
+                        models.ChildDepartment.objects.get_or_create(
+                            id=parent_department.id,
+                            defaults={
+                                "name": parent_department.name,
+                                "parent": None,
+                            },
+                        )
                     )
                 else:
-                    parent_department_as_child = models.ChildDepartment.objects.get(id=1)
+                    parent_department_as_child = models.ChildDepartment.objects.get(
+                        id=1
+                    )
 
                 models.ChildDepartment.objects.get_or_create(
                     id=child_department_id,
