@@ -23,7 +23,7 @@ API_KEY = os.getenv("API_KEY")
 #! SET TO DOMAIN
 ALLOWED_HOSTS = ["*"]
 
-
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 10000
 # Application definition
 
 INSTALLED_APPS = [

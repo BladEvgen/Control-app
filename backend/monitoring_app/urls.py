@@ -48,5 +48,5 @@ urlpatterns = [
 urlpatterns += doc_urls
 
 urlpatterns += [
-    re_path(r"^app/.*$", views.react_app),
+    re_path(r"^app/.*$", views.react_app, name="reac_app"),
 ]
