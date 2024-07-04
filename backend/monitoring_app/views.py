@@ -1,4 +1,5 @@
 import os
+import shutil
 import zipfile
 import datetime
 
@@ -641,41 +642,38 @@ def staff_detail(request, staff_pin):
     except models.Staff.DoesNotExist:
         return Response(status=status.HTTP_404_NOT_FOUND)
 
-    end_date_str = request.query_params.get(
-        "end_date", timezone.now().strftime("%Y-%m-%d")
-    )
-    start_date_str = request.query_params.get(
-        "start_date", (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-    )
+    end_date_str = request.query_params.get("end_date", timezone.now().strftime("%Y-%m-%d"))
+    start_date_str = request.query_params.get("start_date", (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d"))
 
     end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
     start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
-    end_date = end_date + datetime.timedelta(days=1)
-    start_date = start_date + datetime.timedelta(days=1)
-    if start_date > end_date:
-        return Response(
-            data={"error": "start_date cannot be greater than end_date"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
 
-    staff_attendance = models.StaffAttendance.objects.filter(
-        staff=staff, date_at__range=[start_date, end_date]
-    )
+    if start_date > end_date:
+        return Response(data={"error": "start_date cannot be greater than end_date"}, status=status.HTTP_400_BAD_REQUEST)
+
+    staff_attendance = models.StaffAttendance.objects.filter(staff=staff, date_at__range=[start_date, end_date])
+    public_holidays = models.PublicHoliday.objects.filter(date__range=[start_date, end_date]).values_list('date', 'is_working_day')
+
+    holiday_dict = {date: is_working_day for date, is_working_day in public_holidays}
 
     attendance_data = {}
     total_minutes_for_period = 0
     total_days = 0
     percent_for_period = 0
     total_weekend_days = 0
+
     for attendance in staff_attendance:
         date_at = attendance.date_at - datetime.timedelta(days=1)
         is_weekend = date_at.weekday() >= 5
+        is_holiday = date_at in holiday_dict
+        is_off_day = (is_weekend and date_at not in holiday_dict) or (is_holiday and not holiday_dict[date_at])
 
         first_in = attendance.first_in
         last_out = attendance.last_out
 
         if first_in is None or last_out is None:
             percent_day = 0
+            total_minutes_worked = 0
         else:
             total_minutes_expected = 8 * 60
             total_minutes_worked = (last_out - first_in).total_seconds() / 60
@@ -688,13 +686,11 @@ def staff_detail(request, staff_pin):
             "first_in": (first_in if first_in else None),
             "last_out": (last_out if last_out else None),
             "percent_day": round(percent_day, 2),
-            "total_minutes": (
-                round(total_minutes_worked, 2) if first_in and last_out else 0
-            ),
-            "is_weekend": is_weekend,
+            "total_minutes": round(total_minutes_worked, 2) if first_in and last_out else 0,
+            "is_weekend": is_off_day,
         }
 
-        if is_weekend:
+        if is_off_day:
             if attendance_entry["total_minutes"] > 60:
                 percent_for_period *= 1.5
             else:
@@ -703,11 +699,12 @@ def staff_detail(request, staff_pin):
             if attendance_entry["total_minutes"] == 0:
                 percent_day *= 0.75
 
-        total_weekend_days += 1 if is_weekend else 0
+        total_weekend_days += 1 if is_off_day else 0
 
         attendance_data[date_at.strftime("%d-%m-%Y")] = attendance_entry
 
-    total_hours_expected = ((end_date - start_date).days - total_weekend_days) * 8
+    total_hours_expected = (end_date - start_date).days * 8
+    total_hours_expected -= (sum(1 for d, is_working in holiday_dict.items() if not is_working and d.weekday() < 5) * 8)
     percent_for_period += (total_minutes_for_period / (total_hours_expected * 60)) * 100
 
     salaries = models.Salary.objects.filter(staff=staff)
@@ -1020,7 +1017,7 @@ class UploadFileView(View):
     """
     Класс представления для обработки действий по загрузке файлов.
 
-    Отображает форму загрузки файла (`upload_file.html`)
+    Отображает форму загрузки файла (upload_file.html)
     и обрабатывает POST-запросы для импорта данных из файла.
     """
 
@@ -1036,8 +1033,8 @@ class UploadFileView(View):
             **kwargs: Дополнительные именованные аргументы.
 
         Returns:
-            HttpResponse: Отрисовывает шаблон `upload_file.html`
-            с контекстом, содержащим список всех категорий файлов (`categories`).
+            HttpResponse: Отрисовывает шаблон upload_file.html
+            с контекстом, содержащим список всех категорий файлов (categories).
         """
         categories = models.FileCategory.objects.all()
         context = {"categories": categories}
@@ -1054,7 +1051,7 @@ class UploadFileView(View):
 
         Returns:
             HttpResponse: Возвращает редирект на страницу загрузки файла или
-            рендеринг `upload_file.html` с соответствующим контекстом.
+            рендеринг upload_file.html с соответствующим контекстом.
 
         Raises:
             Exception: Если произошла ошибка при обработке файла.
@@ -1174,7 +1171,7 @@ class UploadFileView(View):
             position_name = row[5].value or "Сотрудник"
             department = models.ChildDepartment.objects.get(id=department_id)
 
-            staff, _ = models.Staff.objects.get_or_create(
+            staff, created = models.Staff.objects.get_or_create(
                 pin=pin,
                 defaults={
                     "name": name,
@@ -1182,6 +1179,15 @@ class UploadFileView(View):
                     "department": department,
                 },
             )
+
+            if not created:
+                if staff.name != name:
+                    staff.name = name
+                if staff.surname != surname:
+                    staff.surname = surname
+                if staff.department != department:
+                    staff.department = department
+                staff.save()
 
             position, _ = models.Position.objects.get_or_create(name=position_name)
             staff.positions.add(position)
@@ -1207,8 +1213,6 @@ class UploadFileView(View):
                             filename, ContentFile(file.read()), save=False
                         )
                         staff_member.save()
-
-
 class APIKeyCheckView(APIView):
     permission_classes = [AllowAny]
 
