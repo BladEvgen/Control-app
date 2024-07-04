@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "react-router-dom";
-import { Link,useNavigate } from "../RouterUtils"; 
+import { Link, useNavigate } from "../RouterUtils";
 import Cookies from "js-cookie";
 import { apiUrl } from "../../apiConfig";
 import axiosInstance from "../api";
@@ -66,13 +66,15 @@ const HeaderComponent = () => {
               <div className="relative">
                 <button
                   className="bg-gray-800 text-white font-bold py-2 px-4 rounded lg:inline-flex lg:w-auto"
-                  onClick={toggleDropdown}>
+                  onClick={toggleDropdown}
+                >
                   {username}
                   <svg
                     className="h-5 w-5 inline-block ml-2 lg:hidden"
                     xmlns="http://www.w3.org/2000/svg"
                     viewBox="0 0 20 20"
-                    fill="currentColor">
+                    fill="currentColor"
+                  >
                     <path
                       fillRule="evenodd"
                       d="M9.293 13.707a1 1 0 01-1.414 0l-3-3a1 1 0 111.414-1.414L8 11.586V3a1 1 0 112 0v8.586l2.293-2.293a1 1 0 111.414 1.414l-3 3z"
@@ -84,7 +86,8 @@ const HeaderComponent = () => {
                   <div className="absolute mt-2 w-48 bg-white rounded-md shadow-lg lg:absolute lg:right-0">
                     <button
                       onClick={handleLogout}
-                      className="block px-4 py-2 text-gray-800 hover:bg-gray-200 w-full text-left">
+                      className="block px-4 py-2 text-gray-800 hover:bg-gray-200 w-full text-left"
+                    >
                       Logout
                     </button>
                   </div>
@@ -106,7 +109,8 @@ const HeaderComponent = () => {
             <div className="flex mt-4 lg:mt-0 lg:ml-4">
               <a
                 href={`${apiUrl}/upload`}
-                className="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded lg:inline-flex lg:w-auto">
+                className="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded lg:inline-flex lg:w-auto"
+              >
                 Upload Data
               </a>
             </div>
