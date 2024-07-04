@@ -6,6 +6,7 @@ from .models import (
     Position,
     UserProfile,
     FileCategory,
+    PublicHoliday,
     ChildDepartment,
     StaffAttendance,
     ParentDepartment,
@@ -118,3 +119,11 @@ class SalaryAdmin(admin.ModelAdmin):
     search_fields = ("staff__surname", "staff__name")
     list_filter = ("staff__department",)
     readonly_fields = ("dirty_salary", "total_salary")
+
+
+@admin.register(PublicHoliday)
+class PublicHolidayAdmin(admin.ModelAdmin):
+    list_display = ("date", "name", "is_working_day")
+    list_filter = ("date", "name", "is_working_day")
+    search_fields = ("name",)
+    ordering = ("-date",)

@@ -214,45 +214,32 @@ class Staff(models.Model):
     )
 
     def __str__(self):
-        return f"{self.surname} {self.name}  {self.department.name if self.department else 'N/A'}"
+        return f"{self.surname} {self.name} {self.department.name if self.department else 'N/A'}"
 
     def save(self, *args, **kwargs):
-        if self.pk:
-            try:
-                old_instance = Staff.objects.get(pk=self.pk)
-                old_avatar = old_instance.avatar
-                if old_avatar:
-                    if os.path.exists(old_avatar.path):
-                        os.remove(old_avatar.path)
-            except Staff.DoesNotExist:
-                pass
-
-        if self.avatar:
-            filename = os.path.basename(self.avatar.name)
-            self.avatar.name = user_avatar_path(self, filename)
-            self.full_clean()
-            super().save(*args, **kwargs)
-        else:
-            super().save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
     class Meta:
         verbose_name = "Сотрудник"
         verbose_name_plural = "Сотрудники"
 
-
 @receiver(pre_save, sender=Staff)
 def delete_old_avatar(sender, instance, **kwargs):
-    if instance.pk:
-        try:
-            old_instance = Staff.objects.get(pk=instance.pk)
-            old_avatar = old_instance.avatar
-            if old_avatar:
-                if os.path.exists(old_avatar.path):
-                    os.remove(old_avatar.path)
-        except Staff.DoesNotExist:
-            pass
+    if not instance.pk:
+        return
 
+    try:
+        old_instance = Staff.objects.get(pk=instance.pk)
+    except Staff.DoesNotExist:
+        return
+
+    old_avatar = old_instance.avatar
     new_avatar = instance.avatar
+
+    if old_avatar and old_avatar != new_avatar:
+        if os.path.exists(old_avatar.path):
+            os.remove(old_avatar.path)
+
     if new_avatar:
         new_avatar.name = user_avatar_path(instance, new_avatar.name)
 
@@ -378,3 +365,15 @@ def update_salary_on_position_change(sender, instance, action, **kwargs):
         for salary in instance.salaries.all():
             salary.calculate_salaries()
             salary.save(update_fields=["total_salary"])
+
+class PublicHoliday(models.Model):
+    date = models.DateField(unique=True, verbose_name="Дата праздника")
+    name = models.CharField(max_length=255, verbose_name="Название праздника")
+    is_working_day = models.BooleanField(default=False, verbose_name="Рабочий день")
+
+    def __str__(self):
+        return f"{self.name} ({self.date})"
+
+    class Meta:
+        verbose_name = "Праздничный день"
+        verbose_name_plural = "Праздничные дни"
