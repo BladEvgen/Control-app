@@ -121,11 +121,11 @@ class ChildDepartment(models.Model):
         auto_now_add=True, verbose_name="Дата создания"
     )
     parent = models.ForeignKey(
-        'self',
+        "self",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='children',
+        related_name="children",
         verbose_name="Родительский отдел",
     )
 
@@ -133,18 +133,18 @@ class ChildDepartment(models.Model):
         return self.name
 
     def save(self, *args, **kwargs):
-        existing_child_department = ChildDepartment.objects.filter(
-            name=self.name
-        ).first()
+        if not self.id:  
+            existing_child_department = ChildDepartment.objects.filter(
+                name=self.name
+            ).first()
+            if existing_child_department:
+                self.id = existing_child_department.id  
+                self.parent = (
+                    existing_child_department.parent
+                )  
 
-        if existing_child_department:
-            if existing_child_department.name != self.name:
-                existing_child_department.name = self.name
-                existing_child_department.save()
+        super().save(*args, **kwargs)
 
-        else:
-            super().save(*args, **kwargs)
-            
     def get_all_child_departments(self):
         children = self.children.all()
         all_children = list(children)
@@ -166,10 +166,7 @@ class Position(models.Model):
         default="Сотрудник",
     )
     rate = models.DecimalField(
-        max_digits=4, 
-        decimal_places=2,
-        verbose_name="Ставка",
-        default=1
+        max_digits=4, decimal_places=2, verbose_name="Ставка", default=1
     )
 
     def __str__(self):
@@ -222,6 +219,7 @@ class Staff(models.Model):
     class Meta:
         verbose_name = "Сотрудник"
         verbose_name_plural = "Сотрудники"
+
 
 @receiver(pre_save, sender=Staff)
 def delete_old_avatar(sender, instance, **kwargs):
@@ -365,6 +363,7 @@ def update_salary_on_position_change(sender, instance, action, **kwargs):
         for salary in instance.salaries.all():
             salary.calculate_salaries()
             salary.save(update_fields=["total_salary"])
+
 
 class PublicHoliday(models.Model):
     date = models.DateField(unique=True, verbose_name="Дата праздника")
