@@ -32,7 +32,9 @@ const DepartmentTable = ({ data }: { data: IData }) => {
         onChange={(e) => setSearchQuery(e.target.value)}
         className="border border-gray-300 px-3 py-1 rounded-md mb-4"
       />
-
+      <p className="text-gray-700 mb-4">
+        <strong>Количество сотрудников:</strong> {data?.total_staff_count}
+      </p>
       <div className="flex-1 overflow-y-auto">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
