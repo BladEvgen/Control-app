@@ -1,5 +1,4 @@
 import os
-import shutil
 import zipfile
 import datetime
 
@@ -400,7 +399,7 @@ def department_summary(request, parent_department_id):
         }
 
         cached_data = get_cache(
-            cache_key, query=lambda: data, timeout=2 * 60, cache=Cache
+            cache_key, query=lambda: data, timeout=1 * 10, cache=Cache
         )
 
         return Response(cached_data, status=status.HTTP_200_OK)
@@ -642,17 +641,28 @@ def staff_detail(request, staff_pin):
     except models.Staff.DoesNotExist:
         return Response(status=status.HTTP_404_NOT_FOUND)
 
-    end_date_str = request.query_params.get("end_date", timezone.now().strftime("%Y-%m-%d"))
-    start_date_str = request.query_params.get("start_date", (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d"))
+    end_date_str = request.query_params.get(
+        "end_date", timezone.now().strftime("%Y-%m-%d")
+    )
+    start_date_str = request.query_params.get(
+        "start_date", (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+    )
 
     end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
     start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
 
     if start_date > end_date:
-        return Response(data={"error": "start_date cannot be greater than end_date"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            data={"error": "start_date cannot be greater than end_date"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
-    staff_attendance = models.StaffAttendance.objects.filter(staff=staff, date_at__range=[start_date, end_date])
-    public_holidays = models.PublicHoliday.objects.filter(date__range=[start_date, end_date]).values_list('date', 'is_working_day')
+    staff_attendance = models.StaffAttendance.objects.filter(
+        staff=staff, date_at__range=[start_date, end_date]
+    )
+    public_holidays = models.PublicHoliday.objects.filter(
+        date__range=[start_date, end_date]
+    ).values_list("date", "is_working_day")
 
     holiday_dict = {date: is_working_day for date, is_working_day in public_holidays}
 
@@ -666,7 +676,9 @@ def staff_detail(request, staff_pin):
         date_at = attendance.date_at - datetime.timedelta(days=1)
         is_weekend = date_at.weekday() >= 5
         is_holiday = date_at in holiday_dict
-        is_off_day = (is_weekend and date_at not in holiday_dict) or (is_holiday and not holiday_dict[date_at])
+        is_off_day = (is_weekend and date_at not in holiday_dict) or (
+            is_holiday and not holiday_dict[date_at]
+        )
 
         first_in = attendance.first_in
         last_out = attendance.last_out
@@ -686,7 +698,9 @@ def staff_detail(request, staff_pin):
             "first_in": (first_in if first_in else None),
             "last_out": (last_out if last_out else None),
             "percent_day": round(percent_day, 2),
-            "total_minutes": round(total_minutes_worked, 2) if first_in and last_out else 0,
+            "total_minutes": (
+                round(total_minutes_worked, 2) if first_in and last_out else 0
+            ),
             "is_weekend": is_off_day,
         }
 
@@ -704,7 +718,14 @@ def staff_detail(request, staff_pin):
         attendance_data[date_at.strftime("%d-%m-%Y")] = attendance_entry
 
     total_hours_expected = (end_date - start_date).days * 8
-    total_hours_expected -= (sum(1 for d, is_working in holiday_dict.items() if not is_working and d.weekday() < 5) * 8)
+    total_hours_expected -= (
+        sum(
+            1
+            for d, is_working in holiday_dict.items()
+            if not is_working and d.weekday() < 5
+        )
+        * 8
+    )
     percent_for_period += (total_minutes_for_period / (total_hours_expected * 60)) * 100
 
     salaries = models.Salary.objects.filter(staff=staff)
@@ -1095,7 +1116,7 @@ class UploadFileView(View):
         ws = wb.active
         ws.delete_rows(1, 2)
         rows = list(ws.iter_rows())
-        rows.sort(key=lambda row: row[0].value, reverse=True)
+        rows.sort(key=lambda row: row[0].value, reverse=False)
 
         if category_slug == "departments":
             self.process_departments(rows)
@@ -1122,14 +1143,16 @@ class UploadFileView(View):
                 if child_department_id == 1:
                     continue
 
+                parent_department = None
                 if parent_department_name:
-                    parent_department, _ = (
+                    parent_department, created = (
                         models.ParentDepartment.objects.get_or_create(
-                            name=parent_department_name,
-                            defaults={"id": parent_department_id},
+                            id=parent_department_id,
+                            defaults={"name": parent_department_name},
                         )
                     )
-                    parent_department_as_child, _ = (
+
+                    parent_department_as_child, created = (
                         models.ChildDepartment.objects.get_or_create(
                             id=parent_department.id,
                             defaults={
@@ -1138,18 +1161,22 @@ class UploadFileView(View):
                             },
                         )
                     )
+
                 else:
                     parent_department_as_child = models.ChildDepartment.objects.get(
                         id=1
                     )
 
-                models.ChildDepartment.objects.get_or_create(
-                    id=child_department_id,
-                    defaults={
-                        "name": child_department_name,
-                        "parent": parent_department_as_child,
-                    },
+                child_department, created = (
+                    models.ChildDepartment.objects.get_or_create(
+                        id=child_department_id,
+                        defaults={
+                            "name": child_department_name,
+                            "parent": parent_department_as_child,
+                        },
+                    )
                 )
+
             except Exception as error:
                 print(f"Ошибка при обработке строки: {str(error)}")
 
@@ -1163,34 +1190,64 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке строки.
         """
+
+        staff_instances = []
+        departments_cache = {}
+
         for row in rows:
             pin = row[0].value
             name = row[1].value
             surname = row[2].value or "Нет фамилии"
             department_id = int(row[3].value)
             position_name = row[5].value or "Сотрудник"
-            department = models.ChildDepartment.objects.get(id=department_id)
-
-            staff, created = models.Staff.objects.get_or_create(
-                pin=pin,
-                defaults={
-                    "name": name,
-                    "surname": surname,
-                    "department": department,
-                },
-            )
-
-            if not created:
-                if staff.name != name:
-                    staff.name = name
-                if staff.surname != surname:
-                    staff.surname = surname
-                if staff.department != department:
-                    staff.department = department
-                staff.save()
 
             position, _ = models.Position.objects.get_or_create(name=position_name)
-            staff.positions.add(position)
+
+            if department_id:
+                if department_id in departments_cache:
+                    department = departments_cache[department_id]
+                else:
+                    try:
+                        department = models.ChildDepartment.objects.get(
+                            id=department_id
+                        )
+                        departments_cache[department_id] = department
+                    except models.ChildDepartment.DoesNotExist:
+                        department = None
+            else:
+                department = None  # Default department value
+
+            staff_instance = models.Staff(
+                pin=pin,
+                name=name,
+                surname=surname,
+                department=department,
+            )
+
+            staff_instances.append(staff_instance)
+
+        pin_list = [staff.pin for staff in staff_instances]
+        existing_staff = models.Staff.objects.filter(pin__in=pin_list)
+        existing_staff_dict = {staff.pin: staff for staff in existing_staff}
+
+        staff_to_create = []
+        staff_to_update = []
+
+        for staff_instance in staff_instances:
+            if staff_instance.pin in existing_staff_dict:
+                existing = existing_staff_dict[staff_instance.pin]
+                existing.name = staff_instance.name
+                existing.surname = staff_instance.surname
+                existing.department = staff_instance.department
+                staff_to_update.append(existing)
+            else:
+                staff_to_create.append(staff_instance)
+
+        if staff_to_create:
+            models.Staff.objects.bulk_create(staff_to_create)
+
+        for staff in staff_to_update:
+            staff.save()
 
     def handle_zip(self, file_path):
         """
@@ -1213,6 +1270,8 @@ class UploadFileView(View):
                             filename, ContentFile(file.read()), save=False
                         )
                         staff_member.save()
+
+
 class APIKeyCheckView(APIView):
     permission_classes = [AllowAny]
 
