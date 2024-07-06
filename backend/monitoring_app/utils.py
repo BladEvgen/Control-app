@@ -122,27 +122,39 @@ def get_all_attendance():
         for pin, data in zip(pins, executor.map(get_attendance_data, pins)):
             attendance_data[pin] = data
 
-    with transaction.atomic():
-        for pin, data in attendance_data.items():
-            staff = models.Staff.objects.get(pin=pin)
-            if data:
-                first_event_time = data[-1]["eventTime"]
-                last_event_time = (
-                    data[0]["eventTime"] if len(data) > 1 else first_event_time
-                )
-            else:
-                first_event_time = None
-                last_event_time = None
-            prev_date = datetime.datetime.now() - datetime.timedelta(days=DAYS)
-            next_day = prev_date + datetime.timedelta(days=1)
+    prev_date = timezone.now() - timezone.timedelta(days=DAYS)
+    next_day = prev_date + timezone.timedelta(days=1)
 
-            staff_attendance = models.StaffAttendance.objects.create(
+    staff_attendance_objects = []
+
+    for pin, data in attendance_data.items():
+        staff = models.Staff.objects.get(pin=pin)
+        if data:
+            first_event_time = timezone.make_aware(
+                timezone.datetime.fromisoformat(data[-1]["eventTime"])
+            )
+            last_event_time = (
+                timezone.make_aware(
+                    timezone.datetime.fromisoformat(data[0]["eventTime"])
+                )
+                if len(data) > 1
+                else first_event_time
+            )
+        else:
+            first_event_time = None
+            last_event_time = None
+
+        staff_attendance_objects.append(
+            models.StaffAttendance(
                 staff=staff,
                 first_in=first_event_time,
                 last_out=last_event_time,
                 date_at=next_day.date(),
             )
-            staff_attendance.save()
+        )
+
+    with transaction.atomic():
+        models.StaffAttendance.objects.bulk_create(staff_attendance_objects)
 
 
 def password_check(password: str) -> bool:
