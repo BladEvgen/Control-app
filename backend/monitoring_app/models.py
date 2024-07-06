@@ -133,15 +133,13 @@ class ChildDepartment(models.Model):
         return self.name
 
     def save(self, *args, **kwargs):
-        if not self.id:  
+        if not self.id:
             existing_child_department = ChildDepartment.objects.filter(
                 name=self.name
             ).first()
             if existing_child_department:
-                self.id = existing_child_department.id  
-                self.parent = (
-                    existing_child_department.parent
-                )  
+                self.id = existing_child_department.id
+                self.parent = existing_child_department.parent
 
         super().save(*args, **kwargs)
 
@@ -289,7 +287,6 @@ class StaffAttendance(models.Model):
 
 
 class Salary(models.Model):
-
     staff = models.ForeignKey(
         Staff,
         on_delete=models.CASCADE,
@@ -327,18 +324,38 @@ class Salary(models.Model):
 
     @staticmethod
     def calculate_dirty_salary(clean_salary):
-        ipn_percentage = Decimal("0.10")  # ИПН - 10%
-        opv_percentage = Decimal("0.10")  # ОПВ - 10%
+        # Percentages
+        opvr_percentage = Decimal("0.015")  # ОПВР - 1.5%
         vosms_percentage = Decimal("0.02")  # ВОСМС - 2%
+        oosms_percentage = Decimal("0.03")  # ООСМС - 3%
+        so_percentage = Decimal("0.035")  # СО - 3.5%
+        sn_percentage = Decimal("0.095")  # СН - 9.5%
 
-        deduction_percentage = ipn_percentage + opv_percentage + vosms_percentage
+        # Limits
+        min_sn_limit = 14 * 3692  # 14 МРП = 51 688 тенге
+        max_opv_limit = 50 * 85000  # 50 МЗП = 4 250 000 тенге
+        max_vosms_limit = 10 * 85000  # 10 МЗП = 850 000 тенге
+        max_oosms_limit = 10 * 85000  # 10 МЗП = 850 000 тенге
+        max_so_limit = 7 * 85000  # 7 МЗП = 595 000 тенге
 
-        mrp = 3692
-        taxable_amount = clean_salary - mrp
+        # Calculate deductions
+        opvr_deduction = min(clean_salary, max_opv_limit) * opvr_percentage
+        vosms_deduction = min(clean_salary, max_vosms_limit) * vosms_percentage
+        oosms_deduction = min(clean_salary, max_oosms_limit) * oosms_percentage
+        so_deduction = min(max(clean_salary, 85000), max_so_limit) * so_percentage
+        sn_deduction = max(clean_salary, min_sn_limit) * sn_percentage
 
-        deduction = taxable_amount * deduction_percentage
+        # Total deductions
+        total_deductions = (
+            opvr_deduction
+            + vosms_deduction
+            + oosms_deduction
+            + so_deduction
+            + sn_deduction
+        )
 
-        dirty_salary = taxable_amount + deduction
+        # Calculate dirty salary
+        dirty_salary = clean_salary + total_deductions
 
         return dirty_salary
 
