@@ -11,7 +11,6 @@ import { FiInfo } from "react-icons/fi";
 const StaffDetail = () => {
   const { pin } = useParams<{ pin: string }>();
   const [staffData, setStaffData] = useState<StaffData | null>(null);
-  const [oneMonthData, setOneMonthData] = useState<StaffData | null>(null);
   const [oneMonthDataFetched, setOneMonthDataFetched] = useState(false);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -76,7 +75,6 @@ const StaffDetail = () => {
       const res = await axiosInstance.get(`${apiUrl}/api/staff/${pin}`, {
         params,
       });
-      setOneMonthData(res.data);
       setOneMonthDataFetched(true);
 
       if (res.data && res.data.percent_for_period) {
