@@ -5,6 +5,8 @@ import { useParams } from "react-router-dom";
 import { useNavigate } from "../RouterUtils";
 import { CircleLoader } from "react-spinners";
 import { StaffData, AttendanceData } from "../schemas/IData";
+import { FaChevronLeft } from "react-icons/fa";
+import { FiInfo } from "react-icons/fi";
 
 const StaffDetail = () => {
   const { pin } = useParams<{ pin: string }>();
@@ -15,6 +17,8 @@ const StaffDetail = () => {
   const [endDate, setEndDate] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [oneMonthStartDate, setOneMonthStartDate] = useState<string>("");
+  const [oneMonthEndDate, setOneMonthEndDate] = useState<string>("");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -30,6 +34,11 @@ const StaffDetail = () => {
             start_date: startDate,
             end_date: endDate,
           };
+        } else {
+          params = {
+            start_date: oneMonthStartDate,
+            end_date: oneMonthEndDate,
+          };
         }
         const res = await axiosInstance.get(`${apiUrl}/api/staff/${pin}`, {
           params,
@@ -41,8 +50,10 @@ const StaffDetail = () => {
       }
     };
 
-    fetchStaffData();
-  }, [pin, startDate, endDate]);
+    if (oneMonthStartDate && oneMonthEndDate) {
+      fetchStaffData();
+    }
+  }, [pin, startDate, endDate, oneMonthStartDate, oneMonthEndDate]);
 
   useEffect(() => {
     if (!oneMonthDataFetched) {
@@ -56,6 +67,8 @@ const StaffDetail = () => {
       const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
         .toISOString()
         .split("T")[0];
+      setOneMonthStartDate(startDate);
+      setOneMonthEndDate(endDate);
       const params = {
         start_date: startDate,
         end_date: endDate,
@@ -65,6 +78,13 @@ const StaffDetail = () => {
       });
       setOneMonthData(res.data);
       setOneMonthDataFetched(true);
+
+      if (res.data && res.data.percent_for_period) {
+        setStaffData({
+          ...res.data,
+          percent_for_period: res.data.percent_for_period,
+        });
+      }
     } catch (error) {
       console.error(`Error fetching one month data: ${error}`);
     }
@@ -134,6 +154,14 @@ const StaffDetail = () => {
     }
   };
 
+  const formatDateRu = (dateString: string) => {
+    const date = new Date(dateString);
+    const day = date.getDate().toString().padStart(2, "0");
+    const month = (date.getMonth() + 1).toString().padStart(2, "0");
+    const year = date.getFullYear();
+    return `${day}.${month}.${year}`;
+  };
+
   const navigateToChildDepartment = () => {
     if (staffData) {
       navigate(`/childDepartment/${staffData.department_id}`);
@@ -157,23 +185,52 @@ const StaffDetail = () => {
     return `${formattedOut}.${rnd} ₸`;
   };
 
+  const declensionDays = (daysCount: number) => {
+    if (daysCount % 10 === 1 && daysCount % 100 !== 11) {
+      return "день";
+    } else if (
+      daysCount % 10 >= 2 &&
+      daysCount % 10 <= 4 &&
+      (daysCount % 100 < 10 || daysCount % 100 >= 20)
+    ) {
+      return "дня";
+    } else {
+      return "дней";
+    }
+  };
+
   let bonusPercentage = 0;
   if (
     oneMonthData &&
     oneMonthData.percent_for_period &&
     staffData &&
-    staffData.salary !== null
+    staffData.salary !== null &&
+    Object.keys(oneMonthData.attendance).length > 30
   ) {
-    if (oneMonthData.percent_for_period > 70) {
+    if (oneMonthData.percent_for_period > 80) {
       if (oneMonthData.percent_for_period >= 95) {
         bonusPercentage = 20;
-      } else if (oneMonthData.percent_for_period >= 85) {
+      } else if (oneMonthData.percent_for_period >= 87) {
         bonusPercentage = 15;
       } else {
         bonusPercentage = 10;
       }
     }
   }
+
+  const TooltipText: React.FC<{ text: string; daysCount: number }> = ({
+    text,
+    daysCount,
+  }) => {
+    const [startDate, endDate] = text.split(" - ");
+    return (
+      <span className="text-xm text-gray-500 italic ml-2">
+        <FiInfo className="inline-block align-middle mb-1 mr-1" />
+        Выбранный период: {formatDateRu(startDate)} - {formatDateRu(endDate)}{" "}
+        (найдено {daysCount} {declensionDays(daysCount)})
+      </span>
+    );
+  };
 
   return (
     <div className="container mx-auto p-4 sm:p-8 bg-white shadow-md rounded-lg">
@@ -208,6 +265,14 @@ const StaffDetail = () => {
                   <strong>Процент за выбранный период:</strong>{" "}
                   {staffData.percent_for_period} %
                 </p>
+                <p>
+                  <TooltipText
+                    text={`${startDate ? startDate : oneMonthStartDate} - ${
+                      endDate ? endDate : oneMonthEndDate
+                    }`}
+                    daysCount={Object.keys(staffData.attendance).length}
+                  />
+                </p>
               </div>
             </div>
 
@@ -221,7 +286,22 @@ const StaffDetail = () => {
                 )
               </p>
             )}
-
+            <div className="flex justify-center items-center space-x-4 text-sm text-gray-600 mt-4">
+              <div className="flex items-center">
+                <div className="w-4 h-4 rounded-full bg-yellow-300 mr-2"></div>
+                <span className="font-semibold">Выходной день</span>
+              </div>
+              <div className="flex items-center">
+                <div className="w-4 h-4 rounded-full bg-red-300 mr-2"></div>
+                <span className="font-semibold">Работник отсутствовал</span>
+              </div>
+              <div className="flex items-center">
+                <div className="w-4 h-4 rounded-full bg-green-300 mr-2"></div>
+                <span className="font-semibold">
+                  Работник был на работе в выходной
+                </span>
+              </div>
+            </div>
             <h2 className="text-xl font-bold mt-6 mb-4">Посещаемость</h2>
             <div className="mb-4 flex flex-wrap justify-center sm:justify-between">
               <div className="mb-2 sm:mb-0">
@@ -310,7 +390,7 @@ const StaffDetail = () => {
               onClick={navigateToChildDepartment}
             >
               <span role="img" aria-label="Back" className="text-xl">
-                ◀
+                <FaChevronLeft />
               </span>
             </button>
           </div>
