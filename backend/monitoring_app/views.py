@@ -668,8 +668,8 @@ def staff_detail(request, staff_pin):
 
     attendance_data = {}
     total_minutes_for_period = 0
-    total_days = 0
     percent_for_period = 0
+    total_days_with_data = 0
     total_weekend_days = 0
 
     for attendance in staff_attendance:
@@ -690,7 +690,7 @@ def staff_detail(request, staff_pin):
             total_minutes_expected = 8 * 60
             total_minutes_worked = (last_out - first_in).total_seconds() / 60
             total_minutes_for_period += total_minutes_worked
-            total_days += 1
+            total_days_with_data += 1
 
             percent_day = (total_minutes_worked / total_minutes_expected) * 100
 
@@ -717,7 +717,7 @@ def staff_detail(request, staff_pin):
 
         attendance_data[date_at.strftime("%d-%m-%Y")] = attendance_entry
 
-    total_hours_expected = (end_date - start_date).days * 8
+    total_hours_expected = total_days_with_data * 8
     total_hours_expected -= (
         sum(
             1
@@ -726,7 +726,11 @@ def staff_detail(request, staff_pin):
         )
         * 8
     )
-    percent_for_period += (total_minutes_for_period / (total_hours_expected * 60)) * 100
+
+    if total_hours_expected > 0:
+        percent_for_period += (
+            total_minutes_for_period / (total_hours_expected * 60)
+        ) * 100
 
     salaries = models.Salary.objects.filter(staff=staff)
     total_salary = salaries.first().total_salary if salaries.exists() else None
@@ -1026,7 +1030,7 @@ def fetch_data_view(request):
             )
 
         utils.get_all_attendance()
-        return Response(status=status.HTTP_200_OK, data={"message": "Started"})
+        return Response(status=status.HTTP_200_OK, data={"message": "Done"})
 
     except Exception as e:
         return Response(
