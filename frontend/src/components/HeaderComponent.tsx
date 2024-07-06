@@ -11,6 +11,7 @@ import {
   FaBars,
   FaTimes,
   FaAngleDown,
+  FaUserClock,
 } from "react-icons/fa";
 
 const HeaderComponent = () => {
@@ -88,8 +89,9 @@ const HeaderComponent = () => {
   return (
     <header className="bg-blue-900 text-white shadow-md">
       <nav className="container mx-auto p-4 flex items-center justify-between">
-        <Link to="/" className="text-2xl font-bold">
-          Control Staff App
+        <Link to="/" className="text-2xl font-bold flex items-center">
+          <span>Staff App</span>
+          <FaUserClock className="m-2" />
         </Link>
         <div className="lg:hidden">
           <button className="text-2xl" onClick={toggleMobileMenu}>
