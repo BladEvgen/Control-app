@@ -201,16 +201,16 @@ const StaffDetail = () => {
 
   let bonusPercentage = 0;
   if (
-    oneMonthData &&
-    oneMonthData.percent_for_period &&
     staffData &&
     staffData.salary !== null &&
-    Object.keys(oneMonthData.attendance).length > 30
+    Object.keys(staffData.attendance).length > 28
   ) {
-    if (oneMonthData.percent_for_period > 80) {
-      if (oneMonthData.percent_for_period >= 95) {
+    const percent_for_period = staffData.percent_for_period;
+
+    if (percent_for_period > 80) {
+      if (percent_for_period >= 95) {
         bonusPercentage = 20;
-      } else if (oneMonthData.percent_for_period >= 87) {
+      } else if (percent_for_period >= 85) {
         bonusPercentage = 15;
       } else {
         bonusPercentage = 10;
@@ -233,7 +233,7 @@ const StaffDetail = () => {
   };
 
   return (
-    <div className="container mx-auto p-4 sm:p-8 bg-white shadow-md rounded-lg">
+    <div className="container mx-auto p-6 sm:p-10 bg-white shadow-lg rounded-xl">
       {loading ? (
         <div className="flex items-center justify-center h-full">
           <CircleLoader color="#4A90E2" loading={loading} size={50} />
@@ -241,31 +241,32 @@ const StaffDetail = () => {
       ) : (
         staffData && (
           <div>
-            <div className="flex flex-col sm:flex-row items-center">
+            <div className="flex flex-col sm:flex-row items-center relative">
               <img
                 src={`${apiUrl}${staffData.avatar}`}
                 alt="Avatar"
-                className="w-32 h-32 rounded-full mb-4 sm:mr-4"
+                className="w-32 h-32 rounded-full mb-4 sm:mr-6"
               />
+
               <div className="flex-grow">
-                <p>
+                <p className="text-lg">
                   <strong>ФИО:</strong> {staffData.surname} {staffData.name}
                 </p>
-                <p>
+                <p className="text-lg">
                   <strong>Отдел:</strong> {staffData.department}
                 </p>
-                <p>
+                <p className="text-lg">
                   <strong>Должность:</strong>{" "}
                   {staffData.positions?.join(", ") || "Нет данных"}
                 </p>
-                <p>
+                <p className="text-lg">
                   <strong>Зарплата:</strong> {formatNumber(staffData.salary)}
                 </p>
-                <p>
+                <p className="text-lg">
                   <strong>Процент за выбранный период:</strong>{" "}
                   {staffData.percent_for_period} %
                 </p>
-                <p>
+                <p className="text-lg">
                   <TooltipText
                     text={`${startDate ? startDate : oneMonthStartDate} - ${
                       endDate ? endDate : oneMonthEndDate
@@ -274,10 +275,18 @@ const StaffDetail = () => {
                   />
                 </p>
               </div>
+              <button
+                className="absolute -left-8 -top-4 bg-green-500 text-white rounded-full px-4 py-3 hover:bg-green-700 shadow-md z-10 focus:outline-none hidden sm:block"
+                onClick={navigateToChildDepartment}
+              >
+                <span role="img" aria-label="Back" className="text-xl">
+                  <FaChevronLeft />
+                </span>
+              </button>
             </div>
 
             {bonusPercentage > 0 && (
-              <p className="text-green-500">
+              <p className="text-lg text-green-600 mt-4">
                 Сотрудник может получить дополнительную надбавку в размере{" "}
                 {bonusPercentage}% (
                 {formatNumber(
@@ -286,7 +295,8 @@ const StaffDetail = () => {
                 )
               </p>
             )}
-            <div className="flex justify-center items-center space-x-4 text-sm text-gray-600 mt-4">
+
+            <div className="flex justify-center items-center space-x-4 text-sm text-gray-700 mt-4">
               <div className="flex items-center">
                 <div className="w-4 h-4 rounded-full bg-yellow-300 mr-2"></div>
                 <span className="font-semibold">Выходной день</span>
@@ -302,7 +312,9 @@ const StaffDetail = () => {
                 </span>
               </div>
             </div>
-            <h2 className="text-xl font-bold mt-6 mb-4">Посещаемость</h2>
+
+            <h2 className="text-2xl font-bold mt-8 mb-4">Посещаемость</h2>
+
             <div className="mb-4 flex flex-wrap justify-center sm:justify-between">
               <div className="mb-2 sm:mb-0">
                 <label
@@ -339,7 +351,7 @@ const StaffDetail = () => {
                 </div>
               )}
             </div>
-            {error && <p className="text-red-500 mt-2">{error}</p>}
+            {error && <p className="text-red-600 mt-2">{error}</p>}
 
             <div className="overflow-x-auto">
               <table className="w-full divide-y divide-gray-200">
@@ -378,15 +390,15 @@ const StaffDetail = () => {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {Object.entries(staffData.attendance).map(([date, data]) =>
-                    renderAttendanceRow(date, data)
-                  )}
+                  {Object.entries(staffData.attendance)
+                    .reverse()
+                    .map(([date, data]) => renderAttendanceRow(date, data))}
                 </tbody>
               </table>
             </div>
 
             <button
-              className="fixed bottom-4 left-4 bg-green-500 text-white rounded-full px-4 py-2  hover:bg-green-700 shadow-md z-10 focus:outline-none"
+              className="fixed bottom-4 -left-0 bg-green-500 text-white rounded-full px-4 py-4 hover:bg-green-700 shadow-md z-10 focus:outline-none sm:hidden"
               onClick={navigateToChildDepartment}
             >
               <span role="img" aria-label="Back" className="text-xl">
