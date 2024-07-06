@@ -90,7 +90,7 @@ const HeaderComponent = () => {
     <header className="bg-blue-900 text-white shadow-md">
       <nav className="container mx-auto p-4 flex items-center justify-between">
         <Link to="/" className="text-2xl font-bold flex items-center">
-          <span>Staff App</span>
+          Staff App
           <FaUserClock className="m-2" />
         </Link>
         <div className="lg:hidden">

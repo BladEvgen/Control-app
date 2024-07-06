@@ -1,6 +1,5 @@
 import Cookies from "js-cookie";
 import { apiUrl } from "../apiConfig";
-import { useNavigate } from "./RouterUtils";
 import axios, { AxiosResponse } from "axios";
 
 const axiosInstance = axios.create({
@@ -44,13 +43,13 @@ axiosInstance.interceptors.response.use(
 
         originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
         return axiosInstance(originalRequest);
-      } catch (refreshError:any) {
+      } catch (refreshError: any) {
         if (refreshError.response.status === 401 || refreshError.response.status === 403) {
           Cookies.remove("access_token", { path: "/" });
           Cookies.remove("refresh_token", { path: "/" });
 
-          const navigate = useNavigate();
-          navigate("/login");
+
+          window.location.reload();
         }
         
         return Promise.reject(refreshError);
@@ -59,8 +58,8 @@ axiosInstance.interceptors.response.use(
       Cookies.remove("access_token", { path: "/" });
       Cookies.remove("refresh_token", { path: "/" });
 
-      const navigate = useNavigate();
-      navigate("/login");
+
+      window.location.reload();
     }
 
     return Promise.reject(error);
