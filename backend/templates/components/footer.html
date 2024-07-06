@@ -1,16 +1,20 @@
-<footer class="fixed bottom-0 left-0 right-0 py-3 bg-gray-200">
-    <div class="container mx-auto">
-        <ul class="flex justify-center border-b pb-3 mb-3">
-            <li class="mr-6">
-                <a href="/" class="text-gray-600 hover:text-gray-800">Home</a>
-            </li>
-            <li class="mr-6">
-                <a href="#" class="text-gray-600 hover:text-gray-800">FAQs</a>
-            </li>
-            <li>
-                <a href="/about" class="text-gray-600 hover:text-gray-800">About Us</a>
-            </li>
-        </ul>
-        <p class="text-center text-gray-600">©{{current_year}} Company, Inc</p>
-    </div>
-</footer>
+<div style="position: fixed; bottom: 0; width: 100%;">
+    <footer class="py-3 bg-gray-200">
+        <div class="container mx-auto">
+            <ul class="flex justify-center border-b pb-3 mb-3">
+                <li class="mr-6">
+                    <a href="/" class="text-gray-600 hover:text-gray-800">Home</a>
+                </li>
+                <li class="mr-6">
+                    <a href="/" class="text-gray-600 hover:text-gray-800">FAQs</a>
+                </li>
+                <li>
+                    <a href="/" class="text-gray-600 hover:text-gray-800">About Us</a>
+                </li>
+            </ul>
+            <p class="text-center text-gray-600">
+                © <span id="currentYear">{{current_year}}</span> Company, Inc
+            </p>
+        </div>
+    </footer>
+</div>

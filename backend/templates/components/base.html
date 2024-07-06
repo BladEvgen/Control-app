@@ -14,7 +14,7 @@
 <body class="bg-gray-100">
   <nav class="bg-[#123075] px-6 py-4 shadow">
     <div class="flex justify-between items-center container mx-auto md:flex-row md:items-center md:justify-between">
-      <a href="#" class="text-white text-xl font-bold md:text-2xl">Company Name</a>
+      <a href="{%url 'reac_app'%}" class="text-white text-xl font-bold md:text-2xl">Company Name</a>
       <div class="md:flex flex-col md:flex-row md:-mx-4">
         {% if request.user.is_authenticated %}
         <div class="relative md:mx-4">
@@ -24,7 +24,8 @@
           </button>
           <div class="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg z-10 hidden" id="dropdown-menu">
             <a href="{% url 'reac_app' %}" class="block px-4 py-2 text-gray-800 hover:bg-gray-200">Home</a>
-            <a href="#" class="block px-4 py-2 text-gray-800 hover:bg-gray-200">{{request.user.username}}</a>
+            <a href="{% url 'reac_app' %}"
+              class="block px-4 py-2 text-gray-800 hover:bg-gray-200">{{request.user.username}}</a>
             <a href="{% url 'logout' %}" class="block px-4 py-2 text-gray-800 hover:bg-gray-200">Logout</a>
           </div>
         </div>
