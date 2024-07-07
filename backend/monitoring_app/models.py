@@ -50,7 +50,9 @@ class UserProfile(models.Model):
     )
     is_banned = models.BooleanField(default=False, verbose_name="Статус Блокировки")
     phonenumber = models.CharField(max_length=20, verbose_name="Номер телефона")
-    address = models.TextField(verbose_name="Адрес", null=True, blank=True)
+    last_login_ip = models.GenericIPAddressField(
+        verbose_name="Последний IP-адрес входа", null=True, blank=True
+    )
 
     def __str__(self):
         return f"{self.user.username} Profile"

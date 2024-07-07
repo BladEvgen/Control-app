@@ -974,7 +974,18 @@ def user_profile_detail(request):
     Raises:
     Http401: Если пользователь не аутентифицирован.
     """
+
+    def get_client_ip(request):
+        x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(",")[0]
+        else:
+            ip = request.META.get("REMOTE_ADDR")
+        return ip
+
     user_profile = models.UserProfile.objects.get(user=request.user)
+    user_profile.last_login_ip = get_client_ip(request)
+    user_profile.save(update_fields=["last_login_ip"])
     serializer = serializers.UserProfileSerializer(user_profile)
     return Response(serializer.data)
 

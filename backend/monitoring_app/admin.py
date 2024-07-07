@@ -27,9 +27,9 @@ class APIKeyAdmin(admin.ModelAdmin):
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ("user", "is_banned", "phonenumber", "address")
+    list_display = ("user", "is_banned", "phonenumber", "last_login_ip")
     list_filter = ("is_banned",)
-    search_fields = ("user__username", "phonenumber", "address")
+    search_fields = ("user__username", "phonenumber", "last_login_ip")
     ordering = (
         "user__username",
         "-is_banned",

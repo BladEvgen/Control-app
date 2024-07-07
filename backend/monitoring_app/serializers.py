@@ -21,9 +21,12 @@ class UserSerializer(serializers.ModelSerializer):
         ]
 
 
-class UserProfileSerializer(serializers.Serializer):
-    is_banned = serializers.BooleanField()
+class UserProfileSerializer(serializers.ModelSerializer):
     user = UserSerializer()
+
+    class Meta:
+        model = models.UserProfile
+        fields = ["user", "is_banned", "phonenumber", "last_login_ip"]
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -63,10 +66,17 @@ class ChildDepartmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = models.ChildDepartment
-        fields = ["child_id", "name", "date_of_creation", "parent", "has_child_departments"]
+        fields = [
+            "child_id",
+            "name",
+            "date_of_creation",
+            "parent",
+            "has_child_departments",
+        ]
 
     def get_has_child_departments(self, obj):
         return models.ChildDepartment.objects.filter(parent=obj).exists()
+
 
 class StaffSerializer(serializers.ModelSerializer):
     FIO = serializers.SerializerMethodField()
@@ -159,5 +169,11 @@ class StaffAttendanceByDateSerializer(serializers.Serializer):
         date = data.pop("date")
         return {
             date: self.context.get(date, [])
-            + [{"staff_fio": data["staff_fio"], "first_in": data["first_in"], "last_out": data["last_out"]}]
+            + [
+                {
+                    "staff_fio": data["staff_fio"],
+                    "first_in": data["first_in"],
+                    "last_out": data["last_out"],
+                }
+            ]
         }
