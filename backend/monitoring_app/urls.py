@@ -22,6 +22,7 @@ urlpatterns = [
         views.StaffAttendanceStatsView.as_view(),
         name="staff-attendance-stats",
     ),
+    path("api/download/<int:department_id>/", views.sent_excel, name="sent_excel"),
     path(
         "api/department/<int:parent_department_id>/",
         views.department_summary,
