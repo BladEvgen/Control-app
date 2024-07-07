@@ -19,6 +19,7 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 SECRET_API = os.getenv("SECRET_API")
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
+MAIN_IP = os.getenv("MAIN_IP")
 
 #! SET TO DOMAIN
 ALLOWED_HOSTS = ["*"]
