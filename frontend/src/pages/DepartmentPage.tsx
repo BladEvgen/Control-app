@@ -5,6 +5,7 @@ import { Link } from "../RouterUtils";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { capitalizeFirstLetter } from "../utils/utils";
+import { FaDownload } from "react-icons/fa6";
 
 const DepartmentTable = ({ data }: { data: IData }) => {
   const [page, setPage] = useState(0);
@@ -140,7 +141,10 @@ const DepartmentPage = () => {
   const [data, setData] = useState<IData>({} as IData);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [showReloadMessage, setShowReloadMessage] = useState<boolean>(false);
-
+  const [startDate, setStartDate] = useState<string>("");
+  const [endDate, setEndDate] = useState<string>("");
+  const [isDownloading, setIsDownloading] = useState<boolean>(false);
+  const [showWaitMessage, setShowWaitMessage] = useState<boolean>(false);
   useEffect(() => {
     const fetchData = async (id: number) => {
       try {
@@ -172,6 +176,65 @@ const DepartmentPage = () => {
     fetchData(departmentId);
   }, [departmentId]);
 
+  const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newStartDate = e.target.value;
+    setStartDate(newStartDate);
+    if (newStartDate > endDate) {
+      setEndDate(newStartDate);
+    }
+  };
+
+  const handleEndDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newEndDate = e.target.value;
+    if (newEndDate >= startDate) {
+      setEndDate(newEndDate);
+    }
+  };
+
+  const handleDownload = async () => {
+    setIsDownloading(true);
+    setShowWaitMessage(false);
+
+    const downloadTimeout = setTimeout(() => {
+      setShowWaitMessage(true);
+      const hideWaitMessage = setTimeout(() => {
+        setShowWaitMessage(false);
+      }, 5000);
+      return () => clearTimeout(hideWaitMessage);
+    }, 3000);
+
+    try {
+      const response = await axiosInstance.get(
+        `${apiUrl}/api/download/${id ?? departmentId}/`,
+        {
+          params: {
+            startDate,
+            endDate,
+          },
+          responseType: "blob",
+        }
+      );
+
+      clearTimeout(downloadTimeout);
+      setIsDownloading(false);
+      const departmentName = data.name.replace(/\s/g, "_");
+
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `Посещаемость_${departmentName}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      if (link.parentNode) {
+        link.parentNode.removeChild(link);
+      }
+    } catch (error) {
+      console.error("Error downloading the file:", error);
+      setIsDownloading(false);
+    }
+  };
+
+  const isDownloadDisabled = !startDate || !endDate;
   return (
     <div className="container mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold mb-4">
@@ -185,6 +248,56 @@ const DepartmentPage = () => {
           Вернуться на главную страницу
         </Link>
       )}
+      <div className="flex flex-col md:flex-row items-center mb-6 space-y-4 md:space-y-0 md:space-x-4">
+        <div className="flex flex-col">
+          <label htmlFor="startDate" className="text-sm text-gray-600">
+            Начальная дата
+          </label>
+          <div className="relative">
+            <input
+              type="date"
+              id="startDate"
+              value={startDate}
+              onChange={handleStartDateChange}
+              className="border border-gray-300 px-4 py-2 rounded-md focus:outline-none focus:border-blue-500 transition-colors duration-300 ease-in-out"
+            />
+          </div>
+        </div>
+        <div className="flex flex-col">
+          <label htmlFor="endDate" className="text-sm text-gray-600">
+            Конечная дата
+          </label>
+          <div className="relative">
+            <input
+              type="date"
+              id="endDate"
+              value={endDate}
+              onChange={handleEndDateChange}
+              className="border border-gray-300 px-4 py-2 rounded-md focus:outline-none focus:border-blue-500 transition-colors duration-300 ease-in-out"
+            />
+          </div>
+        </div>
+        <div className="flex items-center">
+          <button
+            onClick={handleDownload}
+            disabled={isDownloadDisabled || isDownloading}
+            className={`px-4 py-2 mt-5 ${
+              isDownloadDisabled || isDownloading
+                ? "bg-gray-300 cursor-not-allowed"
+                : "bg-green-500 hover:bg-green-600"
+            } text-white rounded-md flex items-center transition-colors duration-300 ease-in-out`}
+          >
+            <FaDownload className="mr-2" />
+            Скачать
+          </button>
+          {showWaitMessage && (
+            <p className="text-gray-500 text-sm mt-4 px-4 py-2 bg-yellow-100 border border-yellow-400 rounded-md ml-4">
+              Подождите, загрузка может занять некоторое время...
+            </p>
+          )}
+        </div>
+      </div>
+
       {isLoading ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-white z-50">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-gray-900"></div>
