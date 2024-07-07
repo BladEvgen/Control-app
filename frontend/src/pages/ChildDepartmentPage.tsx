@@ -10,7 +10,6 @@ import { FaDownload } from "react-icons/fa6";
 const ChildDepartmentPage = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [showReloadMessage, setShowReloadMessage] = useState<boolean>(false);
   const [data, setData] = useState<IChildDepartmentData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -27,22 +26,6 @@ const ChildDepartmentPage = () => {
         );
         setData(res.data);
         setIsLoading(false);
-        if (res.status === 200 || res.status === 201) {
-          return;
-        }
-
-        const timeout1 = setTimeout(() => {
-          setShowReloadMessage(true);
-        }, 6000);
-
-        const timeout2 = setTimeout(() => {
-          window.location.reload();
-        }, 10000);
-
-        return () => {
-          clearTimeout(timeout1);
-          clearTimeout(timeout2);
-        };
       } catch (error) {
         console.error(`Error: ${error}`);
       }
@@ -132,11 +115,6 @@ const ChildDepartmentPage = () => {
       {isLoading ? (
         <div className="flex items-center justify-center h-screen">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-gray-900"></div>
-          {showReloadMessage && (
-            <p className="text-gray-500 text-sm ml-2">
-              Попробуйте перезагрузить страницу
-            </p>
-          )}
         </div>
       ) : (
         <>
@@ -150,51 +128,75 @@ const ChildDepartmentPage = () => {
           >
             Вернуться назад
           </button>
-          <div className="flex flex-col md:flex-row items-center mb-6 space-y-4 md:space-y-0 md:space-x-4">
-            <div className="flex flex-col">
-              <label htmlFor="startDate" className="text-sm text-gray-600">
-                Начальная дата
+          <div className="flex flex-col md:flex-row mb-4">
+            <div className="flex flex-col mb-4 md:mr-4">
+              <label
+                htmlFor="startDate"
+                className="block mb-1 font-medium text-gray-700"
+              >
+                Дата начала:
               </label>
-              <div className="relative">
-                <input
-                  type="date"
-                  id="startDate"
-                  value={startDate}
-                  onChange={handleStartDateChange}
-                  className="border border-gray-300 px-4 py-2 rounded-md focus:outline-none focus:border-blue-500 transition-colors duration-300 ease-in-out"
-                />
-              </div>
+              <input
+                type="date"
+                id="startDate"
+                value={startDate}
+                onChange={handleStartDateChange}
+                className="border border-gray-300 px-3 py-2 rounded-md"
+              />
             </div>
-            <div className="flex flex-col">
-              <label htmlFor="endDate" className="text-sm text-gray-600">
-                Конечная дата
+            <div className="flex flex-col mb-4 md:mr-4">
+              <label
+                htmlFor="endDate"
+                className="block mb-1 font-medium text-gray-700"
+              >
+                Дата конца:
               </label>
-              <div className="relative">
-                <input
-                  type="date"
-                  id="endDate"
-                  value={endDate}
-                  onChange={handleEndDateChange}
-                  className="border border-gray-300 px-4 py-2 rounded-md focus:outline-none focus:border-blue-500 transition-colors duration-300 ease-in-out"
-                />
-              </div>
+              <input
+                type="date"
+                id="endDate"
+                value={endDate}
+                onChange={handleEndDateChange}
+                className="border border-gray-300 px-3 py-2 rounded-md"
+              />
             </div>
             <div className="flex items-center">
               <button
                 onClick={handleDownload}
                 disabled={isDownloadDisabled || isDownloading}
-                className={`px-4 py-2 mt-5 ${
+                className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-md text-white mt-3 ${
                   isDownloadDisabled || isDownloading
-                    ? "bg-gray-300 cursor-not-allowed"
+                    ? "bg-gray-400 cursor-not-allowed"
                     : "bg-green-500 hover:bg-green-600"
-                } text-white rounded-md flex items-center transition-colors duration-300 ease-in-out`}
+                }`}
               >
-                <FaDownload className="mr-2" />
-                Скачать
+                {isDownloading ? (
+                  <svg
+                    className="animate-spin h-5 w-5 mr-3 text-white"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    ></circle>
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8v8h8a8 8 0 11-16 0z"
+                    ></path>
+                  </svg>
+                ) : (
+                  <FaDownload className="mr-2" />
+                )}
+                {isDownloading ? "Загрузка" : "Скачать"}
               </button>
               {showWaitMessage && (
-                <p className="text-gray-500 text-sm mt-4 px-4 py-2 bg-yellow-100 border border-yellow-400 rounded-md ml-4">
-                  Подождите, загрузка может занять некоторое время...
+                <p className="text-sm text-red-600 ml-4">
+                  Загрузка может занять некоторое время, пожалуйста,
+                  подождите...
                 </p>
               )}
             </div>
