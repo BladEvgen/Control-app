@@ -285,14 +285,16 @@ const StaffDetail = () => {
 
             {bonusPercentage > 0 && (
               <p className="text-lg text-green-600 mt-4">
-                Сотрудник может получить дополнительную надбавку в размере{" "}
-                {bonusPercentage}% (
+                Сотрудник может получить премию в размере {bonusPercentage}% (
                 {formatNumber(
                   ((staffData.salary ?? 0) * bonusPercentage) / 100
                 )}
                 )
               </p>
             )}
+            <h2 className="text-2xl font-bold mt-8 mb-4 flex justify-center">
+              Посещаемость
+            </h2>
 
             <div className="flex justify-center items-center space-x-4 text-sm text-gray-700 mt-4">
               <div className="flex items-center">
@@ -310,8 +312,6 @@ const StaffDetail = () => {
                 </span>
               </div>
             </div>
-
-            <h2 className="text-2xl font-bold mt-8 mb-4">Посещаемость</h2>
 
             <div className="mb-4 flex flex-wrap justify-center sm:justify-between">
               <div className="mb-2 sm:mb-0">
