@@ -1,11 +1,15 @@
 import os
 import zipfile
 import datetime
+from tempfile import NamedTemporaryFile
+from concurrent.futures import ThreadPoolExecutor
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from django.db.models import Count
 from django.core.cache import caches
+from django.http import HttpResponse
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.contrib.auth import authenticate, login, logout
@@ -14,6 +18,7 @@ from django.views.generic import (
     View,
 )
 from drf_yasg import openapi
+from django.db.models import Q
 from rest_framework import status
 from openpyxl import load_workbook
 from rest_framework.views import APIView
@@ -755,48 +760,61 @@ def staff_detail(request, staff_pin):
 @permission_classes([AllowAny])
 def staff_detail_by_department_id(request, department_id):
     try:
-        end_date_str = request.query_params.get("end_date", None)
-        start_date_str = request.query_params.get("start_date", None)
+        end_date_str = request.query_params.get("end_date")
+        start_date_str = request.query_params.get("start_date")
 
         if not end_date_str or not start_date_str:
             return Response(
                 status=status.HTTP_400_BAD_REQUEST,
-                data={"error": "no parameters provided"},
+                data={"error": "Не указаны параметры начала или конца периода"},
             )
 
-        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
-        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
+        start_date = datetime.datetime.strptime(
+            start_date_str, "%Y-%m-%d"
+        ) + datetime.timedelta(days=1)
+        end_date = datetime.datetime.strptime(
+            end_date_str, "%Y-%m-%d"
+        ) + datetime.timedelta(days=1)
 
         if start_date > end_date:
             return Response(
-                data={"error": "start_date cannot be greater than end_date"},
                 status=status.HTTP_400_BAD_REQUEST,
+                data={"error": "Дата начала не может быть больше даты конца"},
             )
 
-        def get_all_child_departments(department_id):
-            child_departments = models.ChildDepartment.objects.filter(
+        def get_all_child_department_ids(department_id):
+            child_ids = models.ChildDepartment.objects.filter(
                 parent_id=department_id
+            ).values_list("id", flat=True)
+            child_ids = list(child_ids)
+            q_objects = Q(parent_id=department_id)
+            for child_id in child_ids:
+                q_objects |= Q(parent_id=child_id)
+            return models.ChildDepartment.objects.filter(q_objects).values_list(
+                "id", flat=True
             )
-            all_child_ids = list(child_departments.values_list("id", flat=True))
-            for child_id in all_child_ids:
-                all_child_ids.extend(get_all_child_departments(child_id))
-            return all_child_ids
 
         try:
             department = models.ChildDepartment.objects.get(id=department_id)
         except models.ChildDepartment.DoesNotExist:
             return Response(
-                data={"error": "Department not found"}, status=status.HTTP_404_NOT_FOUND
+                status=status.HTTP_404_NOT_FOUND,
+                data={"error": "Подразделение не найдено"},
             )
 
         def get_staff_attendance(department_ids):
-            return models.StaffAttendance.objects.filter(
-                staff__department_id__in=department_ids,
-                date_at__gte=start_date,
-                date_at__lte=end_date,
-            ).order_by("date_at", "staff__surname", "staff__name")
+            return (
+                models.StaffAttendance.objects.filter(
+                    staff__department_id__in=department_ids,
+                    date_at__range=(start_date, end_date),
+                )
+                .select_related("staff")
+                .order_by("date_at", "staff__surname", "staff__name")
+            )
 
-        department_ids = [department_id] + get_all_child_departments(department_id)
+        department_ids = [department_id] + list(
+            get_all_child_department_ids(department_id)
+        )
         staff_attendance = get_staff_attendance(department_ids)
 
         if staff_attendance.exists():
@@ -810,14 +828,17 @@ def staff_detail_by_department_id(request, department_id):
             )
 
         return Response(
-            data={
-                "error": "No staff found for the given department or its child departments"
-            },
             status=status.HTTP_404_NOT_FOUND,
+            data={
+                "error": "Данные о посещаемости не найдены для данного подразделения или его дочерних подразделений"
+            },
         )
 
     except Exception as e:
-        return Response(status=status.HTTP_400_BAD_REQUEST, data={"error": str(e)})
+        return Response(
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            data={"error": str(e)},
+        )
 
 
 @swagger_auto_schema(
@@ -1036,6 +1057,46 @@ def fetch_data_view(request):
         return Response(
             status=status.HTTP_500_INTERNAL_SERVER_ERROR, data={"error": str(e)}
         )
+
+
+@api_view(http_method_names=["GET"])
+@permission_classes([IsAuthenticated])
+def sent_excel(request, department_id):
+    end_date = request.query_params.get("endDate", None)
+    start_date = request.query_params.get("startDate", None)
+
+    if not all([end_date, start_date]):
+        return Response({"error": "Missing start_date or end_date"}, status=400)
+
+    main_ip = settings.MAIN_IP
+    url = f"{main_ip}/api/department/stats/{department_id}/?end_date={end_date}&start_date={start_date}"
+
+    data = utils.fetch_data(url)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future = executor.submit(utils.parse_attendance_data, data)
+        rows = future.result()
+
+    if rows:
+        df_pivot_sorted = utils.create_dataframe(rows)
+
+        wb = utils.save_to_excel(df_pivot_sorted)
+
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        response["Content-Disposition"] = (
+            f"attachment; filename=Посещаемость_{department_id}.xlsx"
+        )
+
+        with NamedTemporaryFile(delete=False) as tmp:
+            wb.save(tmp.name)
+            tmp.seek(0)
+            response.write(tmp.read())
+
+        return response
+    else:
+        return Response({"error": "Failed to generate Excel file"}, status=500)
 
 
 class UploadFileView(View):
