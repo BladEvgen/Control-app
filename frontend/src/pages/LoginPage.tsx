@@ -3,11 +3,14 @@ import axiosInstance from "../api";
 import Cookies from "js-cookie";
 import { useNavigate } from "../RouterUtils";
 import { FaEye, FaEyeSlash } from "react-icons/fa";
+import { FaBug } from "react-icons/fa6";
 
 const LoginPage = () => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [loginError, setLoginError] = useState("");
+
   const navigate = useNavigate();
 
   const handleSubmit = async () => {
@@ -24,9 +27,17 @@ const LoginPage = () => {
 
       navigate("/");
       window.location.reload();
-    } catch (error) {
+    } catch (error: any) {
       console.error("Login error:", error);
+      if (error.response && error.response.status !== 401) {
+        setLoginError("Проверьте правильность введенных вами данных.");
+      } else {
+        setLoginError("Произошла ошибка, попробуйте еще раз позже.");
+      }
     }
+    setTimeout(() => {
+      setLoginError("");
+    }, 7000);
   };
 
   const handleKeyPress = (e: any) => {
@@ -74,6 +85,14 @@ const LoginPage = () => {
         >
           Login
         </button>
+        {loginError && (
+          <div className="p-4 bg-red-500 rounded-lg shadow-md flex items-center">
+            <div className="mr-2">
+              <FaBug className="text-white" size={24} />
+            </div>
+            <p className="text-lg font-semibold text-white">{loginError}</p>
+          </div>
+        )}
       </div>
     </div>
   );
