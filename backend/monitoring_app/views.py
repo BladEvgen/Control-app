@@ -7,9 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
-from django.db.models import Count
 from django.core.cache import caches
 from django.http import HttpResponse
+from django.db.models import Count, Q
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.contrib.auth import authenticate, login, logout
@@ -18,16 +18,23 @@ from django.views.generic import (
     View,
 )
 from drf_yasg import openapi
-from django.db.models import Q
 from rest_framework import status
 from openpyxl import load_workbook
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from drf_yasg.utils import swagger_auto_schema
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 
 from monitoring_app import models, serializers, utils
+
+
+class StaffAttendancePagination(PageNumberPagination):
+    page_size = 5000
+    page_size_query_param = "page_size"
+    max_page_size = 20000
+
 
 Cache = caches["default"]
 
@@ -614,36 +621,44 @@ def staff_detail(request, staff_pin):
 
     * **URL:** `/staff/<staff_pin>/`
     * **Параметры:**
-        * `staff_pin` (обязательный, строка): Уникальный идентификатор сотрудника (PIN)
-        * `start_date` (необязательный, строка): Дата начала периода для фильтрации
-            данных о посещаемости (формат: YYYY-MM-DD). По умолчанию - за последние 7 дней.
-        * `end_date` (необязательный, строка): Дата окончания периода для фильтрации
-            данных о посещаемости (формат: YYYY-MM-DD). По умолчанию - текущая дата.
+        * `staff_pin` (обязательный, строка): Уникальный идентификатор сотрудника (PIN).
+        * `start_date` (необязательный, строка): Дата начала периода для фильтрации данных о посещаемости
+          (формат: YYYY-MM-DD). По умолчанию - за последние 7 дней.
+        * `end_date` (необязательный, строка): Дата окончания периода для фильтрации данных о посещаемости
+          (формат: YYYY-MM-DD). По умолчанию - текущая дата.
 
     **Ответ (JSON):**
 
-    * **Код состояния 200:**
-        * `name` (строка): Имя сотрудника
-        * `surname` (строка): Фамилия сотрудника
-        * `positions` (список строк): Список должностей сотрудника
-        * `avatar` (строка, формат URI): URL аватара сотрудника (может быть null)
-        * `department` (строка): Отдел, к которому относится сотрудник
-        * `department_id` (число): Id отдела
+    * **Код 200:**
+        * `name` (строка): Имя сотрудника.
+        * `surname` (строка): Фамилия сотрудника.
+        * `positions` (список строк): Список должностей сотрудника.
+        * `avatar` (строка, формат URI): URL аватара сотрудника (может быть null).
+        * `department` (строка): Отдел, к которому относится сотрудник.
+        * `department_id` (число): Id отдела.
         * `attendance` (объект): Данные о посещаемости за указанный период.
             Ключи - даты посещаемости в формате "DD-MM-YYYY", значения - объекты:
-                * `first_in` (строка, формат ЧЧ:ММ DD-MM-YYYY): Время первого входа (может быть null)
-                * `last_out` (строка, формат ЧЧ:ММ DD-MM-YYYY): Время последнего выхода (может быть null)
-                * `percent_day` (число): Процент отработанного времени за день
-                * `total_minutes` (число): Общее количество отработанных минут за день
-        * `percent_for_period` (число): Общий процент работы за указанный период
-        * `salary` (число): Общая заработная плата сотрудника (может быть null)
-    * **Код состояния 400:** Неверный запрос, дата начала не может быть позже даты окончания
-    * **Код состояния 404:** Сотрудник не найден
+                * `first_in` (строка, формат ЧЧ:ММ DD-MM-YYYY): Время первого входа (может быть null).
+                * `last_out` (строка, формат ЧЧ:ММ DD-MM-YYYY): Время последнего выхода (может быть null).
+                * `percent_day` (число): Процент отработанного времени за день.
+                * `total_minutes` (число): Общее количество отработанных минут за день.
+        * `percent_for_period` (число): Общий процент работы за указанный период.
+        * `salary` (число): Общая заработная плата сотрудника (может быть null).
+
+    * **Код 400:** Неверный запрос, дата начала не может быть позже даты окончания.
+    * **Код 404:** Сотрудник не найден.
     """
 
-    try:
-        staff = models.Staff.objects.get(pin=staff_pin)
-    except models.Staff.DoesNotExist:
+    def fetch_staff_data():
+        try:
+            staff = models.Staff.objects.get(pin=staff_pin)
+        except models.Staff.DoesNotExist:
+            return None
+        return staff
+
+    staff = get_cache(f"staff_{staff_pin}", query=fetch_staff_data, timeout=300)
+
+    if staff is None:
         return Response(status=status.HTTP_404_NOT_FOUND)
 
     end_date_str = request.query_params.get(
@@ -662,96 +677,88 @@ def staff_detail(request, staff_pin):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    staff_attendance = models.StaffAttendance.objects.filter(
-        staff=staff, date_at__range=[start_date, end_date]
-    )
-    public_holidays = models.PublicHoliday.objects.filter(
-        date__range=[start_date, end_date]
-    ).values_list("date", "is_working_day")
+    cache_key = f"staff_detail_{staff_pin}_{start_date_str}_{end_date_str}"
 
-    holiday_dict = {date: is_working_day for date, is_working_day in public_holidays}
-
-    attendance_data = {}
-    total_minutes_for_period = 0
-    percent_for_period = 0
-    total_days_with_data = 0
-    total_weekend_days = 0
-
-    for attendance in staff_attendance:
-        date_at = attendance.date_at - datetime.timedelta(days=1)
-        is_weekend = date_at.weekday() >= 5
-        is_holiday = date_at in holiday_dict
-        is_off_day = (is_weekend and date_at not in holiday_dict) or (
-            is_holiday and not holiday_dict[date_at]
+    def get_staff_detail():
+        staff_attendance = models.StaffAttendance.objects.filter(
+            staff=staff, date_at__range=[start_date, end_date]
         )
+        public_holidays = models.PublicHoliday.objects.filter(
+            date__range=[start_date, end_date]
+        ).values_list("date", "is_working_day")
 
-        first_in = attendance.first_in
-        last_out = attendance.last_out
-
-        if first_in is None or last_out is None:
-            percent_day = 0
-            total_minutes_worked = 0
-        else:
-            total_minutes_expected = 8 * 60
-            total_minutes_worked = (last_out - first_in).total_seconds() / 60
-            total_minutes_for_period += total_minutes_worked
-            total_days_with_data += 1
-
-            percent_day = (total_minutes_worked / total_minutes_expected) * 100
-
-        attendance_entry = {
-            "first_in": (first_in if first_in else None),
-            "last_out": (last_out if last_out else None),
-            "percent_day": round(percent_day, 2),
-            "total_minutes": (
-                round(total_minutes_worked, 2) if first_in and last_out else 0
-            ),
-            "is_weekend": is_off_day,
+        holiday_dict = {
+            date: is_working_day for date, is_working_day in public_holidays
         }
 
-        if is_off_day:
-            if attendance_entry["total_minutes"] > 60:
-                percent_for_period *= 1.5
+        attendance_data = {}
+        total_minutes_for_period = 0
+        total_days_with_data = 0
+        percent_for_period = 0
+
+        for attendance in staff_attendance:
+            date_at = attendance.date_at - datetime.timedelta(days=1)
+            is_weekend = date_at.weekday() >= 5
+            is_holiday = date_at in holiday_dict
+            is_off_day = (is_weekend and date_at not in holiday_dict) or (
+                is_holiday and not holiday_dict[date_at]
+            )
+
+            first_in = attendance.first_in
+            last_out = attendance.last_out
+
+            if first_in is None or last_out is None:
+                percent_day = 0
+                total_minutes_worked = 0
+            else:
+                total_minutes_expected = 8 * 60
+                total_minutes_worked = (last_out - first_in).total_seconds() / 60
+                total_minutes_for_period += total_minutes_worked
+                total_days_with_data += 1
+
+                percent_day = (total_minutes_worked / total_minutes_expected) * 100
+
+            attendance_entry = {
+                "first_in": first_in if first_in else None,
+                "last_out": last_out if last_out else None,
+                "percent_day": round(percent_day, 2),
+                "total_minutes": (
+                    round(total_minutes_worked, 2) if first_in and last_out else 0
+                ),
+                "is_weekend": is_off_day,
+            }
+
+            if is_off_day and total_minutes_worked > 0:
+                percent_for_period += percent_day * 1.5
+            elif not is_off_day and total_minutes_worked == 0:
+                percent_for_period -= 25
             else:
                 percent_for_period += percent_day
-        else:
-            if attendance_entry["total_minutes"] == 0:
-                percent_day *= 0.75
 
-        total_weekend_days += 1 if is_off_day else 0
+            attendance_data[date_at.strftime("%d-%m-%Y")] = attendance_entry
 
-        attendance_data[date_at.strftime("%d-%m-%Y")] = attendance_entry
+        if total_days_with_data > 0:
+            percent_for_period /= total_days_with_data
 
-    total_hours_expected = total_days_with_data * 8
-    total_hours_expected -= (
-        sum(
-            1
-            for d, is_working in holiday_dict.items()
-            if not is_working and d.weekday() < 5
-        )
-        * 8
-    )
+        salaries = models.Salary.objects.filter(staff=staff)
+        total_salary = salaries.first().total_salary if salaries.exists() else None
+        avatar_url = staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
 
-    if total_hours_expected > 0:
-        percent_for_period += (
-            total_minutes_for_period / (total_hours_expected * 60)
-        ) * 100
+        data = {
+            "name": staff.name,
+            "surname": staff.surname if staff.surname != "Нет фамилии" else "",
+            "positions": [position.name for position in staff.positions.all()],
+            "avatar": avatar_url,
+            "department": staff.department.name if staff.department else "N/A",
+            "department_id": staff.department.id if staff.department else "N/A",
+            "attendance": attendance_data,
+            "percent_for_period": round(percent_for_period, 2),
+            "salary": total_salary,
+        }
 
-    salaries = models.Salary.objects.filter(staff=staff)
-    total_salary = salaries.first().total_salary if salaries.exists() else None
-    avatar_url = staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
+        return data
 
-    data = {
-        "name": staff.name,
-        "surname": staff.surname if staff.surname != "Нет фамилии" else "",
-        "positions": [position.name for position in staff.positions.all()],
-        "avatar": avatar_url,
-        "department": staff.department.name if staff.department else "N/A",
-        "department_id": staff.department.id if staff.department else "N/A",
-        "attendance": attendance_data,
-        "percent_for_period": round(percent_for_period, 2),
-        "salary": total_salary,
-    }
+    data = get_cache(cache_key, query=get_staff_detail, timeout=5 * 60)
 
     return Response(data, status=status.HTTP_200_OK)
 
@@ -762,6 +769,7 @@ def staff_detail_by_department_id(request, department_id):
     try:
         end_date_str = request.query_params.get("end_date")
         start_date_str = request.query_params.get("start_date")
+        page = request.query_params.get("page", 1)
 
         if not end_date_str or not start_date_str:
             return Response(
@@ -769,29 +777,13 @@ def staff_detail_by_department_id(request, department_id):
                 data={"error": "Не указаны параметры начала или конца периода"},
             )
 
-        start_date = datetime.datetime.strptime(
-            start_date_str, "%Y-%m-%d"
-        ) + datetime.timedelta(days=1)
-        end_date = datetime.datetime.strptime(
-            end_date_str, "%Y-%m-%d"
-        ) + datetime.timedelta(days=1)
+        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
+        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
 
         if start_date > end_date:
             return Response(
                 status=status.HTTP_400_BAD_REQUEST,
                 data={"error": "Дата начала не может быть больше даты конца"},
-            )
-
-        def get_all_child_department_ids(department_id):
-            child_ids = models.ChildDepartment.objects.filter(
-                parent_id=department_id
-            ).values_list("id", flat=True)
-            child_ids = list(child_ids)
-            q_objects = Q(parent_id=department_id)
-            for child_id in child_ids:
-                q_objects |= Q(parent_id=child_id)
-            return models.ChildDepartment.objects.filter(q_objects).values_list(
-                "id", flat=True
             )
 
         try:
@@ -802,8 +794,20 @@ def staff_detail_by_department_id(request, department_id):
                 data={"error": "Подразделение не найдено"},
             )
 
-        def get_staff_attendance(department_ids):
-            return (
+        def get_all_child_department_ids(department_id):
+            child_ids = models.ChildDepartment.objects.filter(
+                Q(parent_id=department_id) | Q(parent__parent_id=department_id)
+            ).values_list("id", flat=True)
+            return list(child_ids)
+
+        department_ids = [department_id] + get_all_child_department_ids(department_id)
+
+        cache_key = (
+            f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
+        )
+
+        def query():
+            staff_attendance = (
                 models.StaffAttendance.objects.filter(
                     staff__department_id__in=department_ids,
                     date_at__range=(start_date, end_date),
@@ -812,27 +816,16 @@ def staff_detail_by_department_id(request, department_id):
                 .order_by("date_at", "staff__surname", "staff__name")
             )
 
-        department_ids = [department_id] + list(
-            get_all_child_department_ids(department_id)
-        )
-        staff_attendance = get_staff_attendance(department_ids)
-
-        if staff_attendance.exists():
+            paginator = StaffAttendancePagination()
+            result_page = paginator.paginate_queryset(staff_attendance, request)
             serializer = serializers.StaffAttendanceByDateSerializer(
-                staff_attendance,
-                many=True,
-                context={"department_name": department.name},
-            )
-            return Response(
-                {"department_name": department.name, "attendance": serializer.data}
+                result_page, many=True, context={"department_name": department.name}
             )
 
-        return Response(
-            status=status.HTTP_404_NOT_FOUND,
-            data={
-                "error": "Данные о посещаемости не найдены для данного подразделения или его дочерних подразделений"
-            },
-        )
+            return paginator.get_paginated_response(serializer.data).data
+
+        cached_data = get_cache(cache_key, query=query, timeout=3600)
+        return Response(cached_data)
 
     except Exception as e:
         return Response(
@@ -1077,16 +1070,31 @@ def sent_excel(request, department_id):
     start_date = request.query_params.get("startDate", None)
 
     if not all([end_date, start_date]):
-        return Response({"error": "Missing start_date or end_date"}, status=400)
+        return Response(
+            {"error": "Missing startDate or endDate"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     main_ip = settings.MAIN_IP
-    url = f"{main_ip}/api/department/stats/{department_id}/?end_date={end_date}&start_date={start_date}"
+    rows = []
+    page = 1
 
-    data = utils.fetch_data(url)
+    while True:
+        cache_key = f"{main_ip}_api_department_stats_{department_id}_{start_date}_{end_date}_page_{page}"
+        url = f"{main_ip}/api/department/stats/{department_id}/?end_date={end_date}&start_date={start_date}&page={page}"
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        future = executor.submit(utils.parse_attendance_data, data)
-        rows = future.result()
+        data = get_cache(cache_key, query=lambda: utils.fetch_data(url), timeout=3600)
+
+        if "results" not in data or not data["results"]:
+            break
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future = executor.submit(utils.parse_attendance_data, data["results"])
+            rows += future.result()
+
+        if not data.get("next"):
+            break
+        page += 1
 
     if rows:
         df_pivot_sorted = utils.create_dataframe(rows)
@@ -1107,7 +1115,10 @@ def sent_excel(request, department_id):
 
         return response
     else:
-        return Response({"error": "Failed to generate Excel file"}, status=500)
+        return Response(
+            {"error": "Failed to generate Excel file"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 class UploadFileView(View):
