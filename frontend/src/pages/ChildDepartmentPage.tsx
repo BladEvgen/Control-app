@@ -68,7 +68,7 @@ const ChildDepartmentPage = () => {
       setShowWaitMessage(true);
       const hideWaitMessage = setTimeout(() => {
         setShowWaitMessage(false);
-      }, 5000);
+      }, 7000);
       return () => clearTimeout(hideWaitMessage);
     }, 3000);
 
@@ -81,6 +81,7 @@ const ChildDepartmentPage = () => {
             endDate,
           },
           responseType: "blob",
+          timeout: 600000,
         }
       );
 
@@ -118,7 +119,7 @@ const ChildDepartmentPage = () => {
         </div>
       ) : (
         <>
-          <h1 className="text-3xl font-bold mb-6">
+          <h1 className="text-3xl font-bold mb-6 text-center md:text-left break-words sm:text-center md:truncate">
             {data?.child_department?.name &&
               capitalizeFirstLetter(data.child_department.name)}
           </h1>
@@ -141,7 +142,7 @@ const ChildDepartmentPage = () => {
                 id="startDate"
                 value={startDate}
                 onChange={handleStartDateChange}
-                className="border border-gray-300 px-3 py-2 rounded-md"
+                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto "
               />
             </div>
             <div className="flex flex-col mb-4 md:mr-4">
@@ -156,7 +157,7 @@ const ChildDepartmentPage = () => {
                 id="endDate"
                 value={endDate}
                 onChange={handleEndDateChange}
-                className="border border-gray-300 px-3 py-2 rounded-md"
+                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto"
               />
             </div>
             <div className="flex items-center">
@@ -194,10 +195,10 @@ const ChildDepartmentPage = () => {
                 {isDownloading ? "Загрузка" : "Скачать"}
               </button>
               {showWaitMessage && (
-                <p className="text-sm text-red-600 ml-4">
+                <div className="mt-2 md:mt-0 md:ml-4 p-2 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse">
                   Загрузка может занять некоторое время, пожалуйста,
                   подождите...
-                </p>
+                </div>
               )}
             </div>
           </div>

@@ -196,7 +196,7 @@ const DepartmentPage = () => {
       setShowWaitMessage(true);
       const hideWaitMessage = setTimeout(() => {
         setShowWaitMessage(false);
-      }, 5000);
+      }, 7000);
       return () => clearTimeout(hideWaitMessage);
     }, 3000);
 
@@ -209,6 +209,7 @@ const DepartmentPage = () => {
             endDate,
           },
           responseType: "blob",
+          timeout: 600000,
         }
       );
 
@@ -234,7 +235,7 @@ const DepartmentPage = () => {
   const isDownloadDisabled = !startDate || !endDate;
   return (
     <div className="container mx-auto px-4 py-8">
-      <h1 className="text-2xl font-bold mb-4">
+      <h1 className="text-2xl font-bold mb-4 text-center md:text-left">
         {isLoading ? " " : data?.name}
       </h1>
       {location.pathname !== "/app/" && (
@@ -258,7 +259,7 @@ const DepartmentPage = () => {
             id="startDate"
             value={startDate}
             onChange={handleStartDateChange}
-            className="border border-gray-300 px-3 py-2 rounded-md"
+            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto"
           />
         </div>
         <div className="flex flex-col mb-4 md:mr-4">
@@ -273,10 +274,10 @@ const DepartmentPage = () => {
             id="endDate"
             value={endDate}
             onChange={handleEndDateChange}
-            className="border border-gray-300 px-3 py-2 rounded-md"
+            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto"
           />
         </div>
-        <div className="flex items-center">
+        <div className="flex flex-col md:flex-row items-center">
           <button
             onClick={handleDownload}
             disabled={isDownloadDisabled || isDownloading}
@@ -311,13 +312,12 @@ const DepartmentPage = () => {
             {isDownloading ? "Загрузка" : "Скачать"}
           </button>
           {showWaitMessage && (
-            <p className="text-sm text-red-600 ml-4">
+            <div className="mt-2 md:mt-0 md:ml-4 p-2 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse">
               Загрузка может занять некоторое время, пожалуйста, подождите...
-            </p>
+            </div>
           )}
         </div>
       </div>
-
       {data && <DepartmentTable data={data} />}
     </div>
   );
