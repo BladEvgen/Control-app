@@ -1,6 +1,5 @@
 import re
 import json
-import time
 import datetime
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
@@ -198,18 +197,26 @@ def fetch_data(url: str) -> Dict[str, Any]:
         return {}
 
 
-def parse_attendance_data(data: Dict[str, Any]) -> List[List[Optional[str]]]:
+def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]]]:
     rows: List[List[Optional[str]]] = []
     try:
-        for attendance in data.get("attendance", []):
-            for date, records in attendance.items():
+        for date_record in data:
+            for date, records in date_record.items():
                 date_obj = datetime.datetime.strptime(date, "%Y-%m-%d")
-                date_str = date_obj.strftime("%d.%m.%Y")
+                date_str = date_obj.strftime(
+                    "%d.%m.%Y"
+                )  # Исправлено на правильный формат
+
+                try:
+                    public_holiday = models.PublicHoliday.objects.get(date=date_obj)
+                    is_holiday = True
+                    is_working_day = public_holiday.is_working_day
+                except models.PublicHoliday.DoesNotExist:
+                    is_holiday = False
+                    is_working_day = False
 
                 for record in records:
-                    department_name = data.get("department_name", "")
                     staff_fio = record.get("staff_fio", "")
-
                     timezone_pattern = re.compile(r"\+\d{2}:\d{2}")
 
                     def parse_datetime_with_timezone(
@@ -229,20 +236,29 @@ def parse_attendance_data(data: Dict[str, Any]) -> List[List[Optional[str]]]:
                     first_in = parse_datetime_with_timezone(record.get("first_in"))
                     last_out = parse_datetime_with_timezone(record.get("last_out"))
 
-                    if date_obj.weekday() < 5:
-                        if not first_in and not last_out:
-                            attendance_info = "Отсутствие"
+                    if is_holiday:
+                        if is_working_day:
+                            if first_in and last_out:
+                                attendance_info = f"{first_in} - {last_out}"
+                            else:
+                                attendance_info = "Отсутствие"
                         else:
-                            attendance_info = (
-                                f"{first_in} - {last_out}"
-                                if first_in and last_out
-                                else "Отсутствие"
-                            )
+                            attendance_info = "Праздник"
                     else:
-                        if first_in and last_out:
-                            attendance_info = f"{first_in} - {last_out}"
+                        if date_obj.weekday() < 5:
+                            if not first_in and not last_out:
+                                attendance_info = "Отсутствие"
+                            else:
+                                attendance_info = (
+                                    f"{first_in} - {last_out}"
+                                    if first_in and last_out
+                                    else "Отсутствие"
+                                )
                         else:
-                            attendance_info = "Выходной"
+                            if first_in and last_out:
+                                attendance_info = f"{first_in} - {last_out}"
+                            else:
+                                attendance_info = "Выходной"
 
                     rows.append([staff_fio, date_str, attendance_info])
     except KeyError as e:
