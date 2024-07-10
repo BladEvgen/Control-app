@@ -1,6 +1,6 @@
 import os
 from decimal import Decimal
-from django.db import models
+from django.db import models, IntegrityError
 from monitoring_app import utils
 from django.utils import timezone
 from django.dispatch import receiver
@@ -8,6 +8,7 @@ from django.contrib.auth.models import User
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.validators import FileExtensionValidator
 from django.db.models.signals import pre_save, m2m_changed, post_save, post_delete
+from django.core.exceptions import ValidationError
 
 
 class APIKey(models.Model):
@@ -273,13 +274,19 @@ class StaffAttendance(models.Model):
         return f"{self.staff} {self.date_at.strftime('%d-%m-%Y')}"
 
     def save(self, *args, **kwargs):
-        existing_record = StaffAttendance.objects.filter(
-            staff=self.staff, date_at=self.date_at
-        ).exists()
-        if existing_record:
-            return
-        else:
-            super().save(*args, **kwargs)
+        if "force_insert" in kwargs:
+            kwargs.pop("force_insert")
+
+        if self.pk and not self._state.adding:
+            orig = StaffAttendance.objects.get(pk=self.pk)
+            if (
+                self.first_in != orig.first_in or self.last_out != orig.last_out
+            ) and "admin" in kwargs:
+                raise ValidationError(
+                    "Нельзя изменять поля first_in и last_out через админку."
+                )
+
+        super().save(*args, **kwargs)
 
     class Meta:
         unique_together = [["staff", "date_at"]]
