@@ -111,6 +111,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
     date_hierarchy = "date_at"
     list_display_links = None
     ordering = ("-date_at", "-last_out", "staff")
+    readonly_fields = ("first_in", "last_out")
 
 
 @admin.register(Salary)
