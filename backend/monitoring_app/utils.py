@@ -156,8 +156,9 @@ def get_all_attendance():
             first_event_time = None
             last_event_time = None
 
-        if (staff.pin, next_day.date()) in existing_attendances_dict:
-            attendance = existing_attendances_dict[(staff.pin, next_day.date())]
+        date_at = next_day.date() + datetime.timedelta(days=1)
+        if (staff.pin, date_at) in existing_attendances_dict:
+            attendance = existing_attendances_dict[(staff.pin, date_at)]
             attendance.first_in = first_event_time
             attendance.last_out = last_event_time
             updates.append(attendance)
@@ -167,7 +168,7 @@ def get_all_attendance():
                     staff=staff,
                     first_in=first_event_time,
                     last_out=last_event_time,
-                    date_at=next_day.date(),
+                    date_at=date_at,
                 )
             )
 
