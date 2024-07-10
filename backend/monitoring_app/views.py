@@ -758,7 +758,7 @@ def staff_detail(request, staff_pin):
 
         return data
 
-    data = get_cache(cache_key, query=get_staff_detail, timeout=5 * 60)
+    data = get_cache(cache_key, query=get_staff_detail, timeout=1 * 15)
 
     return Response(data, status=status.HTTP_200_OK)
 
