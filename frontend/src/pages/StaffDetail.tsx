@@ -214,15 +214,15 @@ const StaffDetail = () => {
   ) {
     const percent_for_period = staffData.percent_for_period;
 
-
     if (percent_for_period > 105) {
-    if (percent_for_period > 100) {
-      if (percent_for_period >= 115) {
-        bonusPercentage = 20;
-      } else if (percent_for_period >= 110) {
-        bonusPercentage = 15;
-      } else {
-        bonusPercentage = 10;
+      if (percent_for_period > 100) {
+        if (percent_for_period >= 115) {
+          bonusPercentage = 20;
+        } else if (percent_for_period >= 110) {
+          bonusPercentage = 15;
+        } else {
+          bonusPercentage = 10;
+        }
       }
     }
   }
@@ -268,9 +268,12 @@ const StaffDetail = () => {
                     <strong>Должность:</strong>{" "}
                     {staffData.positions?.join(", ") || "Нет данных"}
                   </p>
-                  <p className="text-lg font-semibold mb-1">
-                    <strong>Зарплата:</strong> {formatNumber(staffData.salary)}
-                  </p>
+                  {staffData.salary !== null && (
+                    <p className="text-lg font-semibold mb-1">
+                      <strong>Зарплата:</strong>{" "}
+                      {formatNumber(staffData.salary)}
+                    </p>
+                  )}
                   <p className="text-lg font-semibold mb-1">
                     <strong>Процент за выбранный период:</strong>{" "}
                     {staffData.percent_for_period} %
@@ -425,5 +428,4 @@ const StaffDetail = () => {
     </div>
   );
 };
-
 export default StaffDetail;
