@@ -21,6 +21,9 @@ API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
 MAIN_IP = os.getenv("MAIN_IP")
 
+LOGIN_URL = "/login_view/"
+LOGOUT_URL = "/logout/"
+
 #! SET TO DOMAIN
 ALLOWED_HOSTS = ["*"]
 
@@ -208,4 +211,21 @@ SIMPLE_JWT = {
     "SLIDING_TOKEN_REFRESH_EXP_CLAIM": "refresh_exp",
     "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10),
     "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(hours=1),
+}
+# DRF-YASG configuration
+SWAGGER_SETTINGS = {
+    "SECURITY_DEFINITIONS": {
+        "Bearer": {
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header",
+        }
+    },
+    "USE_SESSION_AUTH": True,
+    "DEFAULT_AUTO_SCHEMA_CLASS": "drf_yasg.inspectors.SwaggerAutoSchema",
+}
+
+# Optional settings for ReDoc
+REDOC_SETTINGS = {
+    "LAZY_RENDERING": True,
 }

@@ -1,31 +1,29 @@
+import datetime
 import os
 import zipfile
-import datetime
-from tempfile import NamedTemporaryFile
 from concurrent.futures import ThreadPoolExecutor
+from tempfile import NamedTemporaryFile
 
 from django.conf import settings
-from django.db import transaction
-from django.utils import timezone
-from django.core.cache import caches
-from django.http import HttpResponse
-from django.db.models import Count, Q
-from django.contrib.auth.models import User
-from django.core.files.base import ContentFile
 from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.models import User
+from django.core.cache import caches
+from django.core.files.base import ContentFile
+from django.db import transaction
+from django.db.models import Count, Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.views.generic import (
-    View,
-)
+from django.utils import timezone
+from django.views.generic import View
 from drf_yasg import openapi
-from rest_framework import status
-from openpyxl import load_workbook
-from rest_framework.views import APIView
-from rest_framework.response import Response
 from drf_yasg.utils import swagger_auto_schema
-from rest_framework.pagination import PageNumberPagination
+from openpyxl import load_workbook
+from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from monitoring_app import models, serializers, utils
 
@@ -298,12 +296,35 @@ class StaffAttendanceStatsView(APIView):
                 ),
             ),
         ),
-        404: "Департаменты не найдены.",
+        404: openapi.Response(
+            description="Не удалось найти департаменты",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            ),
+        ),
     },
 )
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_parent_id(request):
+    """
+    Получить ID всех родительских департаментов.
+
+    Этот метод возвращает список всех ID родительских департаментов.
+
+    Возвращаемые данные:
+    - Список ID родительских департаментов.
+
+    Возможные ошибки:
+    - 404: Департаменты не найдены.
+
+    Пример ответа:
+    - 200: [1, 2, 3, ...]
+    - 404: {"error": "Не удалось найти департаменты."}
+    """
     try:
         parent_departments = models.ParentDepartment.objects.all()
         parent_ids = [department.id for department in parent_departments]
@@ -763,9 +784,138 @@ def staff_detail(request, staff_pin):
     return Response(data, status=status.HTTP_200_OK)
 
 
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Посещаемость сотрудников по отделу ",
+    operation_description="Получить данные о посещаемости сотрудников по ID подразделения",
+    responses={
+        200: openapi.Response(
+            description="Успешный ответ",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "department_name": openapi.Schema(
+                        type=openapi.TYPE_STRING, description="Название подразделения"
+                    ),
+                    "attendance": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "date": openapi.Schema(
+                                    type=openapi.TYPE_ARRAY,
+                                    items=openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        properties={
+                                            "staff_fio": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                description="ФИО сотрудника",
+                                            ),
+                                            "first_in": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                format=openapi.FORMAT_DATETIME,
+                                                description="Время первого входа сотрудника",
+                                            ),
+                                            "last_out": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                format=openapi.FORMAT_DATETIME,
+                                                description="Время последнего выхода сотрудника",
+                                            ),
+                                        },
+                                    ),
+                                    description="Список сотрудников и их посещаемость за дату",
+                                )
+                            },
+                        ),
+                        description="Список посещаемости по датам",
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(
+            description="Ошибка в запросе",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            ),
+        ),
+        404: openapi.Response(
+            description="Не найдено",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            ),
+        ),
+        500: openapi.Response(
+            description="Ошибка сервера",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            ),
+        ),
+    },
+    manual_parameters=[
+        openapi.Parameter(
+            "end_date",
+            openapi.IN_QUERY,
+            description="Конечная дата периода в формате YYYY-MM-DD",
+            type=openapi.TYPE_STRING,
+            required=True,
+        ),
+        openapi.Parameter(
+            "start_date",
+            openapi.IN_QUERY,
+            description="Начальная дата периода в формате YYYY-MM-DD",
+            type=openapi.TYPE_STRING,
+            required=True,
+        ),
+    ],
+)
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def staff_detail_by_department_id(request, department_id):
+    """
+    Получить данные о посещаемости сотрудников по ID подразделения.
+
+    Этот эндпоинт возвращает данные о посещаемости сотрудников для указанного подразделения и его дочерних подразделений за указанный период.
+
+    Параметры запроса:
+    - end_date: Конечная дата периода в формате YYYY-MM-DD.
+    - start_date: Начальная дата периода в формате YYYY-MM-DD.
+
+    Возвращаемые данные:
+    - department_name: Название подразделения.
+    - attendance: Список посещаемости сотрудников, сгруппированных по датам.
+
+    Пример ответа:
+    {
+        "department_name": "отдел цифровизации образовательных технологий",
+        "attendance": [
+            {
+                "2024-07-01": [
+                    {
+                        "staff_fio": "Testov Test",
+                        "first_in": "2024-07-01T00:00:00+05:00",
+                        "last_out": "2024-07-01T23:59:59+05:00"
+                    },
+                    ...
+                ]
+            },
+            ...
+        ]
+    }
+
+    Возможные ошибки:
+    - 400: Не указаны параметры начала или конца периода.
+    - 404: Подразделение не найдено или данные о посещаемости не найдены.
+    - 500: Внутренняя ошибка сервера.
+    """
     try:
         end_date_str = request.query_params.get("end_date")
         start_date_str = request.query_params.get("start_date")
@@ -836,28 +986,46 @@ def staff_detail_by_department_id(request, department_id):
 
 @swagger_auto_schema(
     method="post",
-    operation_summary="Зарегистрировать нового пользователя доступно только isAdmin",
+    operation_summary="Зарегистрировать нового пользователя (доступно только для администратора)",
+    operation_description="Регистрирует нового пользователя в системе. Разрешено только для администратора.",
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         required=["username", "password"],
         properties={
-            "username": openapi.Schema(type=openapi.TYPE_STRING),
-            "password": openapi.Schema(type=openapi.TYPE_STRING),
+            "username": openapi.Schema(
+                type=openapi.TYPE_STRING,
+                description="Желаемое имя для нового пользователя",
+            ),
+            "password": openapi.Schema(
+                type=openapi.TYPE_STRING, description="Пароль для нового пользователя"
+            ),
         },
     ),
     responses={
-        201: "Created - Пользователь успешно зарегистрирован",
+        201: openapi.Response(
+            description="Created - Пользователь успешно зарегистрирован",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "message": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Сообщение о результате регистрации",
+                    )
+                },
+            ),
+        ),
         400: openapi.Response(
             description="Bad Request - Ошибка в запросе",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
-                    "message": openapi.Schema(type=openapi.TYPE_STRING),
+                    "message": openapi.Schema(
+                        type=openapi.TYPE_STRING, description="Описание ошибки запроса"
+                    ),
                 },
             ),
         ),
     },
-    operation_description="Регистрирует нового пользователя в системе. Разрешено только для администратора.",
 )
 @api_view(http_method_names=["POST"])
 @permission_classes([IsAdminUser])
@@ -866,27 +1034,20 @@ def user_register(request):
     Регистрирует нового пользователя в системе. Разрешено только для администратора.
 
     Этот view ожидает запрос POST, содержащий в теле запроса следующие данные:
+    - username (str): Желаемое имя для нового пользователя.
+    - password (str): Пароль для нового пользователя.
 
-    - имя пользователя (str): желаемое имя для нового пользователя.
-    - пароль (str): пароль для нового пользователя.
-        Пароль должен соответствовать требованиям системы к сложности пароля.
-        которые проверяются с помощью функции `utils.password_check`.
+    Возвращаемые данные:
+    - status (int): HTTP статус код:
+        - 201 Created: Если пользователь успешно зарегистрирован.
+        - 400 Bad Request: Если имя пользователя или пароль отсутствуют, не соответствуют требованиям или имя пользователя уже занято.
+    - message (str): Сообщение о результате регистрации.
 
-    Ответ:
-
-    - Ответ JSON со следующей структурой:
-    - status (int): код состояния HTTP:
-    - 201 Создано: Если пользователь успешно зарегистрирован.
-    - ошибка 400, неверный запрос:
-    - Если имя пользователя или пароль отсутствуют.
-    - Если пароль не проходит проверку сложности.
-    - Если имя пользователя уже занято.
-    - message (str): сообщение, читаемое человеком.
-    с указанием результатов процесса регистрации.
+    Возможные ошибки:
+    - 400 Bad Request: Если имя пользователя или пароль отсутствуют, пароль не соответствует требованиям или имя пользователя уже занято.
 
     Исключения:
-
-    — Стандартные исключения Django, если во время создания или сохранения пользователя возникают какие-либо ошибки.
+    - Стандартные исключения Django, если во время создания или сохранения пользователя возникают какие-либо ошибки.
     """
 
     username = request.data.get("username", None)
@@ -926,30 +1087,60 @@ def user_register(request):
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
-                    "is_banned": openapi.Schema(type=openapi.TYPE_BOOLEAN),
+                    "is_banned": openapi.Schema(
+                        type=openapi.TYPE_BOOLEAN, description="Забанен ли пользователь"
+                    ),
                     "user": openapi.Schema(
                         type=openapi.TYPE_OBJECT,
                         properties={
-                            "username": openapi.Schema(type=openapi.TYPE_STRING),
-                            "email": openapi.Schema(
-                                type=openapi.TYPE_STRING, format=openapi.FORMAT_EMAIL
+                            "username": openapi.Schema(
+                                type=openapi.TYPE_STRING, description="Имя пользователя"
                             ),
-                            "first_name": openapi.Schema(type=openapi.TYPE_STRING),
-                            "last_name": openapi.Schema(type=openapi.TYPE_STRING),
-                            "is_staff": openapi.Schema(type=openapi.TYPE_BOOLEAN),
+                            "email": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                format=openapi.FORMAT_EMAIL,
+                                description="Электронная почта",
+                            ),
+                            "first_name": openapi.Schema(
+                                type=openapi.TYPE_STRING, description="Имя"
+                            ),
+                            "last_name": openapi.Schema(
+                                type=openapi.TYPE_STRING, description="Фамилия"
+                            ),
+                            "is_staff": openapi.Schema(
+                                type=openapi.TYPE_BOOLEAN,
+                                description="Является ли пользователь сотрудником",
+                            ),
                             "date_joined": openapi.Schema(
-                                type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME
+                                type=openapi.TYPE_STRING,
+                                format=openapi.FORMAT_DATETIME,
+                                description="Дата регистрации",
                             ),
                             "last_login": openapi.Schema(
-                                type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME
+                                type=openapi.TYPE_STRING,
+                                format=openapi.FORMAT_DATETIME,
+                                description="Дата последнего входа",
                             ),
-                            "phonenumber": openapi.Schema(type=openapi.TYPE_STRING),
+                            "phonenumber": openapi.Schema(
+                                type=openapi.TYPE_STRING, description="Номер телефона"
+                            ),
                         },
                     ),
                 },
             ),
         ),
-        401: "Unauthorized: Если пользователь не аутентифицирован.",
+        401: openapi.Response(
+            description="Unauthorized: Если пользователь не аутентифицирован.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "detail": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Сообщение об ошибке аутентификации",
+                    )
+                },
+            ),
+        ),
     },
 )
 @api_view(["GET"])
@@ -958,14 +1149,16 @@ def user_profile_detail(request):
     """
     Получить профиль текущего аутентифицированного пользователя.
 
-    Args:
-    запрос: объект запроса.
+    Этот метод возвращает профиль текущего аутентифицированного пользователя, включая его основные данные и информацию о последнем входе.
 
-    Returns:
-    Ответ: ответ, содержащий данные профиля пользователя.
+    Аргументы:
+    - request: объект запроса.
 
-    Raises:
-    Http401: Если пользователь не аутентифицирован.
+    Возвращаемые данные:
+    - Ответ с данными профиля пользователя, включая флаги is_banned, user (с username, email, first_name, last_name, is_staff, date_joined, last_login, phonenumber).
+
+    Возможные ошибки:
+    - 401: Если пользователь не аутентифицирован.
     """
 
     def get_client_ip(request):
@@ -985,7 +1178,7 @@ def user_profile_detail(request):
 
 def logout_view(request):
     logout(request)
-    return redirect("home")
+    return redirect("login_view")
 
 
 def login_view(request):
@@ -1063,9 +1256,77 @@ def fetch_data_view(request):
         )
 
 
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Получение данных о посещаемости в формате Excel",
+    operation_description="Получение данных о посещаемости с внешнего сервера и создание Excel файла. Требуется аутентификация.",
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="API ключ для аутентификации запроса.",
+        ),
+        openapi.Parameter(
+            name="endDate",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="Конечная дата для данных о посещаемости в формате YYYY-MM-DD.",
+        ),
+        openapi.Parameter(
+            name="startDate",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="Начальная дата для данных о посещаемости в формате YYYY-MM-DD.",
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Excel файл с данными о посещаемости.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_FILE,
+                description="Созданный Excel файл, содержащий данные о посещаемости.",
+            ),
+        ),
+        400: openapi.Response(
+            description="Bad Request: отсутствует начальная или конечная дата."
+        ),
+        403: openapi.Response(
+            description="Forbidden: если доступ запрещен или отсутствует API ключ."
+        ),
+        500: openapi.Response(
+            description="Internal server error: если сервер столкнулся с ошибкой."
+        ),
+    },
+)
 @api_view(http_method_names=["GET"])
 @permission_classes([IsAuthenticated])
 def sent_excel(request, department_id):
+    """
+    Получение данных о посещаемости в формате Excel.
+
+    Получение данных о посещаемости с внешнего сервера на основе предоставленного ID отдела,
+    начальной и конечной дат. Создание и возврат Excel файла, содержащего данные о посещаемости.
+
+    Аргументы:
+        request (HttpRequest): Объект HTTP запроса.
+        department_id (int): ID отдела, для которого запрашиваются данные о посещаемости.
+
+    Параметры запроса:
+        - startDate (str): Начальная дата для данных о посещаемости в формате YYYY-MM-DD.
+        - endDate (str): Конечная дата для данных о посещаемости в формате YYYY-MM-DD.
+
+    Возвращает:
+        HttpResponse: HTTP ответ с созданным Excel файлом или сообщением об ошибке.
+
+    Исключения:
+        ValueError: Если начальная или конечная дата отсутствует в параметрах запроса.
+        ConnectionError: Если возникла проблема с получением данных с внешнего сервера.
+    """
+
     end_date = request.query_params.get("endDate", None)
     start_date = request.query_params.get("startDate", None)
 
@@ -1144,6 +1405,7 @@ class UploadFileView(View):
             HttpResponse: Отрисовывает шаблон upload_file.html
             с контекстом, содержащим список всех категорий файлов (categories).
         """
+
         categories = models.FileCategory.objects.all()
         context = {"categories": categories}
         return render(request, self.template_name, context=context)
@@ -1164,6 +1426,7 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке файла.
         """
+
         file_path = request.FILES.get("file")
         category_slug = request.POST.get("category")
 
@@ -1199,6 +1462,7 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке файла Excel.
         """
+
         wb = load_workbook(file_path)
         ws = wb.active
         ws.delete_rows(1, 2)
@@ -1220,6 +1484,7 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке строки.
         """
+
         for row in rows:
             try:
                 parent_department_id = int(row[2].value)
@@ -1360,9 +1625,82 @@ class UploadFileView(View):
 
 
 class APIKeyCheckView(APIView):
+    """
+    Проверка API ключа.
+
+    Проверяет наличие и валидность переданного API ключа в заголовке запроса.
+    Если ключ отсутствует или недействителен, возвращает соответствующее сообщение об ошибке.
+
+    Методы:
+        get: Проверяет API ключ и возвращает данные о его создании и статусе активности.
+
+    Права доступа:
+        AllowAny: Доступ открыт для всех пользователей, аутентификация не требуется.
+    """
+
     permission_classes = [AllowAny]
 
+    @swagger_auto_schema(
+        operation_summary="Проверка API ключа",
+        operation_description="Проверяет наличие и валидность переданного API ключа в заголовке запроса.",
+        manual_parameters=[
+            openapi.Parameter(
+                name="X-API-KEY",
+                in_=openapi.IN_HEADER,
+                type=openapi.TYPE_STRING,
+                required=True,
+                description="API ключ для проверки.",
+            )
+        ],
+        responses={
+            200: openapi.Response(
+                description="Данные о создании и статусе активности API ключа.",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "data": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "created_at": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format="date-time",
+                                    description="Дата и время создания ключа.",
+                                ),
+                                "is_active": openapi.Schema(
+                                    type=openapi.TYPE_BOOLEAN,
+                                    description="Статус активности ключа.",
+                                ),
+                            },
+                        )
+                    },
+                ),
+            ),
+            400: openapi.Response(
+                description="Некорректный запрос: отсутствует или недействителен API ключ.",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "message": openapi.Schema(
+                            type=openapi.TYPE_STRING, description="Сообщение об ошибке."
+                        ),
+                        "error": openapi.Schema(
+                            type=openapi.TYPE_STRING, description="Описание ошибки."
+                        ),
+                    },
+                ),
+            ),
+        },
+    )
     def get(self, request, *args, **kwargs):
+        """
+        Проверяет API ключ и возвращает данные о его создании и статусе активности.
+
+        Аргументы:
+            request (HttpRequest): Объект HTTP запроса.
+
+        Возвращает:
+            Response: Ответ с данными о создании и статусе активности API ключа, либо сообщение об ошибке.
+        """
         api_key = request.headers.get("X-API-KEY")
 
         if not api_key:

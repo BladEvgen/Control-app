@@ -1,14 +1,16 @@
 import os
-from decimal import Decimal
-from django.db import models, IntegrityError
-from monitoring_app import utils
-from django.utils import timezone
-from django.dispatch import receiver
+
+from django.contrib import messages
 from django.contrib.auth.models import User
-from rest_framework_simplejwt.tokens import RefreshToken
-from django.core.validators import FileExtensionValidator
-from django.db.models.signals import pre_save, m2m_changed, post_save, post_delete
 from django.core.exceptions import ValidationError
+from django.core.validators import FileExtensionValidator
+from django.db import models, transaction
+from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
+from django.dispatch import receiver
+from django.utils import timezone
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from monitoring_app import utils
 
 
 class APIKey(models.Model):
@@ -296,6 +298,11 @@ class StaffAttendance(models.Model):
 
 
 class Salary(models.Model):
+    CONTRACT_TYPE_CHOICES = [
+        ("full_time", "Полная занятость"),
+        ("part_time", "Частичная занятость"),
+        ("gph", "ГПХ"),
+    ]
     staff = models.ForeignKey(
         Staff,
         on_delete=models.CASCADE,
@@ -303,20 +310,12 @@ class Salary(models.Model):
         verbose_name="Сотрудник",
     )
 
-    clean_salary = models.DecimalField(
+    net_salary = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         blank=False,
         null=False,
         verbose_name="Чистая зарплата",
-    )
-    dirty_salary = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        blank=True,
-        null=True,
-        editable=False,
-        verbose_name="Грязная зарплата",
     )
     total_salary = models.DecimalField(
         max_digits=10,
@@ -324,58 +323,48 @@ class Salary(models.Model):
         blank=True,
         null=True,
         editable=False,
-        verbose_name="Итогавая зарплата",
+        verbose_name="Итоговая зарплата",
+    )
+    contract_type = models.CharField(
+        max_length=20,
+        choices=CONTRACT_TYPE_CHOICES,
+        default="full_time",
+        verbose_name="Тип контракта",
     )
 
     class Meta:
         verbose_name = "Зарплата"
         verbose_name_plural = "Зарплаты"
 
-    @staticmethod
-    def calculate_dirty_salary(clean_salary):
-        # Percentages
-        opvr_percentage = Decimal("0.015")  # ОПВР - 1.5%
-        vosms_percentage = Decimal("0.02")  # ВОСМС - 2%
-        oosms_percentage = Decimal("0.03")  # ООСМС - 3%
-        so_percentage = Decimal("0.035")  # СО - 3.5%
-        sn_percentage = Decimal("0.095")  # СН - 9.5%
-
-        # Limits
-        min_sn_limit = 14 * 3692  # 14 МРП = 51 688 тенге
-        max_opv_limit = 50 * 85000  # 50 МЗП = 4 250 000 тенге
-        max_vosms_limit = 10 * 85000  # 10 МЗП = 850 000 тенге
-        max_oosms_limit = 10 * 85000  # 10 МЗП = 850 000 тенге
-        max_so_limit = 7 * 85000  # 7 МЗП = 595 000 тенге
-
-        # Calculate deductions
-        opvr_deduction = min(clean_salary, max_opv_limit) * opvr_percentage
-        vosms_deduction = min(clean_salary, max_vosms_limit) * vosms_percentage
-        oosms_deduction = min(clean_salary, max_oosms_limit) * oosms_percentage
-        so_deduction = min(max(clean_salary, 85000), max_so_limit) * so_percentage
-        sn_deduction = max(clean_salary, min_sn_limit) * sn_percentage
-
-        # Total deductions
-        total_deductions = (
-            opvr_deduction
-            + vosms_deduction
-            + oosms_deduction
-            + so_deduction
-            + sn_deduction
-        )
-
-        # Calculate dirty salary
-        dirty_salary = clean_salary + total_deductions
-
-        return dirty_salary
+    def clean(self):
+        total_rate = sum(self.staff.positions.values_list("rate", flat=True))
+        if total_rate > 1.5:
+            raise ValidationError(
+                "Суммарная ставка не может превышать 1.5. Пожалуйста, измените ставки должностей."
+            )
 
     @staticmethod
-    def calculate_total_salary(clean_salary, rate):
-        return clean_salary * rate
+    def calculate_total_salary(net_salary, rate):
+        return net_salary * rate
 
     def calculate_salaries(self):
+        self.clean()
         total_rate = sum(self.staff.positions.values_list("rate", flat=True))
-        self.dirty_salary = self.calculate_dirty_salary(self.clean_salary)
-        self.total_salary = self.calculate_total_salary(self.clean_salary, total_rate)
+        self.total_salary = self.calculate_total_salary(self.net_salary, total_rate)
+
+    def save(self, *args, **kwargs):
+        try:
+            with transaction.atomic():
+                self.calculate_salaries()
+                super().save(*args, **kwargs)
+        except ValidationError:
+            if hasattr(self, "_request"):
+                messages.error(
+                    self._request,
+                    "Суммарная ставка не может превышать 1.5. Изменения не сохранены.",
+                )
+            previous_instance = Salary.objects.get(pk=self.pk)
+            self.total_salary = previous_instance.total_salary
 
 
 @receiver(pre_save, sender=Salary)
@@ -387,8 +376,18 @@ def calculate_salaries(sender, instance, **kwargs):
 def update_salary_on_position_change(sender, instance, action, **kwargs):
     if action in ["post_add", "post_remove", "post_clear"]:
         for salary in instance.salaries.all():
-            salary.calculate_salaries()
-            salary.save(update_fields=["total_salary"])
+            try:
+                with transaction.atomic():
+                    salary.calculate_salaries()
+                    salary.save(update_fields=["total_salary"])
+            except ValidationError:
+                if hasattr(salary, "_request"):
+                    messages.error(
+                        salary._request,
+                        "Суммарная ставка не может превышать 1.5. Изменения не сохранены.",
+                    )
+                previous_instance = Salary.objects.get(pk=salary.pk)
+                salary.total_salary = previous_instance.total_salary
 
 
 class PublicHoliday(models.Model):

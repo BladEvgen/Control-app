@@ -116,10 +116,10 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
 @admin.register(Salary)
 class SalaryAdmin(admin.ModelAdmin):
-    list_display = ("staff", "clean_salary", "dirty_salary", "total_salary")
+    list_display = ("staff", "net_salary", "total_salary")
     search_fields = ("staff__surname", "staff__name")
     list_filter = ("staff__department",)
-    readonly_fields = ("dirty_salary", "total_salary")
+    readonly_fields = ("total_salary",)
 
 
 @admin.register(PublicHoliday)
