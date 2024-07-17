@@ -205,10 +205,10 @@ const StaffDetail = () => {
   ) {
     const percent_for_period = staffData.percent_for_period;
 
-    if (percent_for_period > 80) {
-      if (percent_for_period >= 95) {
+    if (percent_for_period > 100) {
+      if (percent_for_period >= 115) {
         bonusPercentage = 20;
-      } else if (percent_for_period >= 85) {
+      } else if (percent_for_period >= 110) {
         bonusPercentage = 15;
       } else {
         bonusPercentage = 10;
