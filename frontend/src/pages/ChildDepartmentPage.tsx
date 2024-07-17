@@ -251,8 +251,18 @@ const ChildDepartmentPage = () => {
                           </Link>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          {staff.positions.join(", ")}
+                          {staff.positions.length > 2 ? (
+                            <>
+                              {staff.positions[0]}, ...
+                              <span className="text-gray-500 ml-2">
+                                (ещё {staff.positions.length - 1})
+                              </span>
+                            </>
+                          ) : (
+                            staff.positions.join(", ")
+                          )}
                         </td>
+
                         <td className="px-6 py-4 whitespace-nowrap">
                           {formatDate(staff.date_of_creation)}
                         </td>
