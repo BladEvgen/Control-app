@@ -1,29 +1,29 @@
-import datetime
 import os
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+import datetime
 from tempfile import NamedTemporaryFile
+from concurrent.futures import ThreadPoolExecutor
 
-from django.conf import settings
-from django.contrib.auth import authenticate, login, logout
-from django.contrib.auth.models import User
-from django.core.cache import caches
-from django.core.files.base import ContentFile
-from django.db import transaction
-from django.db.models import Count, Q
-from django.http import HttpResponse
-from django.shortcuts import get_object_or_404, redirect, render
-from django.utils import timezone
-from django.views.generic import View
 from drf_yasg import openapi
-from drf_yasg.utils import swagger_auto_schema
-from openpyxl import load_workbook
+from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
-from rest_framework.response import Response
+from openpyxl import load_workbook
+from django.core.cache import caches
+from django.http import HttpResponse
+from django.db.models import Count, Q
+from django.views.generic import View
 from rest_framework.views import APIView
+from django.contrib.auth.models import User
+from rest_framework.response import Response
+from django.core.files.base import ContentFile
+from drf_yasg.utils import swagger_auto_schema
+from rest_framework.pagination import PageNumberPagination
+from django.contrib.auth import authenticate, login, logout
+from django.shortcuts import get_object_or_404, redirect, render
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 
 from monitoring_app import models, serializers, utils
 
@@ -81,7 +81,10 @@ class StaffAttendanceStatsView(APIView):
     """
     View для получения статистики о посещаемости персонала.
 
-    Parametrs:
+    Фильтрация:
+    - Учитываются только сотрудники, относящиеся к подотделу с ID 4958.
+
+    Параметры:
     - запрос: объект HttpRequest
 
     Returns:
@@ -180,35 +183,37 @@ class StaffAttendanceStatsView(APIView):
     )
     def get(self, request):
         date_param = request.query_params.get(
-            "date", datetime.datetime.now().date().strftime("%Y-%m-%d")
+            "date", timezone.now().date().strftime("%Y-%m-%d")
         )
+        date_param = datetime.datetime.strptime(date_param, "%Y-%m-%d").date()
+        next_date = date_param + datetime.timedelta(days=1)
         pin_param = request.query_params.get("pin", None)
 
-        cache_key: str = f"staff_attendance_stats_{date_param}_{pin_param}"
+        cache_key = f"staff_attendance_stats_{date_param}_{pin_param}"
 
         def query():
             try:
-                staff_attendance = models.StaffAttendance.objects.filter(
-                    date_at=date_param
-                )
-                if not staff_attendance:
-                    response_data = {"message": f"No data found for date {date_param}"}
-                    return response_data
+                staff_queryset = models.Staff.objects.all().select_related("department")
+                staff_attendance_queryset = models.StaffAttendance.objects.filter(
+                    date_at__gte=date_param,
+                    date_at__lt=next_date,
+                    staff__in=staff_queryset,
+                ).select_related("staff")
 
-                total_staff_count = models.Staff.objects.count()
+                total_staff_count = staff_queryset.count()
 
-                present_staff = staff_attendance.exclude(first_in__isnull=True)
+                present_staff = staff_attendance_queryset.exclude(first_in__isnull=True)
                 present_staff_pins = present_staff.values_list("staff__pin", flat=True)
                 absent_staff_count = total_staff_count - present_staff.count()
 
                 present_between_9_to_18 = present_staff.filter(
-                    first_in__time__range=["8:00", "19:00"]
+                    first_in__time__range=["08:00", "19:00"]
                 ).count()
 
                 present_data = []
                 absent_data = []
 
-                for staff in models.Staff.objects.all():
+                for staff in staff_queryset:
                     if staff.pin in present_staff_pins:
                         present_data.append(
                             {
@@ -270,9 +275,7 @@ class StaffAttendanceStatsView(APIView):
 
                 return response_data
             except Exception as e:
-                return Response(
-                    data={"error": str(e)}, status=status.HTTP_404_NOT_FOUND
-                )
+                return {"error": str(e)}
 
         cached_data = get_cache(
             cache_key, query=query, timeout=6 * 60 * 60, cache=Cache
