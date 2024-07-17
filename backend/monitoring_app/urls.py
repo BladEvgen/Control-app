@@ -15,18 +15,15 @@ urlpatterns = [
     path("logout/", views.logout_view, name="logout"),
     path("upload/", views.UploadFileView.as_view(), name="uploadFile"),
     path("fetcher/", views.fetch_data_view, name="fetcher"),
-    path("api/user/register/", views.user_register, name="userRegister"),
-    path("api/user/detail/", views.user_profile_detail, name="user-detail"),
     path(
         "api/attendance/stats/",
         views.StaffAttendanceStatsView.as_view(),
         name="staff-attendance-stats",
     ),
-    path("api/download/<int:department_id>/", views.sent_excel, name="sent_excel"),
     path(
-        "api/department/<int:parent_department_id>/",
-        views.department_summary,
-        name="department-summary",
+        "api/child_department/<int:child_department_id>/",
+        views.child_department_detail,
+        name="child-department-detail",
     ),
     path(
         "api/department/stats/<int:department_id>/",
@@ -34,16 +31,19 @@ urlpatterns = [
         name="department-stats",
     ),
     path(
-        "api/child_department/<int:child_department_id>/",
-        views.child_department_detail,
-        name="child-department-detail",
+        "api/department/<int:parent_department_id>/",
+        views.department_summary,
+        name="department-summary",
     ),
-    path("api/staff/<str:staff_pin>/", views.staff_detail, name="staff-detail"),
+    path("api/download/<int:department_id>/", views.sent_excel, name="sent_excel"),
+    path("api/key_check/", views.APIKeyCheckView.as_view(), name="api_key_check"),
     path("api/parent_department_id/", views.get_parent_id, name="get-parent-ids"),
+    path("api/staff/<str:staff_pin>/", views.staff_detail, name="staff-detail"),
     path("api/token/", TokenObtainPairView.as_view()),
     path("api/token/refresh/", TokenRefreshView.as_view()),
     path("api/token/verify/", TokenVerifyView.as_view()),
-    path("api/key_check/", views.APIKeyCheckView.as_view(), name="api_key_check"),
+    path("api/user/detail/", views.user_profile_detail, name="user-detail"),
+    path("api/user/register/", views.user_register, name="userRegister"),
 ]
 
 urlpatterns += doc_urls
