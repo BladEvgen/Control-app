@@ -127,7 +127,7 @@ def get_all_attendance():
             attendance_data[pin] = data
 
     prev_date = timezone.now() - timezone.timedelta(days=DAYS)
-    next_day = prev_date + timezone.timedelta(days=0)
+    next_day = prev_date + timezone.timedelta(days=1)
 
     updates = []
 
