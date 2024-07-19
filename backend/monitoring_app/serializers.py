@@ -157,6 +157,7 @@ class StaffAttendanceByDateSerializer(serializers.Serializer):
     staff_fio = serializers.SerializerMethodField()
     first_in = serializers.DateTimeField()
     last_out = serializers.DateTimeField()
+    department = serializers.SerializerMethodField()
 
     def get_date(self, obj):
         return (obj.date_at - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
@@ -164,16 +165,27 @@ class StaffAttendanceByDateSerializer(serializers.Serializer):
     def get_staff_fio(self, obj):
         return f"{obj.staff.surname} {obj.staff.name}"
 
+    def get_department(self, obj):
+        return obj.staff.department.name if obj.staff.department else "N/A"
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         date = data.pop("date")
+        department = (
+            instance.staff.department.name
+            if instance.staff.department
+            else "Unknown Department"
+        )
         return {
-            date: self.context.get(date, [])
-            + [
-                {
-                    "staff_fio": data["staff_fio"],
-                    "first_in": data["first_in"],
-                    "last_out": data["last_out"],
-                }
-            ]
+            date: {
+                "department": department,
+                "attendance": self.context.get(date, [])
+                + [
+                    {
+                        "staff_fio": data["staff_fio"],
+                        "first_in": data["first_in"],
+                        "last_out": data["last_out"],
+                    }
+                ],
+            }
         }
