@@ -47,3 +47,17 @@ export interface AttendanceData {
   total_minutes: number;
   is_weekend: boolean;
 }
+
+export interface AttendanceStats {
+  department_name: string;
+  total_staff_count: number;
+  present_staff_count: number;
+  absent_staff_count: number;
+  present_between_9_to_18: number;
+  present_data: Array<{
+    staff_pin: string;
+    name: string;
+    individual_percentage: number;
+  }>;
+  absent_data: Array<{ staff_pin: string; name: string }>;
+}
