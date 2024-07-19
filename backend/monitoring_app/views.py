@@ -122,6 +122,7 @@ class StaffAttendanceStatsView(APIView):
                 schema=openapi.Schema(
                     type=openapi.TYPE_OBJECT,
                     properties={
+                        "department_name": openapi.Schema(type=openapi.TYPE_STRING),
                         "total_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
                         "present_staff_count": openapi.Schema(
                             type=openapi.TYPE_INTEGER
@@ -185,6 +186,7 @@ class StaffAttendanceStatsView(APIView):
         date_param = request.query_params.get(
             "date", timezone.now().date().strftime("%Y-%m-%d")
         )
+
         date_param = datetime.datetime.strptime(date_param, "%Y-%m-%d").date()
         next_date = date_param + datetime.timedelta(days=1)
         pin_param = request.query_params.get("pin", None)
@@ -193,18 +195,39 @@ class StaffAttendanceStatsView(APIView):
 
         def query():
             try:
-                staff_queryset = models.Staff.objects.all().select_related("department")
+                department = models.ChildDepartment.objects.filter(id=4958).first()
+                department_name = (
+                    department.name if department else "Unknown Department"
+                )
+
+                staff_queryset = models.Staff.objects.filter(
+                    department__parent_id=4958
+                ).select_related("department")
+
                 staff_attendance_queryset = models.StaffAttendance.objects.filter(
                     date_at__gte=date_param,
                     date_at__lt=next_date,
                     staff__in=staff_queryset,
                 ).select_related("staff")
 
+                if not staff_attendance_queryset.exists():
+                    return {
+                        "department_name": department_name,
+                        "total_staff_count": 0,
+                        "present_staff_count": 0,
+                        "absent_staff_count": 0,
+                        "present_between_9_to_18": 0,
+                        "present_data": [],
+                        "absent_data": [],
+                    }
+
                 total_staff_count = staff_queryset.count()
 
                 present_staff = staff_attendance_queryset.exclude(first_in__isnull=True)
-                present_staff_pins = present_staff.values_list("staff__pin", flat=True)
-                absent_staff_count = total_staff_count - present_staff.count()
+                present_staff_pins = set(
+                    present_staff.values_list("staff__pin", flat=True)
+                )
+                absent_staff_count = total_staff_count - len(present_staff_pins)
 
                 present_between_9_to_18 = present_staff.filter(
                     first_in__time__range=["08:00", "19:00"]
@@ -215,12 +238,23 @@ class StaffAttendanceStatsView(APIView):
 
                 for staff in staff_queryset:
                     if staff.pin in present_staff_pins:
+                        attendance = present_staff.get(staff__pin=staff.pin)
+                        total_minutes = 8 * 60
+                        minutes_present = (
+                            (attendance.last_out - attendance.first_in).total_seconds()
+                            / 60
+                            if attendance.last_out
+                            else 0
+                        )
+                        individual_percentage = (minutes_present / total_minutes) * 100
                         present_data.append(
                             {
                                 "staff_pin": staff.pin,
                                 "name": f"{staff.surname} {staff.name}",
-                                "minutes_present": 0,
-                                "individual_percentage": 0,
+                                "minutes_present": round(minutes_present, 2),
+                                "individual_percentage": round(
+                                    individual_percentage, 2
+                                ),
                             }
                         )
                     else:
@@ -230,22 +264,6 @@ class StaffAttendanceStatsView(APIView):
                                 "name": f"{staff.surname} {staff.name}",
                             }
                         )
-
-                for attendance in present_staff:
-                    total_minutes = 8 * 60
-                    minutes_present = (
-                        (attendance.last_out - attendance.first_in).total_seconds() / 60
-                        if attendance.last_out
-                        else 0
-                    )
-                    individual_percentage = (minutes_present / total_minutes) * 100
-                    for entry in present_data:
-                        if entry["staff_pin"] == attendance.staff.pin:
-                            entry["minutes_present"] = round(minutes_present, 2)
-                            entry["individual_percentage"] = round(
-                                individual_percentage, 2
-                            )
-                            break
 
                 if pin_param:
                     present_data = [
@@ -260,11 +278,13 @@ class StaffAttendanceStatsView(APIView):
                     ]
 
                     response_data = {
+                        "department_name": department_name,
                         "present_data": present_data,
                         "absent_data": absent_data,
                     }
                 else:
                     response_data = {
+                        "department_name": department_name,
                         "total_staff_count": total_staff_count,
                         "present_staff_count": len(present_data),
                         "absent_staff_count": absent_staff_count,
@@ -1345,6 +1365,17 @@ def sent_excel(request, department_id):
             {"error": "Missing startDate or endDate"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    try:
+        end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+        start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+    except ValueError as e:
+        return Response(
+            {"error": f"Invalid date format: {e}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    end_date += datetime.timedelta(days=1)
+    start_date += datetime.timedelta(days=1)
 
     main_ip = settings.MAIN_IP
     rows = []
