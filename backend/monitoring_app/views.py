@@ -685,7 +685,7 @@ def staff_detail(request, staff_pin):
             return None
         return staff
 
-    staff = get_cache(f"staff_{staff_pin}", query=fetch_staff_data, timeout=5 * 60)
+    staff = get_cache(f"staff_{staff_pin}", query=fetch_staff_data, timeout=1 * 10)
 
     if staff is None:
         return Response(status=status.HTTP_404_NOT_FOUND)
@@ -789,7 +789,7 @@ def staff_detail(request, staff_pin):
 
         return data
 
-    data = get_cache(cache_key, query=get_staff_detail, timeout=1 * 15)
+    data = get_cache(cache_key, query=get_staff_detail, timeout=1 * 10)
 
     return Response(data, status=status.HTTP_200_OK)
 
