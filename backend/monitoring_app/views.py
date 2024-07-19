@@ -554,7 +554,7 @@ def child_department_detail(request, child_department_id):
 @swagger_auto_schema(
     method="GET",
     operation_summary="Получить информации об сотруднике",
-    operation_description="Получение подробной информации о сотруднике, включая данные о посещаемости и заработной плате",
+    operation_description="Получение подробной информации о сотруднике, включая данные о посещаемости, заработной плате и типе контракта",
     manual_parameters=[
         openapi.Parameter(
             name="staff_pin",
@@ -627,6 +627,10 @@ def child_department_detail(request, child_department_id):
                         nullable=True,
                         description="Общая заработная плата сотрудника",
                     ),
+                    "contract_type": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Тип контракта сотрудника",
+                    ),
                 },
             ),
         ),
@@ -668,6 +672,7 @@ def staff_detail(request, staff_pin):
                 * `total_minutes` (число): Общее количество отработанных минут за день.
         * `percent_for_period` (число): Общий процент работы за указанный период.
         * `salary` (число): Общая заработная плата сотрудника (может быть null).
+        * `contract_type` (строка): Тип контракта сотрудника.
 
     * **Код 400:** Неверный запрос, дата начала не может быть позже даты окончания.
     * **Код 404:** Сотрудник не найден.
@@ -680,7 +685,7 @@ def staff_detail(request, staff_pin):
             return None
         return staff
 
-    staff = get_cache(f"staff_{staff_pin}", query=fetch_staff_data, timeout=300)
+    staff = get_cache(f"staff_{staff_pin}", query=fetch_staff_data, timeout=5 * 60)
 
     if staff is None:
         return Response(status=status.HTTP_404_NOT_FOUND)
@@ -767,6 +772,7 @@ def staff_detail(request, staff_pin):
         salaries = models.Salary.objects.filter(staff=staff)
         total_salary = salaries.first().total_salary if salaries.exists() else None
         avatar_url = staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
+        contract_type = salaries.first().contract_type if salaries.exists() else None
 
         data = {
             "name": staff.name,
@@ -777,6 +783,7 @@ def staff_detail(request, staff_pin):
             "department_id": staff.department.id if staff.department else "N/A",
             "attendance": attendance_data,
             "percent_for_period": round(percent_for_period, 2),
+            "contract_type": contract_type,
             "salary": total_salary,
         }
 
