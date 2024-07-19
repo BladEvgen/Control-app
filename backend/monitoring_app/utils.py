@@ -127,14 +127,7 @@ def get_all_attendance():
             attendance_data[pin] = data
 
     prev_date = timezone.now() - timezone.timedelta(days=DAYS)
-    next_day = prev_date + timezone.timedelta(days=1)
-
-    existing_attendances = models.StaffAttendance.objects.filter(
-        date_at=next_day.date()
-    ).select_related("staff")
-    existing_attendances_dict = {
-        (attend.staff.pin, attend.date_at): attend for attend in existing_attendances
-    }
+    next_day = prev_date + timezone.timedelta(days=0)
 
     new_attendances = []
     updates = []
@@ -156,25 +149,19 @@ def get_all_attendance():
             first_event_time = None
             last_event_time = None
 
-        date_at = next_day.date() + datetime.timedelta(days=1)
-        if (staff.pin, date_at) in existing_attendances_dict:
-            attendance = existing_attendances_dict[(staff.pin, date_at)]
+        date_at = next_day.date() + timezone.timedelta(days=1)
+
+        attendance, created = models.StaffAttendance.objects.get_or_create(
+            staff=staff,
+            date_at=date_at,
+            defaults={"first_in": first_event_time, "last_out": last_event_time},
+        )
+        if not created:
             attendance.first_in = first_event_time
             attendance.last_out = last_event_time
             updates.append(attendance)
-        else:
-            new_attendances.append(
-                models.StaffAttendance(
-                    staff=staff,
-                    first_in=first_event_time,
-                    last_out=last_event_time,
-                    date_at=date_at,
-                )
-            )
 
     with transaction.atomic():
-        if new_attendances:
-            models.StaffAttendance.objects.bulk_create(new_attendances)
         if updates:
             models.StaffAttendance.objects.bulk_update(
                 updates, ["first_in", "last_out"]
