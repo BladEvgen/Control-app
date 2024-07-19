@@ -303,7 +303,7 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
     wb = Workbook()
     ws = wb.active
 
-    data_font = Font(name="Roboto", size=10)
+    data_font = Font(name="Roboto", size=11)
     data_alignment = Alignment(horizontal="center", vertical="center")
 
     for r_idx, r in enumerate(
@@ -314,8 +314,31 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
             cell.font = data_font
             cell.alignment = data_alignment
 
-    header_font = Font(name="Roboto", size=12, bold=True)
+    header_font = Font(name="Roboto", size=14, bold=True)
     for cell in ws[1]:
         cell.font = header_font
+
+    for col in ws.columns:
+        max_length = 0
+        column = col[0].column_letter
+        for cell in col:
+            try:
+                if len(str(cell.value)) > max_length:
+                    max_length = len(cell.value)
+            except TypeError:
+                pass
+        adjusted_width = max_length + 2
+        ws.column_dimensions[column].width = adjusted_width
+
+    for row in ws.iter_rows():
+        max_height = 0
+        for cell in row:
+            try:
+                if len(str(cell.value)) > max_height:
+                    max_height = len(cell.value)
+            except TypeError:
+                pass
+        adjusted_height = max_height * 1.2
+        ws.row_dimensions[row[0].row].height = adjusted_height
 
     return wb
