@@ -6,6 +6,7 @@ import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { capitalizeFirstLetter } from "../utils/utils";
 import { FaDownload } from "react-icons/fa6";
+import Dashboard from "./Dashboard";
 
 const DepartmentTable = ({ data }: { data: IData }) => {
   const [page, setPage] = useState(0);
@@ -150,8 +151,16 @@ const DepartmentPage = () => {
     total_staff_count: 0,
   });
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [startDate, setStartDate] = useState<string>("");
-  const [endDate, setEndDate] = useState<string>("");
+  const [startDate, setStartDate] = useState<string>(
+    new Date(new Date().setDate(new Date().getDate() - 31))
+      .toISOString()
+      .split("T")[0]
+  );
+  const [endDate, setEndDate] = useState<string>(
+    new Date(new Date().setDate(new Date().getDate() - 0))
+      .toISOString()
+      .split("T")[0]
+  );
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
   const [showWaitMessage, setShowWaitMessage] = useState<boolean>(false);
 
@@ -233,6 +242,7 @@ const DepartmentPage = () => {
   };
 
   const isDownloadDisabled = !startDate || !endDate;
+
   return (
     <div className="container mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold mb-4 text-center md:text-left">
@@ -246,6 +256,7 @@ const DepartmentPage = () => {
           Вернуться на главную страницу
         </Link>
       )}
+
       <div className="flex flex-col md:flex-row mb-4">
         <div className="flex flex-col mb-4 md:mr-4">
           <label
@@ -319,6 +330,7 @@ const DepartmentPage = () => {
         </div>
       </div>
       {data && <DepartmentTable data={data} />}
+      {departmentId === 1 && <Dashboard />}
     </div>
   );
 };
