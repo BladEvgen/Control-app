@@ -10,11 +10,11 @@ from openpyxl import Workbook
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from monitoring_app import models
+from django.core.cache import cache
 from cryptography.fernet import Fernet
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils.dataframe import dataframe_to_rows
-
-from monitoring_app import models
 
 DAYS = settings.DAYS
 
@@ -129,7 +129,6 @@ def get_all_attendance():
     prev_date = timezone.now() - timezone.timedelta(days=DAYS)
     next_day = prev_date + timezone.timedelta(days=0)
 
-    new_attendances = []
     updates = []
 
     for pin, data in attendance_data.items():
@@ -205,8 +204,14 @@ def fetch_data(url: str) -> Dict[str, Any]:
 
 def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]]]:
     rows: List[List[Optional[str]]] = []
-
     timezone_pattern = re.compile(r"\+\d{2}:\d{2}")
+    holidays_cache = cache.get("holidays_cache")
+
+    if not holidays_cache:
+        holidays_cache = {
+            holiday.date: holiday for holiday in models.PublicHoliday.objects.all()
+        }
+        cache.set("holidays_cache", holidays_cache, timeout=60 * 60 * 24)
 
     def parse_datetime_with_timezone(dt_str: Optional[str]) -> Optional[str]:
         if not dt_str:
@@ -218,58 +223,49 @@ def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]
             return datetime.datetime.strptime(dt_str, dt_format).strftime("%H:%M:%S")
         return None
 
-    try:
-        for date_record in data:
-            for date, records in date_record.items():
+    for record in data:
+        for date, details in record.items():
+            try:
+                date_obj = datetime.datetime.strptime(date, "%Y-%m-%d")
+                date_str = date_obj.strftime("%d.%m.%Y")
+            except ValueError as e:
+                print(f"Error parsing date: {e}")
+                continue
+
+            public_holiday = holidays_cache.get(date_obj)
+            is_holiday = public_holiday and not public_holiday.is_working_day
+
+            department = details.get("department", "").replace("_", " ").capitalize()
+            for attendance in details.get("attendance", []):
                 try:
-                    date_obj = datetime.datetime.strptime(date, "%Y-%m-%d")
-                    date_str = date_obj.strftime("%d.%m.%Y")
-                except ValueError as e:
-                    print(f"Error parsing date: {e}")
-                    continue
+                    staff_fio = attendance.get("staff_fio", "")
+                    first_in = parse_datetime_with_timezone(attendance.get("first_in"))
+                    last_out = parse_datetime_with_timezone(attendance.get("last_out"))
 
-                try:
-                    public_holiday = models.PublicHoliday.objects.get(date=date_obj)
-                    is_holiday = not public_holiday.is_working_day
-                except models.PublicHoliday.DoesNotExist:
-                    is_holiday = False
-                except Exception as e:
-                    print(f"Error checking public holiday: {e}")
-                    is_holiday = False
-
-                for record in records:
-                    try:
-                        staff_fio = record.get("staff_fio", "")
-                        first_in = parse_datetime_with_timezone(record.get("first_in"))
-                        last_out = parse_datetime_with_timezone(record.get("last_out"))
-
-                        if date_obj.weekday() >= 5 or is_holiday:
-                            if first_in and last_out:
-                                attendance_info = f"{first_in} - {last_out}"
-                            else:
-                                attendance_info = "Выходной"
+                    if date_obj.weekday() >= 5 or is_holiday:
+                        if first_in and last_out:
+                            attendance_info = f"{first_in} - {last_out}"
                         else:
-                            attendance_info = (
-                                f"{first_in} - {last_out}"
-                                if first_in and last_out
-                                else "Отсутствие"
-                            )
+                            attendance_info = "Выходной"
+                    else:
+                        attendance_info = (
+                            f"{first_in} - {last_out}"
+                            if first_in and last_out
+                            else "Отсутствие"
+                        )
 
-                        rows.append([staff_fio, date_str, attendance_info])
-                    except KeyError as e:
-                        print(f"Missing expected key: {e}")
-                    except Exception as e:
-                        print(f"Error processing record: {e}")
-    except Exception as e:
-        print(f"Error parsing data: {e}")
-
+                    rows.append([staff_fio, department, date_str, attendance_info])
+                except KeyError as e:
+                    print(f"Missing expected key: {e}")
+                except Exception as e:
+                    print(f"Error processing record: {e}")
     return rows
 
 
 def create_dataframe(rows: List[List[Optional[str]]]) -> pd.DataFrame:
-    df = pd.DataFrame(rows, columns=["ФИО", "Дата", "Посещаемость"])
+    df = pd.DataFrame(rows, columns=["ФИО", "Отдел", "Дата", "Посещаемость"])
     df_pivot = df.pivot_table(
-        index=["ФИО"],
+        index=["ФИО", "Отдел"],
         columns="Дата",
         values="Посещаемость",
         aggfunc="first",
@@ -293,8 +289,11 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
     data_font = Font(name="Roboto", size=11)
     data_alignment = Alignment(horizontal="center", vertical="center")
 
+    df_flat = df_pivot_sorted.reset_index()
+    df_flat_sorted = df_flat.sort_values(by=["Отдел", "ФИО"])
+
     for r_idx, r in enumerate(
-        dataframe_to_rows(df_pivot_sorted, index=True, header=True), 1
+        dataframe_to_rows(df_flat_sorted, index=False, header=True), 1
     ):
         for c_idx, value in enumerate(r, 1):
             cell = ws.cell(row=r_idx, column=c_idx, value=value)
@@ -325,7 +324,7 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
                     max_height = len(cell.value)
             except TypeError:
                 pass
-        adjusted_height = max_height * 1.2
+        adjusted_height = max_height * 3
         ws.row_dimensions[row[0].row].height = adjusted_height
 
     return wb
