@@ -12,8 +12,16 @@ const StaffDetail = () => {
   const { pin } = useParams<{ pin: string }>();
   const [staffData, setStaffData] = useState<StaffData | null>(null);
   const [oneMonthDataFetched, setOneMonthDataFetched] = useState(false);
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
+  const [startDate, setStartDate] = useState<string>(
+    new Date(new Date().setDate(new Date().getDate() - 31))
+      .toISOString()
+      .split("T")[0]
+  );
+  const [endDate, setEndDate] = useState<string>(
+    new Date(new Date().setDate(new Date().getDate() - 0))
+      .toISOString()
+      .split("T")[0]
+  );
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [oneMonthStartDate, setOneMonthStartDate] = useState<string>("");
@@ -89,14 +97,21 @@ const StaffDetail = () => {
   };
 
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setStartDate(e.target.value);
-    setError("");
-    setEndDate("");
+    const newStartDate = e.target.value;
+    setStartDate(newStartDate);
+    if (new Date(newStartDate) > new Date(endDate)) {
+      setError("");
+      setEndDate(newStartDate);
+    }
   };
 
   const handleEndDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setEndDate(e.target.value);
-    setError("");
+    const newEndDate = e.target.value;
+    setEndDate(newEndDate);
+    if (new Date(newEndDate) < new Date(startDate)) {
+      setError("");
+      setEndDate(startDate);
+    }
   };
 
   const formatDate = (dateString: string | null) => {

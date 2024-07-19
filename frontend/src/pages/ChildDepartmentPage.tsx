@@ -13,8 +13,16 @@ const ChildDepartmentPage = () => {
   const [data, setData] = useState<IChildDepartmentData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>("");
-  const [startDate, setStartDate] = useState<string>("");
-  const [endDate, setEndDate] = useState<string>("");
+  const [startDate, setStartDate] = useState<string>(
+    new Date(new Date().setDate(new Date().getDate() - 31))
+      .toISOString()
+      .split("T")[0]
+  );
+  const [endDate, setEndDate] = useState<string>(
+    new Date(new Date().setDate(new Date().getDate() - 0))
+      .toISOString()
+      .split("T")[0]
+  );
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
   const [showWaitMessage, setShowWaitMessage] = useState<boolean>(false);
 
