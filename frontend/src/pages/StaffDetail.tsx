@@ -226,11 +226,12 @@ const StaffDetail = () => {
     staffData &&
     staffData.contract_type !== "gph" &&
     staffData.salary !== null &&
-    Object.keys(staffData.attendance).length > 28
+    Object.keys(staffData.attendance).length > 28 &&
+    Object.keys(staffData.attendance).length < 32
   ) {
     const percent_for_period = staffData.percent_for_period;
 
-    if (percent_for_period > 107) {
+    if (percent_for_period > 106) {
       if (percent_for_period > 100) {
         if (percent_for_period >= 119) {
           bonusPercentage = 20;
