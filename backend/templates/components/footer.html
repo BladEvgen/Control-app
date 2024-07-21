@@ -1,20 +1,22 @@
 <div style="position: fixed; bottom: 0; width: 100%;">
-    <footer class="py-3 bg-gray-200">
+    <footer class="py-4 bg-footer-light text-text-dark dark:bg-background-dark dark:text-text-light mt-auto">
         <div class="container mx-auto">
-            <ul class="flex justify-center border-b pb-3 mb-3">
-                <li class="mr-6">
-                    <a href="/" class="text-gray-600 hover:text-gray-800">Home</a>
-                </li>
-                <li class="mr-6">
-                    <a href="/" class="text-gray-600 hover:text-gray-800">FAQs</a>
-                </li>
-                <li>
-                    <a href="/" class="text-gray-600 hover:text-gray-800">About Us</a>
-                </li>
-            </ul>
-            <p class="text-center text-gray-600">
-                © <span id="currentYear">{{current_year}}</span> Company, Inc
-            </p>
+            <div class="flex justify-center border-b border-text-dark dark:border-text-light pb-3 mb-3">
+                <div class="mr-6">
+                    <a href="/"
+                        class="text-text-dark hover:text-primary dark:text-text-light dark:hover:text-primary-light">Home</a>
+                </div>
+                <div class="mr-6">
+                    <a href="/"
+                        class="text-text-dark hover:text-primary dark:text-text-light dark:hover:text-primary-light">FAQs</a>
+                </div>
+                <div>
+                    <a href="/"
+                        class="text-text-dark hover:text-primary dark:text-text-light dark:hover:text-primary-light">About
+                        Us</a>
+                </div>
+            </div>
+            <p class="text-center text-text-dark dark:text-text-light">© {{ current_year }} Company, Inc</p>
         </div>
     </footer>
 </div>
