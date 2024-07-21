@@ -77,41 +77,35 @@ def react_app(request):
 
 
 class StaffAttendanceStatsView(APIView):
+    """
+    Представление для получения статистики о посещаемости персонала.
+
+    Это представление фильтрует данные, чтобы включать только сотрудников, относящихся к отделу с ID 4958.
+
+    Параметры запроса:
+        date (str): Дата, для которой запрашивается статистика посещаемости, в формате 'YYYY-MM-DD'. По умолчанию используется текущая дата.
+        pin (str): ПИН-код сотрудника для получения конкретной статистики посещаемости.
+
+    Возвращает:
+        JSON-ответ, содержащий:
+            department_name (str): Название отдела.
+            total_staff_count (int): Общее количество сотрудников.
+            present_staff_count (int): Количество присутствующих сотрудников.
+            absent_staff_count (int): Количество отсутствующих сотрудников.
+            present_between_9_to_18 (int): Количество сотрудников, присутствующих с 08:00 до 19:00.
+            present_data (list): Список словарей с информацией о присутствующих сотрудниках, включая ПИН, имя, количество минут присутствия и индивидуальный процент.
+            absent_data (list): Список словарей с информацией об отсутствующих сотрудниках, включая ПИН и имя.
+            data_for_date (str): Дата, за которую предоставлены данные, в формате 'YYYY-MM-DD'.
+
+    Примеры:
+        GET /api/attendance/stats/?date=2024-07-20
+        GET /api/attendance/stats/?pin=123456
+
+    Примечание:
+        Ответ кэшируется на 6 часов, а информация о государственных праздниках кэшируется на 1 час.
+    """
+
     permission_classes = [IsAuthenticated]
-    """
-    View для получения статистики о посещаемости персонала.
-
-    Фильтрация:
-    - Учитываются только сотрудники, относящиеся к подотделу с ID 4958.
-
-    Параметры:
-    - запрос: объект HttpRequest
-
-    Returns:
-    - Объект ответа, содержащий статистику посещаемости персонала.
-
-    Usage:
-    Это представление принимает запросы GET с дополнительными параметрами запроса:
-    - дата: дата в формате «ГГГГ-ММ-ДД». По умолчанию используется текущая дата.
-    - PIN-код: PIN-код персонала для получения статистики по конкретному сотруднику.
-
-    Если пин-код не указан, возвращается общая статистика, включая общее количество сотрудников,
-    текущее количество сотрудников, количество отсутствующих сотрудников и присутствие сотрудников с 8:00 до 18:00.
-    Если указан PIN-код, возвращается статистика для конкретного сотрудника.
-
-    Данные ответа включают в себя:
-    - Для общей статистики:
-    - total_staff_count: общее количество сотрудников.
-    - present_staff_count: количество присутствующих сотрудников.
-    - absent_staff_count: количество отсутствующих сотрудников.
-    - present_between_9_to_18: количество сотрудников, присутствующих с 8:00 до 18:00.
-    - present_data: список словарей, содержащих информацию о нынешнем персонале.
-    - absent_data: список словарей, содержащих информацию об отсутствующем персонале.
-    
-    - Для статистики отдельных сотрудников:
-    - Present_data: список словарей, содержащих информацию о нынешнем персонале.
-    - absent_data: список словарей, содержащих информацию об отсутствующем персонале.
-    """
 
     @swagger_auto_schema(
         operation_summary="Получить список людей об их присутствии",
@@ -161,6 +155,7 @@ class StaffAttendanceStatsView(APIView):
                                 },
                             ),
                         ),
+                        "data_for_date": openapi.Schema(type=openapi.TYPE_STRING),
                     },
                 ),
             ),
@@ -186,12 +181,25 @@ class StaffAttendanceStatsView(APIView):
         date_param = request.query_params.get(
             "date", timezone.now().date().strftime("%Y-%m-%d")
         )
-
         date_param = datetime.datetime.strptime(date_param, "%Y-%m-%d").date()
-        next_date = date_param + datetime.timedelta(days=1)
         pin_param = request.query_params.get("pin", None)
 
-        cache_key = f"staff_attendance_stats_{date_param}_{pin_param}"
+        def get_last_working_day(date):
+            holidays = get_cache(
+                "public_holidays",
+                query=lambda: list(
+                    models.PublicHoliday.objects.values_list("date", flat=True)
+                ),
+                timeout=3600,
+            )
+
+            while date.weekday() >= 5 or date in holidays:
+                date -= datetime.timedelta(days=1)
+            return date
+
+        target_date = get_last_working_day(date_param)
+        next_date = target_date + datetime.timedelta(days=1)
+        cache_key = f"staff_attendance_stats_{target_date}_{pin_param}"
 
         def query():
             try:
@@ -203,9 +211,8 @@ class StaffAttendanceStatsView(APIView):
                 staff_queryset = models.Staff.objects.filter(
                     department__parent_id=4958
                 ).select_related("department")
-
                 staff_attendance_queryset = models.StaffAttendance.objects.filter(
-                    date_at__gte=date_param,
+                    date_at__gte=target_date,
                     date_at__lt=next_date,
                     staff__in=staff_queryset,
                 ).select_related("staff")
@@ -219,16 +226,15 @@ class StaffAttendanceStatsView(APIView):
                         "present_between_9_to_18": 0,
                         "present_data": [],
                         "absent_data": [],
+                        "data_for_date": target_date.strftime("%Y-%m-%d"),
                     }
 
                 total_staff_count = staff_queryset.count()
-
                 present_staff = staff_attendance_queryset.exclude(first_in__isnull=True)
                 present_staff_pins = set(
                     present_staff.values_list("staff__pin", flat=True)
                 )
                 absent_staff_count = total_staff_count - len(present_staff_pins)
-
                 present_between_9_to_18 = present_staff.filter(
                     first_in__time__range=["08:00", "19:00"]
                 ).count()
@@ -281,6 +287,7 @@ class StaffAttendanceStatsView(APIView):
                         "department_name": department_name,
                         "present_data": present_data,
                         "absent_data": absent_data,
+                        "data_for_date": target_date.strftime("%Y-%m-%d"),
                     }
                 else:
                     response_data = {
@@ -291,16 +298,14 @@ class StaffAttendanceStatsView(APIView):
                         "present_between_9_to_18": present_between_9_to_18,
                         "present_data": present_data,
                         "absent_data": absent_data,
+                        "data_for_date": target_date.strftime("%Y-%m-%d"),
                     }
 
                 return response_data
             except Exception as e:
                 return {"error": str(e)}
 
-        cached_data = get_cache(
-            cache_key, query=query, timeout=6 * 60 * 60, cache=Cache
-        )
-
+        cached_data = get_cache(cache_key, query=query, timeout=6 * 60 * 60)
         return Response(cached_data)
 
 
