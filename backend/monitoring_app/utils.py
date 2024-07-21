@@ -292,6 +292,9 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
     df_flat = df_pivot_sorted.reset_index()
     df_flat_sorted = df_flat.sort_values(by=["Отдел", "ФИО"])
 
+    max_col_widths = [0] * len(df_flat_sorted.columns)
+    max_row_heights = [0] * (len(df_flat_sorted) + 1)
+
     for r_idx, r in enumerate(
         dataframe_to_rows(df_flat_sorted, index=False, header=True), 1
     ):
@@ -299,32 +302,24 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
             cell = ws.cell(row=r_idx, column=c_idx, value=value)
             cell.font = data_font
             cell.alignment = data_alignment
+            value_length = len(str(value))
+
+            if value_length > max_col_widths[c_idx - 1]:
+                max_col_widths[c_idx - 1] = value_length
+
+            if value_length > max_row_heights[r_idx - 1]:
+                max_row_heights[r_idx - 1] = value_length
 
     header_font = Font(name="Roboto", size=14, bold=True)
     for cell in ws[1]:
         cell.font = header_font
 
-    for col in ws.columns:
-        max_length = 0
-        column = col[0].column_letter
-        for cell in col:
-            try:
-                if len(str(cell.value)) > max_length:
-                    max_length = len(cell.value)
-            except TypeError:
-                pass
-        adjusted_width = max_length + 2
-        ws.column_dimensions[column].width = adjusted_width
+    for idx, col_width in enumerate(max_col_widths, 1):
+        ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = (
+            col_width + 2
+        )
 
-    for row in ws.iter_rows():
-        max_height = 0
-        for cell in row:
-            try:
-                if len(str(cell.value)) > max_height:
-                    max_height = len(cell.value)
-            except TypeError:
-                pass
-        adjusted_height = max_height * 3
-        ws.row_dimensions[row[0].row].height = adjusted_height
+    for idx, row_height in enumerate(max_row_heights, 1):
+        ws.row_dimensions[idx].height = row_height * 3
 
     return wb
