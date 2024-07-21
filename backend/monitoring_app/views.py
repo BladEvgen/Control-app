@@ -1,29 +1,29 @@
+import datetime
 import os
 import zipfile
-import datetime
-from tempfile import NamedTemporaryFile
 from concurrent.futures import ThreadPoolExecutor
+from tempfile import NamedTemporaryFile
 
-from drf_yasg import openapi
 from django.conf import settings
-from django.db import transaction
-from django.utils import timezone
-from rest_framework import status
-from openpyxl import load_workbook
-from django.core.cache import caches
-from django.http import HttpResponse
-from django.db.models import Count, Q
-from django.views.generic import View
-from rest_framework.views import APIView
-from django.contrib.auth.models import User
-from rest_framework.response import Response
-from django.core.files.base import ContentFile
-from drf_yasg.utils import swagger_auto_schema
-from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.models import User
+from django.core.cache import caches
+from django.core.files.base import ContentFile
+from django.db import transaction
+from django.db.models import Count, Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
+from django.views.generic import View
+from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
+from openpyxl import load_workbook
+from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from monitoring_app import models, serializers, utils
 
@@ -187,13 +187,17 @@ class StaffAttendanceStatsView(APIView):
         def get_last_working_day(date):
             holidays = get_cache(
                 "public_holidays",
-                query=lambda: list(
-                    models.PublicHoliday.objects.values_list("date", flat=True)
-                ),
-                timeout=3600,
+                query=lambda: list(models.PublicHoliday.objects.all()),
+                timeout=10 * 1,
             )
 
-            while date.weekday() >= 5 or date in holidays:
+            holiday_dates = {
+                holiday.date: holiday.is_working_day for holiday in holidays
+            }
+
+            while (
+                date.weekday() >= 5 or date in holiday_dates and not holiday_dates[date]
+            ):
                 date -= datetime.timedelta(days=1)
             return date
 
@@ -228,7 +232,6 @@ class StaffAttendanceStatsView(APIView):
                         "absent_data": [],
                         "data_for_date": target_date.strftime("%Y-%m-%d"),
                     }
-
                 total_staff_count = staff_queryset.count()
                 present_staff = staff_attendance_queryset.exclude(first_in__isnull=True)
                 present_staff_pins = set(
@@ -241,7 +244,6 @@ class StaffAttendanceStatsView(APIView):
 
                 present_data = []
                 absent_data = []
-
                 for staff in staff_queryset:
                     if staff.pin in present_staff_pins:
                         attendance = present_staff.get(staff__pin=staff.pin)
@@ -1649,7 +1651,7 @@ class UploadFileView(View):
 
     def handle_zip(self, file_path):
         """
-        Обрабатывает загрузку и импорт данных из ZIP архива.
+        Обрабатывает загрузку и импорт данных из ZIP архива для Staff.
 
         Args:
             file_path (File): Путь к загруженному файлу.
@@ -1664,10 +1666,15 @@ class UploadFileView(View):
                 staff_member = models.Staff.objects.filter(pin=pin).first()
                 if staff_member:
                     with zip_file.open(filename) as file:
-                        staff_member.avatar.save(
-                            filename, ContentFile(file.read()), save=False
-                        )
-                        staff_member.save()
+                        new_avatar = ContentFile(file.read())
+                        new_avatar.name = filename
+                        if new_avatar:
+                            if staff_member.avatar:
+                                staff_member.avatar.delete(save=False)
+                            staff_member.avatar.save(
+                                new_avatar.name, new_avatar, save=False
+                            )
+                            staff_member.save()
 
 
 class APIKeyCheckView(APIView):
