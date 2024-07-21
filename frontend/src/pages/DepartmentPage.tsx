@@ -6,7 +6,6 @@ import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { capitalizeFirstLetter } from "../utils/utils";
 import { FaDownload } from "react-icons/fa6";
-import Dashboard from "./Dashboard";
 
 const DepartmentTable = ({ data }: { data: IData }) => {
   const [page, setPage] = useState(0);
@@ -330,7 +329,6 @@ const DepartmentPage = () => {
         </div>
       </div>
       {data && <DepartmentTable data={data} />}
-      {departmentId === 1 && <Dashboard />}
     </div>
   );
 };

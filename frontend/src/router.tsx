@@ -9,6 +9,7 @@ import DepartmentPage from "./pages/DepartmentPage.tsx";
 import ChildDepartmentPage from "./pages/ChildDepartmentPage.tsx";
 import StaffDetail from "./pages/StaffDetail.tsx";
 import { addPrefix } from "./RouterUtils.tsx";
+import Dashboard from "./pages/Dashboard.tsx";
 interface LayoutProps {
   children: ReactNode;
 }
@@ -60,6 +61,14 @@ const router = createBrowserRouter([
     element: (
       <Layout>
         <StaffDetail /> {""}
+      </Layout>
+    ),
+  },
+  {
+    path: addPrefix("/profile"),
+    element: (
+      <Layout>
+        <Dashboard />
       </Layout>
     ),
   },
