@@ -1,3 +1,40 @@
-export const capitalizeFirstLetter = (string: string) => {
-  return string.charAt(0).toUpperCase() + string.slice(1);
+export const formatDepartmentName = (string: string) => {
+  const exceptions = [
+    "и",
+    "в",
+    "на",
+    "под",
+    "с",
+    "у",
+    "о",
+    "за",
+    "до",
+    "от",
+    "к",
+    "по",
+    "из",
+    "об",
+    "без",
+    "про",
+    "для",
+    "при",
+    "через",
+    "над",
+    "во",
+    "со",
+    "со",
+  ];
+
+  const stringWithSpaces = string.replace(/_/g, " ");
+
+  return stringWithSpaces
+    .split(" ")
+    .map((word, index) => {
+      if (index === 0 || !exceptions.includes(word.toLowerCase())) {
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      } else {
+        return word.toLowerCase();
+      }
+    })
+    .join(" ");
 };
