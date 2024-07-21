@@ -1,14 +1,14 @@
 import os
 
+from django.utils import timezone
 from django.contrib import messages
+from django.dispatch import receiver
+from django.db import models, transaction
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-from django.core.validators import FileExtensionValidator
-from django.db import models, transaction
-from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
-from django.dispatch import receiver
-from django.utils import timezone
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.core.validators import FileExtensionValidator
+from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 
 from monitoring_app import utils
 
@@ -217,32 +217,20 @@ class Staff(models.Model):
         return f"{self.surname} {self.name} {self.department.name if self.department else 'N/A'}"
 
     def save(self, *args, **kwargs):
+        if self.pk:
+            old_avatar = Staff.objects.filter(pk=self.pk).values("avatar").first()
+            if old_avatar and old_avatar["avatar"] != self.avatar and self.avatar:
+                try:
+                    old_avatar_path = old_avatar["avatar"]
+                    if os.path.exists(old_avatar_path):
+                        os.remove(old_avatar_path)
+                except Exception as e:
+                    print(f"Ошибка при удалении старой аватарки: {e}")
         super().save(*args, **kwargs)
 
     class Meta:
         verbose_name = "Сотрудник"
         verbose_name_plural = "Сотрудники"
-
-
-@receiver(pre_save, sender=Staff)
-def delete_old_avatar(sender, instance, **kwargs):
-    if not instance.pk:
-        return
-
-    try:
-        old_instance = Staff.objects.get(pk=instance.pk)
-    except Staff.DoesNotExist:
-        return
-
-    old_avatar = old_instance.avatar
-    new_avatar = instance.avatar
-
-    if old_avatar and old_avatar != new_avatar:
-        if os.path.exists(old_avatar.path):
-            os.remove(old_avatar.path)
-
-    if new_avatar:
-        new_avatar.name = user_avatar_path(instance, new_avatar.name)
 
 
 class StaffAttendance(models.Model):
