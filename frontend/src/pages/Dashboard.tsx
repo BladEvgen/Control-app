@@ -48,6 +48,15 @@ const Dashboard: React.FC = () => {
     }
   }, [loading, stats, error]);
 
+  const formatDate = (dateString: string) => {
+    const options: Intl.DateTimeFormatOptions = {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    };
+    return new Date(dateString).toLocaleDateString("ru-RU", options);
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center items-center h-screen">
@@ -58,13 +67,13 @@ const Dashboard: React.FC = () => {
 
   if (error) {
     return (
-      <div className="flex justify-center items-center h-screen bg-red-100">
+      <div className="flex justify-center items-center h-screen px-4">
         <div
-          className="bg-white border border-red-400 text-red-700 px-4 py-3 rounded relative"
+          className="bg-red-100 border-l-4 border-red-500 text-red-700 px-8 py-6 rounded-lg shadow-lg transition transform duration-500 ease-in-out animate-pulse max-w-lg w-full mx-auto"
           role="alert"
         >
-          <strong className="font-bold">Ошибка!</strong>
-          <span className="block sm:inline">{error}</span>
+          <p className="font-bold text-xl md:text-2xl">Ошибка!</p>
+          <p className="text-lg md:text-xl">{error}</p>
         </div>
       </div>
     );
@@ -76,17 +85,23 @@ const Dashboard: React.FC = () => {
       stats.present_staff_count === 0 &&
       stats.absent_staff_count === 0)
   ) {
-    return null;
-  }
+    const formattedDate = formatDate(stats?.data_for_date || selectedDate);
 
-  const formatDate = (dateString: string) => {
-    const options: Intl.DateTimeFormatOptions = {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    };
-    return new Date(dateString).toLocaleDateString("ru-RU", options);
-  };
+    return (
+      <div className="flex justify-center items-center h-screen px-4">
+        <div
+          className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 px-8 py-6 rounded-lg shadow-lg transition transform duration-500 ease-in-out animate-bounce max-w-lg w-full mx-auto"
+          role="alert"
+        >
+          <p className="font-bold text-xl md:text-2xl">Предупреждение!</p>
+          <p className="text-lg md:text-xl">
+            Данные за {formattedDate} не были найдены, обратитесь к системному
+            администратору.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const formattedDate = formatDate(stats.data_for_date);
 
@@ -217,10 +232,10 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="container mx-auto p-4">
-      <h1 className="text-3xl font-bold mb-4 text-center text-gray-700">
+      <h1 className="text-3xl font-bold mb-4 text-center text-gray-200">
         Посещаемость отдела {stats.department_name}
       </h1>
-      <h2 className="text-xl mb-6 text-center text-gray-500">
+      <h2 className="text-xl mb-6 text-center text-gray-100">
         Посещаемость сотрудников на {formattedDate}
       </h2>
       {stats.total_staff_count === 0 ? (
@@ -258,7 +273,7 @@ const Dashboard: React.FC = () => {
               Процент посещаемости по сотрудникам
             </h2>
             <Line data={lineData} options={lineOptions} />
-            <div className="mt-4 grid grid-cols-2 gap-4">
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
               {ranges
                 .slice(0, staffCountsInRanges.length)
                 .map((range, index) => {
@@ -266,7 +281,7 @@ const Dashboard: React.FC = () => {
                   return (
                     <div
                       key={index}
-                      className="flex justify-between bg-gray-100 p-4 rounded-lg shadow-md"
+                      className="flex flex-col md:flex-row justify-between bg-gray-100 p-4 rounded-lg shadow-md"
                     >
                       <span className="font-semibold text-gray-700">{`${range}% - ${nextRange}%`}</span>
                       <span className="text-gray-900">{`Сотрудников: ${staffCountsInRanges[index]}`}</span>

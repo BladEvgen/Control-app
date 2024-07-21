@@ -4,8 +4,14 @@ import { useParams } from "react-router-dom";
 import { Link } from "../RouterUtils";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
-import { capitalizeFirstLetter } from "../utils/utils";
-import { FaDownload } from "react-icons/fa6";
+import { formatDepartmentName } from "../utils/utils";
+import {
+  FaDownload,
+  FaChevronLeft,
+  FaChevronRight,
+  FaAngleDoubleLeft,
+  FaAngleDoubleRight,
+} from "react-icons/fa";
 
 const DepartmentTable = ({ data }: { data: IData }) => {
   const [page, setPage] = useState(0);
@@ -30,13 +36,13 @@ const DepartmentTable = ({ data }: { data: IData }) => {
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full bg-gray-100 p-4 rounded-lg shadow-lg">
       <input
         type="text"
         placeholder="Поиск отдела"
         value={searchQuery}
         onChange={handleSearchChange}
-        className="border border-gray-300 px-3 py-1 rounded-md mb-4"
+        className="border border-gray-300 px-4 py-2 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
       />
       <p className="text-gray-700 mb-4">
         <strong>Количество сотрудников:</strong> {data?.total_staff_count}
@@ -53,7 +59,7 @@ const DepartmentTable = ({ data }: { data: IData }) => {
               </th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="bg-white divide-y divide-gray-200">
             {filteredDepartments
               .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
               .map((department: IChildDepartment) => (
@@ -65,9 +71,9 @@ const DepartmentTable = ({ data }: { data: IData }) => {
                           ? `/department/${department.child_id}`
                           : `/childDepartment/${department.child_id}`
                       }
-                      className="text-sm font-medium text-gray-900 hover:text-indigo-600"
+                      className="text-sm font-medium text-indigo-600 hover:text-indigo-800"
                     >
-                      {capitalizeFirstLetter(department.name)}
+                      {formatDepartmentName(department.name)}
                     </Link>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
@@ -79,22 +85,30 @@ const DepartmentTable = ({ data }: { data: IData }) => {
         </table>
       </div>
 
-      <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6">
+      <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6 rounded-b-lg">
         <div className="flex-1 flex justify-between">
           <div className="flex">
             <button
               onClick={() => handleChangePage(0)}
               disabled={page === 0}
-              className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 mr-2"
+              className={`${
+                page === 0
+                  ? "text-gray-300"
+                  : "text-gray-700 hover:text-gray-900"
+              } px-4 py-2 rounded-md text-sm font-medium mr-2`}
             >
-              ⏪
+              <FaAngleDoubleLeft size={16} />
             </button>
             <button
               onClick={() => handleChangePage(page - 1)}
               disabled={page === 0}
-              className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 mr-2"
+              className={`${
+                page === 0
+                  ? "text-gray-300"
+                  : "text-gray-700 hover:text-gray-900"
+              } px-4 py-2 rounded-md text-sm font-medium mr-2`}
             >
-              ◀️
+              <FaChevronLeft size={16} />
             </button>
           </div>
           <p className="text-sm text-gray-700">
@@ -112,9 +126,14 @@ const DepartmentTable = ({ data }: { data: IData }) => {
                 page >=
                 Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
               }
-              className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 mr-2"
+              className={`${
+                page >=
+                Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
+                  ? "text-gray-300"
+                  : "text-gray-700 hover:text-gray-900"
+              } px-4 py-2 rounded-md text-sm font-medium mr-2`}
             >
-              ▶️
+              <FaChevronRight size={16} />
             </button>
             <button
               onClick={() =>
@@ -129,9 +148,14 @@ const DepartmentTable = ({ data }: { data: IData }) => {
                 page >=
                 Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
               }
-              className="bg-white-500 text-white px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50"
+              className={`${
+                page >=
+                Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
+                  ? "text-gray-300"
+                  : "text-gray-700 hover:text-gray-900"
+              } px-4 py-2 rounded-md text-sm font-medium`}
             >
-              ⏩
+              <FaAngleDoubleRight size={16} />
             </button>
           </div>
         </div>
@@ -244,8 +268,8 @@ const DepartmentPage = () => {
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <h1 className="text-2xl font-bold mb-4 text-center md:text-left">
-        {isLoading ? " " : data?.name}
+      <h1 className="text-2xl font-bold mb-4 text-center md:text-left text-white">
+        {isLoading ? " " : formatDepartmentName(data?.name)}
       </h1>
       {location.pathname !== "/app/" && (
         <Link
@@ -260,7 +284,7 @@ const DepartmentPage = () => {
         <div className="flex flex-col mb-4 md:mr-4">
           <label
             htmlFor="startDate"
-            className="block mb-1 font-medium text-gray-700"
+            className="block mb-1 font-medium text-gray-200"
           >
             Дата начала:
           </label>
@@ -269,13 +293,13 @@ const DepartmentPage = () => {
             id="startDate"
             value={startDate}
             onChange={handleStartDateChange}
-            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto"
+            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
         <div className="flex flex-col mb-4 md:mr-4">
           <label
             htmlFor="endDate"
-            className="block mb-1 font-medium text-gray-700"
+            className="block mb-1 font-medium text-gray-200"
           >
             Дата конца:
           </label>
@@ -284,7 +308,7 @@ const DepartmentPage = () => {
             id="endDate"
             value={endDate}
             onChange={handleEndDateChange}
-            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto"
+            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
         <div className="flex flex-col md:flex-row items-center">

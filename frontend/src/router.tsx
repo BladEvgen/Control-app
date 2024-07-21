@@ -15,14 +15,16 @@ interface LayoutProps {
 }
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   return (
-    <div className="flex flex-col min-h-screen">
+    <div className="flex flex-col min-h-screen bg-footer-light text-dark-blue dark:text-text-light">
       <HeaderComponent />
-      <div className="flex-1">{children}</div>
+      <div className="relative flex-1 overflow-hidden">
+        <div className="absolute top-0 left-0 right-0 h-full w-full animate-drip bg-gradient-to-b from-primary-dark to-footer-light"></div>
+        <div className="relative z-10 ">{children}</div>
+      </div>
       <FooterComponent />
     </div>
   );
 };
-
 const router = createBrowserRouter([
   {
     path: addPrefix("/"),

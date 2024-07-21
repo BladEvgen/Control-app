@@ -47,54 +47,56 @@ const LoginPage = () => {
   };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
-      <div
-        className="w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-lg md:max-w-lg lg:max-w-xl xl:max-w-2xl"
-        style={{ marginTop: "-25%" }}
-      >
-        <h2 className="text-3xl font-bold text-center text-gray-800">Login</h2>
-        <input
-          className="w-full px-4 py-2 mb-4 text-lg bg-gray-100 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          name="username"
-          placeholder="Username"
-          type="text"
-        />
-        <div className="relative w-full">
+    <div className="flex flex-col min-h-screen bg-background-light dark:bg-background-dark">
+      <div className="flex-grow flex flex-col items-center justify-center animate-gradient-to-r from-accent to-primary">
+        <div className="w-full max-w-md p-8 space-y-6 bg-white dark:bg-background-dark rounded-lg shadow-lg bg-opacity-80 md:max-w-lg lg:max-w-xl xl:max-w-2xl">
+          <h2 className="text-3xl font-bold text-center text-dark-blue dark:text-text-light">
+            Login
+          </h2>
           <input
-            className="w-full px-4 py-2 mb-4 text-lg bg-gray-100 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 pr-10"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            name="password"
-            placeholder="Password"
-            type={showPassword ? "text" : "password"}
-            onKeyPress={handleKeyPress}
+            className="w-full px-4 py-2 mb-4 text-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-light dark:focus:ring-primary"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            name="username"
+            placeholder="Username"
+            type="text"
           />
-          <button
-            type="button"
-            className="absolute inset-y-0 right-0 flex items-center justify-center mb-3 px-3 text-gray-600"
-            onClick={() => setShowPassword(!showPassword)}
-          >
-            {showPassword ? <FaEyeSlash size={24} /> : <FaEye size={24} />}
-          </button>
-        </div>
-        <button
-          className="w-full px-4 py-2 text-lg font-semibold text-white bg-blue-500 rounded-md hover:bg-blue-600 focus:outline-none focus:bg-blue-600"
-          onClick={handleSubmit}
-        >
-          Login
-        </button>
-        {loginError && (
-          <div className="p-4 bg-red-500 rounded-lg shadow-md flex items-center">
-            <div className="mr-2">
-              <FaBug className="text-white" size={24} />
-            </div>
-            <p className="text-lg font-semibold text-white">{loginError}</p>
+          <div className="relative w-full">
+            <input
+              className="w-full px-4 py-2 mb-4 text-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-light dark:focus:ring-primary pr-10"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              name="password"
+              placeholder="Password"
+              type={showPassword ? "text" : "password"}
+              onKeyPress={handleKeyPress}
+            />
+            <button
+              type="button"
+              className="absolute top-[0.7rem] right-2 flex items-center justify-center px-3 text-gray-600 dark:text-gray-400"
+              onClick={() => setShowPassword(!showPassword)}
+            >
+              {showPassword ? <FaEyeSlash size={24} /> : <FaEye size={24} />}
+            </button>
           </div>
-        )}
+          <button
+            className="w-full px-4 py-2 text-lg font-semibold text-white bg-primary dark:bg-primary-dark rounded-md hover:bg-primary-dark dark:hover:bg-darker-blue focus:outline-none focus:bg-primary-dark dark:focus:bg-darker-blue"
+            onClick={handleSubmit}
+          >
+            Login
+          </button>
+          {loginError && (
+            <div className="p-4 bg-red-500 rounded-lg shadow-md flex items-center mt-4">
+              <div className="mr-2">
+                <FaBug className="text-white" size={24} />
+              </div>
+              <p className="text-lg font-semibold text-white">{loginError}</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 };
+
 export default LoginPage;

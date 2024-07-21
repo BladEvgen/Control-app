@@ -4,7 +4,7 @@ import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { IChildDepartmentData } from "../schemas/IData";
 import { useParams } from "react-router-dom";
-import { capitalizeFirstLetter } from "../utils/utils";
+import { formatDepartmentName } from "../utils/utils";
 import { FaDownload } from "react-icons/fa6";
 
 const ChildDepartmentPage = () => {
@@ -127,9 +127,9 @@ const ChildDepartmentPage = () => {
         </div>
       ) : (
         <>
-          <h1 className="text-3xl font-bold mb-6 text-center md:text-left break-words sm:text-center md:truncate">
+          <h1 className="text-3xl font-bold mb-6 text-center md:text-left break-words sm:text-center md:truncate text-white">
             {data?.child_department?.name &&
-              capitalizeFirstLetter(data.child_department.name)}
+              formatDepartmentName(data.child_department.name)}
           </h1>
           <button
             onClick={navigateToChildDepartment}
@@ -141,7 +141,7 @@ const ChildDepartmentPage = () => {
             <div className="flex flex-col mb-4 md:mr-4">
               <label
                 htmlFor="startDate"
-                className="block mb-1 font-medium text-gray-700"
+                className="block mb-1 font-medium text-gray-200 "
               >
                 Дата начала:
               </label>
@@ -150,13 +150,13 @@ const ChildDepartmentPage = () => {
                 id="startDate"
                 value={startDate}
                 onChange={handleStartDateChange}
-                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto "
+                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             <div className="flex flex-col mb-4 md:mr-4">
               <label
                 htmlFor="endDate"
-                className="block mb-1 font-medium text-gray-700"
+                className="block mb-1 font-medium text-gray-200"
               >
                 Дата конца:
               </label>
@@ -165,7 +165,7 @@ const ChildDepartmentPage = () => {
                 id="endDate"
                 value={endDate}
                 onChange={handleEndDateChange}
-                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto"
+                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             <div className="flex items-center">
@@ -219,12 +219,12 @@ const ChildDepartmentPage = () => {
               className="border border-gray-300 px-4 py-2 rounded-md w-full focus:outline-none focus:border-blue-500 transition-colors duration-300 ease-in-out"
             />
           </div>
-          <p className="text-gray-700 mb-4">
+          <p className="text-gray-300 mb-4">
             <strong>Количество сотрудников:</strong> {data?.staff_count}
           </p>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto rounded-lg shadow-lg">
             <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-100">
+              <thead className="bg-gray-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     ФИО
@@ -240,7 +240,7 @@ const ChildDepartmentPage = () => {
                   </th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="bg-white divide-y divide-gray-200 rounded-b-lg">
                 {data?.staff_data &&
                   Object.entries(data.staff_data)
                     .filter(([, staff]) =>
@@ -253,7 +253,7 @@ const ChildDepartmentPage = () => {
                         <td className="px-6 py-4 whitespace-nowrap">
                           <Link
                             to={`/staffDetail/${pin}`}
-                            className="text-blue-500 hover:underline"
+                            className="text-indigo-600 hover:text-indigo-800"
                           >
                             {staff.FIO}
                           </Link>
@@ -270,7 +270,6 @@ const ChildDepartmentPage = () => {
                             staff.positions.join(", ")
                           )}
                         </td>
-
                         <td className="px-6 py-4 whitespace-nowrap">
                           {formatDate(staff.date_of_creation)}
                         </td>
