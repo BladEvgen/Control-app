@@ -148,7 +148,7 @@ def get_all_attendance():
             first_event_time = None
             last_event_time = None
 
-        date_at = next_day.date() + timezone.timedelta(days=1)
+        date_at = next_day.date()
 
         attendance, created = models.StaffAttendance.objects.get_or_create(
             staff=staff,
