@@ -60,4 +60,5 @@ export interface AttendanceStats {
     individual_percentage: number;
   }>;
   absent_data: Array<{ staff_pin: string; name: string }>;
+  data_for_date : string;
 }
