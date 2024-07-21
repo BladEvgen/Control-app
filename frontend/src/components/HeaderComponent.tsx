@@ -87,11 +87,14 @@ const HeaderComponent = () => {
   };
 
   return (
-    <header className="bg-blue-900 text-white shadow-md">
+    <header className="bg-primary-dark text-text-light shadow-md">
       <nav className="container mx-auto p-4 flex items-center justify-between">
-        <Link to="/" className="text-2xl font-bold flex items-center">
+        <Link
+          to="/"
+          className="text-2xl font-bold flex items-center text-text-light"
+        >
           Staff App
-          <FaUserClock className="m-2" />
+          <FaUserClock className="ml-2" />
         </Link>
         <div className="lg:hidden">
           <button className="text-2xl" onClick={toggleMobileMenu}>
@@ -107,7 +110,7 @@ const HeaderComponent = () => {
             <div className="relative mt-4 lg:mt-0 lg:ml-4">
               <button
                 ref={profileButtonRef}
-                className="flex items-center bg-gray-800 hover:bg-gray-900 text-white font-bold py-2 px-4 rounded relative"
+                className="flex items-center bg-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded relative"
                 onClick={toggleDropdown}
               >
                 {username} <FaAngleDown className="ml-2" />
@@ -115,24 +118,24 @@ const HeaderComponent = () => {
               {isDropdownOpen && (
                 <div
                   ref={dropdownRef}
-                  className="absolute right-0 mt-2 w-48 bg-white text-gray-800 rounded-md shadow-lg z-50"
+                  className="absolute right-0 mt-2 w-48 bg-white dark:bg-background-dark text-gray-800 dark:text-text-light rounded-md shadow-lg z-50"
                   onMouseLeave={handleMouseLeave}
                 >
                   <Link to="/profile">
-                    <button className="flex items-center px-4 py-3 hover:bg-gray-200 w-full text-left border-gray-300 rounded">
+                    <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
                       <FaUser className="mr-2 text-blue-500" />
                       Profile
                     </button>
                   </Link>
                   <a href={`${apiUrl}/upload`}>
-                    <button className="flex items-center px-4 py-3  hover:bg-gray-200  w-full text-left border-gray-300">
+                    <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
                       <FaUpload className="mr-2 text-green-500 hover:text-green-700" />
                       Upload
                     </button>
                   </a>
                   <button
                     onClick={handleLogout}
-                    className="flex items-center px-4 py-3 hover:bg-gray-200 w-full text-left border-t text-red-500"
+                    className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-t text-red-500"
                   >
                     <FaSignOutAlt className="mr-2" />
                     Logout
@@ -143,7 +146,7 @@ const HeaderComponent = () => {
           ) : (
             location.pathname !== "/login" && (
               <Link to="/login" className="mt-4 lg:mt-0 lg:ml-4">
-                <button className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">
+                <button className="bg-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded">
                   Login
                 </button>
               </Link>
