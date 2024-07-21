@@ -30,7 +30,9 @@ export const formatDepartmentName = (string: string) => {
   return stringWithSpaces
     .split(" ")
     .map((word, index) => {
-      if (index === 0 || !exceptions.includes(word.toLowerCase())) {
+      if (word.length === 3 || word.length === 4) {
+        return word.toUpperCase();
+      } else if (index === 0 || !exceptions.includes(word.toLowerCase())) {
         return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
       } else {
         return word.toLowerCase();
