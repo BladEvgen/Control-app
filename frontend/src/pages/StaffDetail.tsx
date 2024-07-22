@@ -7,6 +7,7 @@ import { CircleLoader } from "react-spinners";
 import { StaffData, AttendanceData } from "../schemas/IData";
 import { FaChevronLeft } from "react-icons/fa";
 import { FiInfo } from "react-icons/fi";
+import { formatDepartmentName } from "../utils/utils";
 
 const StaffDetail = () => {
   const { pin } = useParams<{ pin: string }>();
@@ -279,7 +280,8 @@ const StaffDetail = () => {
                     <strong>ФИО:</strong> {staffData.surname} {staffData.name}
                   </p>
                   <p className="text-lg font-semibold mb-1">
-                    <strong>Отдел:</strong> {staffData.department}
+                    <strong>Отдел:</strong>{" "}
+                    {formatDepartmentName(staffData.department)}
                   </p>
                   <p className="text-lg font-semibold mb-1">
                     <strong>Должность:</strong>{" "}
