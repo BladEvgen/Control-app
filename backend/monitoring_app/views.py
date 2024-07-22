@@ -1,29 +1,29 @@
-import datetime
 import os
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+import datetime
 from tempfile import NamedTemporaryFile
+from concurrent.futures import ThreadPoolExecutor
 
-from django.conf import settings
-from django.contrib.auth import authenticate, login, logout
-from django.contrib.auth.models import User
-from django.core.cache import caches
-from django.core.files.base import ContentFile
-from django.db import transaction
-from django.db.models import Count, Q
-from django.http import HttpResponse
-from django.shortcuts import get_object_or_404, redirect, render
-from django.utils import timezone
-from django.views.generic import View
 from drf_yasg import openapi
-from drf_yasg.utils import swagger_auto_schema
-from openpyxl import load_workbook
+from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
-from rest_framework.response import Response
+from openpyxl import load_workbook
+from django.core.cache import caches
+from django.http import HttpResponse
+from django.db.models import Count, Q
+from django.views.generic import View
 from rest_framework.views import APIView
+from django.contrib.auth.models import User
+from rest_framework.response import Response
+from django.core.files.base import ContentFile
+from drf_yasg.utils import swagger_auto_schema
+from rest_framework.pagination import PageNumberPagination
+from django.contrib.auth import authenticate, login, logout
+from django.shortcuts import get_object_or_404, redirect, render
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 
 from monitoring_app import models, serializers, utils
 
@@ -148,9 +148,7 @@ class StaffAttendanceStatsView(APIView):
                             items=openapi.Schema(
                                 type=openapi.TYPE_OBJECT,
                                 properties={
-                                    "staff_pin": openapi.Schema(
-                                        type=openapi.TYPE_STRING
-                                    ),
+                                    "staff_pin": openapi.TYPE_STRING,
                                     "name": openapi.Schema(type=openapi.TYPE_STRING),
                                 },
                             ),
@@ -181,134 +179,121 @@ class StaffAttendanceStatsView(APIView):
         date_param = request.query_params.get(
             "date", timezone.now().date().strftime("%Y-%m-%d")
         )
-        date_param = datetime.datetime.strptime(date_param, "%Y-%m-%d").date()
+        date_param = datetime.datetime.strptime(
+            date_param, "%Y-%m-%d"
+        ).date() - datetime.timedelta(days=1)
         pin_param = request.query_params.get("pin", None)
 
-        def get_last_working_day(date):
-            holidays = get_cache(
-                "public_holidays",
-                query=lambda: list(models.PublicHoliday.objects.all()),
-                timeout=10 * 1,
-            )
-
-            holiday_dates = {
-                holiday.date: holiday.is_working_day for holiday in holidays
-            }
-
-            while (
-                date.weekday() >= 5 or date in holiday_dates and not holiday_dates[date]
-            ):
-                date -= datetime.timedelta(days=1)
-            return date
-
-        target_date = get_last_working_day(date_param)
+        target_date = self.get_last_working_day(date_param)
         next_date = target_date + datetime.timedelta(days=1)
         cache_key = f"staff_attendance_stats_{target_date}_{pin_param}"
 
-        def query():
-            try:
-                department = models.ChildDepartment.objects.filter(id=4958).first()
-                department_name = (
-                    department.name if department else "Unknown Department"
-                )
-
-                staff_queryset = models.Staff.objects.filter(
-                    department__parent_id=4958
-                ).select_related("department")
-                staff_attendance_queryset = models.StaffAttendance.objects.filter(
-                    date_at__gte=target_date,
-                    date_at__lt=next_date,
-                    staff__in=staff_queryset,
-                ).select_related("staff")
-
-                if not staff_attendance_queryset.exists():
-                    return {
-                        "department_name": department_name,
-                        "total_staff_count": 0,
-                        "present_staff_count": 0,
-                        "absent_staff_count": 0,
-                        "present_between_9_to_18": 0,
-                        "present_data": [],
-                        "absent_data": [],
-                        "data_for_date": target_date.strftime("%Y-%m-%d"),
-                    }
-                total_staff_count = staff_queryset.count()
-                present_staff = staff_attendance_queryset.exclude(first_in__isnull=True)
-                present_staff_pins = set(
-                    present_staff.values_list("staff__pin", flat=True)
-                )
-                absent_staff_count = total_staff_count - len(present_staff_pins)
-                present_between_9_to_18 = present_staff.filter(
-                    first_in__time__range=["08:00", "19:00"]
-                ).count()
-
-                present_data = []
-                absent_data = []
-                for staff in staff_queryset:
-                    if staff.pin in present_staff_pins:
-                        attendance = present_staff.get(staff__pin=staff.pin)
-                        total_minutes = 8 * 60
-                        minutes_present = (
-                            (attendance.last_out - attendance.first_in).total_seconds()
-                            / 60
-                            if attendance.last_out
-                            else 0
-                        )
-                        individual_percentage = (minutes_present / total_minutes) * 100
-                        present_data.append(
-                            {
-                                "staff_pin": staff.pin,
-                                "name": f"{staff.surname} {staff.name}",
-                                "minutes_present": round(minutes_present, 2),
-                                "individual_percentage": round(
-                                    individual_percentage, 2
-                                ),
-                            }
-                        )
-                    else:
-                        absent_data.append(
-                            {
-                                "staff_pin": staff.pin,
-                                "name": f"{staff.surname} {staff.name}",
-                            }
-                        )
-
-                if pin_param:
-                    present_data = [
-                        entry
-                        for entry in present_data
-                        if entry["staff_pin"] == pin_param
-                    ]
-                    absent_data = [
-                        entry
-                        for entry in absent_data
-                        if entry["staff_pin"] == pin_param
-                    ]
-
-                    response_data = {
-                        "department_name": department_name,
-                        "present_data": present_data,
-                        "absent_data": absent_data,
-                        "data_for_date": target_date.strftime("%Y-%m-%d"),
-                    }
-                else:
-                    response_data = {
-                        "department_name": department_name,
-                        "total_staff_count": total_staff_count,
-                        "present_staff_count": len(present_data),
-                        "absent_staff_count": absent_staff_count,
-                        "present_between_9_to_18": present_between_9_to_18,
-                        "present_data": present_data,
-                        "absent_data": absent_data,
-                        "data_for_date": target_date.strftime("%Y-%m-%d"),
-                    }
-
-                return response_data
-            except Exception as e:
-                return {"error": str(e)}
-
-        cached_data = get_cache(cache_key, query=query, timeout=6 * 60 * 60)
+        cached_data = get_cache(
+            cache_key,
+            query=lambda: self.query_data(target_date, next_date, pin_param),
+            timeout=6 * 60 * 60,
+        )
         return Response(cached_data)
+
+    def get_last_working_day(self, date):
+        holidays = get_cache(
+            "public_holidays",
+            query=lambda: list(models.PublicHoliday.objects.all()),
+            timeout=1 * 60,
+        )
+        holiday_dates = {holiday.date: holiday.is_working_day for holiday in holidays}
+
+        while True:
+            if date.weekday() < 5 and (
+                date not in holiday_dates or holiday_dates[date]
+            ):
+                break
+            date -= datetime.timedelta(days=1)
+        return date
+
+    def query_data(self, target_date, next_date, pin_param):
+        try:
+            department = models.ChildDepartment.objects.filter(id=4958).first()
+            department_name = department.name if department else "Unknown Department"
+
+            staff_queryset = models.Staff.objects.filter(
+                department__parent_id=4958
+            ).select_related("department")
+            staff_attendance_queryset = models.StaffAttendance.objects.filter(
+                date_at__gte=target_date,
+                date_at__lt=next_date,
+                staff__in=staff_queryset,
+            ).select_related("staff")
+
+            total_staff_count = staff_queryset.count()
+            present_staff = staff_attendance_queryset.exclude(first_in__isnull=True)
+            present_staff_pins = set(present_staff.values_list("staff__pin", flat=True))
+            absent_staff_count = total_staff_count - len(present_staff_pins)
+            present_between_9_to_18 = present_staff.filter(
+                first_in__time__range=["08:00", "19:00"]
+            ).count()
+
+            present_data, absent_data = self.get_attendance_data(
+                staff_queryset, present_staff_pins, present_staff
+            )
+
+            if pin_param:
+                present_data = [
+                    entry for entry in present_data if entry["staff_pin"] == pin_param
+                ]
+                absent_data = [
+                    entry for entry in absent_data if entry["staff_pin"] == pin_param
+                ]
+
+                return {
+                    "department_name": department_name,
+                    "present_data": present_data,
+                    "absent_data": absent_data,
+                    "data_for_date": target_date.strftime("%Y-%m-%d"),
+                }
+            else:
+                return {
+                    "department_name": department_name,
+                    "total_staff_count": total_staff_count,
+                    "present_staff_count": len(present_data),
+                    "absent_staff_count": absent_staff_count,
+                    "present_between_9_to_18": present_between_9_to_18,
+                    "present_data": present_data,
+                    "absent_data": absent_data,
+                    "data_for_date": target_date.strftime("%Y-%m-%d"),
+                }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_attendance_data(self, staff_queryset, present_staff_pins, present_staff):
+        present_data = []
+        absent_data = []
+        total_minutes = 8 * 60
+        for staff in staff_queryset:
+            if staff.pin in present_staff_pins:
+                attendance = present_staff.get(staff__pin=staff.pin)
+                minutes_present = (
+                    (attendance.last_out - attendance.first_in).total_seconds() / 60
+                    if attendance.last_out
+                    else 0
+                )
+                individual_percentage = (minutes_present / total_minutes) * 100
+                present_data.append(
+                    {
+                        "staff_pin": staff.pin,
+                        "name": f"{staff.surname} {staff.name}",
+                        "minutes_present": round(minutes_present, 2),
+                        "individual_percentage": round(individual_percentage, 2),
+                    }
+                )
+            else:
+                absent_data.append(
+                    {
+                        "staff_pin": staff.pin,
+                        "name": f"{staff.surname} {staff.name}",
+                    }
+                )
+        return present_data, absent_data
 
 
 @swagger_auto_schema(
