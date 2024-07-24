@@ -11,6 +11,7 @@ import {
   FaChevronRight,
   FaAngleDoubleLeft,
   FaAngleDoubleRight,
+  FaArrowLeft,
 } from "react-icons/fa";
 
 const DepartmentTable = ({ data }: { data: IData }) => {
@@ -36,30 +37,30 @@ const DepartmentTable = ({ data }: { data: IData }) => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-gray-100 p-4 rounded-lg shadow-lg">
+    <div className="flex flex-col h-full rounded-lg shadow-lg ">
       <input
         type="text"
         placeholder="Поиск отдела"
         value={searchQuery}
         onChange={handleSearchChange}
-        className="border border-gray-300 px-4 py-2 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        className="border border-gray-300 px-4 py-2 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
       />
-      <p className="text-gray-700 mb-4">
+      <p className="text mb-4 ml-3 text-gray-300 dark:text-gray-400">
         <strong>Количество сотрудников:</strong> {data?.total_staff_count}
       </p>
       <div className="flex-1 overflow-y-auto">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
+        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+          <thead className="bg-gray-50 dark:bg-gray-800">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400">
                 Название отдела
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400">
                 Дата создания
               </th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
+          <tbody className="bg-white divide-y divide-gray-200 dark:bg-gray-900 dark:divide-gray-700">
             {filteredDepartments
               .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
               .map((department: IChildDepartment) => (
@@ -71,12 +72,12 @@ const DepartmentTable = ({ data }: { data: IData }) => {
                           ? `/department/${department.child_id}`
                           : `/childDepartment/${department.child_id}`
                       }
-                      className="text-sm font-medium text-indigo-600 hover:text-indigo-800"
+                      className="text-sm font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-600"
                     >
                       {formatDepartmentName(department.name)}
                     </Link>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                     {new Date(department.date_of_creation).toLocaleString()}
                   </td>
                 </tr>
@@ -85,7 +86,7 @@ const DepartmentTable = ({ data }: { data: IData }) => {
         </table>
       </div>
 
-      <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6 rounded-b-lg">
+      <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6 rounded-b-lg dark:bg-gray-800 dark:border-gray-700">
         <div className="flex-1 flex justify-between">
           <div className="flex">
             <button
@@ -93,8 +94,8 @@ const DepartmentTable = ({ data }: { data: IData }) => {
               disabled={page === 0}
               className={`${
                 page === 0
-                  ? "text-gray-300"
-                  : "text-gray-700 hover:text-gray-900"
+                  ? "text-gray-300 dark:text-gray-600"
+                  : "text-gray-700 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
               } px-4 py-2 rounded-md text-sm font-medium mr-2`}
             >
               <FaAngleDoubleLeft size={16} />
@@ -104,14 +105,14 @@ const DepartmentTable = ({ data }: { data: IData }) => {
               disabled={page === 0}
               className={`${
                 page === 0
-                  ? "text-gray-300"
-                  : "text-gray-700 hover:text-gray-900"
+                  ? "text-gray-300 dark:text-gray-600"
+                  : "text-gray-700 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
               } px-4 py-2 rounded-md text-sm font-medium mr-2`}
             >
               <FaChevronLeft size={16} />
             </button>
           </div>
-          <p className="text-sm text-gray-700">
+          <p className="text-sm text-gray-700 dark:text-gray-400">
             Показано{" "}
             <span className="font-medium">
               {Math.min((page + 1) * rowsPerPage, filteredDepartments.length)}
@@ -129,8 +130,8 @@ const DepartmentTable = ({ data }: { data: IData }) => {
               className={`${
                 page >=
                 Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
-                  ? "text-gray-300"
-                  : "text-gray-700 hover:text-gray-900"
+                  ? "text-gray-300 dark:text-gray-600"
+                  : "text-gray-700 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
               } px-4 py-2 rounded-md text-sm font-medium mr-2`}
             >
               <FaChevronRight size={16} />
@@ -151,8 +152,8 @@ const DepartmentTable = ({ data }: { data: IData }) => {
               className={`${
                 page >=
                 Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
-                  ? "text-gray-300"
-                  : "text-gray-700 hover:text-gray-900"
+                  ? "text-gray-300 dark:text-gray-600"
+                  : "text-gray-700 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
               } px-4 py-2 rounded-md text-sm font-medium`}
             >
               <FaAngleDoubleRight size={16} />
@@ -267,16 +268,17 @@ const DepartmentPage = () => {
   const isDownloadDisabled = !startDate || !endDate;
 
   return (
-    <div className="container mx-auto px-4 py-8">
+    <div className="container mx-auto px-4 py-8 ">
       <h1 className="text-2xl font-bold mb-4 text-center md:text-left text-white">
         {isLoading ? " " : formatDepartmentName(data?.name)}
       </h1>
       {location.pathname !== "/app/" && (
         <Link
           to="/"
-          className="inline-block mb-4 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
+          className="inline-flex items-center mb-4 px-4 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800"
         >
-          Вернуться на главную страницу
+          <FaArrowLeft className="mr-2" />
+          <span className="font-medium">На главную</span>
         </Link>
       )}
 
@@ -284,7 +286,7 @@ const DepartmentPage = () => {
         <div className="flex flex-col mb-4 md:mr-4">
           <label
             htmlFor="startDate"
-            className="block mb-1 font-medium text-gray-200"
+            className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
           >
             Дата начала:
           </label>
@@ -293,13 +295,13 @@ const DepartmentPage = () => {
             id="startDate"
             value={startDate}
             onChange={handleStartDateChange}
-            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
           />
         </div>
         <div className="flex flex-col mb-4 md:mr-4">
           <label
             htmlFor="endDate"
-            className="block mb-1 font-medium text-gray-200"
+            className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
           >
             Дата конца:
           </label>
@@ -308,7 +310,7 @@ const DepartmentPage = () => {
             id="endDate"
             value={endDate}
             onChange={handleEndDateChange}
-            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
           />
         </div>
         <div className="flex flex-col md:flex-row items-center">
@@ -317,8 +319,8 @@ const DepartmentPage = () => {
             disabled={isDownloadDisabled || isDownloading}
             className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-md text-white mt-3 ${
               isDownloadDisabled || isDownloading
-                ? "bg-gray-400 cursor-not-allowed"
-                : "bg-green-500 hover:bg-green-600"
+                ? "bg-gray-400 cursor-not-allowed dark:bg-gray-600"
+                : "bg-green-500 hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-700"
             }`}
           >
             {isDownloading ? (
@@ -346,7 +348,7 @@ const DepartmentPage = () => {
             {isDownloading ? "Загрузка" : "Скачать"}
           </button>
           {showWaitMessage && (
-            <div className="mt-2 md:mt-0 md:ml-4 p-2 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse">
+            <div className="mt-2 md:mt-0 md:ml-4 p-2 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse dark:bg-red-900 dark:text-red-200">
               Загрузка может занять некоторое время, пожалуйста, подождите...
             </div>
           )}

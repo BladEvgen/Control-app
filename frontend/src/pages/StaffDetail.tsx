@@ -142,7 +142,7 @@ const StaffDetail = () => {
 
     if (!hasInOut && !isWeekend) {
       return (
-        <tr key={date} className="bg-red-100">
+        <tr key={date} className="bg-red-200 dark:bg-red-700 dark:text-white">
           <td colSpan={5} className={rowClassNames}>
             {date}: Нет данных
           </td>
@@ -150,7 +150,10 @@ const StaffDetail = () => {
       );
     } else if (!hasInOut && isWeekend) {
       return (
-        <tr key={date} className="bg-yellow-100">
+        <tr
+          key={date}
+          className="bg-yellow-200 dark:bg-yellow-700 dark:text-white"
+        >
           <td colSpan={5} className={rowClassNames}>
             {date}: Выходной день
           </td>
@@ -158,7 +161,14 @@ const StaffDetail = () => {
       );
     } else {
       return (
-        <tr key={date} className={isWeekend ? "bg-green-100" : ""}>
+        <tr
+          key={date}
+          className={
+            isWeekend
+              ? "bg-green-200 dark:bg-green-700 dark:text-white"
+              : "dark:text-gray-400"
+          }
+        >
           <td className={rowClassNames}>{date}</td>
           <td className={rowClassNames}>
             {data.first_in ? formatDate(data.first_in) : "Нет данных"}
@@ -251,7 +261,7 @@ const StaffDetail = () => {
   }) => {
     const [startDate, endDate] = text.split(" - ");
     return (
-      <span className="text-xm text-gray-500 italic ml-2">
+      <span className="text-sm text-gray-500 dark:text-gray-400 italic ml-2">
         <FiInfo className="inline-block align-middle mb-1 mr-1" />
         Выбранный период: {formatDateRu(startDate)} - {formatDateRu(endDate)}{" "}
         (найдено {daysCount} {declensionDays(daysCount)})
@@ -260,7 +270,7 @@ const StaffDetail = () => {
   };
 
   return (
-    <div className="container mx-auto p-6 sm:p-10 bg-white shadow-lg rounded-xl">
+    <div className="container mx-auto p-6 sm:p-10 bg-white shadow-lg rounded-xl dark:bg-gray-900 dark:text-white">
       {loading ? (
         <div className="flex items-center justify-center h-full">
           <CircleLoader color="#4A90E2" loading={loading} size={50} />
@@ -316,7 +326,7 @@ const StaffDetail = () => {
             </div>
 
             {bonusPercentage > 0 && (
-              <p className="text-lg text-green-600 mt-4">
+              <p className="text-lg text-green-600 dark:text-green-400 mt-4">
                 Сотрудник может получить премию в размере {bonusPercentage}% (
                 {formatNumber(
                   ((staffData.salary ?? 0) * bonusPercentage) / 100
@@ -328,17 +338,17 @@ const StaffDetail = () => {
               Посещаемость
             </h2>
 
-            <div className="flex flex-wrap justify-center gap-4 text-sm text-gray-700 mt-4">
+            <div className="flex flex-wrap justify-center gap-4 text-sm text-gray-700 dark:text-gray-400 mt-4">
               <div className="flex items-center space-x-2">
-                <div className="w-4 h-4 rounded-full bg-yellow-300"></div>
+                <div className="w-4 h-4 rounded-full bg-yellow-400 dark:bg-yellow-500"></div>
                 <span className="font-semibold">Выходной день</span>
               </div>
               <div className="flex items-center space-x-2">
-                <div className="w-4 h-4 rounded-full bg-red-300"></div>
+                <div className="w-4 h-4 rounded-full bg-red-400 dark:bg-red-500"></div>
                 <span className="font-semibold">Работник отсутствовал</span>
               </div>
               <div className="flex items-center space-x-2">
-                <div className="w-4 h-4 rounded-full bg-green-300"></div>
+                <div className="w-4 h-4 rounded-full bg-green-400 dark:bg-green-500"></div>
                 <span className="font-semibold">
                   Работник был на работе в выходной
                 </span>
@@ -349,7 +359,7 @@ const StaffDetail = () => {
               <div className="mb-2 sm:mb-0 w-full sm:w-auto">
                 <label
                   htmlFor="startDate"
-                  className="block text-sm font-medium text-gray-700 mb-1"
+                  className="block text-sm font-medium text-gray-700 dark:text-gray-400 mb-1"
                 >
                   Дата начала:
                 </label>
@@ -358,7 +368,7 @@ const StaffDetail = () => {
                   id="startDate"
                   value={startDate}
                   onChange={handleStartDateChange}
-                  className="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto transition-colors duration-300"
+                  className="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto transition-colors duration-300 dark:bg-gray-800 dark:text-white dark:border-gray-600"
                   placeholder="Дата начала"
                 />
               </div>
@@ -366,7 +376,7 @@ const StaffDetail = () => {
                 <div className="mt-2 sm:mt-0 w-full sm:w-auto">
                   <label
                     htmlFor="endDate"
-                    className="block text-sm font-medium text-gray-700 mb-1"
+                    className="block text-sm font-medium text-gray-700 dark:text-gray-400 mb-1"
                   >
                     Дата окончания:
                   </label>
@@ -375,51 +385,53 @@ const StaffDetail = () => {
                     id="endDate"
                     value={endDate}
                     onChange={handleEndDateChange}
-                    className="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto transition-colors duration-300"
+                    className="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto transition-colors duration-300 dark:bg-gray-800 dark:text-white dark:border-gray-600"
                     placeholder="Дата окончания"
                   />
                 </div>
               )}
             </div>
-            {error && <p className="text-red-600 mt-2">{error}</p>}
+            {error && (
+              <p className="text-red-600 dark:text-red-400 mt-2">{error}</p>
+            )}
 
             <div className="overflow-x-auto">
-              <table className="w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
+              <table className="w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <thead className="bg-gray-50 dark:bg-gray-800">
                   <tr>
                     <th
                       scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400"
                     >
                       Дата
                     </th>
                     <th
                       scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400"
                     >
                       Первое прибытие
                     </th>
                     <th
                       scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400"
                     >
                       Последний уход
                     </th>
                     <th
                       scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400"
                     >
                       Процент дня
                     </th>
                     <th
                       scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400"
                     >
                       Всего времени (Ч:М)
                     </th>
                   </tr>
                 </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
+                <tbody className="bg-white divide-y divide-gray-200 dark:bg-gray-900 dark:divide-gray-700">
                   {Object.entries(staffData.attendance)
                     .reverse()
                     .map(([date, data], index, array) =>
@@ -437,9 +449,7 @@ const StaffDetail = () => {
               className="fixed bottom-4 left-4 bg-green-500 text-white rounded-full px-4 py-4 hover:bg-green-700 shadow-md z-10 focus:outline-none sm:block md:block lg:hidden"
               onClick={navigateToChildDepartment}
             >
-              <span role="img" aria-label="Back" className="text-xl">
-                <FaChevronLeft />
-              </span>
+              <FaChevronLeft className="text-xl" />
             </button>
           </div>
         )

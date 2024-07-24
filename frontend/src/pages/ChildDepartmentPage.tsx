@@ -1,15 +1,14 @@
-import { Link, useNavigate } from "../RouterUtils";
+import { Link } from "../RouterUtils";
 import { useEffect, useState } from "react";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { IChildDepartmentData } from "../schemas/IData";
 import { useParams } from "react-router-dom";
 import { formatDepartmentName } from "../utils/utils";
-import { FaDownload } from "react-icons/fa6";
+import { FaDownload, FaArrowLeft } from "react-icons/fa6";
 
 const ChildDepartmentPage = () => {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const [data, setData] = useState<IChildDepartmentData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -41,17 +40,6 @@ const ChildDepartmentPage = () => {
 
     fetchData();
   }, [id]);
-
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleString();
-  };
-
-  const navigateToChildDepartment = () => {
-    if (data?.child_department.parent) {
-      navigate(`/department/${data.child_department.parent}`);
-    }
-  };
 
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newStartDate = e.target.value;
@@ -120,28 +108,30 @@ const ChildDepartmentPage = () => {
   const isDownloadDisabled = !startDate || !endDate;
 
   return (
-    <div className="container mx-auto px-4 py-8">
+    <div className="container mx-auto px-4 py-8  dark:text-white">
       {isLoading ? (
         <div className="flex items-center justify-center h-screen">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-gray-900"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-gray-900 dark:border-gray-100"></div>
         </div>
       ) : (
         <>
-          <h1 className="text-3xl font-bold mb-6 text-center md:text-left break-words sm:text-center md:truncate text-white">
+          <h1 className="text-2xl font-bold mb-4 text-center md:text-left text-white">
             {data?.child_department?.name &&
               formatDepartmentName(data.child_department.name)}
           </h1>
-          <button
-            onClick={navigateToChildDepartment}
-            className="inline-block mb-6 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors duration-300 ease-in-out"
+          <Link
+            to="/"
+            className="inline-flex items-center mb-4 px-4 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800"
           >
-            Вернуться назад
-          </button>
+            <FaArrowLeft className="mr-2" />
+            <span className="font-medium">На главную</span>
+          </Link>
+
           <div className="flex flex-col md:flex-row mb-4">
             <div className="flex flex-col mb-4 md:mr-4">
               <label
                 htmlFor="startDate"
-                className="block mb-1 font-medium text-gray-200 "
+                className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
               >
                 Дата начала:
               </label>
@@ -150,13 +140,13 @@ const ChildDepartmentPage = () => {
                 id="startDate"
                 value={startDate}
                 onChange={handleStartDateChange}
-                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
               />
             </div>
             <div className="flex flex-col mb-4 md:mr-4">
               <label
                 htmlFor="endDate"
-                className="block mb-1 font-medium text-gray-200"
+                className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
               >
                 Дата конца:
               </label>
@@ -165,7 +155,7 @@ const ChildDepartmentPage = () => {
                 id="endDate"
                 value={endDate}
                 onChange={handleEndDateChange}
-                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
               />
             </div>
             <div className="flex items-center">
@@ -174,8 +164,8 @@ const ChildDepartmentPage = () => {
                 disabled={isDownloadDisabled || isDownloading}
                 className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-md text-white mt-3 ${
                   isDownloadDisabled || isDownloading
-                    ? "bg-gray-400 cursor-not-allowed"
-                    : "bg-green-500 hover:bg-green-600"
+                    ? "bg-gray-400 cursor-not-allowed dark:bg-gray-600"
+                    : "bg-green-500 hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-700"
                 }`}
               >
                 {isDownloading ? (
@@ -203,44 +193,45 @@ const ChildDepartmentPage = () => {
                 {isDownloading ? "Загрузка" : "Скачать"}
               </button>
               {showWaitMessage && (
-                <div className="mt-2 md:mt-0 md:ml-4 p-2 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse">
+                <div className="mt-2 md:mt-0 md:ml-4 p-2 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse dark:bg-red-900 dark:text-red-200">
                   Загрузка может занять некоторое время, пожалуйста,
                   подождите...
                 </div>
               )}
             </div>
           </div>
+
           <div className="mb-6">
             <input
               type="text"
               placeholder="Поиск по ФИО"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="border border-gray-300 px-4 py-2 rounded-md w-full focus:outline-none focus:border-blue-500 transition-colors duration-300 ease-in-out"
+              className="border border-gray-300 px-4 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors duration-300 ease-in-out dark:bg-gray-800 dark:text-white dark:border-gray-600"
             />
           </div>
-          <p className="text-gray-300 mb-4">
+          <p className="text-gray-300 mb-4 dark:text-gray-400">
             <strong>Количество сотрудников:</strong> {data?.staff_count}
           </p>
-          <div className="overflow-x-auto rounded-lg shadow-lg">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
+          <div className="overflow-x-auto rounded-lg shadow-lg bg-white dark:bg-gray-900">
+            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+              <thead className="bg-gray-50 dark:bg-gray-800">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400">
                     ФИО
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400">
                     Должность
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400">
                     Дата создания
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400">
                     Avatar
                   </th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-gray-200 rounded-b-lg">
+              <tbody className="bg-white divide-y divide-gray-200 dark:bg-gray-900 dark:divide-gray-700">
                 {data?.staff_data &&
                   Object.entries(data.staff_data)
                     .filter(([, staff]) =>
@@ -253,7 +244,7 @@ const ChildDepartmentPage = () => {
                         <td className="px-6 py-4 whitespace-nowrap">
                           <Link
                             to={`/staffDetail/${pin}`}
-                            className="text-indigo-600 hover:text-indigo-800"
+                            className="text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-600"
                           >
                             {staff.FIO}
                           </Link>
@@ -262,7 +253,7 @@ const ChildDepartmentPage = () => {
                           {staff.positions.length > 2 ? (
                             <>
                               {staff.positions[0]}, ...
-                              <span className="text-gray-500 ml-2">
+                              <span className="text-gray-500 dark:text-gray-400 ml-2">
                                 (ещё {staff.positions.length - 1})
                               </span>
                             </>
@@ -270,8 +261,10 @@ const ChildDepartmentPage = () => {
                             staff.positions.join(", ")
                           )}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          {formatDate(staff.date_of_creation)}
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                          {new Date(
+                            staff.date_of_creation
+                          ).toLocaleDateString()}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           {staff.avatar ? (
