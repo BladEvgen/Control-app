@@ -102,7 +102,7 @@ class StaffAttendanceStatsView(APIView):
         GET /api/attendance/stats/?pin=123456
 
     Примечание:
-        Ответ кэшируется на 6 часов, а информация о государственных праздниках кэшируется на 1 час.
+        Ответ кэшируется на 1 час, а информация о государственных праздниках кэшируется на 1 минуту.
     """
 
     permission_classes = [IsAuthenticated]
@@ -191,7 +191,7 @@ class StaffAttendanceStatsView(APIView):
         cached_data = get_cache(
             cache_key,
             query=lambda: self.query_data(target_date, next_date, pin_param),
-            timeout=6 * 60 * 60,
+            timeout=1 * 60 * 60,
         )
         return Response(cached_data)
 
@@ -199,7 +199,7 @@ class StaffAttendanceStatsView(APIView):
         holidays = get_cache(
             "public_holidays",
             query=lambda: list(models.PublicHoliday.objects.all()),
-            timeout=1 * 60,
+            timeout=10 * 6,
         )
         holiday_dates = {holiday.date: holiday.is_working_day for holiday in holidays}
 
