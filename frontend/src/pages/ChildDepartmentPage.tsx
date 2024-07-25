@@ -5,7 +5,13 @@ import { apiUrl } from "../../apiConfig";
 import { IChildDepartmentData } from "../schemas/IData";
 import { useParams } from "react-router-dom";
 import { formatDepartmentName } from "../utils/utils";
-import { FaDownload, FaArrowLeft, FaHome } from "react-icons/fa";
+import {
+  FaDownload,
+  FaArrowLeft,
+  FaHome,
+  FaCheckCircle,
+  FaTimesCircle,
+} from "react-icons/fa";
 
 const ChildDepartmentPage = () => {
   const { id } = useParams<{ id: string }>();
@@ -286,13 +292,15 @@ const ChildDepartmentPage = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           {staff.avatar ? (
-                            <span role="img" aria-label="success">
-                              ✅
-                            </span>
+                            <FaCheckCircle
+                              className="text-green-500"
+                              aria-label="success"
+                            />
                           ) : (
-                            <span role="img" aria-label="fail">
-                              ❌
-                            </span>
+                            <FaTimesCircle
+                              className="text-red-500"
+                              aria-label="fail"
+                            />
                           )}
                         </td>
                       </tr>
