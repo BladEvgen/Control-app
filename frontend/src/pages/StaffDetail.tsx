@@ -143,8 +143,13 @@ const StaffDetail = () => {
     if (!hasInOut && !isWeekend) {
       return (
         <tr key={date} className="bg-red-200 dark:bg-red-700 dark:text-white">
-          <td colSpan={5} className={rowClassNames}>
-            {date}: Нет данных
+          <td colSpan={5} className={`${rowClassNames}`}>
+            <div className="flex flex-col md:flex-row md:justify-center">
+              <span className="text-left">{date}</span>
+              <span className="ml-4 md:ml-0 md:w-full md:text-center">
+                Нет данных
+              </span>
+            </div>
           </td>
         </tr>
       );
@@ -154,8 +159,13 @@ const StaffDetail = () => {
           key={date}
           className="bg-yellow-200 dark:bg-yellow-700 dark:text-white"
         >
-          <td colSpan={5} className={rowClassNames}>
-            {date}: Выходной день
+          <td colSpan={5} className={`${rowClassNames}`}>
+            <div className="flex flex-col md:flex-row md:justify-center">
+              <span className="text-left">{date}</span>
+              <span className="ml-4 md:ml-0 md:w-full md:text-center">
+                Выходной день
+              </span>
+            </div>
           </td>
         </tr>
       );
