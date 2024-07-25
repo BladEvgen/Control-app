@@ -296,3 +296,4 @@ dist
 one_pin_skud.py
 *.sqlite3
 frontend/apiConfig.ts
+frontend/apiConfig.ts
