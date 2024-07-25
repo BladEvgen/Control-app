@@ -1,11 +1,11 @@
-import { Link } from "../RouterUtils";
+import { Link, useNavigate } from "../RouterUtils";
 import { useEffect, useState } from "react";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { IChildDepartmentData } from "../schemas/IData";
 import { useParams } from "react-router-dom";
 import { formatDepartmentName } from "../utils/utils";
-import { FaDownload, FaArrowLeft } from "react-icons/fa6";
+import { FaDownload, FaArrowLeft, FaHome } from "react-icons/fa";
 
 const ChildDepartmentPage = () => {
   const { id } = useParams<{ id: string }>();
@@ -24,6 +24,13 @@ const ChildDepartmentPage = () => {
   );
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
   const [showWaitMessage, setShowWaitMessage] = useState<boolean>(false);
+  const navigate = useNavigate();
+
+  const navigateToChildDepartment = () => {
+    if (data?.child_department.parent) {
+      navigate(`/department/${data.child_department.parent}`);
+    }
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -108,27 +115,38 @@ const ChildDepartmentPage = () => {
   const isDownloadDisabled = !startDate || !endDate;
 
   return (
-    <div className="container mx-auto px-4 py-8  dark:text-white">
+    <div className="container mx-auto px-4 py-8 dark:text-white">
       {isLoading ? (
         <div className="flex items-center justify-center h-screen">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-gray-900 dark:border-gray-100"></div>
         </div>
       ) : (
         <>
-          <h1 className="text-2xl font-bold mb-4 text-center md:text-left text-white">
-            {data?.child_department?.name &&
-              formatDepartmentName(data.child_department.name)}
-          </h1>
-          <Link
-            to="/"
-            className="inline-flex items-center mb-4 px-4 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800"
-          >
-            <FaArrowLeft className="mr-2" />
-            <span className="font-medium">На главную</span>
-          </Link>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6">
+            <h1 className="text-2xl font-bold text-center md:text-left text-white">
+              {data?.child_department?.name &&
+                formatDepartmentName(data.child_department.name)}
+            </h1>
+            <div className="flex justify-center space-x-4 mt-4 md:mt-0">
+              <button
+                onClick={navigateToChildDepartment}
+                className="flex items-center px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600  dark:bg-blue-700 dark:hover:bg-blue-800 transition-colors duration-300 ease-in-out"
+              >
+                <FaArrowLeft className="mr-2" />
+                <span>Вернуться назад</span>
+              </button>
+              <Link
+                to="/"
+                className="flex items-center px-4 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
+              >
+                <FaHome className="mr-2" />
+                <span>На главную</span>
+              </Link>
+            </div>
+          </div>
 
-          <div className="flex flex-col md:flex-row mb-4">
-            <div className="flex flex-col mb-4 md:mr-4">
+          <div className="flex flex-col md:flex-row md:space-x-4 mb-4">
+            <div className="flex flex-col mb-4 md:mb-0">
               <label
                 htmlFor="startDate"
                 className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
@@ -140,10 +158,10 @@ const ChildDepartmentPage = () => {
                 id="startDate"
                 value={startDate}
                 onChange={handleStartDateChange}
-                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
+                className="border border-gray-300 px-3 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
               />
             </div>
-            <div className="flex flex-col mb-4 md:mr-4">
+            <div className="flex flex-col mb-4 md:mb-0">
               <label
                 htmlFor="endDate"
                 className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
@@ -155,14 +173,14 @@ const ChildDepartmentPage = () => {
                 id="endDate"
                 value={endDate}
                 onChange={handleEndDateChange}
-                className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
+                className="border border-gray-300 px-3 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
               />
             </div>
-            <div className="flex items-center">
+            <div className="flex flex-col md:flex-row md:items-center">
               <button
                 onClick={handleDownload}
                 disabled={isDownloadDisabled || isDownloading}
-                className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-md text-white mt-3 ${
+                className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-md text-white mt-3 md:mt-7 ${
                   isDownloadDisabled || isDownloading
                     ? "bg-gray-400 cursor-not-allowed dark:bg-gray-600"
                     : "bg-green-500 hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-700"

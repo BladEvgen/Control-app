@@ -11,7 +11,7 @@ import {
   FaChevronRight,
   FaAngleDoubleLeft,
   FaAngleDoubleRight,
-  FaArrowLeft,
+  FaHome,
 } from "react-icons/fa";
 
 const DepartmentTable = ({ data }: { data: IData }) => {
@@ -268,22 +268,24 @@ const DepartmentPage = () => {
   const isDownloadDisabled = !startDate || !endDate;
 
   return (
-    <div className="container mx-auto px-4 py-8 ">
-      <h1 className="text-2xl font-bold mb-4 text-center md:text-left text-white">
-        {isLoading ? " " : formatDepartmentName(data?.name)}
-      </h1>
-      {location.pathname !== "/app/" && (
-        <Link
-          to="/"
-          className="inline-flex items-center mb-4 px-4 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800"
-        >
-          <FaArrowLeft className="mr-2" />
-          <span className="font-medium">На главную</span>
-        </Link>
-      )}
+    <div className="container mx-auto px-4 py-8 dark:text-white">
+      <div className="flex justify-between items-center mb-4">
+        <h1 className="text-2xl font-bold text-white">
+          {isLoading ? " " : formatDepartmentName(data?.name)}
+        </h1>
+        {location.pathname !== "/app/" && (
+          <Link
+            to="/"
+            className="flex items-center px-4 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
+          >
+            <FaHome className="mr-2" />
+            <span className="font-medium">На главную</span>
+          </Link>
+        )}
+      </div>
 
-      <div className="flex flex-col md:flex-row mb-4">
-        <div className="flex flex-col mb-4 md:mr-4">
+      <div className="flex flex-col md:flex-row md:space-x-4 mb-4">
+        <div className="flex flex-col mb-4 md:mb-0">
           <label
             htmlFor="startDate"
             className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
@@ -295,10 +297,10 @@ const DepartmentPage = () => {
             id="startDate"
             value={startDate}
             onChange={handleStartDateChange}
-            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
+            className="border border-gray-300 px-3 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
           />
         </div>
-        <div className="flex flex-col mb-4 md:mr-4">
+        <div className="flex flex-col mb-4 md:mb-0">
           <label
             htmlFor="endDate"
             className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
@@ -310,14 +312,14 @@ const DepartmentPage = () => {
             id="endDate"
             value={endDate}
             onChange={handleEndDateChange}
-            className="border border-gray-300 px-3 py-2 rounded-md w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
+            className="border border-gray-300 px-3 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
           />
         </div>
-        <div className="flex flex-col md:flex-row items-center">
+        <div className="flex flex-col md:flex-row md:items-center">
           <button
             onClick={handleDownload}
             disabled={isDownloadDisabled || isDownloading}
-            className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-md text-white mt-3 ${
+            className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-md text-white mt-3 md:mt-7 ${
               isDownloadDisabled || isDownloading
                 ? "bg-gray-400 cursor-not-allowed dark:bg-gray-600"
                 : "bg-green-500 hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-700"
