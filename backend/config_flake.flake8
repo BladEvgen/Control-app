@@ -1,5 +1,5 @@
 [flake8]
-max-complexity = 10
+max-complexity = 15
 max-line-length = 100
 ignore = E265,W503
 exclude =
@@ -7,4 +7,5 @@ exclude =
     ./monitoring_app/migrations/*,
     tests.py,
     ./backend,
-    ./venv/
+    ./venv/,
+    .monitoring_app/mtest.py

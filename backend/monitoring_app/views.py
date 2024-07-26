@@ -23,7 +23,11 @@ from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import authenticate, login, logout
 from django.shortcuts import get_object_or_404, redirect, render
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.permissions import (
+    AllowAny,
+    IsAdminUser,
+    IsAuthenticated,
+)
 
 from monitoring_app import models, serializers, utils
 
@@ -38,7 +42,10 @@ Cache = caches["default"]
 
 
 def get_cache(
-    key: str, query: callable = lambda: any, timeout: int = 10, cache: any = Cache
+    key: str,
+    query: callable = lambda: any,
+    timeout: int = 10,
+    cache: any = Cache,
 ) -> any:
     """
     Получает данные из кэша по указанному ключу `key`.
@@ -118,25 +125,17 @@ class StaffAttendanceStatsView(APIView):
                     properties={
                         "department_name": openapi.Schema(type=openapi.TYPE_STRING),
                         "total_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "present_staff_count": openapi.Schema(
-                            type=openapi.TYPE_INTEGER
-                        ),
+                        "present_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
                         "absent_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "present_between_9_to_18": openapi.Schema(
-                            type=openapi.TYPE_INTEGER
-                        ),
+                        "present_between_9_to_18": openapi.Schema(type=openapi.TYPE_INTEGER),
                         "present_data": openapi.Schema(
                             type=openapi.TYPE_ARRAY,
                             items=openapi.Schema(
                                 type=openapi.TYPE_OBJECT,
                                 properties={
-                                    "staff_pin": openapi.Schema(
-                                        type=openapi.TYPE_STRING
-                                    ),
+                                    "staff_pin": openapi.Schema(type=openapi.TYPE_STRING),
                                     "name": openapi.Schema(type=openapi.TYPE_STRING),
-                                    "minutes_present": openapi.Schema(
-                                        type=openapi.TYPE_NUMBER
-                                    ),
+                                    "minutes_present": openapi.Schema(type=openapi.TYPE_NUMBER),
                                     "individual_percentage": openapi.Schema(
                                         type=openapi.TYPE_NUMBER
                                     ),
@@ -176,12 +175,10 @@ class StaffAttendanceStatsView(APIView):
         ],
     )
     def get(self, request):
-        date_param = request.query_params.get(
-            "date", timezone.now().date().strftime("%Y-%m-%d")
+        date_param = request.query_params.get("date", timezone.now().date().strftime("%Y-%m-%d"))
+        date_param = datetime.datetime.strptime(date_param, "%Y-%m-%d").date() - datetime.timedelta(
+            days=1
         )
-        date_param = datetime.datetime.strptime(
-            date_param, "%Y-%m-%d"
-        ).date() - datetime.timedelta(days=1)
         pin_param = request.query_params.get("pin", None)
 
         target_date = self.get_last_working_day(date_param)
@@ -204,9 +201,7 @@ class StaffAttendanceStatsView(APIView):
         holiday_dates = {holiday.date: holiday.is_working_day for holiday in holidays}
 
         while True:
-            if date.weekday() < 5 and (
-                date not in holiday_dates or holiday_dates[date]
-            ):
+            if date.weekday() < 5 and (date not in holiday_dates or holiday_dates[date]):
                 break
             date -= datetime.timedelta(days=1)
         return date
@@ -216,9 +211,9 @@ class StaffAttendanceStatsView(APIView):
             department = models.ChildDepartment.objects.filter(id=4958).first()
             department_name = department.name if department else "Unknown Department"
 
-            staff_queryset = models.Staff.objects.filter(
-                department__parent_id=4958
-            ).select_related("department")
+            staff_queryset = models.Staff.objects.filter(department__parent_id=4958).select_related(
+                "department"
+            )
             staff_attendance_queryset = models.StaffAttendance.objects.filter(
                 date_at__gte=target_date,
                 date_at__lt=next_date,
@@ -238,12 +233,8 @@ class StaffAttendanceStatsView(APIView):
             )
 
             if pin_param:
-                present_data = [
-                    entry for entry in present_data if entry["staff_pin"] == pin_param
-                ]
-                absent_data = [
-                    entry for entry in absent_data if entry["staff_pin"] == pin_param
-                ]
+                present_data = [entry for entry in present_data if entry["staff_pin"] == pin_param]
+                absent_data = [entry for entry in absent_data if entry["staff_pin"] == pin_param]
 
                 return {
                     "department_name": department_name,
@@ -359,7 +350,8 @@ def get_parent_id(request):
                 type=openapi.TYPE_OBJECT,
                 properties={
                     "name": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="Название департамента."
+                        type=openapi.TYPE_STRING,
+                        description="Название департамента.",
                     ),
                     "date_of_creation": openapi.Schema(
                         type=openapi.TYPE_STRING,
@@ -417,8 +409,7 @@ def department_summary(request, parent_department_id):
         def calculate_staff_count(department):
             child_departments = models.ChildDepartment.objects.filter(parent=department)
             staff_count = (
-                child_departments.aggregate(total_staff=Count("staff"))["total_staff"]
-                or 0
+                child_departments.aggregate(total_staff=Count("staff"))["total_staff"] or 0
             )
 
             for child_dept in child_departments:
@@ -426,15 +417,11 @@ def department_summary(request, parent_department_id):
 
             return staff_count
 
-        parent_department = get_object_or_404(
-            models.ChildDepartment, id=parent_department_id
-        )
+        parent_department = get_object_or_404(models.ChildDepartment, id=parent_department_id)
 
         total_staff_count = calculate_staff_count(parent_department)
 
-        child_departments_data = models.ChildDepartment.objects.filter(
-            parent=parent_department
-        )
+        child_departments_data = models.ChildDepartment.objects.filter(parent=parent_department)
         child_departments_data_serialized = serializers.ChildDepartmentSerializer(
             child_departments_data, many=True
         ).data
@@ -446,9 +433,7 @@ def department_summary(request, parent_department_id):
             "total_staff_count": total_staff_count,
         }
 
-        cached_data = get_cache(
-            cache_key, query=lambda: data, timeout=1 * 10, cache=Cache
-        )
+        cached_data = get_cache(cache_key, query=lambda: data, timeout=1 * 10, cache=Cache)
 
         return Response(cached_data, status=status.HTTP_200_OK)
     except Exception as e:
@@ -480,7 +465,8 @@ def department_summary(request, parent_department_id):
                             "id": openapi.Schema(type=openapi.TYPE_INTEGER),
                             "name": openapi.Schema(type=openapi.TYPE_STRING),
                             "date_of_creation": openapi.Schema(
-                                type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME
+                                type=openapi.TYPE_STRING,
+                                format=openapi.FORMAT_DATETIME,
                             ),
                             "parent": openapi.Schema(type=openapi.TYPE_INTEGER),
                         },
@@ -544,18 +530,14 @@ def child_department_detail(request, child_department_id):
         staff_data[staff_member.pin] = {
             "FIO": fio,
             "date_of_creation": staff_member.date_of_creation,
-            "avatar": staff_member.avatar.url if staff_member.avatar else None,
+            "avatar": (staff_member.avatar.url if staff_member.avatar else None),
             "positions": [position.name for position in staff_member.positions.all()],
         }
 
-    sorted_staff_data = dict(
-        sorted(staff_data.items(), key=lambda item: item[1]["FIO"])
-    )
+    sorted_staff_data = dict(sorted(staff_data.items(), key=lambda item: item[1]["FIO"]))
 
     data = {
-        "child_department": serializers.ChildDepartmentSerializer(
-            child_department
-        ).data,
+        "child_department": serializers.ChildDepartmentSerializer(child_department).data,
         "staff_count": staff_in_department.count(),
         "staff_data": sorted_staff_data,
     }
@@ -597,10 +579,12 @@ def child_department_detail(request, child_department_id):
                 type=openapi.TYPE_OBJECT,
                 properties={
                     "name": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="Имя сотрудника"
+                        type=openapi.TYPE_STRING,
+                        description="Имя сотрудника",
                     ),
                     "surname": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="Фамилия сотрудника"
+                        type=openapi.TYPE_STRING,
+                        description="Фамилия сотрудника",
                     ),
                     "positions": openapi.Schema(
                         type=openapi.TYPE_ARRAY,
@@ -702,11 +686,10 @@ def staff_detail(request, staff_pin):
     if staff is None:
         return Response(status=status.HTTP_404_NOT_FOUND)
 
-    end_date_str = request.query_params.get(
-        "end_date", timezone.now().strftime("%Y-%m-%d")
-    )
+    end_date_str = request.query_params.get("end_date", timezone.now().strftime("%Y-%m-%d"))
     start_date_str = request.query_params.get(
-        "start_date", (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+        "start_date",
+        (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d"),
     )
 
     end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
@@ -728,9 +711,7 @@ def staff_detail(request, staff_pin):
             date__range=[start_date, end_date]
         ).values_list("date", "is_working_day")
 
-        holiday_dict = {
-            date: is_working_day for date, is_working_day in public_holidays
-        }
+        holiday_dict = {date: is_working_day for date, is_working_day in public_holidays}
 
         attendance_data = {}
         total_minutes_for_period = 0
@@ -763,9 +744,7 @@ def staff_detail(request, staff_pin):
                 "first_in": first_in if first_in else None,
                 "last_out": last_out if last_out else None,
                 "percent_day": round(percent_day, 2),
-                "total_minutes": (
-                    round(total_minutes_worked, 2) if first_in and last_out else 0
-                ),
+                "total_minutes": (round(total_minutes_worked, 2) if first_in and last_out else 0),
                 "is_weekend": is_off_day,
             }
 
@@ -788,11 +767,11 @@ def staff_detail(request, staff_pin):
 
         data = {
             "name": staff.name,
-            "surname": staff.surname if staff.surname != "Нет фамилии" else "",
+            "surname": (staff.surname if staff.surname != "Нет фамилии" else ""),
             "positions": [position.name for position in staff.positions.all()],
             "avatar": avatar_url,
-            "department": staff.department.name if staff.department else "N/A",
-            "department_id": staff.department.id if staff.department else "N/A",
+            "department": (staff.department.name if staff.department else "N/A"),
+            "department_id": (staff.department.id if staff.department else "N/A"),
             "attendance": attendance_data,
             "percent_for_period": round(percent_for_period, 2),
             "contract_type": contract_type,
@@ -817,7 +796,8 @@ def staff_detail(request, staff_pin):
                 type=openapi.TYPE_OBJECT,
                 properties={
                     "department_name": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="Название подразделения"
+                        type=openapi.TYPE_STRING,
+                        description="Название подразделения",
                     ),
                     "attendance": openapi.Schema(
                         type=openapi.TYPE_ARRAY,
@@ -974,9 +954,7 @@ def staff_detail_by_department_id(request, department_id):
 
         department_ids = [department_id] + get_all_child_department_ids(department_id)
 
-        cache_key = (
-            f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
-        )
+        cache_key = f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
 
         def query():
             staff_attendance = (
@@ -991,7 +969,9 @@ def staff_detail_by_department_id(request, department_id):
             paginator = StaffAttendancePagination()
             result_page = paginator.paginate_queryset(staff_attendance, request)
             serializer = serializers.StaffAttendanceByDateSerializer(
-                result_page, many=True, context={"department_name": department.name}
+                result_page,
+                many=True,
+                context={"department_name": department.name},
             )
 
             return paginator.get_paginated_response(serializer.data).data
@@ -1019,7 +999,8 @@ def staff_detail_by_department_id(request, department_id):
                 description="Желаемое имя для нового пользователя",
             ),
             "password": openapi.Schema(
-                type=openapi.TYPE_STRING, description="Пароль для нового пользователя"
+                type=openapi.TYPE_STRING,
+                description="Пароль для нового пользователя",
             ),
         },
     ),
@@ -1042,7 +1023,8 @@ def staff_detail_by_department_id(request, department_id):
                 type=openapi.TYPE_OBJECT,
                 properties={
                     "message": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="Описание ошибки запроса"
+                        type=openapi.TYPE_STRING,
+                        description="Описание ошибки запроса",
                     ),
                 },
             ),
@@ -1095,7 +1077,8 @@ def user_register(request):
     user.set_password(password)
     user.save()
     return Response(
-        status=status.HTTP_201_CREATED, data={"message": "пользователь успешно создан"}
+        status=status.HTTP_201_CREATED,
+        data={"message": "пользователь успешно создан"},
     )
 
 
@@ -1110,13 +1093,15 @@ def user_register(request):
                 type=openapi.TYPE_OBJECT,
                 properties={
                     "is_banned": openapi.Schema(
-                        type=openapi.TYPE_BOOLEAN, description="Забанен ли пользователь"
+                        type=openapi.TYPE_BOOLEAN,
+                        description="Забанен ли пользователь",
                     ),
                     "user": openapi.Schema(
                         type=openapi.TYPE_OBJECT,
                         properties={
                             "username": openapi.Schema(
-                                type=openapi.TYPE_STRING, description="Имя пользователя"
+                                type=openapi.TYPE_STRING,
+                                description="Имя пользователя",
                             ),
                             "email": openapi.Schema(
                                 type=openapi.TYPE_STRING,
@@ -1124,10 +1109,12 @@ def user_register(request):
                                 description="Электронная почта",
                             ),
                             "first_name": openapi.Schema(
-                                type=openapi.TYPE_STRING, description="Имя"
+                                type=openapi.TYPE_STRING,
+                                description="Имя",
                             ),
                             "last_name": openapi.Schema(
-                                type=openapi.TYPE_STRING, description="Фамилия"
+                                type=openapi.TYPE_STRING,
+                                description="Фамилия",
                             ),
                             "is_staff": openapi.Schema(
                                 type=openapi.TYPE_BOOLEAN,
@@ -1144,7 +1131,8 @@ def user_register(request):
                                 description="Дата последнего входа",
                             ),
                             "phonenumber": openapi.Schema(
-                                type=openapi.TYPE_STRING, description="Номер телефона"
+                                type=openapi.TYPE_STRING,
+                                description="Номер телефона",
                             ),
                         },
                     ),
@@ -1236,7 +1224,8 @@ def login_view(request):
                 type=openapi.TYPE_OBJECT,
                 properties={
                     "message": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="Статус сообщения."
+                        type=openapi.TYPE_STRING,
+                        description="Статус сообщения.",
                     ),
                 },
             ),
@@ -1274,7 +1263,8 @@ def fetch_data_view(request):
 
     except Exception as e:
         return Response(
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR, data={"error": str(e)}
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            data={"error": str(e)},
         )
 
 
@@ -1313,9 +1303,7 @@ def fetch_data_view(request):
                 description="Созданный Excel файл, содержащий данные о посещаемости.",
             ),
         ),
-        400: openapi.Response(
-            description="Bad Request: отсутствует начальная или конечная дата."
-        ),
+        400: openapi.Response(description="Bad Request: отсутствует начальная или конечная дата."),
         403: openapi.Response(
             description="Forbidden: если доступ запрещен или отсутствует API ключ."
         ),
@@ -1374,7 +1362,9 @@ def sent_excel(request, department_id):
     page = 1
 
     while True:
-        cache_key = f"{main_ip}_api_department_stats_{department_id}_{start_date}_{end_date}_page_{page}"
+        cache_key = (
+            f"{main_ip}_api_department_stats_{department_id}_{start_date}_{end_date}_page_{page}"
+        )
         url = f"{main_ip}/api/department/stats/{department_id}/?end_date={end_date}&start_date={start_date}&page={page}"
 
         data = get_cache(cache_key, query=lambda: utils.fetch_data(url), timeout=3600)
@@ -1398,9 +1388,7 @@ def sent_excel(request, department_id):
         response = HttpResponse(
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        response["Content-Disposition"] = (
-            f"attachment; filename=Посещаемость_{department_id}.xlsx"
-        )
+        response["Content-Disposition"] = f"attachment; filename=Посещаемость_{department_id}.xlsx"
 
         with NamedTemporaryFile(delete=False) as tmp:
             wb.save(tmp.name)
@@ -1530,11 +1518,9 @@ class UploadFileView(View):
 
                 parent_department = None
                 if parent_department_name:
-                    parent_department, created = (
-                        models.ParentDepartment.objects.get_or_create(
-                            id=parent_department_id,
-                            defaults={"name": parent_department_name},
-                        )
+                    parent_department, created = models.ParentDepartment.objects.get_or_create(
+                        id=parent_department_id,
+                        defaults={"name": parent_department_name},
                     )
 
                     parent_department_as_child, created = (
@@ -1548,18 +1534,14 @@ class UploadFileView(View):
                     )
 
                 else:
-                    parent_department_as_child = models.ChildDepartment.objects.get(
-                        id=1
-                    )
+                    parent_department_as_child = models.ChildDepartment.objects.get(id=1)
 
-                child_department, created = (
-                    models.ChildDepartment.objects.get_or_create(
-                        id=child_department_id,
-                        defaults={
-                            "name": child_department_name,
-                            "parent": parent_department_as_child,
-                        },
-                    )
+                child_department, created = models.ChildDepartment.objects.get_or_create(
+                    id=child_department_id,
+                    defaults={
+                        "name": child_department_name,
+                        "parent": parent_department_as_child,
+                    },
                 )
 
             except Exception as error:
@@ -1593,9 +1575,7 @@ class UploadFileView(View):
                     department = departments_cache[department_id]
                 else:
                     try:
-                        department = models.ChildDepartment.objects.get(
-                            id=department_id
-                        )
+                        department = models.ChildDepartment.objects.get(id=department_id)
                         departments_cache[department_id] = department
                     except models.ChildDepartment.DoesNotExist:
                         department = None
@@ -1656,9 +1636,7 @@ class UploadFileView(View):
                         if new_avatar:
                             if staff_member.avatar:
                                 staff_member.avatar.delete(save=False)
-                            staff_member.avatar.save(
-                                new_avatar.name, new_avatar, save=False
-                            )
+                            staff_member.avatar.save(new_avatar.name, new_avatar, save=False)
                             staff_member.save()
 
 
@@ -1719,10 +1697,12 @@ class APIKeyCheckView(APIView):
                     type=openapi.TYPE_OBJECT,
                     properties={
                         "message": openapi.Schema(
-                            type=openapi.TYPE_STRING, description="Сообщение об ошибке."
+                            type=openapi.TYPE_STRING,
+                            description="Сообщение об ошибке.",
                         ),
                         "error": openapi.Schema(
-                            type=openapi.TYPE_STRING, description="Описание ошибки."
+                            type=openapi.TYPE_STRING,
+                            description="Описание ошибки.",
                         ),
                     },
                 ),
@@ -1743,7 +1723,8 @@ class APIKeyCheckView(APIView):
 
         if not api_key:
             return Response(
-                {"message": "API Key is missing"}, status=status.HTTP_400_BAD_REQUEST
+                {"message": "API Key is missing"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:

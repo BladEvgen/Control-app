@@ -89,7 +89,7 @@ def delete_user_on_profile_delete(sender, instance, **kwargs):
 @receiver(post_delete, sender=UserProfile)
 def update_jwt_token(sender, instance, **kwargs):
     user = instance.user
-    refresh = RefreshToken.for_user(user)
+    RefreshToken.for_user(user)
 
 
 class FileCategory(models.Model):
