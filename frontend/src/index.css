@@ -1,8 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@100;300;400;500;700;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;600;700&family=Roboto:wght@400;500;700&family=Open+Sans:wght@400;600;700&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
 
 *,
 *::before,
@@ -33,13 +32,45 @@ dd {
 }
 
 body {
-    font-family: "Roboto", sans-serif;
+    font-family: "Nunito", sans-serif;
     font-weight: 400;
     font-style: normal;
     min-height: 100vh;
     scroll-behavior: smooth;
     text-rendering: optimizeSpeed;
     line-height: 1.5;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-family: 'Roboto', sans-serif;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+p,
+a,
+li,
+span,
+div {
+    font-family: 'Nunito', sans-serif;
+    font-weight: 600;
+}
+
+strong,
+b {
+    font-family: 'Roboto', sans-serif;
+    font-weight: 500;
+}
+
+small,
+.small-text {
+    font-family: 'Open Sans', sans-serif;
+    font-weight: 400;
 }
 
 ul[class],
