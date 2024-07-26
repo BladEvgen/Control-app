@@ -153,7 +153,7 @@ const Dashboard: React.FC = () => {
             color: "rgba(128, 128, 128, 0.2)",
           },
           ticks: {
-            color: "#ef4444",
+            color: "#F87171",
             font: {
               size: 16,
               weight: "bold" as const,
@@ -172,7 +172,7 @@ const Dashboard: React.FC = () => {
         x: {
           ticks: {
             display: true,
-            color: "#1a8013",
+            color: "#13ad09",
             font: {
               size: 16,
               weight: "bold" as const,
@@ -275,7 +275,7 @@ const Dashboard: React.FC = () => {
   const formattedDate = formatDate(stats.data_for_date);
 
   return (
-    <div className="container mx-auto p-4 dark:bg-gray-900 dark:text-gray-100">
+    <div className="container mx-auto p-4  dark:text-gray-100">
       <h1 className="text-3xl font-bold mb-4 text-center text-gray-200">
         Посещаемость отдела {stats.department_name}
       </h1>
