@@ -1,172 +1,86 @@
-import { useState, useEffect } from "react";
-import { IData, IChildDepartment } from "../schemas/IData";
-import { useParams } from "react-router-dom";
+import { useState, useEffect, ChangeEvent } from "react";
+import { IData } from "../schemas/IData";
+import { useParams, useLocation } from "react-router-dom";
 import { Link } from "../RouterUtils";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { formatDepartmentName } from "../utils/utils";
-import {
-  FaDownload,
-  FaChevronLeft,
-  FaChevronRight,
-  FaAngleDoubleLeft,
-  FaAngleDoubleRight,
-  FaHome,
-} from "react-icons/fa";
+import { FaDownload, FaHome } from "react-icons/fa";
+import DepartmentTable from "./DepartmentTable";
 
-const DepartmentTable = ({ data }: { data: IData }) => {
-  const [page, setPage] = useState(0);
-  const [rowsPerPage] = useState(10);
-  const [searchQuery, setSearchQuery] = useState("");
-
-  const handleChangePage = (newPage: number) => {
-    setPage(newPage);
-  };
-
-  const sortedChildDepartments = (data.child_departments || []).sort((a, b) =>
-    a.name.localeCompare(b.name)
-  );
-
-  const filteredDepartments = sortedChildDepartments.filter((department) =>
-    department.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setSearchQuery(e.target.value);
-    setPage(0);
-  };
-
-  return (
-    <div className="flex flex-col h-full rounded-lg shadow-lg ">
-      <input
-        type="text"
-        placeholder="Поиск отдела"
-        value={searchQuery}
-        onChange={handleSearchChange}
-        className="border border-gray-300 px-4 py-2 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
-      />
-      <p className="text mb-4 ml-3 text-gray-300 dark:text-gray-400">
-        <strong>Количество сотрудников:</strong> {data?.total_staff_count}
-      </p>
-      <div className="flex-1 overflow-y-auto">
-        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-          <thead className="bg-gray-50 dark:bg-gray-800">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400">
-                Название отдела
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400">
-                Дата создания
-              </th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200 dark:bg-gray-900 dark:divide-gray-700">
-            {filteredDepartments
-              .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
-              .map((department: IChildDepartment) => (
-                <tr key={department.child_id}>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <Link
-                      to={
-                        department.has_child_departments
-                          ? `/department/${department.child_id}`
-                          : `/childDepartment/${department.child_id}`
-                      }
-                      className="text-sm font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-600"
-                    >
-                      {formatDepartmentName(department.name)}
-                    </Link>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                    {new Date(department.date_of_creation).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6 rounded-b-lg dark:bg-gray-800 dark:border-gray-700">
-        <div className="flex-1 flex justify-between">
-          <div className="flex">
-            <button
-              onClick={() => handleChangePage(0)}
-              disabled={page === 0}
-              className={`${
-                page === 0
-                  ? "text-gray-300 dark:text-gray-600"
-                  : "text-gray-700 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
-              } px-4 py-2 rounded-md text-sm font-medium mr-2`}
-            >
-              <FaAngleDoubleLeft size={16} />
-            </button>
-            <button
-              onClick={() => handleChangePage(page - 1)}
-              disabled={page === 0}
-              className={`${
-                page === 0
-                  ? "text-gray-300 dark:text-gray-600"
-                  : "text-gray-700 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
-              } px-4 py-2 rounded-md text-sm font-medium mr-2`}
-            >
-              <FaChevronLeft size={16} />
-            </button>
-          </div>
-          <p className="text-sm text-gray-700 dark:text-gray-400">
-            Показано{" "}
-            <span className="font-medium">
-              {Math.min((page + 1) * rowsPerPage, filteredDepartments.length)}
-            </span>{" "}
-            из <span className="font-medium">{filteredDepartments.length}</span>{" "}
-            результатов
-          </p>
-          <div className="flex">
-            <button
-              onClick={() => handleChangePage(page + 1)}
-              disabled={
-                page >=
-                Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
-              }
-              className={`${
-                page >=
-                Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
-                  ? "text-gray-300 dark:text-gray-600"
-                  : "text-gray-700 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
-              } px-4 py-2 rounded-md text-sm font-medium mr-2`}
-            >
-              <FaChevronRight size={16} />
-            </button>
-            <button
-              onClick={() =>
-                handleChangePage(
-                  Math.max(
-                    0,
-                    Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
-                  )
-                )
-              }
-              disabled={
-                page >=
-                Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
-              }
-              className={`${
-                page >=
-                Math.ceil(sortedChildDepartments.length / rowsPerPage) - 1
-                  ? "text-gray-300 dark:text-gray-600"
-                  : "text-gray-700 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
-              } px-4 py-2 rounded-md text-sm font-medium`}
-            >
-              <FaAngleDoubleRight size={16} />
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+const shouldRenderLink = (pathname: string): boolean => {
+  const excludedPaths = ["/app/", "/app/department/1", "/app"];
+  return !excludedPaths.includes(pathname);
 };
 
-const DepartmentPage = () => {
+const formatDate = (date: Date, offsetDays: number): string => {
+  return new Date(new Date().setDate(date.getDate() + offsetDays))
+    .toISOString()
+    .split("T")[0];
+};
+
+const fetchDepartmentData = async (
+  id: number,
+  setData: React.Dispatch<React.SetStateAction<IData>>,
+  setIsLoading: React.Dispatch<React.SetStateAction<boolean>>
+): Promise<void> => {
+  try {
+    const res = await axiosInstance.get(`${apiUrl}/api/department/${id}/`);
+    setData(res.data);
+    setIsLoading(false);
+  } catch (error) {
+    console.error(`Error: ${error}`);
+  }
+};
+
+const handleFileDownload = async (
+  url: string,
+  startDate: string,
+  endDate: string,
+  data: IData,
+  setIsDownloading: React.Dispatch<React.SetStateAction<boolean>>,
+  setShowWaitMessage: React.Dispatch<React.SetStateAction<boolean>>
+): Promise<void> => {
+  setIsDownloading(true);
+  setShowWaitMessage(false);
+
+  const downloadTimeout = setTimeout(() => {
+    setShowWaitMessage(true);
+    const hideWaitMessage = setTimeout(() => {
+      setShowWaitMessage(false);
+    }, 7000);
+    return () => clearTimeout(hideWaitMessage);
+  }, 3000);
+
+  try {
+    const response = await axiosInstance.get(url, {
+      params: { startDate, endDate },
+      responseType: "blob",
+      timeout: 600000,
+    });
+
+    clearTimeout(downloadTimeout);
+    setIsDownloading(false);
+    const departmentName = data.name.replace(/\s/g, "_");
+
+    const fileUrl = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement("a");
+    link.href = fileUrl;
+    link.setAttribute("download", `Посещаемость_${departmentName}.xlsx`);
+    document.body.appendChild(link);
+    link.click();
+    if (link.parentNode) {
+      link.parentNode.removeChild(link);
+    }
+  } catch (error) {
+    console.error("Error downloading the file:", error);
+    setIsDownloading(false);
+  }
+};
+
+const DepartmentPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
+  const location = useLocation();
   const departmentId = id ? parseInt(id) : 1;
   const [data, setData] = useState<IData>({
     name: "",
@@ -176,93 +90,38 @@ const DepartmentPage = () => {
   });
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [startDate, setStartDate] = useState<string>(
-    new Date(new Date().setDate(new Date().getDate() - 31))
-      .toISOString()
-      .split("T")[0]
+    formatDate(new Date(), -31)
   );
-  const [endDate, setEndDate] = useState<string>(
-    new Date(new Date().setDate(new Date().getDate() - 0))
-      .toISOString()
-      .split("T")[0]
-  );
+  const [endDate, setEndDate] = useState<string>(formatDate(new Date(), 0));
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
   const [showWaitMessage, setShowWaitMessage] = useState<boolean>(false);
 
   useEffect(() => {
-    const fetchData = async (id: number) => {
-      try {
-        const res = await axiosInstance.get(`${apiUrl}/api/department/${id}/`);
-        setData(res.data);
-        setIsLoading(false);
-
-        if (res.status === 200 || res.status === 201) {
-          return;
-        }
-      } catch (error) {
-        console.error(`Error: ${error}`);
-      }
-    };
-
-    fetchData(departmentId);
+    fetchDepartmentData(departmentId, setData, setIsLoading);
   }, [departmentId]);
 
-  const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newStartDate = e.target.value;
-    setStartDate(newStartDate);
-    if (newStartDate > endDate) {
-      setEndDate(newStartDate);
+  const handleDateChange = (
+    e: ChangeEvent<HTMLInputElement>,
+    setDate: React.Dispatch<React.SetStateAction<string>>,
+    otherDate: string,
+    compare: (newDate: string, otherDate: string) => boolean
+  ) => {
+    const newDate = e.target.value;
+    setDate(newDate);
+    if (compare(newDate, otherDate)) {
+      setEndDate(newDate);
     }
   };
 
-  const handleEndDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newEndDate = e.target.value;
-    if (newEndDate >= startDate) {
-      setEndDate(newEndDate);
-    }
-  };
-
-  const handleDownload = async () => {
-    setIsDownloading(true);
-    setShowWaitMessage(false);
-
-    const downloadTimeout = setTimeout(() => {
-      setShowWaitMessage(true);
-      const hideWaitMessage = setTimeout(() => {
-        setShowWaitMessage(false);
-      }, 7000);
-      return () => clearTimeout(hideWaitMessage);
-    }, 3000);
-
-    try {
-      const response = await axiosInstance.get(
-        `${apiUrl}/api/download/${id ?? departmentId}/`,
-        {
-          params: {
-            startDate,
-            endDate,
-          },
-          responseType: "blob",
-          timeout: 600000,
-        }
-      );
-
-      clearTimeout(downloadTimeout);
-      setIsDownloading(false);
-      const departmentName = data.name.replace(/\s/g, "_");
-
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement("a");
-      link.href = url;
-      link.setAttribute("download", `Посещаемость_${departmentName}.xlsx`);
-      document.body.appendChild(link);
-      link.click();
-      if (link.parentNode) {
-        link.parentNode.removeChild(link);
-      }
-    } catch (error) {
-      console.error("Error downloading the file:", error);
-      setIsDownloading(false);
-    }
+  const handleDownload = () => {
+    handleFileDownload(
+      `${apiUrl}/api/download/${departmentId}/`,
+      startDate,
+      endDate,
+      data,
+      setIsDownloading,
+      setShowWaitMessage
+    );
   };
 
   const isDownloadDisabled = !startDate || !endDate;
@@ -273,7 +132,7 @@ const DepartmentPage = () => {
         <h1 className="text-2xl font-bold text-white">
           {isLoading ? " " : formatDepartmentName(data?.name)}
         </h1>
-        {location.pathname !== "/app/" && (
+        {shouldRenderLink(location.pathname) && (
           <Link
             to="/"
             className="flex items-center px-4 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
@@ -296,7 +155,14 @@ const DepartmentPage = () => {
             type="date"
             id="startDate"
             value={startDate}
-            onChange={handleStartDateChange}
+            onChange={(e) =>
+              handleDateChange(
+                e,
+                setStartDate,
+                endDate,
+                (newDate, otherDate) => newDate > otherDate
+              )
+            }
             className="border border-gray-300 px-3 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
           />
         </div>
@@ -311,7 +177,14 @@ const DepartmentPage = () => {
             type="date"
             id="endDate"
             value={endDate}
-            onChange={handleEndDateChange}
+            onChange={(e) =>
+              handleDateChange(
+                e,
+                setEndDate,
+                startDate,
+                (newDate, otherDate) => newDate >= otherDate
+              )
+            }
             className="border border-gray-300 px-3 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
           />
         </div>
@@ -350,7 +223,7 @@ const DepartmentPage = () => {
             {isDownloading ? "Загрузка" : "Скачать"}
           </button>
           {showWaitMessage && (
-            <div className="mt-2 md:mt-0 md:ml-4 p-2 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse dark:bg-red-900 dark:text-red-200">
+            <div className="mt-2 md:mt-6 md:ml-4 p-2 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse dark:bg-red-900 dark:text-red-200">
               Загрузка может занять некоторое время, пожалуйста, подождите...
             </div>
           )}
