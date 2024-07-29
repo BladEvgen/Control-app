@@ -11,6 +11,7 @@ from .models import (
     StaffAttendance,
     ParentDepartment,
 )
+from monitoring_app import utils
 
 admin.site.site_header = "Панель управления"
 admin.site.index_title = "Администрирование сайта"
@@ -19,10 +20,36 @@ admin.site.site_title = "Администрирование"
 
 @admin.register(APIKey)
 class APIKeyAdmin(admin.ModelAdmin):
-    list_display = ("key_name", "created_by", "created_at", "key", "is_active")
-    list_filter = ("created_at", "created_by")
+    list_display = ("key_name", "created_by", "created_at", "short_key", "is_active")
+    list_filter = (
+        "created_at",
+        "created_by",
+    )
+    list_editable = ("is_active",)
     search_fields = ("key_name", "created_by__username")
     ordering = ("-created_at", "key_name")
+    readonly_fields = ("key",)
+
+    def short_key(self, obj):
+        return obj.key[:8] + "..."
+
+    short_key.short_description = "Key"
+
+    def get_fields(self, request, obj=None):
+        if obj:
+            return ["key_name", "created_by", "created_at", "key", "is_active"]
+        else:
+            return ["key_name", "created_by", "is_active"]
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj:
+            return ["key_name", "created_by", "created_at", "key"]
+        else:
+            return []
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related("created_by")
 
 
 @admin.register(UserProfile)
@@ -71,6 +98,13 @@ class PositionAdmin(admin.ModelAdmin):
     list_editable = ("rate",)
 
 
+class SalaryInline(admin.TabularInline):
+    model = Salary
+    extra = 1
+    fields = ("net_salary", "total_salary", "contract_type")
+    readonly_fields = ("total_salary",)
+
+
 @admin.register(Staff)
 class StaffAdmin(admin.ModelAdmin):
     list_display = (
@@ -81,7 +115,13 @@ class StaffAdmin(admin.ModelAdmin):
         "display_positions",
         "avatar",
     )
-    list_filter = ("department", "positions")
+    list_filter = (
+        "pin",
+        "department",
+        "surname",
+        "name",
+        "positions",
+    )
     search_fields = ("surname", "name", "department__name")
     filter_horizontal = ("positions",)
     actions = ["clear_avatars"]
@@ -89,6 +129,8 @@ class StaffAdmin(admin.ModelAdmin):
         "surname",
         "name",
     )
+
+    inlines = [SalaryInline]
 
     def clear_avatars(self, request, queryset):
         for staff_member in queryset:
@@ -105,13 +147,29 @@ class StaffAdmin(admin.ModelAdmin):
 
 @admin.register(StaffAttendance)
 class StaffAttendanceAdmin(admin.ModelAdmin):
-    list_display = ("staff", "date_at", "first_in", "last_out")
-    list_filter = ("staff__department", "staff__pin", "staff__surname", "staff__name")
+    list_display = ("staff", "staff_department", "date_at", "first_in", "last_out")
+    list_filter = (
+        utils.HierarchicalDepartmentFilter,
+        "staff__pin",
+        "staff__surname",
+        "staff__name",
+    )
     search_fields = ("staff__surname", "staff__name", "staff__pin")
     date_hierarchy = "date_at"
     list_display_links = None
     ordering = ("-date_at", "-last_out", "staff")
     readonly_fields = ("first_in", "last_out")
+
+    def staff_department(self, obj):
+        return obj.staff.department.name if obj.staff.department else "N/A"
+
+    staff_department.short_description = "Отдел"
+    staff_department.admin_order_field = "staff__department__name"
+
+    def staff_with_department(self, obj):
+        return f"({obj.staff.surname} {obj.staff.name} ({obj.staff.department.name if obj.staff.department else 'N/A'})"
+
+    staff_with_department.short_description = "Staff (Отдел)"
 
 
 @admin.register(Salary)
