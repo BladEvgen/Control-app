@@ -14,9 +14,30 @@ from monitoring_app import models
 from django.core.cache import cache
 from cryptography.fernet import Fernet
 from openpyxl.styles import Alignment, Font
+from django.contrib.admin import SimpleListFilter
 from openpyxl.utils.dataframe import dataframe_to_rows
+from django.utils.translation import gettext_lazy as _
 
 DAYS = settings.DAYS
+
+
+class HierarchicalDepartmentFilter(SimpleListFilter):
+    title = _("Department")
+    parameter_name = "staff_department"
+
+    def lookups(self, request, model_admin):
+        departments = models.ChildDepartment.objects.all()
+        return [(dept.id, dept.name) for dept in departments]
+
+    def queryset(self, request, queryset):
+        if self.value():
+            department = models.ChildDepartment.objects.get(pk=self.value())
+            child_departments = department.get_all_child_departments()
+            child_department_ids = [dept.id for dept in child_departments] + [
+                department.id
+            ]
+            return queryset.filter(staff__department__in=child_department_ids)
+        return queryset
 
 
 class APIKeyUtility:
