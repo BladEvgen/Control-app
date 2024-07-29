@@ -23,7 +23,7 @@ class APIKey(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     key = models.CharField(max_length=256, editable=False, verbose_name="Ключ")
     is_active = models.BooleanField(
-        default=True, editable=False, verbose_name="Статус активности"
+        default=True, editable=True, verbose_name="Статус активности"
     )
 
     def __str__(self):
@@ -37,11 +37,10 @@ class APIKey(models.Model):
                 self.key_name, self.created_by
             )
             self.key = encrypted_key
-            super(APIKey, self).save(*args, **kwargs)
+        super(APIKey, self).save(*args, **kwargs)
 
     class Meta:
         verbose_name = "API Ключ"
-        verbose_name_plural = "API Ключи"
 
 
 class UserProfile(models.Model):
@@ -214,7 +213,7 @@ class Staff(models.Model):
     )
 
     def __str__(self):
-        return f"{self.surname} {self.name} {self.department.name if self.department else 'N/A'}"
+        return f"{self.surname} {self.name}"
 
     def save(self, *args, **kwargs):
         if self.pk:
