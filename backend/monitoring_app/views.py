@@ -29,7 +29,7 @@ from rest_framework.permissions import (
     IsAuthenticated,
 )
 
-from monitoring_app import models, serializers, utils
+from monitoring_app import models, serializers, utils, permissions
 
 
 class StaffAttendancePagination(PageNumberPagination):
@@ -662,7 +662,7 @@ def child_department_detail(request, child_department_id):
     },
 )
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def staff_detail(request, staff_pin):
     """
     Эндпоинт для получения подробной информации о сотруднике,
@@ -1270,7 +1270,7 @@ def login_view(request):
     },
 )
 @api_view(http_method_names=["GET"])
-@permission_classes([AllowAny])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def fetch_data_view(request):
     """
     Запрос на получение данных о посещаемости. Требует передачи заголовка X-API-KEY для аутентификации.
@@ -1363,7 +1363,7 @@ def fetch_data_view(request):
     },
 )
 @api_view(http_method_names=["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def sent_excel(request, department_id):
     """
     Получение данных о посещаемости в формате Excel.

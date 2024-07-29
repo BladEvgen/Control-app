@@ -20,6 +20,7 @@ SECRET_API = os.getenv("SECRET_API")
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
 MAIN_IP = os.getenv("MAIN_IP")
+API_KEY = os.getenv("API_KEY")
 
 LOGIN_URL = "/login_view/"
 LOGOUT_URL = "/logout/"
