@@ -41,6 +41,7 @@ class APIKey(models.Model):
 
     class Meta:
         verbose_name = "API Ключ"
+        verbose_name_plural = "API Ключи"
 
 
 class UserProfile(models.Model):
