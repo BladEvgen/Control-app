@@ -1,6 +1,7 @@
 import requests
 import datetime
 import pandas as pd
+from dateutil import parser
 from openpyxl import Workbook
 from django.conf import settings
 from openpyxl.styles import Font, Alignment
@@ -10,21 +11,18 @@ API_BASE_URL = settings.MAIN_IP
 API_KEY = settings.MINE_API
 DATA_URL = f"{API_BASE_URL}/api/staff/s00260/?start_date=2024-06-29&end_date=2024-07-29"
 
-
 def fetch_data(url: str, api_key: str) -> dict:
     headers = {"x-api-key": api_key}
     response = requests.get(url, headers=headers)
     response.raise_for_status()
     return response.json()
 
-
-def format_datetime(dt_str: str, input_format: str, output_format: str) -> str:
+def format_datetime(dt_str: str, output_format: str) -> str:
     return (
-        datetime.datetime.strptime(dt_str, input_format).strftime(output_format)
+        parser.parse(dt_str).strftime(output_format)
         if dt_str
         else None
     )
-
 
 def parse_attendance_data(data: dict) -> tuple:
     name = f"{data.get('name', '')} {data.get('surname', '')}"
@@ -38,13 +36,13 @@ def parse_attendance_data(data: dict) -> tuple:
         key=lambda x: datetime.datetime.strptime(x[0], "%d-%m-%Y"),
         reverse=True,
     ):
-        date_str = format_datetime(date, "%d-%m-%Y", "%d.%m.%Y")
+        date_str = format_datetime(date, "%d.%m.%Y")
         is_weekend = details.get("is_weekend", False)
         first_in = format_datetime(
-            details.get("first_in"), "%Y-%m-%dT%H:%M:%SZ", "%H:%M:%S"
+            details.get("first_in"), "%H:%M:%S %Z"
         )
         last_out = format_datetime(
-            details.get("last_out"), "%Y-%m-%dT%H:%M:%SZ", "%H:%M:%S"
+            details.get("last_out"), "%H:%M:%S %Z"
         )
         percent_day = details.get("percent_day", 0)
 
@@ -59,13 +57,11 @@ def parse_attendance_data(data: dict) -> tuple:
     df = pd.DataFrame(rows, columns=["Дата", "Посещаемость", "Процент дня"])
     return name, department, percent_for_period, df
 
-
 def auto_fit_column_widths(ws):
     for col in ws.columns:
         max_length = max(len(str(cell.value)) for cell in col)
         adjusted_width = (max_length + 2) * 1.2
         ws.column_dimensions[col[0].column_letter].width = adjusted_width
-
 
 def save_to_excel(
     name: str, department: str, percent_for_period: float, df: pd.DataFrame
@@ -109,7 +105,6 @@ def save_to_excel(
 
     return wb
 
-
 def main():
     try:
         data = fetch_data(DATA_URL, API_KEY)
@@ -120,7 +115,6 @@ def main():
             workbook.save(filename)
     except requests.RequestException as e:
         print(f"An error occurred: {e}")
-
 
 if __name__ == "__main__":
     main()
