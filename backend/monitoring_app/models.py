@@ -1,5 +1,5 @@
 import os
-
+import shutil
 from django.utils import timezone
 from django.contrib import messages
 from django.dispatch import receiver
@@ -228,9 +228,30 @@ class Staff(models.Model):
                     print(f"Ошибка при удалении старой аватарки: {e}")
         super().save(*args, **kwargs)
 
+    def delete(self, *args, **kwargs):
+        avatar_dir = os.path.dirname(self.avatar.path)
+        if os.path.exists(avatar_dir):
+            try:
+                shutil.rmtree(avatar_dir)
+            except Exception as e:
+                print(f"Ошибка при удалении директории с аватаркой: {e}")
+        super().delete(*args, **kwargs)
+
     class Meta:
         verbose_name = "Сотрудник"
         verbose_name_plural = "Сотрудники"
+
+
+@receiver(post_delete, sender=Staff)
+def delete_avatar_on_staff_delete(sender, instance, **kwargs):
+    avatar_dir = os.path.dirname(instance.avatar.path)
+    if os.path.exists(avatar_dir):
+        try:
+            shutil.rmtree(avatar_dir)
+        except Exception as e:
+            print(
+                f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}"
+            )
 
 
 class StaffAttendance(models.Model):
