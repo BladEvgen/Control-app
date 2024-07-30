@@ -295,6 +295,5 @@ dist
 /backend/staticroot
 one_pin_skud.py
 *.sqlite3
-frontend/apiConfig.ts
-frontend/apiConfig.ts
+frontend\apiConfig.ts
 /backend/monitoring_app/migrations
