@@ -98,6 +98,7 @@ class StaffSerializer(serializers.ModelSerializer):
 
 
 class StaffAttendanceSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = models.StaffAttendance
         fields = "__all__"

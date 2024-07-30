@@ -8,4 +8,4 @@ exclude =
     tests.py,
     ./backend,
     ./venv/,
-    .monitoring_app/mtest.py
+    .\monitoring_app\mtest.py

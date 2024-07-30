@@ -1,9 +1,10 @@
-from rest_framework_simplejwt.authentication import JWTAuthentication
-from rest_framework.permissions import BasePermission
 from monitoring_app import models
+from rest_framework.permissions import BasePermission
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 
 class IsAuthenticatedOrAPIKey(BasePermission):
+
     def has_permission(self, request, view):
         if request.user and request.user.is_authenticated:
             return True
