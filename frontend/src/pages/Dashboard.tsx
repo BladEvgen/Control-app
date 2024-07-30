@@ -286,32 +286,6 @@ const Dashboard: React.FC = () => {
         <p className="text-center text-gray-400">Нет данных для отображения</p>
       ) : (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-            <div className="p-6 bg-white dark:bg-gray-800 shadow-lg rounded-lg text-center">
-              <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-300">
-                Всего сотрудников
-              </h2>
-              <p className="text-4xl font-bold text-green-600 dark:text-green-400 mt-2">
-                {stats.total_staff_count}
-              </p>
-            </div>
-            <div className="p-6 bg-white dark:bg-gray-800 shadow-lg rounded-lg text-center">
-              <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-300">
-                Присутствующие
-              </h2>
-              <p className="text-4xl font-bold text-blue-600 dark:text-blue-400 mt-2">
-                {stats.present_staff_count}
-              </p>
-            </div>
-            <div className="p-6 bg-white dark:bg-gray-800 shadow-lg rounded-lg text-center">
-              <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-300">
-                Отсутствующие
-              </h2>
-              <p className="text-4xl font-bold text-red-600 dark:text-red-400 mt-2">
-                {stats.absent_staff_count}
-              </p>
-            </div>
-          </div>
           <div className="bg-white dark:bg-gray-800 shadow-lg rounded-lg p-6 mb-6">
             <h2 className="text-xl font-semibold mb-4 text-center text-gray-700 dark:text-gray-300">
               Процент посещаемости по сотрудникам
@@ -319,6 +293,33 @@ const Dashboard: React.FC = () => {
             {chartData && (
               <Line data={chartData.lineData} options={chartOptions} />
             )}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+              <div className="p-6 bg-white dark:bg-gray-800 shadow-lg rounded-lg text-center">
+                <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-300">
+                  Всего сотрудников
+                </h2>
+                <p className="text-4xl font-bold text-green-600 dark:text-green-400 mt-2">
+                  {stats.total_staff_count}
+                </p>
+              </div>
+              <div className="p-6 bg-white dark:bg-gray-800 shadow-lg rounded-lg text-center">
+                <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-300">
+                  Присутствующие
+                </h2>
+                <p className="text-4xl font-bold text-blue-600 dark:text-blue-400 mt-2">
+                  {stats.present_staff_count}
+                </p>
+              </div>
+              <div className="p-6 bg-white dark:bg-gray-800 shadow-lg rounded-lg text-center">
+                <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-300">
+                  Отсутствующие
+                </h2>
+                <p className="text-4xl font-bold text-red-600 dark:text-red-400 mt-2">
+                  {stats.absent_staff_count}
+                </p>
+              </div>
+            </div>
+
             <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
               {chartData?.ranges
                 .slice(0, chartData.staffCountsInRanges.length)
