@@ -3,7 +3,6 @@ import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { useParams } from "react-router-dom";
 import { useNavigate } from "../RouterUtils";
-import { CircleLoader } from "react-spinners";
 import { StaffData } from "../schemas/IData";
 import { FaChevronLeft } from "react-icons/fa";
 import { FiInfo } from "react-icons/fi";
@@ -174,10 +173,14 @@ const StaffDetail = () => {
   };
 
   return (
-    <div className="container mx-auto p-6 sm:p-10 bg-white shadow-lg rounded-xl dark:bg-gray-900 dark:text-white relative">
+    <div
+      className={`container mx-auto p-6 sm:p-10 rounded-xl relative ${
+        !loading ? "bg-white dark:bg-gray-900 dark:text-white" : ""
+      }`}
+    >
       {loading ? (
-        <div className="flex items-center justify-center h-full">
-          <CircleLoader color="#4A90E2" loading={loading} size={50} />
+        <div className="flex justify-center items-center h-screen">
+          <div className="loader"></div>
         </div>
       ) : (
         staffData && (
@@ -201,7 +204,7 @@ const StaffDetail = () => {
                       {formatDepartmentName(staffData.department)}
                     </p>
                   )}
-                  {staffData.positions?.length && (
+                  {staffData.positions && staffData.positions.length > 0 && (
                     <p className="text-lg font-semibold mb-1">
                       <strong>Должность:</strong>{" "}
                       {staffData.positions.join(", ")}
