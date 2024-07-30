@@ -1656,7 +1656,6 @@ class UploadFileView(View):
             HttpResponse: Отрисовывает шаблон upload_file.html
             с контекстом, содержащим список всех категорий файлов (categories).
         """
-
         categories = models.FileCategory.objects.all()
         context = {"categories": categories}
         return render(request, self.template_name, context=context)
@@ -1677,7 +1676,6 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке файла.
         """
-
         file_path = request.FILES.get("file")
         category_slug = request.POST.get("category")
 
@@ -1713,7 +1711,6 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке файла Excel.
         """
-
         wb = load_workbook(file_path)
         ws = wb.active
         ws.delete_rows(1, 2)
@@ -1735,7 +1732,6 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке строки.
         """
-
         for row in rows:
             try:
                 parent_department_id = int(row[2].value)
@@ -1755,7 +1751,6 @@ class UploadFileView(View):
                         id=parent_department_id,
                         defaults={"name": parent_department_name},
                     )
-
                     (
                         parent_department_as_child,
                         created,
@@ -1796,61 +1791,72 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке строки.
         """
-
         staff_instances = []
         departments_cache = {}
 
         for row in rows:
-            pin = row[0].value
-            name = row[1].value
-            surname = row[2].value or "Нет фамилии"
-            department_id = int(row[3].value)
-            position_name = row[5].value or "Сотрудник"
+            try:
+                pin = row[0].value
+                name = row[1].value
+                surname = row[2].value or "Нет фамилии"
+                department_id = int(row[3].value) if row[3].value else None
+                position_name = (
+                    row[5].value or "Сотрудник" if len(row) > 5 else "Сотрудник"
+                )
 
-            position, _ = models.Position.objects.get_or_create(name=position_name)
+                position, _ = models.Position.objects.get_or_create(name=position_name)
 
-            if department_id:
-                if department_id in departments_cache:
-                    department = departments_cache[department_id]
+                if department_id:
+                    if department_id in departments_cache:
+                        department = departments_cache[department_id]
+                    else:
+                        try:
+                            department = models.ChildDepartment.objects.get(
+                                id=department_id
+                            )
+                            departments_cache[department_id] = department
+                        except models.ChildDepartment.DoesNotExist:
+                            department = None
                 else:
-                    try:
-                        department = models.ChildDepartment.objects.get(
-                            id=department_id
-                        )
-                        departments_cache[department_id] = department
-                    except models.ChildDepartment.DoesNotExist:
-                        department = None
-            else:
-                department = None  # Default department value
+                    department = None  # Default department value
 
-            staff_instance = models.Staff(
-                pin=pin,
-                name=name,
-                surname=surname,
-                department=department,
-            )
+                staff_instance = models.Staff(
+                    pin=pin,
+                    name=name,
+                    surname=surname,
+                    department=department,
+                )
 
-            staff_instances.append(staff_instance)
+                staff_instances.append((staff_instance, position))
+            except IndexError as e:
+                print(f"Error processing row due to missing data: {row}. Error: {e}")
+            except Exception as e:
+                print(f"Unexpected error processing row: {row}. Error: {e}")
 
-        pin_list = [staff.pin for staff in staff_instances]
+        pin_list = [staff[0].pin for staff in staff_instances]
         existing_staff = models.Staff.objects.filter(pin__in=pin_list)
         existing_staff_dict = {staff.pin: staff for staff in existing_staff}
 
         staff_to_create = []
         staff_to_update = []
 
-        for staff_instance in staff_instances:
+        for staff_instance, position in staff_instances:
             if staff_instance.pin in existing_staff_dict:
                 existing = existing_staff_dict[staff_instance.pin]
-                existing.name = staff_instance.name
-                existing.surname = staff_instance.surname
-                existing.department = staff_instance.department
+                if staff_instance.name:
+                    existing.name = staff_instance.name
+                if staff_instance.surname:
+                    existing.surname = staff_instance.surname
+                if staff_instance.department:
+                    existing.department = staff_instance.department
+                if position.name and position.name != "Сотрудник":
+                    if not existing.positions.filter(name=position.name).exists():
+                        existing.positions.add(position)
                 staff_to_update.append(existing)
             else:
+                staff_instance.save()
+                staff_instance.positions.add(position)
                 staff_to_create.append(staff_instance)
-
-        if staff_to_create:
-            models.Staff.objects.bulk_create(staff_to_create)
 
         for staff in staff_to_update:
             staff.save()
