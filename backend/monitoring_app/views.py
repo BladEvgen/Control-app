@@ -188,7 +188,7 @@ class StaffAttendanceStatsView(APIView):
         )
         date_param = datetime.datetime.strptime(
             date_param, "%Y-%m-%d"
-        ).date() - datetime.timedelta(days=1)
+        ).date()
         pin_param = request.query_params.get("pin", None)
 
         target_date = self.get_last_working_day(date_param)
@@ -243,7 +243,7 @@ class StaffAttendanceStatsView(APIView):
             present_data, absent_data = self.get_attendance_data(
                 staff_queryset, present_staff_pins, present_staff
             )
-
+            target_date -= datetime.timedelta(days=1)
             if pin_param:
                 present_data = [
                     entry for entry in present_data if entry["staff_pin"] == pin_param
@@ -574,8 +574,8 @@ def child_department_detail(request, child_department_id):
 
 @swagger_auto_schema(
     method="GET",
-    operation_summary="Получить информации об сотруднике",
-    operation_description="Получение подробной информации о сотруднике, включая данные о посещаемости, заработной плате и типе контракта",
+    operation_summary="Получить информацию о сотруднике",
+    operation_description="Получение подробной информации о сотруднике, включая данные о посещаемости, заработной плате и типе контракта.",
     manual_parameters=[
         openapi.Parameter(
             name="staff_pin",
@@ -664,158 +664,242 @@ def child_department_detail(request, child_department_id):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def staff_detail(request, staff_pin):
-    """
-    Эндпоинт для получения подробной информации о сотруднике,
-    включая данные о посещаемости и заработной плате.
+    """Получить информацию о сотруднике.
 
-    **Запрос (GET):**
+    Данный метод возвращает подробную информацию о сотруднике, включая данные о посещаемости, заработной плате и типе контракта за указанный период.
 
-    * **URL:** `/staff/<staff_pin>/`
-    * **Параметры:**
-        * `staff_pin` (обязательный, строка): Уникальный идентификатор сотрудника (PIN).
-        * `start_date` (необязательный, строка): Дата начала периода для фильтрации данных о посещаемости
-          (формат: YYYY-MM-DD). По умолчанию - за последние 7 дней.
-        * `end_date` (необязательный, строка): Дата окончания периода для фильтрации данных о посещаемости
-          (формат: YYYY-MM-DD). По умолчанию - текущая дата.
+    Процесс расчета процента рабочего времени сотрудника за указанный период включает следующие шаги:
 
-    **Ответ (JSON):**
+    1. Определение периода анализа.
+    2. Фильтрация данных о посещаемости сотрудников по диапазону дат.
+    3. Обработка данных о посещаемости:
+        - Если день является выходным или праздничным, но сотрудник работал, процент рабочего времени за день увеличивается на 50%.
+        - Если день не является выходным или праздничным, но сотрудник не работал, процент рабочего времени за день уменьшается на штрафной коэффициент.
+        - В остальных случаях процент рабочего времени за день рассчитывается стандартно.
+    4. Суммирование данных:
+        - Общая сумма отработанных минут за период.
+        - Общее количество рабочих дней с данными.
+    5. Расчет процента работы за период:
+        - Стоимость одного рабочего дня в процентах рассчитывается как 100% / количество дней в периоде.
+        - Итоговый процент работы за период определяется как сумма процентов за каждый день, деленная на количество дней в периоде.
 
-    * **Код 200:**
-        * `name` (строка): Имя сотрудника.
-        * `surname` (строка): Фамилия сотрудника.
-        * `positions` (список строк): Список должностей сотрудника.
-        * `avatar` (строка, формат URI): URL аватара сотрудника (может быть null).
-        * `department` (строка): Отдел, к которому относится сотрудник.
-        * `department_id` (число): Id отдела.
-        * `attendance` (объект): Данные о посещаемости за указанный период.
-            Ключи - даты посещаемости в формате "DD-MM-YYYY", значения - объекты:
-                * `first_in` (строка, формат ЧЧ:ММ DD-MM-YYYY): Время первого входа (может быть null).
-                * `last_out` (строка, формат ЧЧ:ММ DD-MM-YYYY): Время последнего выхода (может быть null).
-                * `percent_day` (число): Процент отработанного времени за день.
-                * `total_minutes` (число): Общее количество отработанных минут за день.
-        * `percent_for_period` (число): Общий процент работы за указанный период.
-        * `salary` (число): Общая заработная плата сотрудника (может быть null).
-        * `contract_type` (строка): Тип контракта сотрудника.
+    Штрафной коэффициент за пропущенный рабочий день рассчитывается динамически. Он основан на средней производительности сотрудника за аналогичный период в предыдущем месяце и корректирующем коэффициенте. Формула расчета штрафного коэффициента следующая:
 
-    * **Код 400:** Неверный запрос, дата начала не может быть позже даты окончания.
-    * **Код 404:** Сотрудник не найден.
+        R_penalty = (100 / A_avg) * K_adj
+
+    где:
+        - R_penalty: Штрафной коэффициент.
+        - A_avg: Средний процент присутствия за аналогичный период в предыдущем месяце.
+        - K_adj: Корректирующий коэффициент, учитывающий специфику работы.
+
+    Преимущества данного подхода:
+        - **Гибкость и точность**: Динамический расчет штрафного коэффициента обеспечивает более точные и справедливые оценки.
+        - **Учет исторических данных**: Расчет средней производительности за аналогичный период в предыдущем месяце учитывает индивидуальные особенности сотрудников.
+        - **Адаптивность**: Система адаптируется к различным условиям работы и требованиям бизнеса.
+        - **Прозрачность**: Результаты легко объяснимы и обоснованы данными о производительности сотрудников.
+
+    Args:
+        request (HttpRequest): Запрос, содержащий параметры запроса.
+        staff_pin (str): Уникальный идентификатор сотрудника (PIN).
+
+    Returns:
+        Response: Ответ с данными сотрудника или сообщением об ошибке.
+
+    Raises:
+        ValueError: Если start_date больше end_date.
+
+    В ответе содержатся следующие данные:
+        - name: Имя сотрудника.
+        - surname: Фамилия сотрудника.
+        - positions: Список должностей сотрудника.
+        - avatar: URL аватара сотрудника.
+        - department: Отдел, к которому относится сотрудник.
+        - department_id: Id отдела.
+        - attendance: Данные о посещаемости.
+        - percent_for_period: Общий процент работы за указанный период.
+        - salary: Общая заработная плата сотрудника.
+        - contract_type: Тип контракта сотрудника.
     """
 
     def fetch_staff_data():
+        """Получение данных о сотруднике из базы данных.
+
+        Returns:
+            models.Staff: Объект сотрудника.
+            None: Если сотрудник не найден.
+        """
         try:
-            staff = models.Staff.objects.get(pin=staff_pin)
+            return models.Staff.objects.get(pin=staff_pin)
         except models.Staff.DoesNotExist:
             return None
-        return staff
 
-    staff = get_cache(f"staff_{staff_pin}", query=fetch_staff_data, timeout=1 * 10)
+    staff = get_cache(f"staff_{staff_pin}", query=fetch_staff_data, timeout=10)
 
     if staff is None:
         return Response(status=status.HTTP_404_NOT_FOUND)
 
-    end_date_str = request.query_params.get(
-        "end_date", timezone.now().strftime("%Y-%m-%d")
-    )
+    end_date_str = request.query_params.get("end_date", timezone.now().strftime("%Y-%m-%d"))
     start_date_str = request.query_params.get(
         "start_date",
-        (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d"),
+        (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
     )
 
-    end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
-    start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
+    end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
+    start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
 
     if start_date > end_date:
         return Response(
             data={"error": "start_date cannot be greater than end_date"},
-            status=status.HTTP_400_BAD_REQUEST,
+            status=status.HTTP_400_BAD_REQUEST
         )
 
     cache_key = f"staff_detail_{staff_pin}_{start_date_str}_{end_date_str}"
 
-    def get_staff_detail():
-        staff_attendance = models.StaffAttendance.objects.filter(
-            staff=staff, date_at__range=[start_date, end_date]
+    def get_average_attendance(staff, start_date, end_date):
+        """Расчет среднего процента присутствия за аналогичный период в предыдущем месяце.
+
+        Args:
+            staff (models.Staff): Объект сотрудника.
+            start_date (datetime.date): Дата начала текущего периода.
+            end_date (datetime.date): Дата окончания текущего периода.
+
+        Returns:
+            float: Средний процент присутствия за аналогичный период в предыдущем месяце.
+        """
+        previous_start_date = start_date - datetime.timedelta(days=30)
+        previous_end_date = end_date - datetime.timedelta(days=30)
+
+        previous_attendance_qs = models.StaffAttendance.objects.filter(
+            staff=staff, date_at__range=[previous_start_date, previous_end_date]
         )
-        public_holidays = models.PublicHoliday.objects.filter(
+
+        if not previous_attendance_qs.exists():
+            return 85.0  # Default average attendance if no data
+
+        total_minutes = 0
+        total_days = 0
+
+        for attendance in previous_attendance_qs:
+            first_in = attendance.first_in
+            last_out = attendance.last_out
+
+            if first_in and last_out:
+                total_minutes += (last_out - first_in).total_seconds() / 60
+                total_days += 1
+
+        if total_days == 0:
+            return 85.0  # Default average attendance if no complete days
+
+        average_attendance = (total_minutes / (total_days * 8 * 60)) * 100
+        return average_attendance
+
+    def get_staff_detail():
+        """Получение подробной информации о сотруднике.
+
+        Returns:
+            dict: Словарь с данными сотрудника.
+        """
+        attendance_qs = models.StaffAttendance.objects.filter(
+            staff=staff, date_at__range=[start_date + datetime.timedelta(days=1), end_date + datetime.timedelta(days=1)]
+        )
+        holidays = models.PublicHoliday.objects.filter(
             date__range=[start_date, end_date]
         ).values_list("date", "is_working_day")
 
-        holiday_dict = {
-            date: is_working_day for date, is_working_day in public_holidays
-        }
-
+        holiday_dict = dict(holidays)
         attendance_data = {}
         total_minutes_for_period = 0
         total_days_with_data = 0
         percent_for_period = 0
 
-        for attendance in staff_attendance:
-            date_at = attendance.date_at - datetime.timedelta(days=1)
-            is_weekend = date_at.weekday() >= 5
-            is_holiday = date_at in holiday_dict
-            is_off_day = (is_weekend and date_at not in holiday_dict) or (
-                is_holiday and not holiday_dict[date_at]
+        num_days = (end_date - start_date).days + 1
+        cost_per_day = 100 / num_days
+
+
+        average_attendance = get_average_attendance(staff, start_date, end_date)
+        K_adj = 1.25
+        penalty_rate = (100 / average_attendance) * K_adj
+
+        def process_attendance(attendance):
+            """Обработка данных о посещаемости.
+
+            Args:
+                attendance (models.StaffAttendance): Объект данных о посещаемости.
+
+            Returns:
+                dict: Словарь с обработанными данными о посещаемости.
+            """
+            nonlocal total_minutes_for_period, total_days_with_data, percent_for_period
+
+            event_date = attendance.date_at - datetime.timedelta(days=1)
+            if not (start_date <= event_date <= end_date):
+                return None
+
+            is_weekend = event_date.weekday() >= 5
+            is_holiday = event_date in holiday_dict
+            is_off_day = (is_weekend and event_date not in holiday_dict) or (
+                is_holiday and not holiday_dict[event_date]
             )
 
             first_in = attendance.first_in
             last_out = attendance.last_out
 
-            if first_in is None or last_out is None:
-                percent_day = 0
-                total_minutes_worked = 0
-            else:
+            if first_in and last_out:
                 total_minutes_expected = 8 * 60
                 total_minutes_worked = (last_out - first_in).total_seconds() / 60
+                percent_day = (total_minutes_worked / total_minutes_expected) * 100
                 total_minutes_for_period += total_minutes_worked
                 total_days_with_data += 1
-
-                percent_day = (total_minutes_worked / total_minutes_expected) * 100
-
-            attendance_entry = {
-                "first_in": first_in if first_in else None,
-                "last_out": last_out if last_out else None,
-                "percent_day": round(percent_day, 2),
-                "total_minutes": (
-                    round(total_minutes_worked, 2) if first_in and last_out else 0
-                ),
-                "is_weekend": is_off_day,
-            }
+            else:
+                percent_day = 0
+                total_minutes_worked = 0
 
             if is_off_day and total_minutes_worked > 0:
                 percent_for_period += percent_day * 1.5
             elif not is_off_day and total_minutes_worked == 0:
-                percent_for_period -= 25
+                percent_for_period -= penalty_rate * cost_per_day
             else:
                 percent_for_period += percent_day
 
-            attendance_data[date_at.strftime("%d-%m-%Y")] = attendance_entry
+            return {
+                "first_in": first_in.astimezone(timezone.get_current_timezone()) if first_in else None,
+                "last_out": last_out.astimezone(timezone.get_current_timezone()) if last_out else None,
+                "percent_day": round(percent_day, 2),
+                "total_minutes": round(total_minutes_worked, 2),
+                "is_weekend": is_off_day
+            }
+
+        for attendance in attendance_qs:
+            event_date = attendance.date_at - datetime.timedelta(days=1)
+            attendance_record = process_attendance(attendance)
+            if attendance_record:
+                attendance_data[event_date.strftime("%d-%m-%Y")] = attendance_record
 
         if total_days_with_data > 0:
             percent_for_period /= total_days_with_data
 
-        salaries = models.Salary.objects.filter(staff=staff)
-        total_salary = salaries.first().total_salary if salaries.exists() else None
+        salary_qs = models.Salary.objects.filter(staff=staff).first()
         avatar_url = staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
-        contract_type = salaries.first().contract_type if salaries.exists() else None
 
-        data = {
+        return {
             "name": staff.name,
-            "surname": (staff.surname if staff.surname != "Нет фамилии" else ""),
+            "surname": staff.surname if staff.surname != "Нет фамилии" else "",
             "positions": [position.name for position in staff.positions.all()],
             "avatar": avatar_url,
-            "department": (staff.department.name if staff.department else "N/A"),
-            "department_id": (staff.department.id if staff.department else "N/A"),
+            "department": staff.department.name if staff.department else "N/A",
+            "department_id": staff.department.id if staff.department else "N/A",
             "attendance": attendance_data,
             "percent_for_period": round(percent_for_period, 2),
-            "contract_type": contract_type,
-            "salary": total_salary,
+            "contract_type": salary_qs.contract_type if salary_qs else None,
+            "salary": salary_qs.total_salary if salary_qs else None
         }
 
-        return data
-
-    data = get_cache(cache_key, query=get_staff_detail, timeout=1 * 10)
+    data = get_cache(cache_key, query=get_staff_detail, timeout=1*60*60)
 
     return Response(data, status=status.HTTP_200_OK)
+
+
+
 
 
 @swagger_auto_schema(
@@ -1415,7 +1499,7 @@ def sent_excel(request, department_id):
         cache_key = f"{main_ip}_api_department_stats_{department_id}_{start_date}_{end_date}_page_{page}"
         url = f"{main_ip}/api/department/stats/{department_id}/?end_date={end_date}&start_date={start_date}&page={page}"
 
-        data = get_cache(cache_key, query=lambda: utils.fetch_data(url), timeout=3600)
+        data = get_cache(cache_key, query=lambda: utils.fetch_data(url), timeout=1*60*60)
 
         if "results" not in data or not data["results"]:
             break
