@@ -4,7 +4,7 @@ import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { Chart as ChartJS, registerables, TooltipItem } from "chart.js";
 import { AttendanceStats } from "../schemas/IData";
-
+import Notification from "../components/Notification";
 ChartJS.register(...registerables);
 
 const Dashboard: React.FC = () => {
@@ -70,6 +70,7 @@ const Dashboard: React.FC = () => {
     };
     return new Date(dateString).toLocaleDateString("ru-RU", options);
   };
+
   const chartData = useMemo(() => {
     if (!stats) return null;
 
@@ -235,47 +236,25 @@ const Dashboard: React.FC = () => {
   }
 
   if (error) {
-    return (
-      <div className="flex justify-center items-center h-screen px-4">
-        <div
-          className="bg-red-100 dark:bg-red-900 border-l-4 border-red-500 text-red-700 dark:text-red-300 px-8 py-6 rounded-lg shadow-lg transition transform duration-500 ease-in-out animate-pulse max-w-lg w-full mx-auto"
-          role="alert"
-        >
-          <p className="font-bold text-xl md:text-2xl">Ошибка!</p>
-          <p className="text-lg md:text-xl">{error}</p>
-        </div>
-      </div>
-    );
+    return <Notification message={error} type="error" />;
   }
 
-  if (
-    !stats ||
-    (stats.total_staff_count === 0 &&
-      stats.present_staff_count === 0 &&
-      stats.absent_staff_count === 0)
-  ) {
-    const formattedDate = formatDate(stats?.data_for_date || selectedDate);
+  if (!stats) {
+    const message = "Данные не были найдены.";
+    return <Notification message={message} type="warning" />;
+  }
 
-    return (
-      <div className="flex justify-center items-center h-screen px-4">
-        <div
-          className="bg-yellow-100 dark:bg-yellow-900 border-l-4 border-yellow-500 text-yellow-700 dark:text-yellow-300 px-8 py-6 rounded-lg shadow-lg transition transform duration-500 ease-in-out animate-bounce max-w-lg w-full mx-auto"
-          role="alert"
-        >
-          <p className="font-bold text-xl md:text-2xl">Предупреждение!</p>
-          <p className="text-lg md:text-xl">
-            Данные за {formattedDate} не были найдены, обратитесь к системному
-            администратору.
-          </p>
-        </div>
-      </div>
-    );
+  if (stats.present_data.length === 0) {
+    const formattedDate = formatDate(stats.data_for_date || selectedDate);
+    const message = `Данные за ${formattedDate} не были найдены, обратитесь к системному администратору.`;
+
+    return <Notification message={message} type="warning" />;
   }
 
   const formattedDate = formatDate(stats.data_for_date);
 
   return (
-    <div className="container mx-auto p-4  dark:text-gray-100">
+    <div className="container mx-auto p-4 dark:text-gray-100">
       <h1 className="text-3xl font-bold mb-4 text-center text-gray-200">
         Посещаемость отдела {stats.department_name}
       </h1>
