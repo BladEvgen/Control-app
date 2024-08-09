@@ -4,12 +4,14 @@ from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
 
-host_names = ["RogStrix", "MacBook-Pro.local"]
+host_names = ["RogStrix", "MacBook-Pro.local", "MacbookPro"]
 DEBUG = True if socket.gethostname() in host_names else False
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 DAYS = 1
+
+
 
 DOTENV_PATH = BASE_DIR / ".env"
 if DOTENV_PATH.exists():

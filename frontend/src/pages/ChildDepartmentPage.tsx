@@ -217,7 +217,7 @@ const ChildDepartmentPage = () => {
                 {isDownloading ? "Загрузка" : "Скачать"}
               </button>
               {showWaitMessage && (
-                <div className="mt-2 md:mt-0 md:ml-4 p-2 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse dark:bg-red-900 dark:text-red-200">
+                <div className="mt-2 md:mt-6 md:ml-4 p-2 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse dark:bg-red-900 dark:text-red-200">
                   Загрузка может занять некоторое время, пожалуйста,
                   подождите...
                 </div>
