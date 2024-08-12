@@ -1,3 +1,31 @@
+export class BaseState<T> {
+  data: T | null;
+  error: string;
+  loading: boolean;
+  showNotification: boolean;
+
+  constructor(data: T | null = null) {
+    this.data = data;
+    this.error = "";
+    this.loading = true;
+    this.showNotification = false;
+  }
+}
+
+
+export class ExtendedState<T> extends BaseState<T> {
+  startDate: string;
+  endDate: string;
+  oneMonthDataFetched: boolean;
+
+  constructor(data: T | null = null) {
+    super(data);
+    this.startDate = "";
+    this.endDate = "";
+    this.oneMonthDataFetched = false;
+  }
+}
+
 export interface IChildDepartment {
   child_id: number;
   name: string;
