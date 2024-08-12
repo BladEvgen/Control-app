@@ -237,7 +237,56 @@ const ChildDepartmentPage = () => {
           <p className="text-gray-300 mb-4 dark:text-gray-400">
             <strong>Количество сотрудников:</strong> {data?.staff_count}
           </p>
-          <div className="overflow-x-auto rounded-lg shadow-lg bg-white dark:bg-gray-900">
+
+          {/* Для мобильных устройств */}
+          <div className="block md:hidden space-y-4">
+            {data?.staff_data &&
+              Object.entries(data.staff_data)
+                .filter(([, staff]) =>
+                  staff.FIO.toLowerCase().includes(searchQuery.toLowerCase())
+                )
+                .map(([pin, staff]) => (
+                  <div
+                    key={pin}
+                    className="p-4 bg-white dark:bg-gray-800 rounded-lg shadow-md"
+                  >
+                    <div className="flex justify-between items-center mb-2">
+                      <Link
+                        to={`/staffDetail/${pin}`}
+                        className="text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-600 font-semibold text-lg"
+                      >
+                        {staff.FIO}
+                      </Link>
+                      {staff.avatar ? (
+                        <FaCheckCircle
+                          className="text-green-500"
+                          aria-label="success"
+                        />
+                      ) : (
+                        <FaTimesCircle
+                          className="text-red-500"
+                          aria-label="fail"
+                        />
+                      )}
+                    </div>
+                    <p className="text-gray-600 dark:text-gray-400">
+                      <strong>Должность: </strong>
+                      {staff.positions.length > 2
+                        ? `${staff.positions[0]}, ... (ещё ${
+                            staff.positions.length - 1
+                          })`
+                        : staff.positions.join(", ")}
+                    </p>
+                    <p className="text-gray-600 dark:text-gray-400">
+                      <strong>Дата создания: </strong>
+                      {new Date(staff.date_of_creation).toLocaleDateString()}
+                    </p>
+                  </div>
+                ))}
+          </div>
+
+          {/* Для планшетов и ПК */}
+          <div className="hidden md:block overflow-x-auto rounded-lg shadow-lg bg-white dark:bg-gray-900">
             <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
               <thead className="bg-gray-50 dark:bg-gray-800">
                 <tr>

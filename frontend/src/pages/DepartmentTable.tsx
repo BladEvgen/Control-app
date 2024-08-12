@@ -66,7 +66,36 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
       <p className="text mb-4 ml-3 text-gray-300 dark:text-gray-400">
         <strong>Количество сотрудников:</strong> {data.total_staff_count}
       </p>
-      <div className="flex-1 overflow-y-auto">
+
+      {/* Для мобильных устройств */}
+      <div className="block md:hidden space-y-4">
+        {filteredDepartments
+          .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
+          .map((department) => (
+            <div
+              key={department.child_id}
+              className="p-4 bg-white dark:bg-gray-800 rounded-lg shadow-md"
+            >
+              <Link
+                to={
+                  department.has_child_departments
+                    ? `/department/${department.child_id}`
+                    : `/childDepartment/${department.child_id}`
+                }
+                className="text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-600 font-semibold text-lg"
+              >
+                {formatDepartmentName(department.name)}
+              </Link>
+              <p className="text-gray-600 dark:text-gray-400">
+                <strong>Дата создания: </strong>
+                {new Date(department.date_of_creation).toLocaleString()}
+              </p>
+            </div>
+          ))}
+      </div>
+
+      {/* Для планшетов и ПК */}
+      <div className="hidden md:block flex-1 overflow-y-auto">
         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
           <thead className="bg-gray-50 dark:bg-gray-800">
             <tr>
