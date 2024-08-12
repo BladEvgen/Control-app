@@ -49,6 +49,14 @@ export const formatDateRu = (dateString: string) => {
   return `${day}.${month}.${year}`;
 };
 
+export const formatDateFromKeyRu = (dateString: string | null) => {
+  if (!dateString) return "Нет данных";
+
+  const [day, month, year] = dateString.split("-");
+
+  return `${day}.${month}.${year}`;
+};
+
 export const formatNumber = (value: number | undefined | null): string => {
   if (value === undefined || value === null) return "Не установлена";
 
@@ -82,12 +90,20 @@ export const declensionDays = (daysCount: number) => {
 
 export const formatDate = (dateString: string | null) => {
   if (!dateString) return "Нет данных";
-  const date = new Date(dateString);
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const timePart = dateString.split("T")[1].split("+")[0];
+  const [hours, minutes] = timePart.split(":");
+
+  return `${hours}:${minutes}`;
 };
 
 export const formatMinutes = (totalMinutes: number) => {
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = Math.ceil(totalMinutes % 60);
+  let hours = Math.floor(totalMinutes / 60);
+  let minutes = Math.round(totalMinutes % 60);
+
+  if (minutes === 60) {
+    hours += 1;
+    minutes = 0;
+  }
+
   return `${hours}:${minutes < 10 ? "0" : ""}${minutes}`;
 };
