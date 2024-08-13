@@ -9,7 +9,9 @@ class Command(BaseCommand):
         categories = [
             {"name": "Отделы", "slug": "departments"},
             {"name": "Сотрудники", "slug": "staff"},
+            {"name": "Удаление сотрудников", "slug": "delete_staff"},
             {"name": "Фото", "slug": "photo"},
+            
         ]
 
         for category_data in categories:
