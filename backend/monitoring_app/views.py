@@ -29,6 +29,7 @@ from rest_framework.permissions import (
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
+from django.contrib import messages
 from monitoring_app import models, permissions, serializers, utils
 
 
@@ -1654,10 +1655,11 @@ class UploadFileView(View):
 
         Returns:
             HttpResponse: Отрисовывает шаблон upload_file.html
-            с контекстом, содержащим список всех категорий файлов (categories).
+            с контекстом, содержащим список всех категорий файлов (categories) и список родительских отделов (parent_departments).
         """
         categories = models.FileCategory.objects.all()
-        context = {"categories": categories}
+        parent_departments = models.ParentDepartment.objects.exclude(id=1)
+        context = {"categories": categories, "parent_departments": parent_departments}
         return render(request, self.template_name, context=context)
 
     def post(self, request, *args, **kwargs):
@@ -1678,29 +1680,41 @@ class UploadFileView(View):
         """
         file_path = request.FILES.get("file")
         category_slug = request.POST.get("category")
+        parent_department_id = request.POST.get("parent_department")
 
         if file_path and category_slug:
             try:
                 if file_path.name.endswith(".xlsx"):
-                    self.handle_excel(file_path, category_slug)
+                    rows = self.handle_excel(file_path)
+                    if category_slug == "delete_staff":
+                        self.delete_staff(request, rows, parent_department_id)
+                    elif category_slug == "staff":
+                        self.process_staff(request, rows)
+                    elif category_slug == "departments":
+                        self.process_departments(request, rows)
+                    messages.success(
+                        request, "Файл успешно обработан и данные обновлены."
+                    )
                 elif file_path.name.endswith(".zip") and category_slug == "photo":
-                    self.handle_zip(file_path)
+                    self.handle_zip(request, file_path)
+                    messages.success(request, "Фото успешно загружены.")
                 else:
-                    context = {"error": "Неверный формат файла или категория"}
-                    return render(request, self.template_name, context=context)
+                    messages.error(request, "Неверный формат файла или категория.")
+                    return render(request, self.template_name)
 
                 return redirect("uploadFile")
             except Exception as error:
-                context = {"error": f"Ошибка при обработке файла: {str(error)}"}
+                messages.error(request, f"Ошибка при обработке файла: {str(error)}")
         else:
-            context = {
-                "error": "Проверьте правильность заполненных данных или неверный формат файла"
-            }
+            messages.error(
+                request,
+                "Проверьте правильность заполненных данных или неверный формат файла.",
+            )
 
-        return render(request, self.template_name, context=context)
+        return render(request, self.template_name)
 
     @transaction.atomic
-    def handle_excel(self, file_path, category_slug):
+    def handle_excel(self, file_path):
         """
         Обрабатывает загрузку и импорт данных из файла Excel.
 
@@ -1716,24 +1730,73 @@ class UploadFileView(View):
         ws.delete_rows(1, 2)
         rows = list(ws.iter_rows())
         rows.sort(key=lambda row: row[0].value, reverse=False)
+        return rows
 
-        if category_slug == "departments":
-            self.process_departments(rows)
-        elif category_slug == "staff":
-            self.process_staff(rows)
-
-    def process_departments(self, rows):
+    def delete_staff(self, request, rows, parent_department_id):
         """
-        Обрабатывает данные для категории "departments" из Excel файла.
+        Удаляет сотрудников дочерних отделов, отсутствующих в переданном списке PIN-кодов.
+
+        Метод получает родительский отдел по `parent_department_id` и находит все связанные 
+        дочерние отделы. Затем проверяет, какие PIN-коды сотрудников из базы данных 
+        отсутствуют в списке, переданном в `rows`, и удаляет таких сотрудников.
 
         Args:
-            rows (list): Список строк из файла Excel.
+            request: HTTP-запрос для отправки сообщений об успешном или неудачном удалении.
+            rows: Список строк с PIN-кодами сотрудников, которых нужно оставить.
+            parent_department_id: ID родительского отдела для поиска связанных дочерних отделов.
 
+        Exceptions:
+            ValueError: Если не передан `parent_department_id` или не найдены дочерние отделы.
+            models.ParentDepartment.DoesNotExist: Если родительский отдел с данным ID не найден.
+            Exception: Любая другая ошибка, возникшая при удалении сотрудников.
+        """
+        try:
+            if not parent_department_id:
+                raise ValueError("ID родительского отдела не был передан.")
+
+            parent_department = models.ParentDepartment.objects.get(
+                id=parent_department_id
+            )
+
+            child_departments = models.ChildDepartment.objects.filter(
+                parent__name=parent_department.name
+            )
+            if not child_departments.exists():
+                raise ValueError(
+                    f"Для родительского отдела {parent_department.name} не найдены дочерние отделы."
+                )
+
+            pin_list_from_file = [row[0].value for row in rows if row[0].value]
+
+            staff_in_db = models.Staff.objects.filter(department__in=child_departments)
+
+            staff_to_delete = staff_in_db.exclude(pin__in=pin_list_from_file)
+
+            deleted_count, _ = staff_to_delete.delete()
+            messages.success(
+                request, f"Успешно удалено {deleted_count} сотрудника(ов)."
+            )
+
+        except models.ParentDepartment.DoesNotExist:
+            error_message = f"Родительский отдел с ID {parent_department_id} не найден."
+            messages.error(request, error_message)
+        except ValueError as ve:
+            messages.error(request, str(ve))
+        except Exception as e:
+            messages.error(
+                request, f"Произошла ошибка при удалении сотрудников: {str(e)}"
+            )
+
+    def process_departments(self, request, rows):
+        """
+        Обрабатывает данные для категории "departments" из Excel файла.
+        Args:
+            rows (list): Список строк из файла Excel.
         Raises:
             Exception: Если произошла ошибка при обработке строки.
         """
-        for row in rows:
-            try:
+        try:
+            for row in rows:
                 parent_department_id = int(row[2].value)
                 parent_department_name = row[3].value
                 child_department_name = row[1].value
@@ -1742,48 +1805,54 @@ class UploadFileView(View):
                 if child_department_id == 1:
                     continue
 
-                parent_department = None
                 if parent_department_name:
-                    (
-                        parent_department,
-                        created,
-                    ) = models.ParentDepartment.objects.get_or_create(
-                        id=parent_department_id,
-                        defaults={"name": parent_department_name},
+                    parent_department, created = (
+                        models.ParentDepartment.objects.get_or_create(
+                            id=parent_department_id,
+                            defaults={"name": parent_department_name},
+                        )
                     )
-                    (
-                        parent_department_as_child,
-                        created,
-                    ) = models.ChildDepartment.objects.get_or_create(
-                        id=parent_department.id,
-                        defaults={
-                            "name": parent_department.name,
-                            "parent": None,
-                        },
+                    if created:
+                        messages.success(
+                            request,
+                            f"Родительский отдел {parent_department_name} создан.",
+                        )
+                    parent_department_as_child, created = (
+                        models.ChildDepartment.objects.get_or_create(
+                            id=parent_department.id,
+                            defaults={
+                                "name": parent_department.name,
+                                "parent": None,
+                            },
+                        )
                     )
-
                 else:
                     parent_department_as_child = models.ChildDepartment.objects.get(
                         id=1
                     )
 
-                (
-                    child_department,
-                    created,
-                ) = models.ChildDepartment.objects.get_or_create(
-                    id=child_department_id,
-                    defaults={
-                        "name": child_department_name,
-                        "parent": parent_department_as_child,
-                    },
+                child_department, created = (
+                    models.ChildDepartment.objects.get_or_create(
+                        id=child_department_id,
+                        defaults={
+                            "name": child_department_name,
+                            "parent": parent_department_as_child,
+                        },
+                    )
                 )
+                if created:
+                    messages.success(
+                        request, f"Дочерний отдел {child_department_name} создан."
+                    )
 
-            except Exception as error:
-                print(f"Ошибка при обработке строки: {str(error)}")
+        except Exception as error:
+            messages.error(request, f"Ошибка при обработке отдела: {str(error)}")
 
-    def process_staff(self, rows):
+    def process_staff(self, request, rows):
         """
         Обрабатывает данные для категории "staff" из Excel файла.
+        except Exception as error:
+            messages.error(request, f"Ошибка при обработке отдела: {str(error)}")
 
         Args:
             rows (list): Список строк из файла Excel.
@@ -1794,8 +1863,8 @@ class UploadFileView(View):
         staff_instances = []
         departments_cache = {}
 
-        for row in rows:
-            try:
+        try:
+            for row in rows:
                 pin = row[0].value
                 name = row[1].value
                 surname = row[2].value or "Нет фамилии"
@@ -1818,7 +1887,7 @@ class UploadFileView(View):
                         except models.ChildDepartment.DoesNotExist:
                             department = None
                 else:
-                    department = None  # Default department value
+                    department = None
 
                 staff_instance = models.Staff(
                     pin=pin,
@@ -1828,65 +1897,76 @@ class UploadFileView(View):
                 )
 
                 staff_instances.append((staff_instance, position))
-            except IndexError as e:
-                print(f"Error processing row due to missing data: {row}. Error: {e}")
-            except Exception as e:
-                print(f"Unexpected error processing row: {row}. Error: {e}")
 
-        pin_list = [staff[0].pin for staff in staff_instances]
-        existing_staff = models.Staff.objects.filter(pin__in=pin_list)
-        existing_staff_dict = {staff.pin: staff for staff in existing_staff}
+            pin_list = [staff[0].pin for staff in staff_instances]
+            existing_staff = models.Staff.objects.filter(pin__in=pin_list)
+            existing_staff_dict = {staff.pin: staff for staff in existing_staff}
 
-        staff_to_create = []
-        staff_to_update = []
+            staff_to_create = []
+            staff_to_update = []
 
-        for staff_instance, position in staff_instances:
-            if staff_instance.pin in existing_staff_dict:
-                existing = existing_staff_dict[staff_instance.pin]
-                if staff_instance.name:
-                    existing.name = staff_instance.name
-                if staff_instance.surname:
-                    existing.surname = staff_instance.surname
-                if staff_instance.department:
-                    existing.department = staff_instance.department
-                if position.name and position.name != "Сотрудник":
-                    if not existing.positions.filter(name=position.name).exists():
-                        existing.positions.add(position)
-                staff_to_update.append(existing)
-            else:
-                staff_instance.save()
-                staff_instance.positions.add(position)
-                staff_to_create.append(staff_instance)
+            for staff_instance, position in staff_instances:
+                if staff_instance.pin in existing_staff_dict:
+                    existing = existing_staff_dict[staff_instance.pin]
+                    if staff_instance.name:
+                        existing.name = staff_instance.name
+                    if staff_instance.surname:
+                        existing.surname = staff_instance.surname
+                    if staff_instance.department:
+                        existing.department = staff_instance.department
+                    if position.name and position.name != "Сотрудник":
+                        if not existing.positions.filter(name=position.name).exists():
+                            existing.positions.add(position)
+                    staff_to_update.append(existing)
+                else:
+                    staff_instance.save()
+                    staff_instance.positions.add(position)
+                    staff_to_create.append(staff_instance)
 
-        for staff in staff_to_update:
-            staff.save()
+            for staff in staff_to_update:
+                staff.save()
 
-    def handle_zip(self, file_path):
+            messages.success(
+                request, f"Успешно обновлено {len(staff_to_update)} сотрудников."
+            )
+            messages.success(
+                request, f"Успешно добавлено {len(staff_to_create)} новых сотрудников."
+            )
+
+        except Exception as e:
+            messages.error(request, f"Ошибка при обработке сотрудников: {str(e)}")
+
+    def handle_zip(self, request, file_path):
         """
         Обрабатывает загрузку и импорт данных из ZIP архива для Staff.
-
         Args:
             file_path (File): Путь к загруженному файлу.
 
         Raises:
             Exception: Если произошла ошибка при обработке ZIP файла.
         """
-        with zipfile.ZipFile(file_path, "r") as zip_file:
-            zip_file.extractall("/tmp")
-            for filename in zip_file.namelist():
-                pin = os.path.splitext(filename)[0]
-                staff_member = models.Staff.objects.filter(pin=pin).first()
-                if staff_member:
-                    with zip_file.open(filename) as file:
-                        new_avatar = ContentFile(file.read())
-                        new_avatar.name = filename
-                        if new_avatar:
-                            if staff_member.avatar:
-                                staff_member.avatar.delete(save=False)
-                            staff_member.avatar.save(
-                                new_avatar.name, new_avatar, save=False
-                            )
-                            staff_member.save()
+        try:
+            with zipfile.ZipFile(file_path, "r") as zip_file:
+                zip_file.extractall("/tmp")
+                for filename in zip_file.namelist():
+                    pin = os.path.splitext(filename)[0]
+                    staff_member = models.Staff.objects.filter(pin=pin).first()
+                    if staff_member:
+                        with zip_file.open(filename) as file:
+                            new_avatar = ContentFile(file.read())
+                            new_avatar.name = filename
+                            if new_avatar:
+                                if staff_member.avatar:
+                                    staff_member.avatar.delete(save=False)
+                                staff_member.avatar.save(
+                                    new_avatar.name, new_avatar, save=False
+                                )
+                                staff_member.save()
+            messages.success(request, "Фотографии успешно обновлены.")
+        except Exception as e:
+            messages.error(
+                request, f"Ошибка при обработке архива с фотографиями: {str(e)}"
+            )
 
 
 class APIKeyCheckView(APIView):
