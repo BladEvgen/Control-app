@@ -128,25 +128,26 @@ const ChildDepartmentPage = () => {
         </div>
       ) : (
         <>
+          <h1 className="text-2xl font-bold text-center md:text-left text-white mb-6">
+            {data?.child_department?.name &&
+              formatDepartmentName(data.child_department.name)}
+          </h1>
+
           <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6">
-            <h1 className="text-2xl font-bold text-center md:text-left text-white">
-              {data?.child_department?.name &&
-                formatDepartmentName(data.child_department.name)}
-            </h1>
             <div className="flex justify-center space-x-4 mt-4 md:mt-0">
               <button
                 onClick={navigateToChildDepartment}
-                className="flex items-center px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600  dark:bg-blue-700 dark:hover:bg-blue-800 transition-colors duration-300 ease-in-out"
+                className="flex items-center px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 dark:bg-blue-700 dark:hover:bg-blue-800 transition-colors duration-300 ease-in-out"
               >
                 <FaArrowLeft className="mr-2" />
                 <span>Вернуться назад</span>
               </button>
               <Link
                 to="/"
-                className="flex items-center px-4 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
+                className="flex items-center px-3 py-2 bg-yellow-500 text-white text-base md:text-lg rounded-lg shadow-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
               >
                 <FaHome className="mr-2" />
-                <span>На главную</span>
+                <span className="font-semibold">На главную</span>
               </Link>
             </div>
           </div>
@@ -237,7 +238,6 @@ const ChildDepartmentPage = () => {
           <p className="text-gray-300 mb-4 dark:text-gray-400">
             <strong>Количество сотрудников:</strong> {data?.staff_count}
           </p>
-
           {/* Для мобильных устройств */}
           <div className="block md:hidden space-y-4">
             {data?.staff_data &&
