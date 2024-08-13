@@ -84,6 +84,8 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
     const cardClassNames = `p-4 rounded-lg shadow-md mb-4 ${
       isWeekend && hasInOut
         ? "bg-green-100 dark:bg-green-700"
+        : !hasInOut && isWeekend
+        ? "bg-yellow-100 dark:bg-yellow-700"
         : !hasInOut
         ? "bg-red-100 dark:bg-red-700"
         : "bg-white dark:bg-gray-800"
@@ -99,6 +101,8 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
             className={`text-xs font-semibold ${
               isWeekend && hasInOut
                 ? "text-green-600 dark:text-green-300"
+                : !hasInOut && isWeekend
+                ? "text-yellow-600 dark:text-yellow-300"
                 : !hasInOut
                 ? "text-red-600 dark:text-red-300"
                 : "text-gray-600 dark:text-gray-400"
@@ -106,6 +110,8 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
           >
             {isWeekend && hasInOut
               ? "Работа в выходной"
+              : !hasInOut && isWeekend
+              ? "Выходной день"
               : !hasInOut
               ? "Нет данных"
               : ""}
