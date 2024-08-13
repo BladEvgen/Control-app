@@ -29,7 +29,7 @@ const DateForm: React.FC<DateFormProps> = ({
           id="startDate"
           value={startDate}
           onChange={handleStartDateChange}
-          className="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto transition-colors duration-300 dark:bg-gray-800 dark:text-white dark:border-gray-600"
+          className="rounded-lg border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto transition-colors duration-300 dark:bg-gray-800 dark:text-white dark:border-gray-600 text-center"
           placeholder="Дата начала"
         />
       </div>
@@ -46,7 +46,7 @@ const DateForm: React.FC<DateFormProps> = ({
             id="endDate"
             value={endDate}
             onChange={handleEndDateChange}
-            className="rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto transition-colors duration-300 dark:bg-gray-800 dark:text-white dark:border-gray-600"
+            className="rounded-lg border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto transition-colors duration-300 dark:bg-gray-800 dark:text-white dark:border-gray-600 text-center"
             placeholder="Дата окончания"
           />
         </div>

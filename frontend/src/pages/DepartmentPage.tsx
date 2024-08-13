@@ -136,7 +136,7 @@ const DepartmentPage: React.FC = () => {
         {shouldRenderLink(location.pathname) && (
           <Link
             to="/"
-            className="flex items-center justify-center px-3 py-2 bg-yellow-500 text-white text-base md:text-lg rounded-lg shadow-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out mb-4 md:mb-0"
+            className="flex items-center justify-center px-2 py-1 bg-yellow-500 text-white text-base md:text-lg rounded-lg shadow-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out mb-4 md:mb-0"
           >
             <FaHome className="mr-2" />
             <span className="font-semibold">На главную</span>
@@ -193,7 +193,7 @@ const DepartmentPage: React.FC = () => {
           <button
             onClick={handleDownload}
             disabled={isDownloadDisabled || isDownloading}
-            className={`flex items-center justify-center w-full md:w-auto px-6 py-3 rounded-lg text-white mt-3 md:mt-7 ${
+            className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-lg text-white mt-3 md:mt-7 ${
               isDownloadDisabled || isDownloading
                 ? "bg-gray-400 cursor-not-allowed dark:bg-gray-600"
                 : "bg-green-500 hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-700"

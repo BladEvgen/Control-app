@@ -135,20 +135,20 @@ const ChildDepartmentPage = () => {
 
           <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6">
             <div className="flex justify-center space-x-4 mt-4 md:mt-0">
-              <button
-                onClick={navigateToChildDepartment}
-                className="flex items-center px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 dark:bg-blue-700 dark:hover:bg-blue-800 transition-colors duration-300 ease-in-out"
-              >
-                <FaArrowLeft className="mr-2" />
-                <span>Вернуться назад</span>
-              </button>
               <Link
                 to="/"
-                className="flex items-center px-3 py-2 bg-yellow-500 text-white text-base md:text-lg rounded-lg shadow-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
+                className="flex items-center px-2 py-1 bg-yellow-500 text-white text-base md:text-lg rounded-lg shadow-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
               >
                 <FaHome className="mr-2" />
                 <span className="font-semibold">На главную</span>
               </Link>
+              <button
+                onClick={navigateToChildDepartment}
+                className="flex items-center px-2 py-1 bg-blue-500 text-white rounded-lg hover:bg-blue-600 dark:bg-blue-700 dark:hover:bg-blue-800 transition-colors duration-300 ease-in-out"
+              >
+                <FaArrowLeft className="mr-2" />
+                <span>Вернуться назад</span>
+              </button>
             </div>
           </div>
 
@@ -187,7 +187,7 @@ const ChildDepartmentPage = () => {
               <button
                 onClick={handleDownload}
                 disabled={isDownloadDisabled || isDownloading}
-                className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-md text-white mt-3 md:mt-7 ${
+                className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-lg text-white mt-3 md:mt-7  ${
                   isDownloadDisabled || isDownloading
                     ? "bg-gray-400 cursor-not-allowed dark:bg-gray-600"
                     : "bg-green-500 hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-700"
