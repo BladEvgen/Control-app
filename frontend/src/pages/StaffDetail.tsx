@@ -11,6 +11,7 @@ import Notification from "../components/Notification";
 import DateForm from "./DateForm";
 import AttendanceTable from "./AttendanceTable";
 import { formatDateRu, formatNumber, declensionDays } from "../utils/utils";
+import { BaseAction } from "../schemas/BaseAction";
 
 const CONTRACT_TYPE_CHOICES = [
   ["full_time", "Полная занятость"],
@@ -37,32 +38,55 @@ const StaffDetail = () => {
   const [endDate, setEndDate] = useState<string>(
     new Date().toISOString().split("T")[0]
   );
+  const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState("");
   const [showNotification, setShowNotification] = useState(false);
   const navigate = useNavigate();
 
-  const fetchAttendanceData = useCallback(async () => {
-    if (startDate && endDate && new Date(startDate) <= new Date(endDate)) {
-      try {
-        const params = { start_date: startDate, end_date: endDate };
-        const res = await axiosInstance.get(`${apiUrl}/api/staff/${pin}`, {
-          params,
-        });
-        setStaffData(res.data);
-        setAttendance(res.data.attendance);
-      } catch (error: any) {
-        if (error.response && error.response.status === 404) {
-          setShowNotification(true);
-          setError("Сотрудник не найден");
-        } else {
-          console.error(`Error fetching attendance data: ${error}`);
+  const fetchAttendanceData = useCallback(
+    async (useBaseAction = false) => {
+      if (startDate && endDate && new Date(startDate) <= new Date(endDate)) {
+        if (useBaseAction) {
+          const action = new BaseAction("SET_LOADING");
+          console.log(action);
+          setLoading(true);
+        }
+
+        try {
+          const params = { start_date: startDate, end_date: endDate };
+          const res = await axiosInstance.get(`${apiUrl}/api/staff/${pin}`, {
+            params,
+          });
+
+          setStaffData(res.data);
+          setAttendance(res.data.attendance);
+
+          if (useBaseAction) {
+            const action = new BaseAction("SET_DATA", res.data);
+            console.log(action);
+            setLoading(false);
+          }
+        } catch (error: any) {
+          setLoading(false);
+          if (error.response && error.response.status === 404) {
+            setShowNotification(true);
+            setError("Сотрудник не найден");
+          } else {
+            console.error(`Error fetching attendance data: ${error}`);
+          }
+
+          if (useBaseAction) {
+            const action = new BaseAction("SET_ERROR", "Error fetching data");
+            console.log(action);
+          }
         }
       }
-    }
-  }, [startDate, endDate, pin]);
+    },
+    [startDate, endDate, pin]
+  );
 
   useEffect(() => {
-    fetchAttendanceData();
+    fetchAttendanceData(true);
   }, [startDate, endDate, fetchAttendanceData]);
 
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -129,7 +153,12 @@ const StaffDetail = () => {
       {showNotification && error && (
         <Notification message={error} type="error" />
       )}
-      {staffData && (
+      {loading && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
+          <div className="loader"></div>
+        </div>
+      )}
+      {staffData && !loading && (
         <div>
           <div className="relative mb-6">
             <div className="flex flex-col items-center sm:flex-row sm:items-start sm:space-x-6">
