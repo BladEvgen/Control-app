@@ -1,0 +1,76 @@
+<nav class="bg-[#123075] px-6 py-4 shadow-md">
+  <div class="flex justify-between items-center container mx-auto">
+    <a href="{%url 'reac_app'%}" class="text-white text-2xl font-bold flex items-center">
+      Staff App
+      <i class="fas fa-user-clock ml-2"></i>
+    </a>
+
+
+    <div class="hidden lg:flex items-center space-x-4">
+      {% if request.user.is_authenticated %}
+      <div class="relative">
+        <button
+          class="flex items-center bg-blue-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded focus:outline-none"
+          id="profile-button">
+          {{ request.user.username }} <i class="fas fa-angle-down ml-2"></i>
+        </button>
+        <div class="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg z-50 hidden" id="dropdown-menu">
+          <a href="{% url 'reac_app' %}" class="block px-4 py-3 hover:bg-gray-200">
+            <i class="fas fa-home mr-2 text-blue-500"></i> Home
+          </a>
+          <a href="{% url 'logout' %}" class="block px-4 py-3 hover:bg-gray-200 text-red-500">
+            <i class="fas fa-sign-out-alt mr-2"></i> Logout
+          </a>
+        </div>
+      </div>
+      {% else %}
+      <a href="{% url 'login_view' %}"
+        class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">Login</a>
+      {% endif %}
+    </div>
+
+    <div class="lg:hidden flex items-center">
+      <button id="mobile-menu-button" class="text-white text-2xl">
+        <i class="fas fa-bars"></i>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<div class="lg:hidden bg-[#123075] text-white shadow-md mt-2 p-4 rounded-md space-y-4 hidden" id="mobile-menu">
+  <a href="{% url 'reac_app' %}" class="block text-lg hover:bg-blue-700 px-4 py-2 rounded-md">
+    <i class="fas fa-home mr-2"></i> Home
+  </a>
+  <a href="{% url 'logout' %}" class="block text-lg hover:bg-blue-700 px-4 py-2 rounded-md text-red-500">
+    <i class="fas fa-sign-out-alt mr-2"></i> Logout
+  </a>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const profileButton = document.getElementById('profile-button');
+    const dropdownMenu = document.getElementById('dropdown-menu');
+    const mobileMenuButton = document.getElementById('mobile-menu-button');
+    const mobileMenu = document.getElementById('mobile-menu');
+
+    profileButton.addEventListener('click', function () {
+      dropdownMenu.classList.toggle('hidden');
+    });
+
+    document.addEventListener('click', function (event) {
+      if (!dropdownMenu.contains(event.target) && !profileButton.contains(event.target)) {
+        dropdownMenu.classList.add('hidden');
+      }
+    });
+
+    mobileMenuButton.addEventListener('click', function () {
+      mobileMenu.classList.toggle('hidden');
+    });
+
+    document.addEventListener('click', function (event) {
+      if (!mobileMenu.contains(event.target) && !mobileMenuButton.contains(event.target)) {
+        mobileMenu.classList.add('hidden');
+      }
+    });
+  });
+</script>
