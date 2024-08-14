@@ -7,6 +7,7 @@
 {% block main %}
 <div class="flex items-center justify-center min-h-screen bg-gray-100">
 
+    {% if user.is_authenticated %}
     <form id="upload-form" enctype="multipart/form-data"
         class="space-y-6 p-8 bg-white rounded-xl shadow-xl max-w-lg w-full transition ease-in-out duration-150 transform hover:shadow-2xl absolute top-1/4"
         method="post">
@@ -91,7 +92,16 @@
         {% endfor %}
     </ul>
     {% endif %}
+
+    {% else %}
+    <div class="text-center p-8 bg-white rounded-xl shadow-xl max-w-lg w-full absolute top-1/4">
+        <h2 class="text-2xl font-bold text-gray-800 mb-6">Вы не авторизованы</h2>
+        <p class="text-gray-600">Для загрузки файлов, пожалуйста, <a href="{% url 'login_view' %}"
+                class="text-blue-500 underline">войдите в аккаунт</a>.</p>
+    </div>
+    {% endif %}
 </div>
+
 
 <script>
     document.addEventListener('DOMContentLoaded', function () {
@@ -162,7 +172,7 @@
 
             setTimeout(function () {
                 message.classList.add('opacity-100', 'scale-100');
-            }, 100); // 
+            }, 100);
 
             setTimeout(function () {
                 message.classList.remove('opacity-100', 'scale-100');
