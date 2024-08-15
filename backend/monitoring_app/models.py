@@ -244,14 +244,15 @@ class Staff(models.Model):
 
 @receiver(post_delete, sender=Staff)
 def delete_avatar_on_staff_delete(sender, instance, **kwargs):
-    avatar_dir = os.path.dirname(instance.avatar.path)
-    if os.path.exists(avatar_dir):
-        try:
-            shutil.rmtree(avatar_dir)
-        except Exception as e:
-            print(
-                f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}"
-            )
+    if instance.avatar: 
+        avatar_dir = os.path.dirname(instance.avatar.path)
+        if os.path.exists(avatar_dir):
+            try:
+                shutil.rmtree(avatar_dir)
+            except Exception as e:
+                print(f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}")
+    else:
+        print("Аватар отсутствует, ничего не удаляется.")
 
 
 class StaffAttendance(models.Model):

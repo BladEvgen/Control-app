@@ -1,81 +1,145 @@
 {% extends "components/base.html" %}
+{% load static %}
 {% load django_app_filters_and_tags %}
 
 {% block title %}Upload File{% endblock %}
-{% load static %}
+
 {% block main %}
-<div class="max-w-lg mx-auto py-8 bg-gray-100 shadow-lg rounded-lg">
-    <form id="upload-form" enctype="multipart/form-data" class="space-y-2 p-6">
+<div class="flex items-center justify-center min-h-screen bg-gray-100">
+
+    {% if user.is_authenticated %}
+    <form id="upload-form" enctype="multipart/form-data"
+        class="space-y-6 p-8 bg-white rounded-xl shadow-xl max-w-lg w-full transition ease-in-out duration-150 transform hover:shadow-2xl absolute top-1/4"
+        method="post">
         {% csrf_token %}
+        <div class="text-center">
+            <h2 class="text-2xl font-bold text-gray-800 mb-6">Загрузка файлов</h2>
+        </div>
+
         <div>
-            <label for="category" class="block text-gray-700 font-bold mb-1">Шаблоны</label>
+            <label for="category" class="block text-gray-700 font-medium mb-2">Шаблоны</label>
             <div class="relative">
                 <select name="category" id="category"
-                    class="appearance-none form-select border rounded w-full py-2 px-3 text-gray-700 leading-tight">
+                    class="appearance-none form-select border border-gray-300 rounded-lg w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm transition ease-in-out duration-150 transform hover:scale-105 hover:border-blue-500">
                     <option value="" disabled selected>Выберите шаблон</option>
                     {% for category in categories %}
                     <option value="{{ category.slug }}">{{ category.name }}</option>
                     {% endfor %}
                 </select>
                 <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
-                    <i class="fas fa-chevron-down"></i>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd"
+                            d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
+                    </svg>
                 </div>
             </div>
         </div>
-        <div class="file-upload">
-            <label for="file" class="block text-gray-700 font-bold mb-1">Загрузить файл</label>
-            <div class="border border-gray-300 rounded-lg cursor-pointer bg-white text-gray-400 hover:bg-gray-50">
-                <input type="file" name="file" id="file" accept=".xlsx , .zip" class="hidden" />
-                <p class="p-2 text-center ">Перетащите или нажмите чтобы добавить файл</p>
+
+        <div id="parent-department-container" class="hidden">
+            <label for="parent_department" class="block text-gray-700 font-medium mb-2">Где удалить</label>
+            <div class="relative">
+                <select name="parent_department" id="parent_department"
+                    class="appearance-none form-select border border-gray-300 rounded-lg w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm transition ease-in-out duration-150 transform hover:scale-105 hover:border-blue-500">
+                    <option value="" disabled selected>Выберите откуда удалить</option>
+                    {% for parent in parent_departments %}
+                    <option value="{{ parent.id }}">{{ parent.name }}</option>
+                    {% endfor %}
+                </select>
+                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd"
+                            d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
+                            clip-rule="evenodd" />
+                    </svg>
+                </div>
             </div>
         </div>
+
+        <div class="file-upload">
+            <label for="file" class="block text-gray-700 font-medium mb-2">Загрузить файл</label>
+            <div id="drop-area"
+                class="border-2 border-dashed border-gray-300 rounded-lg cursor-pointer bg-gray-50 text-gray-400 hover:bg-blue-50 p-8 flex flex-col items-center justify-center transition ease-in-out duration-150 hover:border-blue-500">
+                <input type="file" name="file" id="file" accept=".xlsx, .zip" class="hidden" />
+                <p id="drop-text" class="text-center">Перетащите или нажмите чтобы добавить файл</p>
+            </div>
+        </div>
+
         <div class="flex justify-center">
-            <button type="button" id="submit-btn"
-                class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline  ">
+            <button type="submit" id="submit-btn"
+                class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg focus:outline-none focus:shadow-outline transition ease-in-out duration-150 transform hover:scale-105">
                 Загрузить <i class="fas fa-upload ml-2"></i>
             </button>
         </div>
     </form>
 
-    <div id="message" class="hidden mt-4 bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative"
-        role="alert">
-        <span class="block sm:inline"></span>
-    </div>
+    {% if messages %}
+    <ul class="messages fixed top-20 right-4 space-y-2 z-50 transform translate-y-10">
+        {% for message in messages %}
+        <li class="text-center p-4 rounded-lg shadow-lg max-w-xs w-full transition transform duration-500 ease-in-out opacity-0 scale-90 
+                        {% if message.tags == 'error' %}
+                            bg-red-100 border border-red-400 text-red-700
+                        {% elif message.tags == 'success' %}
+                            bg-green-100 border border-green-400 text-green-700
+                        {% elif message.tags == 'warning' %}
+                            bg-yellow-100 border border-yellow-400 text-yellow-700
+                        {% elif message.tags == 'info' %}
+                            bg-blue-100 border border-blue-400 text-blue-700
+                        {% endif %}
+                    ">
+            {{ message }}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
 
-    <div id="error" class="hidden mt-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative"
-        role="alert">
-        <span class="block sm:inline"></span>
+    {% else %}
+    <div class="text-center p-8 bg-white rounded-xl shadow-xl max-w-lg w-full absolute top-1/4">
+        <h2 class="text-2xl font-bold text-gray-800 mb-6">Вы не авторизованы</h2>
+        <p class="text-gray-600">Для загрузки файлов, пожалуйста, <a href="{% url 'login_view' %}"
+                class="text-blue-500 underline">войдите в аккаунт</a>.</p>
     </div>
+    {% endif %}
 </div>
-
 
 
 <script>
     document.addEventListener('DOMContentLoaded', function () {
-        var submitBtn = document.getElementById('submit-btn');
         var categorySelect = document.getElementById('category');
+        var parentDepartmentContainer = document.getElementById('parent-department-container');
         var fileInput = document.getElementById('file');
-        var dropArea = document.querySelector('.file-upload div');
+        var dropArea = document.getElementById('drop-area');
+        var dropText = document.getElementById('drop-text');
+        var uploadForm = document.getElementById('upload-form');
 
-        fileInput.addEventListener('change', function (e) {
-            var fileName = e.target.files[0].name;
-            var label = document.querySelector('.file-upload p');
-            label.textContent = fileName;
-            if (fileName !== '') {
-                label.classList.remove('text-gray-400');
-                label.classList.add('text-green-500', 'font-bold');
+
+        categorySelect.addEventListener('change', function () {
+            if (categorySelect.value === "delete_staff") {
+                parentDepartmentContainer.classList.remove('hidden');
             } else {
-                label.classList.remove('text-green-500', 'font-bold');
-                label.classList.add('text-gray-400');
+                parentDepartmentContainer.classList.add('hidden');
             }
         });
+
 
         dropArea.addEventListener('click', function () {
             fileInput.click();
         });
 
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            dropArea.addEventListener(eventName, preventDefaults, false);
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, function (e) {
+                preventDefaults(e);
+                dropArea.classList.add('border-blue-500', 'bg-blue-50');
+                dropText.textContent = 'Отпустите файл сюда';
+            }, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, function (e) {
+                preventDefaults(e);
+                dropArea.classList.remove('border-blue-500', 'bg-blue-50');
+                dropText.textContent = 'Перетащите или нажмите чтобы добавить файл';
+            }, false);
         });
 
         function preventDefaults(e) {
@@ -83,61 +147,38 @@
             e.stopPropagation();
         }
 
-        dropArea.addEventListener('drop', handleDrop, false);
-
-        function handleDrop(e) {
+        dropArea.addEventListener('drop', function (e) {
             let dt = e.dataTransfer;
             let files = dt.files;
 
             fileInput.files = files;
 
             var fileName = files[0].name;
-            var label = document.querySelector('.file-upload p');
-            label.textContent = fileName;
-        }
+            dropText.textContent = fileName;
+            dropText.classList.remove('text-gray-400');
+            dropText.classList.add('text-green-500', 'font-bold');
+        });
 
-        submitBtn.addEventListener('click', function () {
-            if (categorySelect.value && fileInput.files.length > 0) {
-                var formData = new FormData();
-                console.log("Category: ", categorySelect.value);
+        fileInput.addEventListener('change', function (e) {
+            var fileName = e.target.files[0].name;
+            dropText.textContent = fileName;
+            dropText.classList.remove('text-gray-400');
+            dropText.classList.add('text-green-500', 'font-bold');
+        });
 
-                formData.append('category', categorySelect.value);
-                formData.append('file', fileInput.files[0]);
 
-                fetch("{% url 'uploadFile' %}", {
-                    method: 'POST',
-                    body: formData,
-                    headers: {
-                        'X-CSRFToken': "{{ csrf_token }}",
-                    },
-                })
-                    .then(response => {
-                        if (response.ok) {
-                            document.getElementById('message').innerText = "Файл успешно загружен.";
-                            document.getElementById('message').classList.remove('hidden');
-                            setTimeout(function () {
-                                document.getElementById('message').classList.add('hidden');
-                            }, 3000);
-                        } else {
-                            document.getElementById('error').innerText = "Произошла ошибка. Пожалуйста, попробуйте еще раз.";
-                            document.getElementById('error').classList.remove('hidden');
-                            setTimeout(function () {
-                                document.getElementById('error').classList.add('hidden');
-                            }, 3000);
-                        }
-                    })
-                    .catch(error => {
-                        console.error('Error:', error);
-                    });
-            } else {
-                document.getElementById('error').innerText = "Пожалуйста, выберите категорию и выберите файл.";
-                document.getElementById('error').classList.remove('hidden');
-                setTimeout(function () {
-                    document.getElementById('error').classList.add('hidden');
-                }, 3000);
-            }
+        var messages = document.querySelectorAll('.messages li');
+        messages.forEach(function (message) {
+
+            setTimeout(function () {
+                message.classList.add('opacity-100', 'scale-100');
+            }, 100);
+
+            setTimeout(function () {
+                message.classList.remove('opacity-100', 'scale-100');
+                message.classList.add('opacity-0', 'scale-90');
+            }, 5000);
         });
     });
 </script>
-
 {% endblock %}
