@@ -1497,7 +1497,7 @@ def fetch_data_view(request):
 
 @swagger_auto_schema(
     method="get",
-    operation_summary="Получение данны�� о посещаемости в формате Excel",
+    operation_summary="Получение данных о посещаемости в формате Excel",
     operation_description="Получение данных о посещаемости с внешнего сервера и создание Excel файла. Требуется аутентификация.",
     manual_parameters=[
         openapi.Parameter(
