@@ -17,6 +17,7 @@ DOTENV_PATH = BASE_DIR / ".env"
 if DOTENV_PATH.exists():
     load_dotenv(DOTENV_PATH)
 
+
 SECRET_KEY = os.getenv("SECRET_KEY")
 SECRET_API = os.getenv("SECRET_API")
 API_URL = os.getenv("API_URL")
@@ -27,8 +28,9 @@ API_KEY = os.getenv("API_KEY")
 LOGIN_URL = "/login_view/"
 LOGOUT_URL = "/logout/"
 
+
 #! SET TO DOMAIN
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS = ["*","https://dot.medkrmu.kz","https://control.krmu.edu.kz"]
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10 МБ
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10 МБ
@@ -58,11 +60,15 @@ CORS_ALLOW_ALL_ORIGINS = False
 
 CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8000",
+    "http://127.0.0.1:5002",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
     "http://localhost:3000",
     "http://localhost:5173",
     "http://localhost:8000",
+    "http://localhost:5002",
+    "https://dot.medkrmu.kz"
+    
 ]
 
 MIDDLEWARE = [
