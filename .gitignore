@@ -298,3 +298,4 @@ one_pin_skud.py
 frontend\apiConfig.ts
 /backend/monitoring_app/migrations
 frontend/apiConfig.ts
+backend/db.json
