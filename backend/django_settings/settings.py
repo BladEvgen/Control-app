@@ -1,7 +1,8 @@
 import os
 import socket
 from pathlib import Path
-from datetime import timedelta
+from datetime import datetime, timedelta
+
 from dotenv import load_dotenv
 
 host_names = ["RogStrix", "MacBook-Pro.local", "MacbookPro"]
@@ -10,7 +11,6 @@ DEBUG = True if socket.gethostname() in host_names else False
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 DAYS = 1
-
 
 
 DOTENV_PATH = BASE_DIR / ".env"
@@ -231,4 +231,43 @@ SWAGGER_SETTINGS = {
 # Optional settings for ReDoc
 REDOC_SETTINGS = {
     "LAZY_RENDERING": True,
+}
+
+
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {message}",
+            "style": "{",
+            "datefmt": "%Y-%m-%d %H:%M",
+        },
+    },
+    "handlers": {
+        "file": {
+            "level": "INFO" if DEBUG else "WARNING",
+            "class": "logging.FileHandler",
+            "filename": os.path.join(
+                LOG_DIR, f'log-{datetime.now().strftime("%Y-%m-%d_%H")}.log'
+            ),
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        "": {  
+            "handlers": ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "django": {
+            "handlers": ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+    },
 }

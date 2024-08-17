@@ -1,4 +1,6 @@
 import os
+import time
+import logging
 import zipfile
 import datetime
 from tempfile import NamedTemporaryFile
@@ -10,6 +12,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from openpyxl import load_workbook
+from django.contrib import messages
 from django.core.cache import caches
 from django.http import HttpResponse
 from django.db.models import Count, Q
@@ -29,8 +32,15 @@ from rest_framework.permissions import (
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from django.contrib import messages
 from monitoring_app import models, permissions, serializers, utils
+
+logger = logging.getLogger(__name__)
+
+
+def example_function():
+    logger.info("This is an info message")
+    logger.warning("This is a warning message")
+    logger.error("This is an error message")
 
 
 class StaffAttendancePagination(PageNumberPagination):
@@ -81,7 +91,10 @@ def home(request):
 
 @permission_classes([AllowAny])
 def react_app(request):
-    return render(request, "index.html")
+    try:
+        return render(request, "index.html")
+    except Exception as error:
+        logger.error(f"React App {str(error)}")
 
 
 class StaffAttendanceStatsView(APIView):
@@ -184,24 +197,39 @@ class StaffAttendanceStatsView(APIView):
         ],
     )
     def get(self, request):
+        logger.info("Received request for staff attendance stats.")
+
         date_param = request.query_params.get(
             "date", timezone.now().date().strftime("%Y-%m-%d")
         )
         date_param = datetime.datetime.strptime(date_param, "%Y-%m-%d").date()
         pin_param = request.query_params.get("pin", None)
 
-        target_date = self.get_last_working_day(date_param)
-        next_date = target_date + datetime.timedelta(days=1)
-        cache_key = f"staff_attendance_stats_{target_date}_{pin_param}"
+        logger.debug(f"Parsed date_param: {date_param}, pin_param: {pin_param}")
 
-        cached_data = get_cache(
-            cache_key,
-            query=lambda: self.query_data(target_date, next_date, pin_param),
-            timeout=1 * 60 * 60,
-        )
-        return Response(cached_data)
+        try:
+            target_date = self.get_last_working_day(date_param)
+            next_date = target_date + datetime.timedelta(days=1)
+            cache_key = f"staff_attendance_stats_{target_date}_{pin_param}"
+
+            logger.debug(f"Generated cache_key: {cache_key}")
+
+            cached_data = get_cache(
+                cache_key,
+                query=lambda: self.query_data(target_date, next_date, pin_param),
+                timeout=1 * 60 * 60,
+            )
+
+            logger.info("Successfully retrieved staff attendance data.")
+            return Response(cached_data)
+
+        except Exception as e:
+            logger.error(f"Error while processing request: {str(e)}")
+            return Response({"error": str(e)}, status=500)
 
     def get_last_working_day(self, date):
+        logger.debug(f"Calculating last working day for date: {date}")
+
         holidays = get_cache(
             "public_holidays",
             query=lambda: list(models.PublicHoliday.objects.all()),
@@ -215,9 +243,14 @@ class StaffAttendanceStatsView(APIView):
             ):
                 break
             date -= datetime.timedelta(days=1)
+
+        logger.debug(f"Last working day determined: {date}")
         return date
 
     def query_data(self, target_date, next_date, pin_param):
+        logger.info(
+            f"Querying data for target_date: {target_date}, pin_param: {pin_param}"
+        )
         try:
             department = models.ChildDepartment.objects.filter(id=4958).first()
             department_name = department.name if department else "Unknown Department"
@@ -242,6 +275,9 @@ class StaffAttendanceStatsView(APIView):
             present_data, absent_data = self.get_attendance_data(
                 staff_queryset, present_staff_pins, present_staff
             )
+
+            logger.info(f"Data query successful for department: {department_name}")
+
             target_date -= datetime.timedelta(days=1)
             if pin_param:
                 present_data = [
@@ -269,9 +305,11 @@ class StaffAttendanceStatsView(APIView):
                     "data_for_date": target_date.strftime("%Y-%m-%d"),
                 }
         except Exception as e:
+            logger.error(f"Error querying data: {str(e)}")
             return {"error": str(e)}
 
     def get_attendance_data(self, staff_queryset, present_staff_pins, present_staff):
+        logger.debug("Generating attendance data.")
         present_data = []
         absent_data = []
         total_minutes = 8 * 60
@@ -299,6 +337,8 @@ class StaffAttendanceStatsView(APIView):
                         "name": f"{staff.surname} {staff.name}",
                     }
                 )
+
+        logger.info("Attendance data generation complete.")
         return present_data, absent_data
 
 
@@ -346,11 +386,15 @@ def get_parent_id(request):
     - 200: [1, 2, 3, ...]
     - 404: {"error": "Не удалось найти департаменты."}
     """
+    logger.info("Request received to get parent department IDs.")
+
     try:
         parent_departments = models.ParentDepartment.objects.all()
         parent_ids = [department.id for department in parent_departments]
+        logger.info(f"Found {len(parent_ids)} parent departments.")
         return Response(data=parent_ids, status=status.HTTP_200_OK)
     except Exception as e:
+        logger.error(f"Error retrieving parent department IDs: {str(e)}")
         return Response(data={"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
 
 
@@ -413,8 +457,12 @@ def get_parent_id(request):
 @permission_classes([IsAuthenticated])
 def department_summary(request, parent_department_id):
     cache_key = f"department_summary_{parent_department_id}"
+    logger.info(
+        f"Request received for department summary with ID {parent_department_id}"
+    )
 
     if not models.ChildDepartment.objects.filter(id=parent_department_id).exists():
+        logger.warning(f"Department with ID {parent_department_id} not found")
         return Response(
             status=status.HTTP_404_NOT_FOUND,
             data={"message": f"Department with ID {parent_department_id} not found"},
@@ -422,6 +470,7 @@ def department_summary(request, parent_department_id):
     try:
 
         def calculate_staff_count(department):
+            logger.debug(f"Calculating staff count for department ID {department.id}")
             child_departments = models.ChildDepartment.objects.filter(parent=department)
             staff_count = (
                 child_departments.aggregate(total_staff=Count("staff"))["total_staff"]
@@ -431,10 +480,16 @@ def department_summary(request, parent_department_id):
             for child_dept in child_departments:
                 staff_count += calculate_staff_count(child_dept)
 
+            logger.debug(
+                f"Total staff count for department ID {department.id} is {staff_count}"
+            )
             return staff_count
 
         parent_department = get_object_or_404(
             models.ChildDepartment, id=parent_department_id
+        )
+        logger.info(
+            f"Department found: {parent_department.name} (ID: {parent_department_id})"
         )
 
         total_staff_count = calculate_staff_count(parent_department)
@@ -453,12 +508,15 @@ def department_summary(request, parent_department_id):
             "total_staff_count": total_staff_count,
         }
 
+        logger.debug(f"Caching department summary data with key: {cache_key}")
         cached_data = get_cache(
             cache_key, query=lambda: data, timeout=1 * 10, cache=Cache
         )
 
+        logger.info(f"Returning summary data for department ID {parent_department_id}")
         return Response(cached_data, status=status.HTTP_200_OK)
     except Exception as e:
+        logger.error(f"Error while generating department summary: {str(e)}")
         return Response(data={"message": str(e)}, status=status.HTTP_404_NOT_FOUND)
 
 
@@ -534,13 +592,24 @@ def child_department_detail(request, child_department_id):
     Raises:
     Http404: Если дочерний отдел не существует.
     """
+    logger.info(
+        f"Request received for child department detail with ID {child_department_id}"
+    )
+
     try:
         child_department = models.ChildDepartment.objects.get(id=child_department_id)
+        logger.info(
+            f"Found child department: {child_department.name} (ID: {child_department_id})"
+        )
     except models.ChildDepartment.DoesNotExist:
+        logger.warning(f"Child department with ID {child_department_id} not found")
         return Response(status=status.HTTP_404_NOT_FOUND)
 
     all_departments = [child_department] + child_department.get_all_child_departments()
     staff_in_department = models.Staff.objects.filter(department__in=all_departments)
+    logger.debug(
+        f"Found {staff_in_department.count()} staff members in child department ID {child_department_id}"
+    )
 
     staff_data = {}
     for staff_member in staff_in_department:
@@ -555,10 +624,12 @@ def child_department_detail(request, child_department_id):
             "avatar": (staff_member.avatar.url if staff_member.avatar else None),
             "positions": [position.name for position in staff_member.positions.all()],
         }
+        logger.debug(f"Processed staff member: {fio} (PIN: {staff_member.pin})")
 
     sorted_staff_data = dict(
         sorted(staff_data.items(), key=lambda item: item[1]["FIO"])
     )
+    logger.info(f"Sorted staff data for child department ID {child_department_id}")
 
     data = {
         "child_department": serializers.ChildDepartmentSerializer(
@@ -568,6 +639,9 @@ def child_department_detail(request, child_department_id):
         "staff_data": sorted_staff_data,
     }
 
+    logger.info(
+        f"Returning detailed data for child department ID {child_department_id}"
+    )
     return Response(data, status=status.HTTP_200_OK)
 
 
@@ -679,27 +753,38 @@ def staff_detail(request, staff_pin):
         - **ValueError**: Если start_date больше end_date.
     """
 
+    logger.info(f"Request received for staff details with PIN {staff_pin}")
+
     staff = get_cache(
         f"staff_{staff_pin}", query=lambda: fetch_staff_data(staff_pin), timeout=10
     )
 
     if staff is None:
+        logger.warning(f"Staff with PIN {staff_pin} not found")
         return Response(status=status.HTTP_404_NOT_FOUND)
 
     start_date, end_date = get_date_range(request)
+    logger.debug(f"Retrieved date range: start_date={start_date}, end_date={end_date}")
+
     if start_date > end_date:
+        logger.warning(
+            f"Invalid date range: start_date {start_date} is greater than end_date {end_date}"
+        )
         return Response(
             data={"error": "start_date cannot be greater than end_date"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     cache_key = f"staff_detail_{staff_pin}_{start_date}_{end_date}"
+    logger.debug(f"Generated cache key: {cache_key}")
+
     data = get_cache(
         cache_key,
         query=lambda: get_staff_detail(staff, start_date, end_date),
         timeout=1 * 60 * 60,
     )
 
+    logger.info(f"Returning staff details for PIN {staff_pin}")
     return Response(data, status=status.HTTP_200_OK)
 
 
@@ -749,6 +834,9 @@ def get_staff_detail(staff, start_date, end_date):
     Returns:
         dict: Словарь с данными сотрудника.
     """
+    logger.info(f"Fetching staff detail for {staff.name} (PIN: {staff.pin})")
+    logger.debug(f"Date range: {start_date} to {end_date}")
+
     attendance_qs = models.StaffAttendance.objects.filter(
         staff=staff,
         date_at__range=[
@@ -756,9 +844,12 @@ def get_staff_detail(staff, start_date, end_date):
             end_date + datetime.timedelta(days=1),
         ],
     )
+    logger.debug(f"Attendance records retrieved: {attendance_qs.count()}")
+
     holidays = models.PublicHoliday.objects.filter(
         date__range=[start_date, end_date]
     ).values_list("date", "is_working_day")
+    logger.debug(f"Public holidays within range: {len(holidays)}")
 
     holiday_dict = dict(holidays)
     attendance_data = {}
@@ -768,17 +859,26 @@ def get_staff_detail(staff, start_date, end_date):
 
     num_days = (end_date - start_date).days + 1
     cost_per_day = 100 / num_days
+    logger.debug(f"Number of days in period: {num_days}, cost per day: {cost_per_day}")
 
     average_attendance = get_average_attendance_for_period(staff, start_date, end_date)
+    logger.debug(f"Average attendance for period: {average_attendance}")
+
     K_adj = 1.25
     penalty_rate = (100 / average_attendance) * K_adj
+    logger.debug(f"Penalty rate calculated: {penalty_rate}")
 
     salary_qs = models.Salary.objects.filter(staff=staff).first()
     contract_type = salary_qs.contract_type if salary_qs else "full_time"
     total_minutes_expected_per_day = get_expected_minutes_per_day(contract_type)
+    logger.debug(
+        f"Contract type: {contract_type}, expected minutes per day: {total_minutes_expected_per_day}"
+    )
 
     for attendance in attendance_qs:
         event_date = attendance.date_at - datetime.timedelta(days=1)
+        logger.debug(f"Processing attendance for date: {event_date}")
+
         (
             attendance_record,
             total_minutes_for_period,
@@ -797,15 +897,21 @@ def get_staff_detail(staff, start_date, end_date):
             total_days_with_data,
             percent_for_period,
         )
+
         if attendance_record:
             attendance_data[event_date.strftime("%d-%m-%Y")] = attendance_record
+            logger.debug(
+                f"Attendance record added for {event_date}: {attendance_record}"
+            )
 
     if total_days_with_data > 0:
         percent_for_period /= total_days_with_data
+        logger.debug(f"Final percent for period: {percent_for_period}")
 
     avatar_url = staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
+    logger.debug(f"Avatar URL: {avatar_url}")
 
-    return {
+    staff_detail = {
         "name": staff.name,
         "surname": staff.surname if staff.surname != "Нет фамилии" else "",
         "positions": [position.name for position in staff.positions.all()],
@@ -817,6 +923,9 @@ def get_staff_detail(staff, start_date, end_date):
         "contract_type": salary_qs.contract_type if salary_qs else None,
         "salary": salary_qs.total_salary if salary_qs else None,
     }
+
+    logger.info(f"Staff detail generation complete for {staff.name} (PIN: {staff.pin})")
+    return staff_detail
 
 
 def get_average_attendance_for_period(staff, start_date, end_date):
@@ -830,15 +939,26 @@ def get_average_attendance_for_period(staff, start_date, end_date):
     Returns:
         float: Средний процент присутствия за аналогичный период в предыдущем месяце.
     """
+    logger.info(
+        f"Calculating average attendance for staff {staff.name} (PIN: {staff.pin}) from {start_date} to {end_date}"
+    )
+
     previous_start_date = start_date - datetime.timedelta(days=30)
     previous_end_date = end_date - datetime.timedelta(days=30)
+    logger.debug(f"Previous period range: {previous_start_date} to {previous_end_date}")
 
     previous_attendance_qs = models.StaffAttendance.objects.filter(
         staff=staff, date_at__range=[previous_start_date, previous_end_date]
     )
+    logger.debug(
+        f"Retrieved {previous_attendance_qs.count()} attendance records for previous period"
+    )
 
     if not previous_attendance_qs.exists():
-        return 85.0  # Default average attendance if no data
+        logger.warning(
+            "No attendance records found for the previous period. Returning default average attendance of 85.0%"
+        )
+        return 85.0
 
     total_minutes = 0
     total_days = 0
@@ -848,13 +968,23 @@ def get_average_attendance_for_period(staff, start_date, end_date):
         last_out = attendance.last_out
 
         if first_in and last_out:
-            total_minutes += (last_out - first_in).total_seconds() / 60
+            minutes_present = (last_out - first_in).total_seconds() / 60
+            total_minutes += minutes_present
             total_days += 1
+            logger.debug(
+                f"Processed attendance for {attendance.date_at}: {minutes_present} minutes present"
+            )
 
     if total_days == 0:
-        return 85.0  # Default average attendance if no complete days
+        logger.warning(
+            "No complete attendance days found for the previous period. Returning default average attendance of 85.0%"
+        )
+        return 85.0  #
 
     average_attendance = (total_minutes / (total_days * 8 * 60)) * 100
+    logger.info(
+        f"Calculated average attendance for previous period: {average_attendance}%"
+    )
     return average_attendance
 
 
@@ -903,21 +1033,32 @@ def process_attendance(
     Returns:
         tuple: Кортеж, содержащий словарь с обработанными данными о посещаемости и обновленные значения total_minutes_for_period, total_days_with_data и percent_for_period.
     """
+    logger.info(f"Processing attendance for event date {event_date}")
 
     if not (start_date <= event_date <= end_date):
+        logger.warning(
+            f"Event date {event_date} is out of the given date range {start_date} to {end_date}"
+        )
         return None, total_minutes_for_period, total_days_with_data, percent_for_period
 
     is_off_day = check_off_day(event_date, holiday_dict)
+    logger.debug(f"Is off day: {is_off_day} for event date {event_date}")
+
     first_in, last_out = attendance.first_in, attendance.last_out
+    logger.debug(f"First in: {first_in}, Last out: {last_out}")
 
     if first_in and last_out:
         total_minutes_worked = (last_out - first_in).total_seconds() / 60
         percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
         total_minutes_for_period += total_minutes_worked
         total_days_with_data += 1
+        logger.debug(
+            f"Total minutes worked: {total_minutes_worked}, Percent day: {percent_day}"
+        )
     else:
         percent_day = 0
         total_minutes_worked = 0
+        logger.warning(f"No valid attendance times found for event date {event_date}")
 
     percent_for_period = update_percent_for_period(
         percent_for_period,
@@ -927,23 +1068,25 @@ def process_attendance(
         cost_per_day,
         penalty_rate,
     )
+    logger.debug(f"Updated percent for period: {percent_for_period}")
+
+    attendance_record = {
+        "first_in": (
+            first_in.astimezone(timezone.get_current_timezone()) if first_in else None
+        ),
+        "last_out": (
+            last_out.astimezone(timezone.get_current_timezone()) if last_out else None
+        ),
+        "percent_day": round(percent_day, 2),
+        "total_minutes": round(total_minutes_worked, 2),
+        "is_weekend": is_off_day,
+    }
+    logger.info(
+        f"Processed attendance record for event date {event_date}: {attendance_record}"
+    )
 
     return (
-        {
-            "first_in": (
-                first_in.astimezone(timezone.get_current_timezone())
-                if first_in
-                else None
-            ),
-            "last_out": (
-                last_out.astimezone(timezone.get_current_timezone())
-                if last_out
-                else None
-            ),
-            "percent_day": round(percent_day, 2),
-            "total_minutes": round(total_minutes_worked, 2),
-            "is_weekend": is_off_day,
-        },
+        attendance_record,
         total_minutes_for_period,
         total_days_with_data,
         percent_for_period,
@@ -988,18 +1131,32 @@ def update_percent_for_period(
     Returns:
         float: Обновленный процент рабочего времени за период.
     """
+    logger.debug(
+        f"Updating percent for period. Initial: {percent_for_period}%, "
+        f"Day percent: {percent_day}%, Is off day: {is_off_day}, "
+        f"Total minutes worked: {total_minutes_worked}, "
+        f"Cost per day: {cost_per_day}, Penalty rate: {penalty_rate}"
+    )
+
     if is_off_day and total_minutes_worked > 0:
+        logger.info(f"Off day with work. Increasing percent by {percent_day * 1.5}%.")
         percent_for_period += percent_day * 1.5
     elif not is_off_day and total_minutes_worked == 0:
+        logger.warning(
+            f"Workday with no work. Decreasing percent by {penalty_rate * cost_per_day}%."
+        )
         percent_for_period -= penalty_rate * cost_per_day
     else:
+        logger.info(f"Regular day. Adding {percent_day}% to the period percent.")
         percent_for_period += percent_day
+
+    logger.debug(f"Updated percent for period: {percent_for_period}%")
     return percent_for_period
 
 
 @swagger_auto_schema(
     method="get",
-    operation_summary="Посещаемость сотрудников по отделу ",
+    operation_summary="Посещаемость сотрудников по отделу",
     operation_description="Получить данные о посещаемости сотрудников по ID подразделения",
     responses={
         200: openapi.Response(
@@ -1130,12 +1287,17 @@ def staff_detail_by_department_id(request, department_id):
     - 404: Подразделение не найдено или данные о посещаемости не найдены.
     - 500: Внутренняя ошибка сервера.
     """
+    logger.info(
+        f"Request received for staff attendance by department ID {department_id}"
+    )
+
     try:
         end_date_str = request.query_params.get("end_date")
         start_date_str = request.query_params.get("start_date")
         page = request.query_params.get("page", 1)
 
         if not end_date_str or not start_date_str:
+            logger.warning("Missing start_date or end_date in request parameters")
             return Response(
                 status=status.HTTP_400_BAD_REQUEST,
                 data={"error": "Не указаны параметры начала или конца периода"},
@@ -1143,8 +1305,10 @@ def staff_detail_by_department_id(request, department_id):
 
         start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
         end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
+        logger.debug(f"Parsed date range: start_date={start_date}, end_date={end_date}")
 
         if start_date > end_date:
+            logger.warning("Start date is greater than end date")
             return Response(
                 status=status.HTTP_400_BAD_REQUEST,
                 data={"error": "Дата начала не может быть больше даты конца"},
@@ -1152,7 +1316,9 @@ def staff_detail_by_department_id(request, department_id):
 
         try:
             department = models.ChildDepartment.objects.get(id=department_id)
+            logger.info(f"Department found: {department.name} (ID: {department_id})")
         except models.ChildDepartment.DoesNotExist:
+            logger.warning(f"Department with ID {department_id} not found")
             return Response(
                 status=status.HTTP_404_NOT_FOUND,
                 data={"error": "Подразделение не найдено"},
@@ -1165,12 +1331,15 @@ def staff_detail_by_department_id(request, department_id):
             return list(child_ids)
 
         department_ids = [department_id] + get_all_child_department_ids(department_id)
+        logger.debug(f"Department IDs for attendance query: {department_ids}")
 
         cache_key = (
             f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
         )
+        logger.debug(f"Generated cache key: {cache_key}")
 
         def query():
+            logger.info("Querying staff attendance data")
             staff_attendance = (
                 models.StaffAttendance.objects.filter(
                     staff__department_id__in=department_ids,
@@ -1188,12 +1357,15 @@ def staff_detail_by_department_id(request, department_id):
                 context={"department_name": department.name},
             )
 
+            logger.info("Staff attendance data query completed")
             return paginator.get_paginated_response(serializer.data).data
 
         cached_data = get_cache(cache_key, query=query, timeout=3600)
+        logger.info("Returning cached or queried data")
         return Response(cached_data)
 
     except Exception as e:
+        logger.error(f"Server error while processing request: {str(e)}")
         return Response(
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             data={"error": str(e)},
@@ -1268,32 +1440,47 @@ def user_register(request):
     - Стандартные исключения Django, если во время создания или сохранения пользователя возникают какие-либо ошибки.
     """
 
+    logger.info("Received request to register a new user")
+
     username = request.data.get("username", None)
     password = request.data.get("password", None)
+
     if not username or not password:
+        logger.warning("Username or password not provided")
         return Response(
             status=status.HTTP_400_BAD_REQUEST,
             data={"message": "Требуется юзернейм и пароль"},
         )
 
     if not utils.password_check(password):
+        logger.warning("Password does not meet the requirements")
         return Response(
             status=status.HTTP_400_BAD_REQUEST,
-            data={"messgae": "Пароль не прошел требования"},
-        )
-    user, created = User.objects.get_or_create(username=username)
-    if not created:
-        return Response(
-            status=status.HTTP_400_BAD_REQUEST,
-            data={"message": "Данный username уже занят"},
+            data={"message": "Пароль не прошел требования"},
         )
 
-    user.set_password(password)
-    user.save()
-    return Response(
-        status=status.HTTP_201_CREATED,
-        data={"message": "пользователь успешно создан"},
-    )
+    try:
+        user, created = User.objects.get_or_create(username=username)
+        if not created:
+            logger.warning(f"Username '{username}' is already taken")
+            return Response(
+                status=status.HTTP_400_BAD_REQUEST,
+                data={"message": "Данный username уже занят"},
+            )
+
+        user.set_password(password)
+        user.save()
+        logger.info(f"User '{username}' successfully created")
+        return Response(
+            status=status.HTTP_201_CREATED,
+            data={"message": "пользователь успешно создан"},
+        )
+    except Exception as e:
+        logger.error(f"Error occurred while creating user '{username}': {str(e)}")
+        return Response(
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            data={"message": str(e)},
+        )
 
 
 @swagger_auto_schema(
@@ -1389,15 +1576,37 @@ def user_profile_detail(request):
         x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
         if x_forwarded_for:
             ip = x_forwarded_for.split(",")[0]
+            logger.debug(f"X-Forwarded-For header found, client IP: {ip}")
         else:
             ip = request.META.get("REMOTE_ADDR")
+            logger.debug(f"No X-Forwarded-For header, using REMOTE_ADDR: {ip}")
         return ip
 
-    user_profile = models.UserProfile.objects.get(user=request.user)
-    user_profile.last_login_ip = get_client_ip(request)
-    user_profile.save(update_fields=["last_login_ip"])
-    serializer = serializers.UserProfileSerializer(user_profile)
-    return Response(serializer.data)
+    try:
+        logger.info(f"User {request.user.username} is accessing their profile")
+        user_profile = models.UserProfile.objects.get(user=request.user)
+        client_ip = get_client_ip(request)
+        user_profile.last_login_ip = client_ip
+        user_profile.save(update_fields=["last_login_ip"])
+        logger.info(
+            f"Updated last login IP for user {request.user.username} to {client_ip}"
+        )
+        serializer = serializers.UserProfileSerializer(user_profile)
+        return Response(serializer.data)
+    except models.UserProfile.DoesNotExist:
+        logger.error(f"UserProfile does not exist for user {request.user.username}")
+        return Response(
+            status=status.HTTP_404_NOT_FOUND,
+            data={"message": "Профиль пользователя не найден"},
+        )
+    except Exception as e:
+        logger.error(
+            f"An error occurred while retrieving the profile for user {request.user.username}: {str(e)}"
+        )
+        return Response(
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            data={"message": "Произошла ошибка при получении профиля пользователя"},
+        )
 
 
 def logout_view(request):
@@ -1464,9 +1673,14 @@ def fetch_data_view(request):
     Http403: Если доступ запрещен или отсутствует API ключ.
     Http500: В случае ошибки сервера.
     """
+    function_name = "fetch_data_view"
+    start_time = time.perf_counter()
+    logger.info(f"{function_name}: Request received")
+
     try:
         api_key = request.headers.get("X-API-KEY")
         if api_key is None:
+            logger.warning(f"{function_name}: API key not provided in request headers")
             return Response(
                 status=status.HTTP_403_FORBIDDEN,
                 data={"error": "Доступ запрещен. Не указан API ключ."},
@@ -1475,23 +1689,36 @@ def fetch_data_view(request):
         try:
             key_obj = models.APIKey.objects.get(key=api_key)
             if not key_obj.is_active:
+                logger.warning(f"{function_name}: API key {api_key} is inactive")
                 return Response(
                     status=status.HTTP_403_FORBIDDEN,
                     data={"error": "Доступ запрещен. Недействительный API ключ."},
                 )
         except models.APIKey.DoesNotExist:
+            logger.warning(f"{function_name}: API key {api_key} does not exist")
             return Response(
                 status=status.HTTP_403_FORBIDDEN,
                 data={"error": "Доступ запрещен. Недействительный API ключ."},
             )
 
         utils.get_all_attendance()
+        logger.info(f"{function_name}: Attendance data fetched successfully")
         return Response(status=status.HTTP_200_OK, data={"message": "Done"})
 
     except Exception as e:
+        logger.error(
+            f"{function_name}: Error occurred while fetching attendance data: {str(e)}"
+        )
         return Response(
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             data={"error": str(e)},
+        )
+    finally:
+        end_time = time.perf_counter()
+        duration_seconds = end_time - start_time
+        duration_human_readable = utils.format_duration(duration_seconds)
+        logger.info(
+            f"{function_name} completed in {duration_human_readable} (({duration_seconds:.2f} seconds))"
         )
 
 
@@ -1565,11 +1792,17 @@ def sent_excel(request, department_id):
         ValueError: Если начальная или конечная дата отсутствует в параметрах запроса.
         ConnectionError: Если возникла проблема с получением данных с внешнего сервера.
     """
+    logger.info(
+        f"Request received to generate Excel file for department ID {department_id}"
+    )
 
     end_date = request.query_params.get("endDate", None)
     start_date = request.query_params.get("startDate", None)
 
     if not all([end_date, start_date]):
+        logger.warning(
+            f"Missing startDate or endDate in request parameters for department ID {department_id}"
+        )
         return Response(
             {"error": "Missing startDate or endDate"},
             status=status.HTTP_400_BAD_REQUEST,
@@ -1578,10 +1811,15 @@ def sent_excel(request, department_id):
         end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
         start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
     except ValueError as e:
+        logger.error(f"Invalid date format for department ID {department_id}: {e}")
         return Response(
             {"error": f"Invalid date format: {e}"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    logger.debug(
+        f"Parsed dates for department ID {department_id}: start_date={start_date}, end_date={end_date}"
+    )
 
     end_date += datetime.timedelta(days=1)
     start_date += datetime.timedelta(days=1)
@@ -1594,24 +1832,37 @@ def sent_excel(request, department_id):
         cache_key = f"{main_ip}_api_department_stats_{department_id}_{start_date}_{end_date}_page_{page}"
         url = f"{main_ip}/api/department/stats/{department_id}/?end_date={end_date}&start_date={start_date}&page={page}"
 
+        logger.debug(f"Fetching data for department ID {department_id} from URL: {url}")
+
         data = get_cache(
             cache_key, query=lambda: utils.fetch_data(url), timeout=1 * 60 * 60
         )
 
         if "results" not in data or not data["results"]:
+            logger.info(
+                f"No more results found for department ID {department_id}, stopping data fetch."
+            )
             break
 
         with ThreadPoolExecutor(max_workers=3) as executor:
             future = executor.submit(utils.parse_attendance_data, data["results"])
             rows += future.result()
+            logger.debug(
+                f"Processed page {page} for department ID {department_id}, rows collected: {len(rows)}"
+            )
 
         if not data.get("next"):
+            logger.info(
+                f"All pages processed for department ID {department_id}, total rows collected: {len(rows)}"
+            )
             break
         page += 1
 
     if rows:
+        logger.info(
+            f"Creating Excel file for department ID {department_id} with {len(rows)} rows"
+        )
         df_pivot_sorted = utils.create_dataframe(rows)
-
         wb = utils.save_to_excel(df_pivot_sorted)
 
         response = HttpResponse(
@@ -1626,8 +1877,14 @@ def sent_excel(request, department_id):
             tmp.seek(0)
             response.write(tmp.read())
 
+        logger.info(
+            f"Excel file created successfully for department ID {department_id}"
+        )
         return response
     else:
+        logger.error(
+            f"Failed to generate Excel file for department ID {department_id}, no data rows found"
+        )
         return Response(
             {"error": "Failed to generate Excel file"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1657,9 +1914,11 @@ class UploadFileView(View):
             HttpResponse: Отрисовывает шаблон upload_file.html
             с контекстом, содержащим список всех категорий файлов (categories) и список родительских отделов (parent_departments).
         """
+        logger.info("GET request received for file upload view")
         categories = models.FileCategory.objects.all()
         parent_departments = models.ParentDepartment.objects.exclude(id=1)
         context = {"categories": categories, "parent_departments": parent_departments}
+        logger.debug(f"Rendering template with context: {context}")
         return render(request, self.template_name, context=context)
 
     def post(self, request, *args, **kwargs):
@@ -1678,34 +1937,44 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке файла.
         """
+        logger.info("POST request received for file upload view")
         file_path = request.FILES.get("file")
         category_slug = request.POST.get("category")
         parent_department_id = request.POST.get("parent_department")
 
         if file_path and category_slug:
+            logger.debug(f"File received: {file_path.name}, Category: {category_slug}")
             try:
                 if file_path.name.endswith(".xlsx"):
+                    logger.info("Processing Excel file")
                     rows = self.handle_excel(file_path)
                     if category_slug == "delete_staff":
+                        logger.info("Deleting staff based on Excel data")
                         self.delete_staff(request, rows, parent_department_id)
                     elif category_slug == "staff":
+                        logger.info("Processing staff data from Excel")
                         self.process_staff(request, rows)
                     elif category_slug == "departments":
+                        logger.info("Processing departments data from Excel")
                         self.process_departments(request, rows)
                     messages.success(
                         request, "Файл успешно обработан и данные обновлены."
                     )
                 elif file_path.name.endswith(".zip") and category_slug == "photo":
+                    logger.info("Processing ZIP file for photos")
                     self.handle_zip(request, file_path)
                     messages.success(request, "Фото успешно загружены.")
                 else:
+                    logger.warning("Invalid file format or category")
                     messages.error(request, "Неверный формат файла или категория.")
                     return render(request, self.template_name)
 
                 return redirect("uploadFile")
             except Exception as error:
+                logger.error(f"Error processing file: {str(error)}")
                 messages.error(request, f"Ошибка при обработке файла: {str(error)}")
         else:
+            logger.warning("File or category missing in the POST request")
             messages.error(
                 request,
                 "Проверьте правильность заполненных данных или неверный формат файла.",
@@ -1725,19 +1994,25 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке файла Excel.
         """
-        wb = load_workbook(file_path)
-        ws = wb.active
-        ws.delete_rows(1, 2)
-        rows = list(ws.iter_rows())
-        rows.sort(key=lambda row: row[0].value, reverse=False)
-        return rows
+        logger.info("Handling Excel file")
+        try:
+            wb = load_workbook(file_path)
+            ws = wb.active
+            ws.delete_rows(1, 2)
+            rows = list(ws.iter_rows())
+            rows.sort(key=lambda row: row[0].value, reverse=False)
+            logger.debug(f"Excel file processed, number of rows: {len(rows)}")
+            return rows
+        except Exception as e:
+            logger.error(f"Error processing Excel file: {str(e)}")
+            raise
 
     def delete_staff(self, request, rows, parent_department_id):
         """
         Удаляет сотрудников дочерних отделов, отсутствующих в переданном списке PIN-кодов.
 
-        Метод получает родительский отдел по `parent_department_id` и находит все связанные 
-        дочерние отделы. Затем проверяет, какие PIN-коды сотрудников из базы данных 
+        Метод получает родительский отдел по `parent_department_id` и находит все связанные
+        дочерние отделы. Затем проверяет, какие PIN-коды сотрудников из базы данных
         отсутствуют в списке, переданном в `rows`, и удаляет таких сотрудников.
 
         Args:
@@ -1750,6 +2025,7 @@ class UploadFileView(View):
             models.ParentDepartment.DoesNotExist: Если родительский отдел с данным ID не найден.
             Exception: Любая другая ошибка, возникшая при удалении сотрудников.
         """
+        logger.info(f"Deleting staff for parent department ID: {parent_department_id}")
         try:
             if not parent_department_id:
                 raise ValueError("ID родительского отдела не был передан.")
@@ -1773,16 +2049,20 @@ class UploadFileView(View):
             staff_to_delete = staff_in_db.exclude(pin__in=pin_list_from_file)
 
             deleted_count, _ = staff_to_delete.delete()
+            logger.info(f"Deleted {deleted_count} staff members")
             messages.success(
                 request, f"Успешно удалено {deleted_count} сотрудника(ов)."
             )
 
         except models.ParentDepartment.DoesNotExist:
             error_message = f"Родительский отдел с ID {parent_department_id} не найден."
+            logger.error(error_message)
             messages.error(request, error_message)
         except ValueError as ve:
+            logger.warning(f"ValueError during staff deletion: {str(ve)}")
             messages.error(request, str(ve))
         except Exception as e:
+            logger.error(f"Unexpected error during staff deletion: {str(e)}")
             messages.error(
                 request, f"Произошла ошибка при удалении сотрудников: {str(e)}"
             )
@@ -1795,12 +2075,20 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке строки.
         """
+        logger.info("Processing departments data")
         try:
             for row in rows:
-                parent_department_id = int(row[2].value)
+                parent_department_id_value = row[2].value
                 parent_department_name = row[3].value
                 child_department_name = row[1].value
-                child_department_id = int(row[0].value)
+                child_department_id_value = row[0].value
+
+                if not parent_department_id_value or not child_department_id_value:
+                    logger.debug("Skipping row due to missing or invalid ID")
+                    continue
+
+                parent_department_id = int(parent_department_id_value)
+                child_department_id = int(child_department_id_value)
 
                 if child_department_id == 1:
                     continue
@@ -1813,6 +2101,9 @@ class UploadFileView(View):
                         )
                     )
                     if created:
+                        logger.info(
+                            f"Created new parent department: {parent_department_name}"
+                        )
                         messages.success(
                             request,
                             f"Родительский отдел {parent_department_name} создан.",
@@ -1841,11 +2132,15 @@ class UploadFileView(View):
                     )
                 )
                 if created:
+                    logger.info(
+                        f"Created new child department: {child_department_name}"
+                    )
                     messages.success(
                         request, f"Дочерний отдел {child_department_name} создан."
                     )
 
         except Exception as error:
+            logger.error(f"Error processing departments: {str(error)}")
             messages.error(request, f"Ошибка при обработке отдела: {str(error)}")
 
     def process_staff(self, request, rows):
@@ -1860,6 +2155,7 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке строки.
         """
+        logger.info("Processing staff data")
         staff_instances = []
         departments_cache = {}
 
@@ -1926,6 +2222,8 @@ class UploadFileView(View):
             for staff in staff_to_update:
                 staff.save()
 
+            logger.info(f"Updated {len(staff_to_update)} staff members")
+            logger.info(f"Created {len(staff_to_create)} new staff members")
             messages.success(
                 request, f"Успешно обновлено {len(staff_to_update)} сотрудников."
             )
@@ -1934,6 +2232,7 @@ class UploadFileView(View):
             )
 
         except Exception as e:
+            logger.error(f"Error processing staff data: {str(e)}")
             messages.error(request, f"Ошибка при обработке сотрудников: {str(e)}")
 
     def handle_zip(self, request, file_path):
@@ -1945,6 +2244,7 @@ class UploadFileView(View):
         Raises:
             Exception: Если произошла ошибка при обработке ZIP файла.
         """
+        logger.info("Processing ZIP file for staff photos")
         try:
             with zipfile.ZipFile(file_path, "r") as zip_file:
                 zip_file.extractall("/tmp")
@@ -1962,8 +2262,10 @@ class UploadFileView(View):
                                     new_avatar.name, new_avatar, save=False
                                 )
                                 staff_member.save()
+            logger.info("Staff photos updated successfully")
             messages.success(request, "Фотографии успешно обновлены.")
         except Exception as e:
+            logger.error(f"Error processing ZIP file: {str(e)}")
             messages.error(
                 request, f"Ошибка при обработке архива с фотографиями: {str(e)}"
             )
@@ -2048,9 +2350,12 @@ class APIKeyCheckView(APIView):
         Возвращает:
             Response: Ответ с данными о создании и статусе активности API ключа, либо сообщение об ошибке.
         """
+        logger.info("API Key check request received")
+
         api_key = request.headers.get("X-API-KEY")
 
         if not api_key:
+            logger.warning("API Key is missing in the request")
             return Response(
                 {"message": "API Key is missing"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -2058,11 +2363,14 @@ class APIKeyCheckView(APIView):
 
         try:
             secret_key = utils.APIKeyUtility.get_secret_key()
+            logger.debug("Secret key retrieved successfully")
             data = utils.APIKeyUtility.decrypt_data(
                 api_key, secret_key, fields=("created_at", "is_active")
             )
+            logger.info("API Key is valid")
             return Response({"data": data}, status=status.HTTP_200_OK)
         except Exception as e:
+            logger.error(f"Invalid API Key: {str(e)}")
             return Response(
                 {"message": "Invalid API Key", "error": str(e)},
                 status=status.HTTP_400_BAD_REQUEST,

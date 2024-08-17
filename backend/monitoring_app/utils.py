@@ -20,6 +20,19 @@ from django.utils.translation import gettext_lazy as _
 
 DAYS = settings.DAYS
 
+def format_duration(duration_seconds):
+    """Converts a duration in seconds to a more human-readable format."""
+    if duration_seconds < 60:
+        return f"{duration_seconds:.2f} seconds"
+    elif duration_seconds < 3600:
+        minutes = duration_seconds // 60
+        seconds = duration_seconds % 60
+        return f"{minutes:.0f} minute(s) {seconds:.2f} seconds"
+    else:
+        hours = duration_seconds // 3600
+        minutes = (duration_seconds % 3600) // 60
+        seconds = duration_seconds % 60
+        return f"{hours:.0f} hour(s) {minutes:.0f} minute(s) {seconds:.2f} seconds"
 
 class HierarchicalDepartmentFilter(SimpleListFilter):
     title = _("Department")
@@ -117,6 +130,7 @@ def get_attendance_data(pin: str):
         response = requests.get(
             settings.API_URL + "/api/transaction/listAttTransaction",
             params=params,
+            timeout=10 
         )
         response.raise_for_status()
         response_json = response.json()
