@@ -30,7 +30,7 @@ LOGOUT_URL = "/logout/"
 
 
 #! SET TO DOMAIN
-ALLOWED_HOSTS = ["https://dot.medkrmu.kz","https://control.krmu.edu.kz"]
+ALLOWED_HOSTS = ["control.krmu.edu.kz", "dot.medkrmu.kz"]
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10 МБ
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10 МБ
