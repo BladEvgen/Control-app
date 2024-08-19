@@ -30,7 +30,7 @@ LOGOUT_URL = "/logout/"
 
 
 #! SET TO DOMAIN
-ALLOWED_HOSTS = ["*","https://dot.medkrmu.kz","https://control.krmu.edu.kz"]
+ALLOWED_HOSTS = ["https://dot.medkrmu.kz","https://control.krmu.edu.kz"]
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10 МБ
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10 МБ
@@ -67,8 +67,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:8000",
     "http://localhost:5002",
-    "https://dot.medkrmu.kz"
-    
+    "https://dot.medkrmu.kz",
+    "https://control.krmu.edu.kz",
 ]
 
 MIDDLEWARE = [
