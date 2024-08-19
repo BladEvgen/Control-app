@@ -217,7 +217,7 @@ class StaffAttendanceStatsView(APIView):
             cached_data = get_cache(
                 cache_key,
                 query=lambda: self.query_data(target_date, next_date, pin_param),
-                timeout=1 * 60 * 60,
+                timeout=1 * 5 * 60,
             )
 
             logger.info("Successfully retrieved staff attendance data.")
@@ -756,7 +756,7 @@ def staff_detail(request, staff_pin):
     logger.info(f"Request received for staff details with PIN {staff_pin}")
 
     staff = get_cache(
-        f"staff_{staff_pin}", query=lambda: fetch_staff_data(staff_pin), timeout=10
+        f"staff_{staff_pin}", query=lambda: fetch_staff_data(staff_pin), timeout=1*10
     )
 
     if staff is None:
@@ -781,7 +781,7 @@ def staff_detail(request, staff_pin):
     data = get_cache(
         cache_key,
         query=lambda: get_staff_detail(staff, start_date, end_date),
-        timeout=1 * 60 * 60,
+        timeout=1 * 5 * 60,
     )
 
     logger.info(f"Returning staff details for PIN {staff_pin}")
@@ -1360,7 +1360,7 @@ def staff_detail_by_department_id(request, department_id):
             logger.info("Staff attendance data query completed")
             return paginator.get_paginated_response(serializer.data).data
 
-        cached_data = get_cache(cache_key, query=query, timeout=3600)
+        cached_data = get_cache(cache_key, query=query, timeout=1*60*60)
         logger.info("Returning cached or queried data")
         return Response(cached_data)
 
