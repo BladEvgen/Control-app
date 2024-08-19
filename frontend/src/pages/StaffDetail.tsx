@@ -37,7 +37,7 @@ const StaffDetail = () => {
   const [endDate, setEndDate] = useState<string>(
     new Date().toISOString().split("T")[0]
   );
-  const [error, setError] = useState("");
+  const [error] = useState("");
   const [notificationMessage, setNotificationMessage] = useState("");
   const [notificationType, setNotificationType] = useState<"warning" | "error">(
     "error"
