@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { Line } from "react-chartjs-2";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
+
 import { Chart as ChartJS, registerables, TooltipItem } from "chart.js";
 import { AttendanceStats } from "../schemas/IData";
 import Notification from "../components/Notification";
