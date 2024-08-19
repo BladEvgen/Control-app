@@ -1,9 +1,9 @@
 import { Link, useNavigate } from "../RouterUtils";
-import { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
+import { useParams } from "react-router-dom";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { IChildDepartmentData } from "../schemas/IData";
-import { useParams } from "react-router-dom";
 import { formatDepartmentName } from "../utils/utils";
 import {
   FaDownload,
@@ -13,10 +13,26 @@ import {
   FaTimesCircle,
 } from "react-icons/fa";
 
+// Extend BaseAction within ChildDepartmentPage
+class BaseAction<T> {
+  static SET_LOADING = "SET_LOADING";
+  static SET_DATA = "SET_DATA";
+  static SET_ERROR = "SET_ERROR";
+
+  type: string;
+  payload?: T;
+
+  constructor(type: string, payload?: T) {
+    this.type = type;
+    this.payload = payload;
+  }
+}
+
 const ChildDepartmentPage = () => {
   const { id } = useParams<{ id: string }>();
   const [data, setData] = useState<IChildDepartmentData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [startDate, setStartDate] = useState<string>(
     new Date(new Date().setDate(new Date().getDate() - 31))
@@ -24,9 +40,7 @@ const ChildDepartmentPage = () => {
       .split("T")[0]
   );
   const [endDate, setEndDate] = useState<string>(
-    new Date(new Date().setDate(new Date().getDate() - 0))
-      .toISOString()
-      .split("T")[0]
+    new Date().toISOString().split("T")[0]
   );
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
   const [showWaitMessage, setShowWaitMessage] = useState<boolean>(false);
@@ -38,16 +52,36 @@ const ChildDepartmentPage = () => {
     }
   };
 
+  const dispatch = (action: BaseAction<any>) => {
+    switch (action.type) {
+      case BaseAction.SET_LOADING:
+        setIsLoading(action.payload as boolean);
+        break;
+      case BaseAction.SET_DATA:
+        setData(action.payload as IChildDepartmentData);
+        setIsLoading(false);
+        break;
+      case BaseAction.SET_ERROR:
+        setError(action.payload as string);
+        setIsLoading(false);
+        break;
+    }
+  };
+
   useEffect(() => {
     const fetchData = async () => {
+      dispatch(new BaseAction(BaseAction.SET_LOADING, true));
+
       try {
         const res = await axiosInstance.get(
           `${apiUrl}/api/child_department/${id}/`
         );
-        setData(res.data);
-        setIsLoading(false);
+        dispatch(new BaseAction(BaseAction.SET_DATA, res.data));
       } catch (error) {
         console.error(`Error: ${error}`);
+        dispatch(
+          new BaseAction(BaseAction.SET_ERROR, "Не удалось загрузить данные")
+        );
       }
     };
 
@@ -123,12 +157,26 @@ const ChildDepartmentPage = () => {
   return (
     <div className="container mx-auto px-4 py-8 dark:text-white">
       {isLoading ? (
-        <div className="flex items-center justify-center h-screen">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-gray-900 dark:border-gray-100"></div>
+        <div className="flex flex-col items-center justify-center h-screen">
+          <div className="loader"></div>
+          <p className="mt-4 text-lg text-gray-300 dark:text-gray-400">
+            Данные загружаются, пожалуйста, подождите...
+          </p>
+        </div>
+      ) : error ? (
+        <div className="flex flex-col items-center justify-center h-screen">
+          <FaTimesCircle className="text-red-500 text-5xl mb-4" />
+          <p className="text-xl text-red-600 dark:text-red-400">{error}</p>
+          <Link
+            to="/"
+            className="mt-6 px-4 py-2 bg-yellow-500 text-white text-lg rounded-lg shadow-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
+          >
+            Вернуться на главную
+          </Link>
         </div>
       ) : (
         <>
-          <h1 className="text-2xl font-bold text-center md:text-left text-white mb-6">
+          <h1 className="text-3xl font-bold text-center md:text-left text-white mb-8">
             {data?.child_department?.name &&
               formatDepartmentName(data.child_department.name)}
           </h1>
@@ -137,14 +185,14 @@ const ChildDepartmentPage = () => {
             <div className="flex justify-center space-x-4 mt-4 md:mt-0">
               <Link
                 to="/"
-                className="flex items-center px-2 py-1 bg-yellow-500 text-white text-base md:text-lg rounded-lg shadow-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
+                className="flex items-center px-3 py-2 bg-yellow-500 text-white text-lg rounded-lg shadow-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
               >
                 <FaHome className="mr-2" />
                 <span className="font-semibold">На главную</span>
               </Link>
               <button
                 onClick={navigateToChildDepartment}
-                className="flex items-center px-2 py-1 bg-blue-500 text-white rounded-lg hover:bg-blue-600 dark:bg-blue-700 dark:hover:bg-blue-800 transition-colors duration-300 ease-in-out"
+                className="flex items-center px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 dark:bg-blue-700 dark:hover:bg-blue-800 transition-colors duration-300 ease-in-out"
               >
                 <FaArrowLeft className="mr-2" />
                 <span>Вернуться назад</span>
@@ -156,7 +204,7 @@ const ChildDepartmentPage = () => {
             <div className="flex flex-col mb-4 md:mb-0">
               <label
                 htmlFor="startDate"
-                className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
+                className="block mb-2 font-medium text-gray-200 dark:text-gray-400"
               >
                 Дата начала:
               </label>
@@ -165,13 +213,13 @@ const ChildDepartmentPage = () => {
                 id="startDate"
                 value={startDate}
                 onChange={handleStartDateChange}
-                className="border border-gray-300 px-3 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
+                className="border border-gray-300 px-4 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
               />
             </div>
             <div className="flex flex-col mb-4 md:mb-0">
               <label
                 htmlFor="endDate"
-                className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
+                className="block mb-2 font-medium text-gray-200 dark:text-gray-400"
               >
                 Дата конца:
               </label>
@@ -180,45 +228,28 @@ const ChildDepartmentPage = () => {
                 id="endDate"
                 value={endDate}
                 onChange={handleEndDateChange}
-                className="border border-gray-300 px-3 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
+                className="border border-gray-300 px-4 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
               />
             </div>
             <div className="flex flex-col md:flex-row md:items-center">
               <button
                 onClick={handleDownload}
                 disabled={isDownloadDisabled || isDownloading}
-                className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-lg text-white mt-3 md:mt-7  ${
+                className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-lg text-white mt-4 md:mt-7 ${
                   isDownloadDisabled || isDownloading
                     ? "bg-gray-400 cursor-not-allowed dark:bg-gray-600"
                     : "bg-green-500 hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-700"
-                }`}
+                } shadow-md`}
               >
                 {isDownloading ? (
-                  <svg
-                    className="animate-spin h-5 w-5 mr-3 text-white"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    ></circle>
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8v8h8a8 8 0 11-16 0z"
-                    ></path>
-                  </svg>
+                  <div className="loader"></div>
                 ) : (
                   <FaDownload className="mr-2" />
                 )}
                 {isDownloading ? "Загрузка" : "Скачать"}
               </button>
               {showWaitMessage && (
-                <div className="mt-2 md:mt-6 md:ml-4 p-2 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse dark:bg-red-900 dark:text-red-200">
+                <div className="mt-2 md:mt-6 md:ml-4 p-3 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse dark:bg-red-900 dark:text-red-200">
                   Загрузка может занять некоторое время, пожалуйста,
                   подождите...
                 </div>
@@ -235,9 +266,11 @@ const ChildDepartmentPage = () => {
               className="border border-gray-300 px-4 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors duration-300 ease-in-out dark:bg-gray-800 dark:text-white dark:border-gray-600"
             />
           </div>
+
           <p className="text-gray-300 mb-4 dark:text-gray-400">
             <strong>Количество сотрудников:</strong> {data?.staff_count}
           </p>
+
           {/* Для мобильных устройств */}
           <div className="block md:hidden space-y-4">
             {data?.staff_data &&
