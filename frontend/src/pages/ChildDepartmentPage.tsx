@@ -13,7 +13,6 @@ import {
   FaTimesCircle,
 } from "react-icons/fa";
 
-// Extend BaseAction within ChildDepartmentPage
 class BaseAction<T> {
   static SET_LOADING = "SET_LOADING";
   static SET_DATA = "SET_DATA";

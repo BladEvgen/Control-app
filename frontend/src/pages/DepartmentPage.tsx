@@ -1,6 +1,8 @@
 import { useState, useEffect, ChangeEvent } from "react";
 import { IData } from "../schemas/IData";
-import { useParams, useLocation, Link } from "react-router-dom";
+import { useParams, useLocation } from "react-router-dom";
+import { Link } from "../RouterUtils";
+
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { formatDepartmentName } from "../utils/utils";
