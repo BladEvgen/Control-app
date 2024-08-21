@@ -1,6 +1,7 @@
 import re
 import json
 import datetime
+from functools import wraps
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -10,13 +11,17 @@ from openpyxl import Workbook
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
-from monitoring_app import models
+from rest_framework import status
 from django.core.cache import cache
+from django.http import HttpRequest
 from cryptography.fernet import Fernet
 from openpyxl.styles import Alignment, Font
+from rest_framework.response import Response
 from django.contrib.admin import SimpleListFilter
-from openpyxl.utils.dataframe import dataframe_to_rows
 from django.utils.translation import gettext_lazy as _
+from openpyxl.utils.dataframe import dataframe_to_rows
+
+from monitoring_app import models
 
 DAYS = settings.DAYS
 
@@ -358,3 +363,23 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
         ws.row_dimensions[idx].height = row_height * 3
 
     return wb
+
+
+def add_api_key_header(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        request = args[0]
+        
+        if isinstance(request, HttpRequest):
+            api_key = models.APIKey.objects.filter(is_active=True).first()
+            if api_key:
+                request.META['HTTP_X_API_KEY'] = api_key.key
+            else:
+                return Response(
+                    {"error": "No active API key available for authentication."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
+        return func(*args, **kwargs)
+    
+    return wrapper
