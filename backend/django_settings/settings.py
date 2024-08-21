@@ -28,6 +28,7 @@ API_KEY = os.getenv("API_KEY")
 LOGIN_URL = "/login_view/"
 LOGOUT_URL = "/logout/"
 
+
 if DEBUG:
     ALLOWED_HOSTS = ["*"]
 else:
@@ -225,6 +226,8 @@ SIMPLE_JWT = {
 }
 # DRF-YASG configuration
 SWAGGER_SETTINGS = {
+    "LOGIN_URL": "login_view",
+    "LOGOUT_URL": "logout",
     "SECURITY_DEFINITIONS": {
         "Bearer": {
             "type": "apiKey",
@@ -267,7 +270,7 @@ LOGGING = {
         },
     },
     "loggers": {
-        "": {  
+        "": {
             "handlers": ["file"],
             "level": "INFO" if DEBUG else "WARNING",
             "propagate": False,
