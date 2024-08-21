@@ -1,32 +1,44 @@
-from django.conf import settings
+import logging
 from monitoring_app import models
 from rest_framework.permissions import BasePermission
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import InvalidToken, AuthenticationFailed
 
+logger = logging.getLogger(__name__)
+
 class IsAuthenticatedOrAPIKey(BasePermission):
 
     def has_permission(self, request, view):
-        logger = settings.LOGGING['loggers']['django'] 
         
+        logger.info("Checking permissions for request")
+
         if request.user and request.user.is_authenticated:
+            logger.info("User is authenticated via session")
             return True
 
         jwt_authenticator = JWTAuthentication()
         try:
-            user, token = jwt_authenticator.authenticate(request)
-            if user and token:
-                if token and token.payload.get('token_type') == 'access':
+            auth_result = jwt_authenticator.authenticate(request)
+            if auth_result is not None:
+                user, token = auth_result
+                if token.payload.get('token_type') == 'access':
+                    logger.info("User authenticated via JWT")
                     return True
         except (InvalidToken, AuthenticationFailed) as e:
-            logger.warning(f"JWT Authentication failed: {str(e)}")
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected error during JWT authentication: {str(e)}")
-            return False
+            logger.warning(f"JWT authentication failed: {str(e)}")
 
         api_key = request.headers.get("X-API-KEY")
-        if api_key and models.APIKey.objects.filter(key=api_key, is_active=True).exists():
-            return True
+        if api_key:
+            logger.info("API key provided")
+            try:
+                key_obj = models.APIKey.objects.get(key=api_key)
+                if key_obj.is_active:
+                    logger.info("API key is valid and active ")
+                    return True
+                else:
+                    logger.warning(f"API key is inactive {api_key}")
+            except models.APIKey.DoesNotExist:
+                logger.warning(f"API key does not exist {api_key}")
 
+        logger.warning("Permission denied")
         return False
