@@ -1,9 +1,14 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import { useLocation } from "react-router-dom";
+import { apiUrl } from "../../apiConfig";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import { Link, useNavigate } from "../RouterUtils";
 import Cookies from "js-cookie";
 import axiosInstance from "../api";
-import { apiUrl } from "../../apiConfig";
 import {
   FaUser,
   FaSignOutAlt,
@@ -15,7 +20,6 @@ import {
   FaMoon,
   FaSun,
 } from "react-icons/fa";
-
 type HeaderComponentProps = {
   toggleTheme: () => void;
   currentTheme: string;
@@ -26,17 +30,54 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
   currentTheme,
 }) => {
   const navigate = useNavigate();
-  const location = useLocation();
-  const [username, setUsername] = useState<string>("");
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [username, setUsername] = useState<string>(
+    () => Cookies.get("username") || ""
+  );
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
+    () => !!Cookies.get("access_token")
+  );
   const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const profileButtonRef = useRef<HTMLButtonElement>(null);
 
+  const checkAuthentication = useCallback(async () => {
+    const accessToken = Cookies.get("access_token");
+    const refreshToken = Cookies.get("refresh_token");
+
+    if (accessToken && refreshToken) {
+      if (!username) {
+        try {
+          const userDetails = await axiosInstance.get("/user/detail/");
+          const fetchedUsername = userDetails.data.user.username;
+
+          setUsername(fetchedUsername);
+          Cookies.set("username", fetchedUsername, { path: "/" });
+          setIsAuthenticated(true);
+        } catch (error) {
+          console.error("Error fetching user details:", error);
+          handleLogout();
+        }
+      } else {
+        setIsAuthenticated(true);
+      }
+    } else {
+      handleLogout();
+    }
+  }, [username]);
+
+  const handleLogout = useCallback(() => {
+    Cookies.remove("access_token");
+    Cookies.remove("refresh_token");
+    Cookies.remove("username");
+    setIsAuthenticated(false);
+    setUsername("");
+    navigate("/login");
+  }, [navigate]);
+
   useEffect(() => {
     checkAuthentication();
-  }, []);
+  }, [checkAuthentication]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -55,158 +96,141 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
     };
   }, []);
 
-  const checkAuthentication = useCallback(async () => {
-    const accessToken = Cookies.get("access_token");
-    const refreshToken = Cookies.get("refresh_token");
+  const toggleDropdown = useCallback(() => {
+    setIsDropdownOpen((prev) => !prev);
+  }, []);
 
-    if (accessToken && refreshToken) {
-      try {
-        const userDetails = await axiosInstance.get("/user/detail/");
-        setUsername(userDetails.data.user.username);
-        setIsAuthenticated(true);
-      } catch (error) {
-        console.error("Error fetching user details:", error);
-        setIsAuthenticated(false);
-      }
-    } else {
-      setIsAuthenticated(false);
-      if (location.pathname !== "/login") {
-        navigate("/login");
-      }
-    }
-  }, [navigate, location.pathname]);
-
-  const handleLogout = () => {
-    Cookies.remove("access_token");
-    Cookies.remove("refresh_token");
-    Cookies.remove("sessionid");
-    setIsAuthenticated(false);
-    window.location.reload();
-  };
-
-  const toggleDropdown = () => {
-    setIsDropdownOpen(!isDropdownOpen);
-  };
-
-  const toggleMobileMenu = () => {
-    setIsMobileMenuOpen(!isMobileMenuOpen);
+  const toggleMobileMenu = useCallback(() => {
+    setIsMobileMenuOpen((prev) => !prev);
     setIsDropdownOpen(false);
-  };
+  }, []);
 
-  const DropdownMenu = () => (
-    <div
-      ref={dropdownRef}
-      className="absolute right-0 mt-2 w-48 bg-white dark:bg-background-dark text-gray-800 dark:text-text-light rounded-md shadow-lg z-50"
-      onMouseLeave={() => setIsDropdownOpen(false)}
-    >
-      <Link to="/profile">
-        <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
-          <FaUser className="mr-2 text-blue-500" />
-          Profile
-        </button>
-      </Link>
-      <a href={`${apiUrl}/upload`}>
-        <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
-          <FaUpload className="mr-2 text-green-500 hover:text-green-700" />
-          Upload
-        </button>
-      </a>
-      <button
-        onClick={toggleTheme}
-        className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-t text-yellow-500"
+  const DropdownMenu = useMemo(
+    () => (
+      <div
+        ref={dropdownRef}
+        className="absolute right-0 mt-2 w-48 bg-white dark:bg-background-dark text-gray-800 dark:text-text-light rounded-md shadow-lg z-50"
+        onMouseLeave={() => setIsDropdownOpen(false)}
       >
-        {currentTheme === "dark" ? (
-          <FaSun className="mr-2 text-yellow-500" />
-        ) : (
-          <FaMoon className="mr-2 text-gray-900" />
-        )}
-        Toggle Theme
-      </button>
-      <button
-        onClick={handleLogout}
-        className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-t text-red-500"
-      >
-        <FaSignOutAlt className="mr-2" />
-        Logout
-      </button>
-    </div>
+        <Link to="/profile">
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
+            <FaUser className="mr-2 text-blue-500" />
+            Profile
+          </button>
+        </Link>
+        <a href={`${apiUrl}/upload`}>
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
+            <FaUpload className="mr-2 text-green-500 hover:text-green-700" />
+            Upload
+          </button>
+        </a>
+        <button
+          onClick={toggleTheme}
+          className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-t text-yellow-500"
+        >
+          {currentTheme === "dark" ? (
+            <FaSun className="mr-2 text-yellow-500" />
+          ) : (
+            <FaMoon className="mr-2 text-gray-900" />
+          )}
+          Toggle Theme
+        </button>
+        <button
+          onClick={handleLogout}
+          className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-t text-red-500"
+        >
+          <FaSignOutAlt className="mr-2" />
+          Logout
+        </button>
+      </div>
+    ),
+    [currentTheme, handleLogout, toggleTheme]
   );
 
-  const AuthenticatedMenu = () => (
-    <div className="relative mt-4 lg:mt-0 lg:ml-4">
-      <button
-        ref={profileButtonRef}
-        className="flex items-center bg-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded"
-        onClick={toggleDropdown}
-      >
-        {username} <FaAngleDown className="ml-2" />
-      </button>
-      {isDropdownOpen && <DropdownMenu />}
-    </div>
-  );
-
-  const UnauthenticatedMenu = () => (
-    <div className="flex items-center mt-4 lg:mt-0">
-      <Link to="/login" className="mr-4">
-        <button className="bg-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded">
-          Login
+  const AuthenticatedMenu = useMemo(
+    () => (
+      <div className="relative mt-4 lg:mt-0 lg:ml-4">
+        <button
+          ref={profileButtonRef}
+          className="flex items-center bg-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded"
+          onClick={toggleDropdown}
+        >
+          {username} <FaAngleDown className="ml-2" />
         </button>
-      </Link>
-      <button
-        onClick={toggleTheme}
-        className="bg-primary hover:bg-primary-dark text-white font-bold py-3 px-4 rounded flex items-center"
-      >
-        {currentTheme === "dark" ? (
-          <FaSun className="text-yellow-500" />
-        ) : (
-          <FaMoon className="text-white" />
-        )}
-      </button>
-    </div>
+        {isDropdownOpen && DropdownMenu}
+      </div>
+    ),
+    [DropdownMenu, isDropdownOpen, toggleDropdown, username]
   );
 
-  const MobileMenu = () => (
-    <div
-      ref={dropdownRef}
-      className="lg:hidden bg-primary-dark text-text-light shadow-md mt-2 p-4 rounded-md space-y-4"
-    >
-      <Link
-        to="/profile"
-        className="block text-lg hover:bg-primary-dark px-4 py-2 rounded-md"
+  const UnauthenticatedMenu = useMemo(
+    () => (
+      <div className="flex items-center mt-4 lg:mt-0">
+        <Link to="/login" className="mr-4">
+          <button className="bg-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded">
+            Login
+          </button>
+        </Link>
+        <button
+          onClick={toggleTheme}
+          className="bg-primary hover:bg-primary-dark text-white font-bold py-3 px-4 rounded flex items-center"
+        >
+          {currentTheme === "dark" ? (
+            <FaSun className="text-yellow-500" />
+          ) : (
+            <FaMoon className="text-white" />
+          )}
+        </button>
+      </div>
+    ),
+    [currentTheme, toggleTheme]
+  );
+
+  const MobileMenu = useMemo(
+    () => (
+      <div
+        ref={dropdownRef}
+        className="lg:hidden bg-primary-dark text-text-light shadow-md mt-2 p-4 rounded-md space-y-4"
       >
-        <div className="flex items-center">
-          <FaUser className="mr-2 text-blue-500" />
-          Profile
-        </div>
-      </Link>
-      <a
-        href={`${apiUrl}/upload`}
-        className="block text-lg hover:bg-primary-dark px-4 py-2 rounded-md"
-      >
-        <div className="flex items-center">
-          <FaUpload className="mr-2 text-green-500 hover:text-green-700" />
-          Upload
-        </div>
-      </a>
-      <button
-        onClick={toggleTheme}
-        className=" w-full text-left text-lg hover:bg-primary-dark px-4 py-2 rounded-md flex items-center"
-      >
-        {currentTheme === "dark" ? (
-          <FaSun className="text-yellow-500 mr-2" />
-        ) : (
-          <FaMoon className="text-white mr-2" />
-        )}
-        Toggle Theme
-      </button>
-      <button
-        onClick={handleLogout}
-        className="w-full text-left text-lg hover:bg-primary-dark px-4 py-2 rounded-md flex items-center text-red-500"
-      >
-        <FaSignOutAlt className="mr-2" />
-        Logout
-      </button>
-    </div>
+        <Link
+          to="/profile"
+          className="block text-lg hover:bg-primary-dark px-4 py-2 rounded-md"
+        >
+          <div className="flex items-center">
+            <FaUser className="mr-2 text-blue-500" />
+            Profile
+          </div>
+        </Link>
+        <a
+          href="/upload"
+          className="block text-lg hover:bg-primary-dark px-4 py-2 rounded-md"
+        >
+          <div className="flex items-center">
+            <FaUpload className="mr-2 text-green-500 hover:text-green-700" />
+            Upload
+          </div>
+        </a>
+        <button
+          onClick={toggleTheme}
+          className=" w-full text-left text-lg hover:bg-primary-dark px-4 py-2 rounded-md flex items-center"
+        >
+          {currentTheme === "dark" ? (
+            <FaSun className="text-yellow-500 mr-2" />
+          ) : (
+            <FaMoon className="text-white mr-2" />
+          )}
+          Toggle Theme
+        </button>
+        <button
+          onClick={handleLogout}
+          className="w-full text-left text-lg hover:bg-primary-dark px-4 py-2 rounded-md flex items-center text-red-500"
+        >
+          <FaSignOutAlt className="mr-2" />
+          Logout
+        </button>
+      </div>
+    ),
+    [currentTheme, handleLogout, toggleTheme]
   );
 
   return (
@@ -225,14 +249,14 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
               {isMobileMenuOpen ? <FaTimes /> : <FaBars />}
             </button>
           ) : (
-            <UnauthenticatedMenu />
+            UnauthenticatedMenu
           )}
         </div>
         <div className="hidden lg:flex items-center">
-          {isAuthenticated ? <AuthenticatedMenu /> : <UnauthenticatedMenu />}
+          {isAuthenticated ? AuthenticatedMenu : UnauthenticatedMenu}
         </div>
       </nav>
-      {isMobileMenuOpen && isAuthenticated && <MobileMenu />}
+      {isMobileMenuOpen && isAuthenticated && MobileMenu}
     </header>
   );
 };
