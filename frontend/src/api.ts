@@ -1,6 +1,24 @@
 import Cookies from "js-cookie";
 import { apiUrl } from "../apiConfig";
+import { addPrefix } from "./RouterUtils";
 import axios, { AxiosResponse } from "axios";
+
+const setCookie = (name: string, value: string, options = {}) => {
+  Cookies.set(name, value, {
+    path: "/",
+    secure: true,
+    sameSite: "Strict",
+    ...options,
+  });
+};
+
+const removeCookie = (name: string) => {
+  Cookies.remove(name, { path: "/" });
+};
+
+const getCookie = (name: string) => {
+  return Cookies.get(name);
+};
 
 const axiosInstance = axios.create({
   baseURL: `${apiUrl}/api`,
@@ -12,58 +30,66 @@ const axiosInstance = axios.create({
 
 axiosInstance.interceptors.request.use(
   (config) => {
-    const accessToken = Cookies.get("access_token");
+    const accessToken = getCookie("access_token");
     if (accessToken) {
       config.headers.Authorization = `Bearer ${accessToken}`;
     }
     return config;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
 axiosInstance.interceptors.response.use(
-  (response: AxiosResponse) => {
-    return response;
-  },
+  (response: AxiosResponse) => response,
   async (error) => {
     const originalRequest = error.config;
 
-    if ((error.response.status === 401 || error.response.status === 403) && !originalRequest._retry) {
+    if (
+      (error.response?.status === 401 || error.response?.status === 403) &&
+      !originalRequest._retry
+    ) {
       originalRequest._retry = true;
       try {
-        const refreshResponse = await axios.post(`${apiUrl}/api/token/refresh/`, { refresh: Cookies.get("refresh_token") });
+        const refreshResponse = await axios.post(
+          `${apiUrl}/api/token/refresh/`,
+          {
+            refresh: getCookie("refresh_token"),
+          }
+        );
 
         const newAccessToken = refreshResponse.data.access;
         const newRefreshToken = refreshResponse.data.refresh;
 
-        Cookies.set("access_token", newAccessToken, { path: "/" });
-        Cookies.set("refresh_token", newRefreshToken, { path: "/" });
+        setCookie("access_token", newAccessToken);
+        setCookie("refresh_token", newRefreshToken);
 
         originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
         return axiosInstance(originalRequest);
       } catch (refreshError: any) {
-        if (refreshError.response.status === 401 || refreshError.response.status === 403) {
-          Cookies.remove("access_token", { path: "/" });
-          Cookies.remove("refresh_token", { path: "/" });
-
-
-          window.location.reload();
+        if (
+          refreshError.response?.status === 401 ||
+          refreshError.response?.status === 403
+        ) {
+          handleLogout();
         }
-        
         return Promise.reject(refreshError);
       }
-    } else if (error.response.status === 401) {
-      Cookies.remove("access_token", { path: "/" });
-      Cookies.remove("refresh_token", { path: "/" });
+    }
 
-
-      window.location.reload();
+    if (error.response?.status === 401) {
+      handleLogout();
     }
 
     return Promise.reject(error);
   }
 );
+
+const handleLogout = () => {
+  removeCookie("access_token");
+  removeCookie("refresh_token");
+  removeCookie("username");
+
+  window.location.replace(addPrefix("/login"));
+};
 
 export default axiosInstance;

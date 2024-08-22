@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import axiosInstance from "../api";
 import Cookies from "js-cookie";
 import { useNavigate } from "../RouterUtils";
@@ -13,7 +13,7 @@ const LoginPage = () => {
 
   const navigate = useNavigate();
 
-  const handleSubmit = async () => {
+  const handleSubmit = useCallback(async () => {
     const formattedUsername = username.trim().toLowerCase();
 
     try {
@@ -24,30 +24,27 @@ const LoginPage = () => {
 
       Cookies.set("access_token", res.data.access, { path: "/" });
       Cookies.set("refresh_token", res.data.refresh, { path: "/" });
+      Cookies.set("username", formattedUsername, { path: "/" });
 
       navigate("/");
       window.location.reload();
     } catch (error: any) {
       console.error("Login error:", error);
-      if (error.response && error.response.status !== 401) {
-        setLoginError("Проверьте правильность введенных вами данных.");
-      } else {
-        setLoginError("Произошла ошибка, попробуйте еще раз позже.");
-      }
+      setLoginError("Ошибка входа. Пожалуйста, попробуйте позже.");
     }
     setTimeout(() => {
       setLoginError("");
     }, 7000);
-  };
+  }, [username, password, navigate]);
 
-  const handleKeyPress = (e: any) => {
+  const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
       handleSubmit();
     }
   };
 
   return (
-    <div className="flex flex-col min-h-screen bg-background-light dark:bg-background-dark">
+    <div className="flex flex-col min-h-screen bg-footer-light dark:bg-background-dark">
       <div className="flex-grow flex flex-col items-center justify-center animate-gradient-to-r from-accent to-primary">
         <div className="w-full max-w-md p-8 space-y-6 bg-white dark:bg-gray-900 rounded-lg shadow-lg bg-opacity-80 md:max-w-lg lg:max-w-xl xl:max-w-2xl">
           <h2 className="text-3xl font-bold text-center text-dark-blue dark:text-text-light">

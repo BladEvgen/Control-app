@@ -1770,6 +1770,7 @@ def fetch_data_view(request):
 )
 @api_view(http_method_names=["GET"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
+@utils.add_api_key_header
 def sent_excel(request, department_id):
     """
     Получение данных о посещаемости в формате Excel.
