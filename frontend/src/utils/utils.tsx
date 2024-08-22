@@ -22,21 +22,44 @@ export const formatDepartmentName = (string: string) => {
     "над",
     "во",
     "со",
-    "со",
   ];
+
+  const abbreviations = ["крму", "ппс", "ауп"].map((abbr) =>
+    abbr.toLowerCase()
+  );
 
   const stringWithSpaces = string.replace(/_/g, " ");
 
   return stringWithSpaces
     .split(" ")
-    .map((word, index) => {
-      if (word.length === 3 || word.length === 4) {
+    .map((word, index, words) => {
+      const lowerWord = word.toLowerCase();
+
+      if (abbreviations.includes(lowerWord)) {
         return word.toUpperCase();
-      } else if (index === 0 || !exceptions.includes(word.toLowerCase())) {
-        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-      } else {
-        return word.toLowerCase();
       }
+
+      if (index === 0 || !exceptions.includes(lowerWord)) {
+        if (lowerWord.includes("им.")) {
+          const [prefix, rest] = word.split("им.");
+          return (
+            prefix.charAt(0).toUpperCase() +
+            prefix.slice(1).toLowerCase() +
+            " им. " +
+            rest.charAt(0).toUpperCase() +
+            ". " +
+            rest.slice(1).toLowerCase()
+          );
+        }
+
+        if (index > 0 && words[index - 1].toLowerCase().includes("им.")) {
+          return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+        }
+
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      }
+
+      return word.toLowerCase();
     })
     .join(" ");
 };
