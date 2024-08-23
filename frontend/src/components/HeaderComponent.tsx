@@ -202,7 +202,7 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
           </div>
         </Link>
         <a
-          href="/upload"
+          href={`${apiUrl}/upload`}
           className="block text-lg hover:bg-primary-dark px-4 py-2 rounded-md"
         >
           <div className="flex items-center">

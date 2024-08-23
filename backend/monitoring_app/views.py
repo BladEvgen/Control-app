@@ -1,36 +1,36 @@
+import datetime
+import logging
 import os
 import time
-import logging
 import zipfile
-import datetime
-from tempfile import NamedTemporaryFile
 from concurrent.futures import ThreadPoolExecutor
+from tempfile import NamedTemporaryFile
 
-from drf_yasg import openapi
 from django.conf import settings
-from django.db import transaction
-from django.utils import timezone
-from rest_framework import status
-from openpyxl import load_workbook
 from django.contrib import messages
-from django.core.cache import caches
-from django.http import HttpResponse
-from django.db.models import Count, Q
-from django.views.generic import View
-from django.contrib.auth.models import User
-from django.core.files.base import ContentFile
-from drf_yasg.utils import swagger_auto_schema
-from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.models import User
+from django.core.cache import caches
+from django.core.files.base import ContentFile
+from django.db import transaction
+from django.db.models import Count, Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
+from django.views.generic import View
+from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
+from openpyxl import load_workbook
+from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import (
     AllowAny,
     IsAdminUser,
     IsAuthenticated,
 )
-from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from monitoring_app import models, permissions, serializers, utils
 
@@ -756,7 +756,7 @@ def staff_detail(request, staff_pin):
     logger.info(f"Request received for staff details with PIN {staff_pin}")
 
     staff = get_cache(
-        f"staff_{staff_pin}", query=lambda: fetch_staff_data(staff_pin), timeout=1*10
+        f"staff_{staff_pin}", query=lambda: fetch_staff_data(staff_pin), timeout=1 * 10
     )
 
     if staff is None:
@@ -1360,7 +1360,7 @@ def staff_detail_by_department_id(request, department_id):
             logger.info("Staff attendance data query completed")
             return paginator.get_paginated_response(serializer.data).data
 
-        cached_data = get_cache(cache_key, query=query, timeout=1*60*60)
+        cached_data = get_cache(cache_key, query=query, timeout=1 * 60 * 60)
         logger.info("Returning cached or queried data")
         return Response(cached_data)
 
@@ -2376,3 +2376,74 @@ class APIKeyCheckView(APIView):
                 {"message": "Invalid API Key", "error": str(e)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+
+def password_reset_request_view(request):
+    if request.method == "POST":
+        identifier = request.POST.get("identifier")
+        ip_address = request.META.get("REMOTE_ADDR")
+        user = (
+            User.objects.filter(username=identifier).first()
+            or User.objects.filter(email=identifier).first()
+        )
+
+        user_timezone = utils.get_user_timezone(request)
+
+        if user:
+            last_request_time = models.PasswordResetRequestLog.get_last_request_time(
+                user, ip_address
+            )
+            if not models.PasswordResetRequestLog.can_request_again(user, ip_address):
+                next_possible_time = timezone.localtime(
+                    last_request_time + timezone.timedelta(minutes=5), user_timezone
+                )
+                last_request_time_local = timezone.localtime(
+                    last_request_time, user_timezone
+                )
+                messages.warning(
+                    request,
+                    f"Запрос уже был отправлен. Повторный запрос возможен в {next_possible_time.strftime('%H:%M:%S %Z')} ({next_possible_time.tzinfo}). Последний запрос был в {last_request_time_local.strftime('%H:%M:%S %Z')} ({last_request_time_local.tzinfo}).",
+                )
+            else:
+                utils.send_password_reset_email(user, request)
+                models.PasswordResetRequestLog.log_request(user, ip_address)
+                current_time_local = timezone.localtime(timezone.now(), user_timezone)
+                messages.success(
+                    request,
+                    f"Если пользователь существует, ссылка для сброса пароля была отправлена на его электронную почту. Последний запрос был в {current_time_local.strftime('%H:%M:%S %Z')} ({current_time_local.tzinfo}).",
+                )
+        else:
+            messages.info(
+                request,
+                "Если пользователь существует, ссылка для сброса пароля была отправлена на его электронную почту.",
+            )
+
+        return redirect("password_reset_request")
+
+    return render(request, "password_reset_request.html")
+
+
+def password_reset_confirm_view(request, token):
+    reset_token = get_object_or_404(models.PasswordResetToken, token=token)
+
+    if not reset_token.is_valid():
+        messages.error(request, "Этот токен для сброса пароля больше не действителен.")
+        return redirect("password_reset_request")
+
+    if request.method == "POST":
+        new_password = request.POST.get("password")
+        user = reset_token.user
+        user.set_password(new_password)
+        user.save()
+
+        if models.PasswordResetToken.objects.mark_as_used(token):
+            messages.success(
+                request,
+                "Пароль успешно сброшен. Вы можете войти в систему с новым паролем.",
+            )
+            return redirect("reac_app")
+        else:
+            messages.error(request, "Ошибка при обновлении токена. Попробуйте снова.")
+            return redirect("password_reset_confirm", token=token)
+
+    return render(request, "password_reset_confirm.html", {"token": token})
