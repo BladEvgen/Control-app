@@ -1,25 +1,30 @@
-import re
-import json
 import datetime
+import json
+import re
+from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 from typing import Any, Dict, List, Optional
-from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlparse
 
-import requests
 import pandas as pd
-from openpyxl import Workbook
-from django.conf import settings
-from django.db import transaction
-from django.utils import timezone
-from rest_framework import status
-from django.core.cache import cache
-from django.http import HttpRequest
+import pytz
+import requests
 from cryptography.fernet import Fernet
-from openpyxl.styles import Alignment, Font
-from rest_framework.response import Response
+from django.conf import settings
 from django.contrib.admin import SimpleListFilter
+from django.core.cache import cache
+from django.core.mail import send_mail
+from django.db import transaction
+from django.http import HttpRequest
+from django.urls import reverse
+from django.utils import timezone
+from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font
 from openpyxl.utils.dataframe import dataframe_to_rows
+from rest_framework import status
+from rest_framework.response import Response
 
 from monitoring_app import models
 
@@ -383,3 +388,55 @@ def add_api_key_header(func):
         return func(*args, **kwargs)
     
     return wrapper
+
+
+def send_password_reset_email(user, request):
+    parsed_main_ip = urlparse(settings.MAIN_IP)
+    main_ip = parsed_main_ip.netloc if parsed_main_ip.netloc else parsed_main_ip.path
+
+    reset_link = f"{request.scheme}://{main_ip}{reverse('password_reset_confirm', args=[models.PasswordResetToken.generate_token(user)])}"
+    
+    subject = "Инструкция по сбросу пароля"
+    html_message = format_html(
+        """
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ececec; border-radius: 10px; background-color: #ffffff;">
+            <h2 style="color: #007bff; text-align: center; margin-bottom: 20px;">Сброс пароля для {username}</h2>
+            <p style="color: #333; line-height: 1.6; margin-bottom: 20px;">
+                Вы получили это письмо, потому что был запрошен сброс пароля для вашего аккаунта. Если это не вы, проигнорируйте это письмо, и ваш пароль останется неизменным.
+            </p>
+            <div style="text-align: center; margin-bottom: 20px;">
+                <a href="{reset_link}" style="display: inline-block; padding: 12px 24px; color: #ffffff; background-color: #007bff; text-decoration: none; border-radius: 5px; font-size: 16px;">
+                    Сбросить пароль
+                </a>
+            </div>
+            <p style="color: #333; line-height: 1.6; margin-bottom: 20px;">
+                Эта ссылка будет действительна в течение 1 часа. Для вашей безопасности не передавайте эту ссылку другим лицам.
+            </p>
+            <hr style="border: none; border-top: 1px solid #ececec; margin: 20px 0;">
+            <p style="font-size: 12px; color: #999; text-align: center;">
+                Если вы не запрашивали сброс пароля, проигнорируйте это письмо. <br>
+                Если у вас есть вопросы, свяжитесь с нашей службой поддержки.
+            </p>
+        </div>
+        """, username=user.username, reset_link=reset_link
+    )
+    plain_message = (
+        f"Здравствуйте, {user.username}!\n\n"
+        "Вы получили это письмо, потому что был запрошен сброс пароля для вашего аккаунта.\n\n"
+        f"Для сброса пароля перейдите по следующей ссылке: {reset_link}\n\n"
+        "Эта ссылка будет действительна в течение 1 часа. Для вашей безопасности не передавайте эту ссылку другим лицам.\n\n"
+        "Если вы не запрашивали сброс пароля, проигнорируйте это письмо, и ваш пароль останется неизменным.\n\n"
+        "Если у вас есть вопросы, свяжитесь с нашей службой поддержки.\n\n"
+        "С уважением,\n"
+        "Команда поддержки."
+    )
+    send_mail(
+        subject, plain_message, settings.DEFAULT_FROM_EMAIL, [user.email],
+        html_message=html_message
+    )
+    
+def get_user_timezone(request):
+    user_timezone = request.session.get('timezone')
+    if not user_timezone:
+        user_timezone = settings.TIME_ZONE
+    return pytz.timezone(user_timezone)
