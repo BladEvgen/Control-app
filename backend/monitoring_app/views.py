@@ -1,36 +1,36 @@
-import datetime
-import logging
 import os
 import time
+import logging
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+import datetime
 from tempfile import NamedTemporaryFile
+from concurrent.futures import ThreadPoolExecutor
 
-from django.conf import settings
-from django.contrib import messages
-from django.contrib.auth import authenticate, login, logout
-from django.contrib.auth.models import User
-from django.core.cache import caches
-from django.core.files.base import ContentFile
-from django.db import transaction
-from django.db.models import Count, Q
-from django.http import HttpResponse
-from django.shortcuts import get_object_or_404, redirect, render
-from django.utils import timezone
-from django.views.generic import View
 from drf_yasg import openapi
-from drf_yasg.utils import swagger_auto_schema
-from openpyxl import load_workbook
+from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from openpyxl import load_workbook
+from django.contrib import messages
+from django.core.cache import caches
+from django.http import HttpResponse
+from django.db.models import Count, Q
+from django.views.generic import View
+from django.contrib.auth.models import User
+from django.core.files.base import ContentFile
+from drf_yasg.utils import swagger_auto_schema
 from rest_framework.pagination import PageNumberPagination
+from django.contrib.auth import authenticate, login, logout
+from django.shortcuts import get_object_or_404, redirect, render
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import (
     AllowAny,
     IsAdminUser,
     IsAuthenticated,
 )
-from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.response import Response
 
 from monitoring_app import models, permissions, serializers, utils
 
@@ -2377,11 +2377,11 @@ class APIKeyCheckView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-
 def password_reset_request_view(request):
     if request.method == "POST":
         identifier = request.POST.get("identifier")
-        ip_address = request.META.get("REMOTE_ADDR")
+        ip_address = utils.get_client_ip(request)  # Ensure you always get an IP address
+        logger.error(str(ip_address))
         user = (
             User.objects.filter(username=identifier).first()
             or User.objects.filter(email=identifier).first()

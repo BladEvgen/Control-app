@@ -1,34 +1,44 @@
-import datetime
-import json
 import re
-from concurrent.futures import ThreadPoolExecutor
+import json
+import datetime
 from functools import wraps
-from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
 
-import pandas as pd
 import pytz
 import requests
-from cryptography.fernet import Fernet
-from django.conf import settings
-from django.contrib.admin import SimpleListFilter
-from django.core.cache import cache
-from django.core.mail import send_mail
-from django.db import transaction
-from django.http import HttpRequest
-from django.urls import reverse
-from django.utils import timezone
-from django.utils.html import format_html
-from django.utils.translation import gettext_lazy as _
+import pandas as pd
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font
-from openpyxl.utils.dataframe import dataframe_to_rows
+from django.urls import reverse
+from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import status
+from django.core.cache import cache
+from django.http import HttpRequest
+from cryptography.fernet import Fernet
+from django.core.mail import send_mail
+from django.utils.html import format_html
+from openpyxl.styles import Alignment, Font
 from rest_framework.response import Response
+from django.contrib.admin import SimpleListFilter
+from django.utils.translation import gettext_lazy as _
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 from monitoring_app import models
 
 DAYS = settings.DAYS
+
+def get_client_ip(request):
+    """Get the client IP address from the request, considering proxy setups."""
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        ip = x_forwarded_for.split(',')[0].strip()
+    else:
+        ip = request.META.get('REMOTE_ADDR')
+    return ip
+
 
 def format_duration(duration_seconds):
     """Converts a duration in seconds to a more human-readable format."""
