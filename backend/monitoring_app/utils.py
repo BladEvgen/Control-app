@@ -30,13 +30,14 @@ from monitoring_app import models
 
 DAYS = settings.DAYS
 
+
 def get_client_ip(request):
     """Get the client IP address from the request, considering proxy setups."""
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded_for:
-        ip = x_forwarded_for.split(',')[0].strip()
+        ip = x_forwarded_for.split(",")[0].strip()
     else:
-        ip = request.META.get('REMOTE_ADDR')
+        ip = request.META.get("REMOTE_ADDR")
     return ip
 
 
@@ -54,6 +55,7 @@ def format_duration(duration_seconds):
         seconds = duration_seconds % 60
         return f"{hours:.0f} hour(s) {minutes:.0f} minute(s) {seconds:.2f} seconds"
 
+
 class HierarchicalDepartmentFilter(SimpleListFilter):
     title = _("Department")
     parameter_name = "staff_department"
@@ -66,9 +68,7 @@ class HierarchicalDepartmentFilter(SimpleListFilter):
         if self.value():
             department = models.ChildDepartment.objects.get(pk=self.value())
             child_departments = department.get_all_child_departments()
-            child_department_ids = [dept.id for dept in child_departments] + [
-                department.id
-            ]
+            child_department_ids = [dept.id for dept in child_departments] + [department.id]
             return queryset.filter(staff__department__in=child_department_ids)
         return queryset
 
@@ -150,7 +150,7 @@ def get_attendance_data(pin: str):
         response = requests.get(
             settings.API_URL + "/api/transaction/listAttTransaction",
             params=params,
-            timeout=10 
+            timeout=10,
         )
         response.raise_for_status()
         response_json = response.json()
@@ -193,9 +193,7 @@ def get_all_attendance():
                 timezone.datetime.fromisoformat(data[-1]["eventTime"])
             )
             last_event_time = (
-                timezone.make_aware(
-                    timezone.datetime.fromisoformat(data[0]["eventTime"])
-                )
+                timezone.make_aware(timezone.datetime.fromisoformat(data[0]["eventTime"]))
                 if len(data) > 1
                 else first_event_time
             )
@@ -217,9 +215,7 @@ def get_all_attendance():
 
     with transaction.atomic():
         if updates:
-            models.StaffAttendance.objects.bulk_update(
-                updates, ["first_in", "last_out"]
-            )
+            models.StaffAttendance.objects.bulk_update(updates, ["first_in", "last_out"])
 
 
 def password_check(password: str) -> bool:
@@ -241,9 +237,7 @@ def password_check(password: str) -> bool:
         bool: True, если пароль соответствует всем требованиям сложности, в противном случае — False
     """
     return bool(
-        re.match(
-            r"^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$", password
-        )
+        re.match(r"^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$", password)
     )
 
 
@@ -263,9 +257,7 @@ def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]
     holidays_cache = cache.get("holidays_cache")
 
     if not holidays_cache:
-        holidays_cache = {
-            holiday.date: holiday for holiday in models.PublicHoliday.objects.all()
-        }
+        holidays_cache = {holiday.date: holiday for holiday in models.PublicHoliday.objects.all()}
         cache.set("holidays_cache", holidays_cache, timeout=60 * 60 * 24)
 
     def parse_datetime_with_timezone(dt_str: Optional[str]) -> Optional[str]:
@@ -304,9 +296,7 @@ def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]
                             attendance_info = "Выходной"
                     else:
                         attendance_info = (
-                            f"{first_in} - {last_out}"
-                            if first_in and last_out
-                            else "Отсутствие"
+                            f"{first_in} - {last_out}" if first_in and last_out else "Отсутствие"
                         )
 
                     rows.append([staff_fio, department, date_str, attendance_info])
@@ -350,9 +340,7 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
     max_col_widths = [0] * len(df_flat_sorted.columns)
     max_row_heights = [0] * (len(df_flat_sorted) + 1)
 
-    for r_idx, r in enumerate(
-        dataframe_to_rows(df_flat_sorted, index=False, header=True), 1
-    ):
+    for r_idx, r in enumerate(dataframe_to_rows(df_flat_sorted, index=False, header=True), 1):
         for c_idx, value in enumerate(r, 1):
             cell = ws.cell(row=r_idx, column=c_idx, value=value)
             cell.font = data_font
@@ -370,9 +358,7 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
         cell.font = header_font
 
     for idx, col_width in enumerate(max_col_widths, 1):
-        ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = (
-            col_width + 2
-        )
+        ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = col_width + 2
 
     for idx, row_height in enumerate(max_row_heights, 1):
         ws.row_dimensions[idx].height = row_height * 3
@@ -384,19 +370,19 @@ def add_api_key_header(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         request = args[0]
-        
+
         if isinstance(request, HttpRequest):
             api_key = models.APIKey.objects.filter(is_active=True).first()
             if api_key:
-                request.META['HTTP_X_API_KEY'] = api_key.key
+                request.META["HTTP_X_API_KEY"] = api_key.key
             else:
                 return Response(
                     {"error": "No active API key available for authentication."},
-                    status=status.HTTP_403_FORBIDDEN
+                    status=status.HTTP_403_FORBIDDEN,
                 )
-        
+
         return func(*args, **kwargs)
-    
+
     return wrapper
 
 
@@ -405,7 +391,7 @@ def send_password_reset_email(user, request):
     main_ip = parsed_main_ip.netloc if parsed_main_ip.netloc else parsed_main_ip.path
 
     reset_link = f"{request.scheme}://{main_ip}{reverse('password_reset_confirm', args=[models.PasswordResetToken.generate_token(user)])}"
-    
+
     subject = "Инструкция по сбросу пароля"
     html_message = format_html(
         """
@@ -428,7 +414,9 @@ def send_password_reset_email(user, request):
                 Если у вас есть вопросы, свяжитесь с нашей службой поддержки.
             </p>
         </div>
-        """, username=user.username, reset_link=reset_link
+        """,
+        username=user.username,
+        reset_link=reset_link,
     )
     plain_message = (
         f"Здравствуйте, {user.username}!\n\n"
@@ -441,12 +429,16 @@ def send_password_reset_email(user, request):
         "Команда поддержки."
     )
     send_mail(
-        subject, plain_message, settings.DEFAULT_FROM_EMAIL, [user.email],
-        html_message=html_message
+        subject,
+        plain_message,
+        settings.DEFAULT_FROM_EMAIL,
+        [user.email],
+        html_message=html_message,
     )
-    
+
+
 def get_user_timezone(request):
-    user_timezone = request.session.get('timezone')
+    user_timezone = request.session.get("timezone")
     if not user_timezone:
         user_timezone = settings.TIME_ZONE
     return pytz.timezone(user_timezone)

@@ -25,8 +25,8 @@ schema_view = get_schema_view(
         contact=openapi.Contact(email="ekozlov00@mail.ru"),
         license=openapi.License(name="MIT License"),
     ),
-    public=False,  
-    permission_classes=(IsAuthenticatedOrReadOnly,),  
+    public=False,
+    permission_classes=(IsAuthenticatedOrReadOnly,),
 )
 
 urlpatterns = [
@@ -36,7 +36,5 @@ urlpatterns = [
         name="schema-swagger-ui",
     ),
     path("redoc/", schema_view.with_ui("redoc", cache_timeout=0), name="schema-redoc"),
-    path(
-        "swagger<format>/", schema_view.without_ui(cache_timeout=0), name="schema-json"
-    ),
+    path("swagger<format>/", schema_view.without_ui(cache_timeout=0), name="schema-json"),
 ]

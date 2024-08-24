@@ -98,9 +98,7 @@ def save_to_excel(
             cell.alignment = data_alignment
             cell.font = data_font
 
-    for row in ws.iter_rows(
-        min_row=1, max_row=4 if contract_type else 3, min_col=1, max_col=2
-    ):
+    for row in ws.iter_rows(min_row=1, max_row=4 if contract_type else 3, min_col=1, max_col=2):
         for cell in row:
             cell.alignment = header_alignment
             cell.font = title_font if cell.column == 1 else data_font
@@ -129,12 +127,8 @@ def main():
     try:
         data = fetch_data(DATA_URL, API_KEY)
         if data:
-            name, department, contract_type, percent_for_period, df = (
-                parse_attendance_data(data)
-            )
-            workbook = save_to_excel(
-                name, department, contract_type, percent_for_period, df
-            )
+            name, department, contract_type, percent_for_period, df = parse_attendance_data(data)
+            workbook = save_to_excel(name, department, contract_type, percent_for_period, df)
             filename = f"Отчет_{department}_{name}.xlsx".replace(" ", "_")
             workbook.save(filename)
     except requests.RequestException as e:

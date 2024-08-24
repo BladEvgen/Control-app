@@ -1,63 +1,60 @@
-{% extends "admin/change_list.html" %}
-{% load i18n static %}
-
-{% block extrastyle %}
+{% extends "admin/change_list.html" %} {% load i18n static %} {% block
+extrastyle %}
 <style>
-    .object-tools {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        gap: 10px;
-    }
+  .object-tools {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+  }
 
-    .grp-add-handler {
-        margin-bottom: 10px;
-    }
+  .grp-add-handler {
+    margin-bottom: 10px;
+  }
 
+  .reset-filters-button {
+    background-color: #2a85d0;
+    color: white;
+    border: 1px solid #2a85d0;
+    padding: 8px 16px;
+    text-decoration: none;
+    margin-bottom: 1vh;
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: bold;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    transition: background-color 0.3s ease, box-shadow 0.3s ease,
+      transform 0.3s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .reset-filters-button:hover {
+    background-color: #1c5a8c;
+    border-color: #1c5a8c;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+    transform: translateY(-2px);
+    color: white;
+  }
+
+  @media (max-width: 768px) {
     .reset-filters-button {
-        background-color: #2a85d0;
-        color: white;
-        border: 1px solid #2a85d0;
-        padding: 8px 16px;
-        text-decoration: none;
-        margin-bottom: 1vh;
-        border-radius: 4px;
-        font-size: 14px;
-        font-weight: bold;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        transition: background-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+      width: 100%;
+      text-align: center;
     }
+  }
 
-    .reset-filters-button:hover {
-        background-color: #1c5a8c;
-        border-color: #1c5a8c;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
-        transform: translateY(-2px);
-        color: white;
+  @media (max-width: 480px) {
+    .reset-filters-button {
+      width: 100%;
     }
-
-    @media (max-width: 768px) {
-        .reset-filters-button {
-            width: 100%;
-            text-align: center;
-        }
-    }
-
-    @media (max-width: 480px) {
-        .reset-filters-button {
-            width: 100%;
-        }
-    }
+  }
 </style>
-{% endblock %}
-
-{% block object-tools %}
+{% endblock %} {% block object-tools %}
 
 <div class="object-tools">
-    {{ block.super }}
-    <a href="{{ request.path }}" class="reset-filters-button">Сбросить Фильтры</a>
+  {{ block.super }}
+  <a href="{{ request.path }}" class="reset-filters-button">Сбросить Фильтры</a>
 </div>
 {% endblock %}

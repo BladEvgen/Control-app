@@ -1,40 +1,46 @@
-{% extends "components/base.html" %}
-{% load django_app_filters_and_tags %}
-
-{% block title %}Upload File{% endblock %}
-{% load static %}
-{% block main %}
+{% extends "components/base.html" %} {% load django_app_filters_and_tags %} {%
+block title %}Upload File{% endblock %} {% load static %} {% block main %}
 
 <div class="container mx-auto mt-10">
-    <div class="flex justify-center">
-        <div class="w-full max-w-md px-8 py-6 bg-white rounded-lg shadow-md">
-            <h2 class="text-center text-2xl font-semibold mb-6">Login</h2>
-            <form method="post" action="{% url 'login_view' %}">
-                {% csrf_token %}
-                <div class="mb-4">
-                    <label htmlFor="username" class="block text-gray-700 font-bold mb-2">
-                        Username
-                    </label>
-                    <input type="text" id="username" name="username"
-                        class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
-                        required />
-                </div>
-                <div class="mb-6">
-                    <label htmlFor="password" class="block text-gray-700 font-bold mb-2">
-                        Password
-                    </label>
-                    <input type="password" id="password" name="password"
-                        class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
-                        required />
-                </div>
-                <div class="flex items-center justify-between">
-                    <button type="submit"
-                        class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline">
-                        Login
-                    </button>
-                </div>
-            </form>
+  <div class="flex justify-center">
+    <div class="w-full max-w-md px-8 py-6 bg-white rounded-lg shadow-md">
+      <h2 class="text-center text-2xl font-semibold mb-6">Login</h2>
+      <form method="post" action="{% url 'login_view' %}">
+        {% csrf_token %}
+        <div class="mb-4">
+          <label htmlFor="username" class="block text-gray-700 font-bold mb-2">
+            Username
+          </label>
+          <input
+            type="text"
+            id="username"
+            name="username"
+            class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+            required
+          />
         </div>
+        <div class="mb-6">
+          <label htmlFor="password" class="block text-gray-700 font-bold mb-2">
+            Password
+          </label>
+          <input
+            type="password"
+            id="password"
+            name="password"
+            class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+            required
+          />
+        </div>
+        <div class="flex items-center justify-between">
+          <button
+            type="submit"
+            class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+          >
+            Login
+          </button>
+        </div>
+      </form>
     </div>
+  </div>
 </div>
 {% endblock %}

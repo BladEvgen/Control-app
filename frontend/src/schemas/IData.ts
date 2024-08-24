@@ -12,7 +12,6 @@ export class BaseState<T> {
   }
 }
 
-
 export class ExtendedState<T> extends BaseState<T> {
   startDate: string;
   endDate: string;
@@ -88,5 +87,5 @@ export interface AttendanceStats {
     individual_percentage: number;
   }>;
   absent_data: Array<{ staff_pin: string; name: string }>;
-  data_for_date : string;
+  data_for_date: string;
 }

@@ -4,63 +4,71 @@ from django.utils import timezone
 from monitoring_app import utils
 
 from .models import (
-    APIKey,
-    ChildDepartment,
-    FileCategory,
-    ParentDepartment,
-    PasswordResetRequestLog,
-    PasswordResetToken,
-    Position,
-    PublicHoliday,
-    Salary,
     Staff,
-    StaffAttendance,
+    APIKey,
+    Salary,
+    Position,
     UserProfile,
+    FileCategory,
+    PublicHoliday,
+    ChildDepartment,
+    StaffAttendance,
+    ParentDepartment,
+    PasswordResetToken,
+    PasswordResetRequestLog,
 )
 
 admin.site.site_header = "Панель управления"
 admin.site.index_title = "Администрирование сайта"
 admin.site.site_title = "Администрирование"
+
+
 class UsedFilter(admin.SimpleListFilter):
-    title = 'Статус использования'
-    parameter_name = 'used'
+    title = "Статус использования"
+    parameter_name = "used"
 
     def lookups(self, request, model_admin):
         return (
-            ('yes', 'Использован'),
-            ('no', 'Не использован'),
+            ("yes", "Использован"),
+            ("no", "Не использован"),
         )
 
     def queryset(self, request, queryset):
-        if self.value() == 'yes':
+        if self.value() == "yes":
             return queryset.filter(_used=True)
-        if self.value() == 'no':
+        if self.value() == "no":
             return queryset.filter(_used=False)
+
 
 @admin.register(PasswordResetToken)
 class PasswordResetTokenAdmin(admin.ModelAdmin):
-    list_display = ('user', 'created_at', 'used', 'is_valid')
-    list_filter = (UsedFilter, 'created_at')
-    search_fields = ('user__username', 'user__email', 'token')
-    readonly_fields = ('user', 'token', 'created_at', 'used')
+    list_display = ("user", "created_at", "used", "is_valid")
+    list_filter = (UsedFilter, "created_at")
+    search_fields = ("user__username", "user__email", "token")
+    readonly_fields = ("user", "token", "created_at", "used")
     list_display_links = None
+
     def is_valid(self, obj):
         return obj.is_valid()
+
     is_valid.boolean = True
-    is_valid.short_description = 'Действительный токен'
+    is_valid.short_description = "Действительный токен"
+
 
 @admin.register(PasswordResetRequestLog)
 class PasswordResetRequestLogAdmin(admin.ModelAdmin):
-    list_display = ('user', 'ip_address', 'requested_at', 'next_possible_request')
-    list_filter = ('requested_at',)
-    search_fields = ('user__username', 'user__email', 'ip_address')
-    readonly_fields = ('user', 'ip_address', 'requested_at')
+    list_display = ("user", "ip_address", "requested_at", "next_possible_request")
+    list_filter = ("requested_at",)
+    search_fields = ("user__username", "user__email", "ip_address")
+    readonly_fields = ("user", "ip_address", "requested_at")
     list_display_links = None
 
     def next_possible_request(self, obj):
         return obj.requested_at + timezone.timedelta(minutes=5)
-    next_possible_request.short_description = 'Следующий возможный запрос'
-    
+
+    next_possible_request.short_description = "Следующий возможный запрос"
+
+
 @admin.register(APIKey)
 class APIKeyAdmin(admin.ModelAdmin):
     list_display = ("key_name", "created_by", "created_at", "short_key", "is_active")
