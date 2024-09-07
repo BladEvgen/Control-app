@@ -11,6 +11,7 @@ class Command(BaseCommand):
             {"name": "Сотрудники", "slug": "staff"},
             {"name": "Удаление сотрудников", "slug": "delete_staff"},
             {"name": "Фото", "slug": "photo"},
+            
         ]
 
         for category_data in categories:
@@ -19,11 +20,15 @@ class Command(BaseCommand):
 
             if FileCategory.objects.filter(slug=slug).exists():
                 self.stdout.write(
-                    self.style.WARNING(f'Category with slug "{slug}" already exists. Skipping.')
+                    self.style.WARNING(
+                        f'Category with slug "{slug}" already exists. Skipping.'
+                    )
                 )
                 continue
 
             FileCategory.objects.create(name=name, slug=slug)
-            self.stdout.write(self.style.SUCCESS(f'Successfully created category "{name}"'))
+            self.stdout.write(
+                self.style.SUCCESS(f'Successfully created category "{name}"')
+            )
 
         self.stdout.write(self.style.SUCCESS("Initial categories creation complete"))

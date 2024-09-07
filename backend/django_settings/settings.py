@@ -155,7 +155,8 @@ else:
 
 AUTH_PASSWORD_VALIDATORS = [
     {
-        "NAME": "django.contrib.auth.password_validation." + "UserAttributeSimilarityValidator",
+        "NAME": "django.contrib.auth.password_validation."
+        + "UserAttributeSimilarityValidator",
     },
     {
         "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
@@ -231,23 +232,19 @@ SIMPLE_JWT = {
 }
 
 if DEBUG:
-    SIMPLE_JWT.update(
-        {
-            "ACCESS_TOKEN_LIFETIME": timedelta(minutes=1),
-            "REFRESH_TOKEN_LIFETIME": timedelta(minutes=5),
-            "SLIDING_TOKEN_LIFETIME": timedelta(minutes=1),
-            "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(minutes=5),
-        }
-    )
+    SIMPLE_JWT.update({
+        "ACCESS_TOKEN_LIFETIME": timedelta(minutes=1),  
+        "REFRESH_TOKEN_LIFETIME": timedelta(minutes=5),  
+        "SLIDING_TOKEN_LIFETIME": timedelta(minutes=1),  
+        "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(minutes=5),  
+    })
 else:
-    SIMPLE_JWT.update(
-        {
-            "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
-            "REFRESH_TOKEN_LIFETIME": timedelta(hours=1),
-            "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10),
-            "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(hours=1),
-        }
-    )
+    SIMPLE_JWT.update({
+        "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
+        "REFRESH_TOKEN_LIFETIME": timedelta(hours=1),
+        "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10),
+        "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(hours=1),
+    })
 
 # DRF-YASG configuration
 SWAGGER_SETTINGS = {
@@ -288,7 +285,9 @@ LOGGING = {
         "file": {
             "level": "INFO" if DEBUG else "WARNING",
             "class": "logging.FileHandler",
-            "filename": os.path.join(LOG_DIR, f'log-{datetime.now().strftime("%Y-%m-%d_%H")}.log'),
+            "filename": os.path.join(
+                LOG_DIR, f'log-{datetime.now().strftime("%Y-%m-%d_%H")}.log'
+            ),
             "formatter": "verbose",
         },
     },

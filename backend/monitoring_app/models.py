@@ -1,29 +1,27 @@
 import os
 import shutil
 
-from django.utils import timezone
 from django.contrib import messages
-from django.dispatch import receiver
-from django.db import models, transaction
 from django.contrib.auth.models import User
-from django.utils.crypto import get_random_string
 from django.core.exceptions import ValidationError
-from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.validators import FileExtensionValidator
+from django.db import models, transaction
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
+from django.dispatch import receiver
+from django.utils import timezone
+from django.utils.crypto import get_random_string
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from monitoring_app import utils
-
 
 class PasswordResetTokenManager(models.Manager):
     def mark_as_used(self, token):
         token_obj = self.filter(token=token, _used=False).first()
         if token_obj and token_obj.is_valid():
             token_obj._used = True
-            token_obj.save(update_fields=["_used"])
+            token_obj.save(update_fields=['_used'])
             return True
         return False
-
 
 class PasswordResetToken(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
@@ -73,11 +71,9 @@ class PasswordResetRequestLog(models.Model):
 
     @staticmethod
     def get_last_request_time(user, ip_address):
-        last_request = (
-            PasswordResetRequestLog.objects.filter(user=user, ip_address=ip_address)
-            .order_by("-requested_at")
-            .first()
-        )
+        last_request = PasswordResetRequestLog.objects.filter(
+            user=user, ip_address=ip_address
+        ).order_by('-requested_at').first()
         return last_request.requested_at if last_request else None
 
     @staticmethod
@@ -90,12 +86,11 @@ class PasswordResetRequestLog(models.Model):
         if not last_request_time:
             return True
         return timezone.now() >= last_request_time + timezone.timedelta(minutes=5)
-
+    
     class Meta:
         verbose_name = "Лог запросов на сброс пароля"
         verbose_name_plural = "Логи запросов на сброс пароля"
-
-
+        
 class APIKey(models.Model):
     key_name = models.CharField(
         max_length=100, null=False, blank=False, verbose_name="Название ключа"
@@ -105,7 +100,9 @@ class APIKey(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     key = models.CharField(max_length=256, editable=False, verbose_name="Ключ")
-    is_active = models.BooleanField(default=True, editable=True, verbose_name="Статус активности")
+    is_active = models.BooleanField(
+        default=True, editable=True, verbose_name="Статус активности"
+    )
 
     def __str__(self):
         status = "Активен" if self.is_active else "Деактивирован"
@@ -188,7 +185,9 @@ class FileCategory(models.Model):
 class ParentDepartment(models.Model):
     id = models.AutoField(primary_key=True, verbose_name="Номер отдела")
     name = models.CharField(max_length=255, unique=True, verbose_name="Название отдела")
-    date_of_creation = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
+    date_of_creation = models.DateTimeField(
+        auto_now_add=True, verbose_name="Дата создания"
+    )
 
     def __str__(self):
         return self.name
@@ -201,7 +200,9 @@ class ParentDepartment(models.Model):
 class ChildDepartment(models.Model):
     id = models.AutoField(primary_key=True, verbose_name="Номер отдела")
     name = models.CharField(max_length=255, verbose_name="Название отдела")
-    date_of_creation = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
+    date_of_creation = models.DateTimeField(
+        auto_now_add=True, verbose_name="Дата создания"
+    )
     parent = models.ForeignKey(
         "self",
         on_delete=models.SET_NULL,
@@ -216,7 +217,9 @@ class ChildDepartment(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.id:
-            existing_child_department = ChildDepartment.objects.filter(name=self.name).first()
+            existing_child_department = ChildDepartment.objects.filter(
+                name=self.name
+            ).first()
             if existing_child_department:
                 self.id = existing_child_department.id
                 self.parent = existing_child_department.parent
@@ -243,7 +246,9 @@ class Position(models.Model):
         verbose_name="Профессия",
         default="Сотрудник",
     )
-    rate = models.DecimalField(max_digits=4, decimal_places=2, verbose_name="Ставка", default=1)
+    rate = models.DecimalField(
+        max_digits=4, decimal_places=2, verbose_name="Ставка", default=1
+    )
 
     def __str__(self):
         return f"{self.name} Ставка: {self.rate}"
@@ -267,7 +272,9 @@ class Staff(models.Model):
         editable=False,
     )
     name = models.CharField(max_length=255, blank=False, null=False, verbose_name="Имя")
-    surname = models.CharField(max_length=255, blank=False, null=False, verbose_name="Фамилия")
+    surname = models.CharField(
+        max_length=255, blank=False, null=False, verbose_name="Фамилия"
+    )
     department = models.ForeignKey(
         ChildDepartment, on_delete=models.SET_NULL, null=True, verbose_name="Отдел"
     )
@@ -321,7 +328,9 @@ def delete_avatar_on_staff_delete(sender, instance, **kwargs):
             try:
                 shutil.rmtree(avatar_dir)
             except Exception as e:
-                print(f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}")
+                print(
+                    f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}"
+                )
     else:
         print("Аватар отсутствует, ничего не удаляется.")
 
@@ -365,7 +374,9 @@ class StaffAttendance(models.Model):
             if (
                 self.first_in != orig.first_in or self.last_out != orig.last_out
             ) and "admin" in kwargs:
-                raise ValidationError("Нельзя изменять поля first_in и last_out через админку.")
+                raise ValidationError(
+                    "Нельзя изменять поля first_in и last_out через админку."
+                )
 
         super().save(*args, **kwargs)
 

@@ -1,6 +1,5 @@
 from datetime import datetime
 
-
 def parse_date(date_str: str) -> datetime:
     """
     Parses a date string and returns a datetime object. The function handles
@@ -16,23 +15,16 @@ def parse_date(date_str: str) -> datetime:
         ValueError: If the provided date string is not in a recognized format.
     """
     date_formats = ["%Y-%m-%d", "%m/%d/%Y", "%d.%m.%Y"]
-
+    
     parsed_date = next(
-        (
-            datetime.strptime(date_str, fmt)
-            for fmt in date_formats
-            if _valid_date_format(date_str, fmt)
-        ),
-        None,
+        (datetime.strptime(date_str, fmt) for fmt in date_formats if _valid_date_format(date_str, fmt)),
+        None
     )
-
+    
     if parsed_date is None:
-        raise ValueError(
-            "Неверный формат даты. Используйте один из следующих форматов: YYYY-MM-DD, MM/DD/YYYY, DD.MM.YYYY."
-        )
-
+        raise ValueError("Неверный формат даты. Используйте один из следующих форматов: YYYY-MM-DD, MM/DD/YYYY, DD.MM.YYYY.")
+    
     return parsed_date
-
 
 def _valid_date_format(date_str: str, fmt: str) -> bool:
     """
@@ -50,7 +42,6 @@ def _valid_date_format(date_str: str, fmt: str) -> bool:
         return True
     except ValueError:
         return False
-
 
 def calculate_date_range(start_date_str: str = "", end_date_str: str = "") -> int:
     """
@@ -73,17 +64,12 @@ def calculate_date_range(start_date_str: str = "", end_date_str: str = "") -> in
     today = datetime.today()
     start_date = parse_date(start_date_str) if start_date_str else today
     end_date = parse_date(end_date_str) if end_date_str else today
-
+    
     delta = end_date - start_date
     return abs(delta.days)
 
-
-start_date_input = input(
-    "Введите дату начала (YYYY-MM-DD, MM/DD/YYYY, или DD.MM.YYYY, нажмите Enter для текущей даты): "
-)
-end_date_input = input(
-    "Введите дату конца (YYYY-MM-DD, MM/DD/YYYY, или DD.MM.YYYY, нажмите Enter для текущей даты): "
-)
+start_date_input = input("Введите дату начала (YYYY-MM-DD, MM/DD/YYYY, или DD.MM.YYYY, нажмите Enter для текущей даты): ")
+end_date_input = input("Введите дату конца (YYYY-MM-DD, MM/DD/YYYY, или DD.MM.YYYY, нажмите Enter для текущей даты): ")
 
 try:
     days = calculate_date_range(start_date_input, end_date_input)

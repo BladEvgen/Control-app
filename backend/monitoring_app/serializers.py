@@ -54,7 +54,9 @@ class ParentDepartmentSerializer(serializers.ModelSerializer):
             child_departments = models.ChildDepartment.objects.all()
             return ChildDepartmentSerializer(child_departments, many=True).data
         else:
-            child_departments = models.ChildDepartment.objects.filter(parent=parent_department)
+            child_departments = models.ChildDepartment.objects.filter(
+                parent=parent_department
+            )
             return ChildDepartmentSerializer(child_departments, many=True).data
 
 
@@ -171,7 +173,9 @@ class StaffAttendanceByDateSerializer(serializers.Serializer):
         data = super().to_representation(instance)
         date = data.pop("date")
         department = (
-            instance.staff.department.name if instance.staff.department else "Unknown Department"
+            instance.staff.department.name
+            if instance.staff.department
+            else "Unknown Department"
         )
         return {
             date: {
