@@ -299,3 +299,5 @@ frontend\apiConfig.ts
 /backend/monitoring_app/migrations
 frontend/apiConfig.ts
 backend/db.json
+*.json
+*.sql
