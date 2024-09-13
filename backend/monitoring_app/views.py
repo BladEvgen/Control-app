@@ -2016,10 +2016,6 @@ class UploadFileView(View):
             logger.debug(f"Rows before sorting: {[row[0].value for row in rows]}")
 
             rows.sort(
-                key=lambda row: (not str(row[0].value).isdigit(), str(row[0].value)),
-                reverse=True,
-            )
-            rows.sort(
                 key=lambda row: (
                     not str(row[0].value).isdigit(),
                     str(row[0].value).zfill(10),
@@ -2260,7 +2256,7 @@ class UploadFileView(View):
                         staff_instance.save()
                         staff_instance.positions.add(position)
                         staff_to_create.append(staff_instance)
-                    except IntegrityError as e:
+                    except IntegrityError:
                         logger.warning(
                             f"Duplicate entry for pin {staff_instance.pin}, skipping."
                         )
