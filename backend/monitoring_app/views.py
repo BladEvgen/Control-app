@@ -263,11 +263,11 @@ class StaffAttendanceStatsView(APIView):
             f"Querying data for target_date: {target_date}, pin_param: {pin_param}"
         )
         try:
-            department = models.ChildDepartment.objects.filter(id="04958").first()
+            department = models.ChildDepartment.objects.filter(id="4958").first()
             department_name = department.name if department else "Unknown Department"
 
             staff_queryset = models.Staff.objects.filter(
-                department__parent_id="04958"
+                department__parent_id="4958"
             ).select_related("department")
             staff_attendance_queryset = models.StaffAttendance.objects.filter(
                 date_at__gte=target_date,
@@ -2013,10 +2013,20 @@ class UploadFileView(View):
             ws = wb.active
             ws.delete_rows(1, 2)
             rows = list(ws.iter_rows())
+            logger.debug(f"Rows before sorting: {[row[0].value for row in rows]}")
+
             rows.sort(
-                key=lambda row: str(row[0].value) if row[0].value is not None else "",
+                key=lambda row: (not str(row[0].value).isdigit(), str(row[0].value)),
+                reverse=True,
+            )
+            rows.sort(
+                key=lambda row: (
+                    not str(row[0].value).isdigit(),
+                    str(row[0].value).zfill(10),
+                ),
                 reverse=False,
             )
+            logger.debug(f"Rows after sorting: {[row[0].value for row in rows]}")
             logger.debug(f"Excel file processed, number of rows: {len(rows)}")
             return rows
         except Exception as e:
@@ -2103,12 +2113,20 @@ class UploadFileView(View):
                 child_department_name = row[1].value
                 child_department_id_value = row[0].value
 
-                if not parent_department_id_value or not child_department_id_value:
+                parent_department_id = (
+                    utils.normalize_id(str(parent_department_id_value).strip())
+                    if parent_department_id_value
+                    else None
+                )
+                child_department_id = (
+                    utils.normalize_id(str(child_department_id_value).strip())
+                    if child_department_id_value
+                    else None
+                )
+
+                if not parent_department_id or not child_department_id:
                     logger.debug("Skipping row due to missing or invalid ID")
                     continue
-
-                parent_department_id = str(parent_department_id_value)
-                child_department_id = str(child_department_id_value)
 
                 if parent_department_name:
                     parent_department, parent_created = (
@@ -2131,7 +2149,7 @@ class UploadFileView(View):
                     )
                 else:
                     parent_department_as_child = models.ChildDepartment.objects.get(
-                        id="S1"
+                        id="1"
                     )
 
                 child_department, child_created = (
@@ -2152,8 +2170,8 @@ class UploadFileView(View):
             if created_parent_departments or created_child_departments:
                 messages.success(
                     request,
-                    f"Создано родительских отделов: {len(created_parent_departments)} ({', '.join(created_parent_departments)}), "
-                    f"дочерних отделов: {len(created_child_departments)} ({', '.join(created_child_departments)}).",
+                    f"Создано родительских отделов: {len(created_parent_departments)}, "
+                    f"дочерних отделов: {len(created_child_departments)}.",
                 )
 
         except Exception as error:
@@ -2223,9 +2241,15 @@ class UploadFileView(View):
                     existing = existing_staff_dict[staff_instance.pin]
                     if staff_instance.name and staff_instance.name != existing.name:
                         existing.name = staff_instance.name
-                    if staff_instance.surname and staff_instance.surname != existing.surname:
+                    if (
+                        staff_instance.surname
+                        and staff_instance.surname != existing.surname
+                    ):
                         existing.surname = staff_instance.surname
-                    if staff_instance.department and staff_instance.department != existing.department:
+                    if (
+                        staff_instance.department
+                        and staff_instance.department != existing.department
+                    ):
                         existing.department = staff_instance.department
                     if position.name and position.name != "Сотрудник":
                         if not existing.positions.filter(name=position.name).exists():
@@ -2237,7 +2261,9 @@ class UploadFileView(View):
                         staff_instance.positions.add(position)
                         staff_to_create.append(staff_instance)
                     except IntegrityError as e:
-                        logger.warning(f"Duplicate entry for pin {staff_instance.pin}, skipping.")
+                        logger.warning(
+                            f"Duplicate entry for pin {staff_instance.pin}, skipping."
+                        )
                         continue
 
             for staff in staff_to_update:
@@ -2255,7 +2281,6 @@ class UploadFileView(View):
         except Exception as e:
             logger.error(f"Error processing staff data: {str(e)}")
             messages.error(request, f"Ошибка при обработке сотрудников: {str(e)}")
-
 
     def handle_zip(self, request, file_path):
         """
