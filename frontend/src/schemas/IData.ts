@@ -27,10 +27,10 @@ export class ExtendedState<T> extends BaseState<T> {
 }
 
 export interface IChildDepartment {
-  child_id: number;
+  child_id: string | number;
   name: string;
   date_of_creation: string;
-  parent: number;
+  parent: string | number;
   has_child_departments: boolean;
 }
 

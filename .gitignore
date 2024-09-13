@@ -299,5 +299,6 @@ frontend\apiConfig.ts
 /backend/monitoring_app/migrations
 frontend/apiConfig.ts
 backend/db.json
-*.json
+backend/data-12-09-24.json
+backend/old_data-12-09-24.json
 *.sql

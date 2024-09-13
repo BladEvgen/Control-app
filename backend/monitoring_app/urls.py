@@ -21,21 +21,21 @@ urlpatterns = [
         name="staff-attendance-stats",
     ),
     path(
-        "api/child_department/<int:child_department_id>/",
+        "api/child_department/<str:child_department_id>/",
         views.child_department_detail,
         name="child-department-detail",
     ),
     path(
-        "api/department/stats/<int:department_id>/",
+        "api/department/stats/<str:department_id>/",
         views.staff_detail_by_department_id,
         name="department-stats",
     ),
     path(
-        "api/department/<int:parent_department_id>/",
+        "api/department/<str:parent_department_id>/",
         views.department_summary,
         name="department-summary",
     ),
-    path("api/download/<int:department_id>/", views.sent_excel, name="sent_excel"),
+    path("api/download/<str:department_id>/", views.sent_excel, name="sent_excel"),
     path("api/key_check/", views.APIKeyCheckView.as_view(), name="api_key_check"),
     path("api/parent_department_id/", views.get_parent_id, name="get-parent-ids"),
     path("api/staff/<str:staff_pin>/", views.staff_detail, name="staff-detail"),
@@ -44,8 +44,17 @@ urlpatterns = [
     path("api/token/verify/", TokenVerifyView.as_view()),
     path("api/user/detail/", views.user_profile_detail, name="user-detail"),
     path("api/user/register/", views.user_register, name="userRegister"),
-    path('password-reset/', views.password_reset_request_view, name='password_reset_request'),
-    path('password-reset/<str:token>/', views.password_reset_confirm_view, name='password_reset_confirm'),]
+    path(
+        "password-reset/",
+        views.password_reset_request_view,
+        name="password_reset_request",
+    ),
+    path(
+        "password-reset/<str:token>/",
+        views.password_reset_confirm_view,
+        name="password_reset_confirm",
+    ),
+]
 
 urlpatterns += doc_urls
 

@@ -30,13 +30,14 @@ from monitoring_app import models
 
 DAYS = settings.DAYS
 
+
 def get_client_ip(request):
     """Get the client IP address from the request, considering proxy setups."""
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded_for:
-        ip = x_forwarded_for.split(',')[0].strip()
+        ip = x_forwarded_for.split(",")[0].strip()
     else:
-        ip = request.META.get('REMOTE_ADDR')
+        ip = request.META.get("REMOTE_ADDR")
     return ip
 
 
@@ -53,6 +54,7 @@ def format_duration(duration_seconds):
         minutes = (duration_seconds % 3600) // 60
         seconds = duration_seconds % 60
         return f"{hours:.0f} hour(s) {minutes:.0f} minute(s) {seconds:.2f} seconds"
+
 
 class HierarchicalDepartmentFilter(SimpleListFilter):
     title = _("Department")
@@ -150,7 +152,7 @@ def get_attendance_data(pin: str):
         response = requests.get(
             settings.API_URL + "/api/transaction/listAttTransaction",
             params=params,
-            timeout=10 
+            timeout=10,
         )
         response.raise_for_status()
         response_json = response.json()
@@ -384,19 +386,19 @@ def add_api_key_header(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         request = args[0]
-        
+
         if isinstance(request, HttpRequest):
             api_key = models.APIKey.objects.filter(is_active=True).first()
             if api_key:
-                request.META['HTTP_X_API_KEY'] = api_key.key
+                request.META["HTTP_X_API_KEY"] = api_key.key
             else:
                 return Response(
                     {"error": "No active API key available for authentication."},
-                    status=status.HTTP_403_FORBIDDEN
+                    status=status.HTTP_403_FORBIDDEN,
                 )
-        
+
         return func(*args, **kwargs)
-    
+
     return wrapper
 
 
@@ -405,7 +407,7 @@ def send_password_reset_email(user, request):
     main_ip = parsed_main_ip.netloc if parsed_main_ip.netloc else parsed_main_ip.path
 
     reset_link = f"{request.scheme}://{main_ip}{reverse('password_reset_confirm', args=[models.PasswordResetToken.generate_token(user)])}"
-    
+
     subject = "Инструкция по сбросу пароля"
     html_message = format_html(
         """
@@ -428,7 +430,9 @@ def send_password_reset_email(user, request):
                 Если у вас есть вопросы, свяжитесь с нашей службой поддержки.
             </p>
         </div>
-        """, username=user.username, reset_link=reset_link
+        """,
+        username=user.username,
+        reset_link=reset_link,
     )
     plain_message = (
         f"Здравствуйте, {user.username}!\n\n"
@@ -441,12 +445,32 @@ def send_password_reset_email(user, request):
         "Команда поддержки."
     )
     send_mail(
-        subject, plain_message, settings.DEFAULT_FROM_EMAIL, [user.email],
-        html_message=html_message
+        subject,
+        plain_message,
+        settings.DEFAULT_FROM_EMAIL,
+        [user.email],
+        html_message=html_message,
     )
-    
+
+
 def get_user_timezone(request):
-    user_timezone = request.session.get('timezone')
+    user_timezone = request.session.get("timezone")
     if not user_timezone:
         user_timezone = settings.TIME_ZONE
     return pytz.timezone(user_timezone)
+
+
+def normalize_id(department_id):
+    """
+    Нормализует ID отдела, удаляя ведущие нули, если ID состоит только из цифр.
+    Если ID содержит буквы, он остаётся без изменений.
+
+    Args:
+        department_id (str): ID отдела.
+
+    Returns:
+        str: Нормализованный ID.
+    """
+    if department_id.isdigit():
+        return str(int(department_id))
+    return department_id

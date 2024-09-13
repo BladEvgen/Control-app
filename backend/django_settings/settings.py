@@ -232,19 +232,23 @@ SIMPLE_JWT = {
 }
 
 if DEBUG:
-    SIMPLE_JWT.update({
-        "ACCESS_TOKEN_LIFETIME": timedelta(minutes=1),  
-        "REFRESH_TOKEN_LIFETIME": timedelta(minutes=5),  
-        "SLIDING_TOKEN_LIFETIME": timedelta(minutes=1),  
-        "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(minutes=5),  
-    })
+    SIMPLE_JWT.update(
+        {
+            "ACCESS_TOKEN_LIFETIME": timedelta(minutes=1),
+            "REFRESH_TOKEN_LIFETIME": timedelta(minutes=5),
+            "SLIDING_TOKEN_LIFETIME": timedelta(minutes=1),
+            "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(minutes=5),
+        }
+    )
 else:
-    SIMPLE_JWT.update({
-        "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
-        "REFRESH_TOKEN_LIFETIME": timedelta(hours=1),
-        "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10),
-        "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(hours=1),
-    })
+    SIMPLE_JWT.update(
+        {
+            "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
+            "REFRESH_TOKEN_LIFETIME": timedelta(hours=1),
+            "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10),
+            "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(hours=1),
+        }
+    )
 
 # DRF-YASG configuration
 SWAGGER_SETTINGS = {
@@ -288,6 +292,7 @@ LOGGING = {
             "filename": os.path.join(
                 LOG_DIR, f'log-{datetime.now().strftime("%Y-%m-%d_%H")}.log'
             ),
+            "encoding": "utf-8",
             "formatter": "verbose",
         },
     },

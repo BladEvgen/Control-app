@@ -14,17 +14,21 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from monitoring_app import utils
 
+
 class PasswordResetTokenManager(models.Manager):
     def mark_as_used(self, token):
         token_obj = self.filter(token=token, _used=False).first()
         if token_obj and token_obj.is_valid():
             token_obj._used = True
-            token_obj.save(update_fields=['_used'])
+            token_obj.save(update_fields=["_used"])
             return True
         return False
 
+
 class PasswordResetToken(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, verbose_name="Пользователь"
+    )
     token = models.CharField(max_length=64, unique=True, verbose_name="Токен")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     _used = models.BooleanField(default=False, verbose_name="Статус использования")
@@ -58,7 +62,9 @@ class PasswordResetToken(models.Model):
 
 
 class PasswordResetRequestLog(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, verbose_name="Пользователь"
+    )
     ip_address = models.GenericIPAddressField(verbose_name="IP-адрес")
     requested_at = models.DateTimeField(auto_now_add=True, verbose_name="Время запроса")
 
@@ -71,9 +77,11 @@ class PasswordResetRequestLog(models.Model):
 
     @staticmethod
     def get_last_request_time(user, ip_address):
-        last_request = PasswordResetRequestLog.objects.filter(
-            user=user, ip_address=ip_address
-        ).order_by('-requested_at').first()
+        last_request = (
+            PasswordResetRequestLog.objects.filter(user=user, ip_address=ip_address)
+            .order_by("-requested_at")
+            .first()
+        )
         return last_request.requested_at if last_request else None
 
     @staticmethod
@@ -82,15 +90,18 @@ class PasswordResetRequestLog(models.Model):
 
     @staticmethod
     def can_request_again(user, ip_address):
-        last_request_time = PasswordResetRequestLog.get_last_request_time(user, ip_address)
+        last_request_time = PasswordResetRequestLog.get_last_request_time(
+            user, ip_address
+        )
         if not last_request_time:
             return True
         return timezone.now() >= last_request_time + timezone.timedelta(minutes=5)
-    
+
     class Meta:
         verbose_name = "Лог запросов на сброс пароля"
         verbose_name_plural = "Логи запросов на сброс пароля"
-        
+
+
 class APIKey(models.Model):
     key_name = models.CharField(
         max_length=100, null=False, blank=False, verbose_name="Название ключа"
@@ -183,7 +194,7 @@ class FileCategory(models.Model):
 
 
 class ParentDepartment(models.Model):
-    id = models.AutoField(primary_key=True, verbose_name="Номер отдела")
+    id = models.CharField(primary_key=True, verbose_name="Номер отдела", max_length=10)
     name = models.CharField(max_length=255, unique=True, verbose_name="Название отдела")
     date_of_creation = models.DateTimeField(
         auto_now_add=True, verbose_name="Дата создания"
@@ -192,13 +203,17 @@ class ParentDepartment(models.Model):
     def __str__(self):
         return self.name
 
+    @classmethod
+    def len_parent_departments(cls) -> int:
+        return cls.objects.count()
+
     class Meta:
         verbose_name = "Родительский отдел"
         verbose_name_plural = "Родительские отделы"
 
 
 class ChildDepartment(models.Model):
-    id = models.AutoField(primary_key=True, verbose_name="Номер отдела")
+    id = models.CharField(primary_key=True, verbose_name="Номер отдела", max_length=10)
     name = models.CharField(max_length=255, verbose_name="Название отдела")
     date_of_creation = models.DateTimeField(
         auto_now_add=True, verbose_name="Дата создания"
@@ -214,6 +229,10 @@ class ChildDepartment(models.Model):
 
     def __str__(self):
         return self.name
+
+    @classmethod
+    def len_child_departments(cls) -> int:
+        return cls.objects.count()
 
     def save(self, *args, **kwargs):
         if not self.id:

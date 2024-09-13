@@ -28,7 +28,7 @@ const formatDate = (date: Date, offsetDays: number): string => {
 };
 
 const fetchDepartmentData = async (
-  id: number,
+  id: string,
   dispatch: React.Dispatch<DepartmentAction>
 ): Promise<void> => {
   dispatch(new DepartmentAction(DepartmentAction.SET_LOADING, true));
@@ -95,7 +95,7 @@ const handleFileDownload = async (
 const DepartmentPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
-  const departmentId = id ? parseInt(id) : 1;
+  const departmentId = id ? id : "1";
   const [data, setData] = useState<IData>({
     name: "",
     date_of_creation: "",

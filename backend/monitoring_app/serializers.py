@@ -61,7 +61,7 @@ class ParentDepartmentSerializer(serializers.ModelSerializer):
 
 
 class ChildDepartmentSerializer(serializers.ModelSerializer):
-    child_id = serializers.IntegerField(source="id")
+    child_id = serializers.CharField(source="id")
     has_child_departments = serializers.SerializerMethodField()
 
     class Meta:
