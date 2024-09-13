@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from drf_yasg import openapi
 from django.conf import settings
-from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from openpyxl import load_workbook
@@ -20,6 +19,7 @@ from django.views.generic import View
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from drf_yasg.utils import swagger_auto_schema
+from django.db import IntegrityError, transaction
 from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import authenticate, login, logout
 from django.shortcuts import get_object_or_404, redirect, render
@@ -2221,20 +2221,24 @@ class UploadFileView(View):
             for staff_instance, position in staff_instances:
                 if staff_instance.pin in existing_staff_dict:
                     existing = existing_staff_dict[staff_instance.pin]
-                    if staff_instance.name:
+                    if staff_instance.name and staff_instance.name != existing.name:
                         existing.name = staff_instance.name
-                    if staff_instance.surname:
+                    if staff_instance.surname and staff_instance.surname != existing.surname:
                         existing.surname = staff_instance.surname
-                    if staff_instance.department:
+                    if staff_instance.department and staff_instance.department != existing.department:
                         existing.department = staff_instance.department
                     if position.name and position.name != "Сотрудник":
                         if not existing.positions.filter(name=position.name).exists():
                             existing.positions.add(position)
                     staff_to_update.append(existing)
                 else:
-                    staff_instance.save()
-                    staff_instance.positions.add(position)
-                    staff_to_create.append(staff_instance)
+                    try:
+                        staff_instance.save()
+                        staff_instance.positions.add(position)
+                        staff_to_create.append(staff_instance)
+                    except IntegrityError as e:
+                        logger.warning(f"Duplicate entry for pin {staff_instance.pin}, skipping.")
+                        continue
 
             for staff in staff_to_update:
                 staff.save()
@@ -2251,6 +2255,7 @@ class UploadFileView(View):
         except Exception as e:
             logger.error(f"Error processing staff data: {str(e)}")
             messages.error(request, f"Ошибка при обработке сотрудников: {str(e)}")
+
 
     def handle_zip(self, request, file_path):
         """
