@@ -2013,7 +2013,10 @@ class UploadFileView(View):
             ws = wb.active
             ws.delete_rows(1, 2)
             rows = list(ws.iter_rows())
-            rows.sort(key=lambda row: row[0].value, reverse=False)
+            rows.sort(
+                key=lambda row: str(row[0].value) if row[0].value is not None else "",
+                reverse=False,
+            )
             logger.debug(f"Excel file processed, number of rows: {len(rows)}")
             return rows
         except Exception as e:
