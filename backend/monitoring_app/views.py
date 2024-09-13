@@ -91,10 +91,21 @@ def home(request):
 
 @permission_classes([AllowAny])
 def react_app(request):
-    try:
-        return render(request, "index.html")
-    except Exception as error:
-        logger.error(f"React App {str(error)}")
+    def render_react_app():
+        try:
+            return render(request, "index.html")
+        except Exception as error:
+            logger.error(f"React App {str(error)}")
+            return None
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future = executor.submit(render_react_app)
+        response = future.result()
+
+    if response is None:
+        return HttpResponse("Error loading React app", status=500)
+
+    return response
 
 
 class StaffAttendanceStatsView(APIView):
@@ -252,11 +263,11 @@ class StaffAttendanceStatsView(APIView):
             f"Querying data for target_date: {target_date}, pin_param: {pin_param}"
         )
         try:
-            department = models.ChildDepartment.objects.filter(id=4958).first()
+            department = models.ChildDepartment.objects.filter(id="04958").first()
             department_name = department.name if department else "Unknown Department"
 
             staff_queryset = models.Staff.objects.filter(
-                department__parent_id=4958
+                department__parent_id="04958"
             ).select_related("department")
             staff_attendance_queryset = models.StaffAttendance.objects.filter(
                 date_at__gte=target_date,
@@ -423,7 +434,7 @@ def get_parent_id(request):
                             type=openapi.TYPE_OBJECT,
                             properties={
                                 "child_id": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
+                                    type=openapi.TYPE_STRING,
                                     description="ID дочернего подразделения.",
                                 ),
                                 "name": openapi.Schema(
@@ -436,7 +447,7 @@ def get_parent_id(request):
                                     description="Дата создания дочернего подразделения.",
                                 ),
                                 "parent": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
+                                    type=openapi.TYPE_STRING,
                                     description="ID родительского департамента.",
                                 ),
                             },
@@ -467,6 +478,7 @@ def department_summary(request, parent_department_id):
             status=status.HTTP_404_NOT_FOUND,
             data={"message": f"Department with ID {parent_department_id} not found"},
         )
+
     try:
 
         def calculate_staff_count(department):
@@ -491,7 +503,7 @@ def department_summary(request, parent_department_id):
         logger.info(
             f"Department found: {parent_department.name} (ID: {parent_department_id})"
         )
-
+        parent_department_id = str(parent_department_id).zfill(5)
         total_staff_count = calculate_staff_count(parent_department)
 
         child_departments_data = models.ChildDepartment.objects.filter(
@@ -510,7 +522,7 @@ def department_summary(request, parent_department_id):
 
         logger.debug(f"Caching department summary data with key: {cache_key}")
         cached_data = get_cache(
-            cache_key, query=lambda: data, timeout=1 * 10, cache=Cache
+            cache_key, query=lambda: data, timeout=1 * 1, cache=Cache
         )
 
         logger.info(f"Returning summary data for department ID {parent_department_id}")
@@ -2077,6 +2089,10 @@ class UploadFileView(View):
             Exception: Если произошла ошибка при обработке строки.
         """
         logger.info("Processing departments data")
+
+        created_parent_departments = []
+        created_child_departments = []
+
         try:
             for row in rows:
                 parent_department_id_value = row[2].value
@@ -2088,42 +2104,34 @@ class UploadFileView(View):
                     logger.debug("Skipping row due to missing or invalid ID")
                     continue
 
-                parent_department_id = int(parent_department_id_value)
-                child_department_id = int(child_department_id_value)
-
-                if child_department_id == 1:
-                    continue
+                parent_department_id = str(parent_department_id_value)
+                child_department_id = str(child_department_id_value)
 
                 if parent_department_name:
-                    parent_department, created = (
+                    parent_department, parent_created = (
                         models.ParentDepartment.objects.get_or_create(
                             id=parent_department_id,
                             defaults={"name": parent_department_name},
                         )
                     )
-                    if created:
+                    if parent_created:
+                        created_parent_departments.append(parent_department_name)
                         logger.info(
                             f"Created new parent department: {parent_department_name}"
                         )
-                        messages.success(
-                            request,
-                            f"Родительский отдел {parent_department_name} создан.",
-                        )
-                    parent_department_as_child, created = (
+
+                    parent_department_as_child, child_created = (
                         models.ChildDepartment.objects.get_or_create(
                             id=parent_department.id,
-                            defaults={
-                                "name": parent_department.name,
-                                "parent": None,
-                            },
+                            defaults={"name": parent_department.name, "parent": None},
                         )
                     )
                 else:
                     parent_department_as_child = models.ChildDepartment.objects.get(
-                        id=1
+                        id="S1"
                     )
 
-                child_department, created = (
+                child_department, child_created = (
                     models.ChildDepartment.objects.get_or_create(
                         id=child_department_id,
                         defaults={
@@ -2132,13 +2140,18 @@ class UploadFileView(View):
                         },
                     )
                 )
-                if created:
+                if child_created:
+                    created_child_departments.append(child_department_name)
                     logger.info(
                         f"Created new child department: {child_department_name}"
                     )
-                    messages.success(
-                        request, f"Дочерний отдел {child_department_name} создан."
-                    )
+
+            if created_parent_departments or created_child_departments:
+                messages.success(
+                    request,
+                    f"Создано родительских отделов: {len(created_parent_departments)} ({', '.join(created_parent_departments)}), "
+                    f"дочерних отделов: {len(created_child_departments)} ({', '.join(created_child_departments)}).",
+                )
 
         except Exception as error:
             logger.error(f"Error processing departments: {str(error)}")
@@ -2165,7 +2178,7 @@ class UploadFileView(View):
                 pin = row[0].value
                 name = row[1].value
                 surname = row[2].value or "Нет фамилии"
-                department_id = int(row[3].value) if row[3].value else None
+                department_id = str(row[3].value) if row[3].value else None
                 position_name = (
                     row[5].value or "Сотрудник" if len(row) > 5 else "Сотрудник"
                 )
@@ -2376,6 +2389,7 @@ class APIKeyCheckView(APIView):
                 {"message": "Invalid API Key", "error": str(e)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
 
 def password_reset_request_view(request):
     if request.method == "POST":
