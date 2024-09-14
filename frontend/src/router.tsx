@@ -87,7 +87,7 @@ const router = createBrowserRouter([
     ),
   },
   {
-    path: addPrefix("/profile"),
+    path: addPrefix("/dashboard"),
     element: (
       <Layout>
         <Dashboard />
