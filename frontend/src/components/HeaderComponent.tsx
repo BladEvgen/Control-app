@@ -10,7 +10,6 @@ import { Link, useNavigate } from "../RouterUtils";
 import Cookies from "js-cookie";
 import axiosInstance from "../api";
 import {
-  FaUser,
   FaSignOutAlt,
   FaUpload,
   FaBars,
@@ -20,6 +19,7 @@ import {
   FaMoon,
   FaSun,
 } from "react-icons/fa";
+import { MdDashboard } from "react-icons/md";
 type HeaderComponentProps = {
   toggleTheme: () => void;
   currentTheme: string;
@@ -112,10 +112,10 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
         className="absolute right-0 mt-2 w-48 bg-white dark:bg-background-dark text-gray-800 dark:text-text-light rounded-md shadow-lg z-50"
         onMouseLeave={() => setIsDropdownOpen(false)}
       >
-        <Link to="/profile">
+        <Link to="/dashboard">
           <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
-            <FaUser className="mr-2 text-blue-500" />
-            Profile
+            <MdDashboard className="mr-2 text-blue-500" />
+            Dashboard
           </button>
         </Link>
         <a href={`${apiUrl}/upload`}>
@@ -193,12 +193,12 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
         className="lg:hidden bg-primary-dark text-text-light shadow-md mt-2 p-4 rounded-md space-y-4"
       >
         <Link
-          to="/profile"
+          to="/dashboard"
           className="block text-lg hover:bg-primary-dark px-4 py-2 rounded-md"
         >
           <div className="flex items-center">
-            <FaUser className="mr-2 text-blue-500" />
-            Profile
+            <MdDashboard className="mr-2 text-blue-500" />
+            Dashboard
           </div>
         </Link>
         <a
