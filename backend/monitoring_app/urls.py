@@ -2,10 +2,9 @@ from django.urls import path, re_path
 from rest_framework_simplejwt.views import (
     TokenVerifyView,
     TokenRefreshView,
-    TokenObtainPairView,
 )
 
-from monitoring_app import views
+from monitoring_app import views, custom_jwt
 from django.views.generic import RedirectView
 from monitoring_app.swagger import urlpatterns as doc_urls
 
@@ -39,7 +38,11 @@ urlpatterns = [
     path("api/key_check/", views.APIKeyCheckView.as_view(), name="api_key_check"),
     path("api/parent_department_id/", views.get_parent_id, name="get-parent-ids"),
     path("api/staff/<str:staff_pin>/", views.staff_detail, name="staff-detail"),
-    path("api/token/", TokenObtainPairView.as_view()),
+    path(
+        "api/token/",
+        custom_jwt.CustomTokenObtainPairView.as_view(),
+        name="token_obtain_pair",
+    ),
     path("api/token/refresh/", TokenRefreshView.as_view()),
     path("api/token/verify/", TokenVerifyView.as_view()),
     path("api/user/detail/", views.user_profile_detail, name="user-detail"),

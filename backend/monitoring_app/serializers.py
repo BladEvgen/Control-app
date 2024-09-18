@@ -15,7 +15,6 @@ class UserSerializer(serializers.ModelSerializer):
             "email",
             "first_name",
             "last_name",
-            "is_staff",
             "date_joined",
             "last_login",
         ]
@@ -26,12 +25,40 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = models.UserProfile
-        fields = ["user", "is_banned", "phonenumber", "last_login_ip"]
+        fields = ["user", "is_banned", "last_login_ip"]
 
     def to_representation(self, instance):
+        """
+        Преобразует данные профиля пользователя в единый формат JSON,
+        помещая `is_banned` и `last_login_ip` внутрь объекта `user`.
+        """
         data = super().to_representation(instance)
-        data["user"]["phonenumber"] = instance.phonenumber
-        return data
+
+        result = {
+            "user": {
+                "username": instance.user.username,
+                "email": instance.user.email,
+                "first_name": instance.user.first_name,
+                "last_name": instance.user.last_name,
+                "date_joined": instance.user.date_joined.strftime("%Y-%m-%d %H:%M:%S"),
+                "last_login": (
+                    instance.user.last_login.strftime("%Y-%m-%d %H:%M:%S")
+                    if instance.user.last_login
+                    else None
+                ),
+                "phonenumber": instance.phonenumber if not instance.is_banned else None,
+                "is_banned": instance.is_banned,
+                "last_login_ip": instance.last_login_ip,
+            }
+        }
+
+        if instance.is_banned:
+            result["user"] = {
+                "username": instance.user.username,
+                "is_banned": instance.is_banned,
+            }
+
+        return result
 
 
 def get_main_parent(department):
