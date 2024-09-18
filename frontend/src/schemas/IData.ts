@@ -11,7 +11,30 @@ export class BaseState<T> {
     this.showNotification = false;
   }
 }
+export interface ITokenResponse {
+  refresh: string;
+  access: string;
+  user: {
+    username: string;
+    is_banned: boolean;
+    is_staff: boolean;
+    is_super: boolean;
+  };
+}
 
+export interface IUserDetails {
+  user: {
+    username: string;
+    email: string;
+    first_name: string;
+    last_name: string;
+    date_joined: string;  
+    last_login: string | null;  
+    phonenumber: string;
+    is_banned: boolean;
+    last_login_ip: string | null;  
+  };
+}
 
 export class ExtendedState<T> extends BaseState<T> {
   startDate: string;
