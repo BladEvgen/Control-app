@@ -1,24 +1,21 @@
 from django.contrib import admin
 from django.utils import timezone
-from django.utils.safestring import mark_safe
 
 from monitoring_app import utils
 
 from .models import (
-    Staff,
     APIKey,
-    Salary,
-    Position,
-    UserProfile,
-    FileCategory,
-    StaffAbsence,
-    PublicHoliday,
     ChildDepartment,
-    StaffAttendance,
+    FileCategory,
     ParentDepartment,
-    RemoteWorkPeriod,
-    PasswordResetToken,
     PasswordResetRequestLog,
+    PasswordResetToken,
+    Position,
+    PublicHoliday,
+    Salary,
+    Staff,
+    StaffAttendance,
+    UserProfile,
 )
 
 admin.site.site_header = "Панель управления"
@@ -75,7 +72,10 @@ class PasswordResetRequestLogAdmin(admin.ModelAdmin):
 @admin.register(APIKey)
 class APIKeyAdmin(admin.ModelAdmin):
     list_display = ("key_name", "created_by", "created_at", "short_key", "is_active")
-    list_filter = ("created_at", "created_by")
+    list_filter = (
+        "created_at",
+        "created_by",
+    )
     list_editable = ("is_active",)
     search_fields = ("key_name", "created_by__username")
     ordering = ("-created_at", "key_name")
@@ -108,7 +108,10 @@ class UserProfileAdmin(admin.ModelAdmin):
     list_display = ("user", "is_banned", "phonenumber", "last_login_ip")
     list_filter = ("is_banned",)
     search_fields = ("user__username", "phonenumber", "last_login_ip")
-    ordering = ("user__username", "-is_banned")
+    ordering = (
+        "user__username",
+        "-is_banned",
+    )
     list_editable = ("is_banned",)
 
 
@@ -122,14 +125,20 @@ class FileCategoryAdmin(admin.ModelAdmin):
 class ParentDepartmentAdmin(admin.ModelAdmin):
     list_display = ("id", "name", "date_of_creation")
     search_fields = ("name",)
-    ordering = ("name", "date_of_creation")
+    ordering = (
+        "name",
+        "date_of_creation",
+    )
 
 
 @admin.register(ChildDepartment)
 class ChildDepartmentAdmin(admin.ModelAdmin):
     list_display = ("id", "name", "parent", "date_of_creation")
     search_fields = ("name", "parent__name")
-    ordering = ("name", "-date_of_creation")
+    ordering = (
+        "name",
+        "-date_of_creation",
+    )
 
 
 @admin.register(Position)
@@ -147,41 +156,6 @@ class SalaryInline(admin.TabularInline):
     readonly_fields = ("total_salary",)
 
 
-class StaffAbsenceInline(admin.TabularInline):
-    model = StaffAbsence
-    extra = 0
-    fields = (
-        "start_date",
-        "end_date",
-        "absence_type",
-        "approved",
-        "document",
-        "comment",
-    )
-    readonly_fields = ("document_preview",)
-
-    def document_preview(self, obj):
-        if obj.document and obj.document.url.endswith((".png", ".jpg", ".jpeg")):
-            return mark_safe(f'<img src="{obj.document.url}" width="100" />')
-        elif obj.document:
-            return mark_safe(f'<a href="{obj.document.url}">Скачать документ</a>')
-        return "Нет документа"
-
-    document_preview.short_description = "Документ"
-
-
-class RemoteWorkPeriodInline(admin.TabularInline):
-    model = RemoteWorkPeriod
-    extra = 0
-    fields = (
-        "start_date",
-        "end_date",
-        "is_permanent",
-        "approved",
-        "comment",
-    )
-
-
 @admin.register(Staff)
 class StaffAdmin(admin.ModelAdmin):
     list_display = (
@@ -190,19 +164,24 @@ class StaffAdmin(admin.ModelAdmin):
         "name",
         "department",
         "display_positions",
-        "work_type",
-        "avatar_thumbnail",
+        "avatar",
     )
     list_filter = (
+        "pin",
         "department",
+        "surname",
+        "name",
         "positions",
-        "work_type",
     )
     search_fields = ("surname", "name", "department__name")
     filter_horizontal = ("positions",)
     actions = ["clear_avatars"]
-    ordering = ("surname", "name")
-    inlines = [SalaryInline, StaffAbsenceInline, RemoteWorkPeriodInline]
+    ordering = (
+        "surname",
+        "name",
+    )
+
+    inlines = [SalaryInline]
 
     def clear_avatars(self, request, queryset):
         for staff_member in queryset:
@@ -216,13 +195,6 @@ class StaffAdmin(admin.ModelAdmin):
 
     display_positions.short_description = "Должности"
 
-    def avatar_thumbnail(self, obj):
-        if obj.avatar:
-            return mark_safe(f'<img src="{obj.avatar.url}" width="50" />')
-        return "Нет фото"
-
-    avatar_thumbnail.short_description = "Фото"
-
 
 @admin.register(StaffAttendance)
 class StaffAttendanceAdmin(admin.ModelAdmin):
@@ -232,7 +204,6 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         "staff__pin",
         "staff__surname",
         "staff__name",
-        "staff__positions",
     )
     search_fields = ("staff__surname", "staff__name", "staff__pin")
     date_hierarchy = "date_at"
@@ -254,9 +225,9 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
 @admin.register(Salary)
 class SalaryAdmin(admin.ModelAdmin):
-    list_display = ("staff", "net_salary", "total_salary", "contract_type")
+    list_display = ("staff", "net_salary", "total_salary")
     search_fields = ("staff__surname", "staff__name")
-    list_filter = ("staff__department", "contract_type")
+    list_filter = ("staff__department",)
     readonly_fields = ("total_salary",)
 
 
@@ -266,82 +237,3 @@ class PublicHolidayAdmin(admin.ModelAdmin):
     list_filter = ("date", "name", "is_working_day")
     search_fields = ("name",)
     ordering = ("-date",)
-
-
-@admin.register(StaffAbsence)
-class StaffAbsenceAdmin(admin.ModelAdmin):
-    list_display = (
-        "staff",
-        "absence_type",
-        "start_date",
-        "end_date",
-        "approved",
-        "document_link",
-    )
-    list_filter = (
-        "absence_type",
-        "approved",
-        "staff__department",
-        "staff__positions",
-    )
-    search_fields = ("staff__surname", "staff__name", "staff__pin")
-    date_hierarchy = "start_date"
-    ordering = ("-start_date",)
-    readonly_fields = ("document_preview",)
-    actions = ["approve_absences", "disapprove_absences"]
-
-    def document_link(self, obj):
-        if obj.document:
-            return mark_safe(f'<a href="{obj.document.url}">Скачать</a>')
-        return "Нет документа"
-
-    document_link.short_description = "Документ"
-
-    def document_preview(self, obj):
-        if obj.document and obj.document.url.endswith((".png", ".jpg", ".jpeg")):
-            return mark_safe(f'<img src="{obj.document.url}" width="100" />')
-        elif obj.document:
-            return mark_safe(f'<a href="{obj.document.url}">Скачать документ</a>')
-        return "Нет документа"
-
-    document_preview.short_description = "Просмотр документа"
-
-    def approve_absences(self, request, queryset):
-        queryset.update(approved=True)
-
-    approve_absences.short_description = "Одобрить выбранные отсутствия"
-
-    def disapprove_absences(self, request, queryset):
-        queryset.update(approved=False)
-
-    disapprove_absences.short_description = "Отклонить выбранные отсутствия"
-
-
-@admin.register(RemoteWorkPeriod)
-class RemoteWorkPeriodAdmin(admin.ModelAdmin):
-    list_display = (
-        "staff",
-        "start_date",
-        "end_date",
-        "is_permanent",
-        "approved",
-    )
-    list_filter = (
-        "is_permanent",
-        "approved",
-        "staff__department",
-        "staff__positions",
-    )
-    search_fields = ("staff__surname", "staff__name", "staff__pin")
-    ordering = ("-start_date",)
-    actions = ["approve_periods", "disapprove_periods"]
-
-    def approve_periods(self, request, queryset):
-        queryset.update(approved=True)
-
-    approve_periods.short_description = "Одобрить выбранные периоды"
-
-    def disapprove_periods(self, request, queryset):
-        queryset.update(approved=False)
-
-    disapprove_periods.short_description = "Отклонить выбранные периоды"
