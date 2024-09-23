@@ -1,16 +1,16 @@
 import os
 import shutil
 
-from django.contrib import messages
-from django.contrib.auth.models import User
-from django.core.exceptions import ValidationError
-from django.core.validators import FileExtensionValidator
-from django.db import models, transaction
-from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
-from django.dispatch import receiver
 from django.utils import timezone
+from django.contrib import messages
+from django.dispatch import receiver
+from django.db import models, transaction
+from django.contrib.auth.models import User
 from django.utils.crypto import get_random_string
+from django.core.exceptions import ValidationError
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.core.validators import FileExtensionValidator
+from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 
 from monitoring_app import utils
 
@@ -281,6 +281,10 @@ def user_avatar_path(instance, filename):
     return f"user_images/{instance.pin}/{instance.pin}.{filename.split('.')[-1]}"
 
 
+def absence_document_path(instance, filename):
+    return f"absence_documents/{instance.staff.pin}/{filename}"
+
+
 class Staff(models.Model):
     pin = models.CharField(
         max_length=100,
@@ -310,6 +314,18 @@ class Staff(models.Model):
         validators=[FileExtensionValidator(allowed_extensions=["jpg"])],
     )
 
+    WORK_TYPE_CHOICES = [
+        ("office", "Офисная работа"),
+        ("remote", "Дистанционная работа"),
+        ("hybrid", "Смешанная работа"),
+    ]
+    work_type = models.CharField(
+        max_length=10,
+        choices=WORK_TYPE_CHOICES,
+        default="office",
+        verbose_name="Тип работы",
+    )
+
     def __str__(self):
         return f"{self.surname} {self.name}"
 
@@ -322,7 +338,7 @@ class Staff(models.Model):
                     if os.path.exists(old_avatar_path):
                         os.remove(old_avatar_path)
                 except Exception as e:
-                    print(f"Ошибка при удалении старой аватарки: {e}")
+                    print(f"Ошибка при удалении старого аватара: {e}")
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -331,7 +347,7 @@ class Staff(models.Model):
             try:
                 shutil.rmtree(avatar_dir)
             except Exception as e:
-                print(f"Ошибка при удалении директории с аватаркой: {e}")
+                print(f"Ошибка при удалении директории с аватаром: {e}")
         super().delete(*args, **kwargs)
 
     class Meta:
@@ -510,3 +526,135 @@ class PublicHoliday(models.Model):
     class Meta:
         verbose_name = "Праздничный день"
         verbose_name_plural = "Праздничные дни"
+
+
+class StaffAbsence(models.Model):
+    ABSENCE_TYPE_CHOICES = [
+        ("vacation", "Отпуск"),
+        ("sick_leave", "Больничный"),
+        ("business_trip", "Командировка"),
+        ("other", "Другое"),
+    ]
+
+    staff = models.ForeignKey(
+        Staff,
+        on_delete=models.CASCADE,
+        related_name="absences",
+        verbose_name="Сотрудник",
+    )
+    start_date = models.DateField(verbose_name="Дата начала отсутствия")
+    end_date = models.DateField(verbose_name="Дата окончания отсутствия")
+    absence_type = models.CharField(
+        max_length=25, choices=ABSENCE_TYPE_CHOICES, verbose_name="Тип отсутствия"
+    )
+    approved = models.BooleanField(default=False, verbose_name="Одобрено")
+    document = models.FileField(
+        upload_to=absence_document_path,
+        validators=[
+            FileExtensionValidator(allowed_extensions=["pdf", "png", "jpg", "jpeg"])
+        ],
+        verbose_name="Подтверждающий документ",
+        null=True,
+        blank=True,
+        help_text="разрешается грузить фотографию или pdf подтверждения",
+    )
+    comment = models.TextField(verbose_name="Комментарий", null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.staff} - {self.get_absence_type_display()} ({self.start_date} - {self.end_date})"
+
+    def clean(self):
+        remote_work_exists = RemoteWorkPeriod.objects.filter(
+            staff=self.staff,
+            start_date__lte=self.end_date,
+            end_date__gte=self.start_date,
+            approved=True,
+        ).exists()
+        if remote_work_exists:
+            raise ValidationError(
+                "Невозможно добавить отсутствие: пересекается с периодом удаленной работы."
+            )
+        if self.end_date < self.start_date:
+            raise ValidationError("Дата окончания не может быть раньше даты начала.")
+        overlapping_absences = StaffAbsence.objects.filter(
+            staff=self.staff,
+            start_date__lte=self.end_date,
+            end_date__gte=self.start_date,
+        ).exclude(pk=self.pk)
+        if overlapping_absences.exists():
+            raise ValidationError("Период отсутствия пересекается с уже существующим.")
+
+    class Meta:
+        verbose_name = "Отсутствие сотрудника"
+        verbose_name_plural = "Отсутствия сотрудников"
+
+
+class RemoteWorkPeriod(models.Model):
+    staff = models.ForeignKey(
+        Staff,
+        on_delete=models.CASCADE,
+        related_name="remote_work_periods",
+        verbose_name="Сотрудник",
+    )
+    start_date = models.DateField(
+        verbose_name="Дата начала дистанционной работы", null=True, blank=True
+    )
+    end_date = models.DateField(
+        verbose_name="Дата окончания дистанционной работы", null=True, blank=True
+    )
+    is_permanent = models.BooleanField(
+        default=False, verbose_name="Постоянная дистанционная работа"
+    )
+    approved = models.BooleanField(default=False, verbose_name="Одобрено")
+    comment = models.TextField(verbose_name="Комментарий", null=True, blank=True)
+
+    def __str__(self):
+        if self.is_permanent:
+            return f"{self.staff} - Постоянная дистанционная работа"
+        else:
+            return f"{self.staff} ({self.start_date} - {self.end_date})"
+
+    def clean(self):
+        absence_exists = StaffAbsence.objects.filter(
+            staff=self.staff,
+            start_date__lte=self.end_date,
+            end_date__gte=self.start_date,
+            approved=True,
+        ).exists()
+
+        if absence_exists:
+            raise ValidationError(
+                "Невозможно добавить удаленную работу: пересекается с зарегистрированным отсутствием."
+            )
+
+        if not self.is_permanent:
+            if not self.start_date or not self.end_date:
+                raise ValidationError(
+                    "Необходимо указать даты начала и окончания для непостоянного периода."
+                )
+            if self.end_date < self.start_date:
+                raise ValidationError(
+                    "Дата окончания не может быть раньше даты начала."
+                )
+            overlapping_periods = RemoteWorkPeriod.objects.filter(
+                staff=self.staff,
+                start_date__lte=self.end_date,
+                end_date__gte=self.start_date,
+                is_permanent=False,
+            ).exclude(pk=self.pk)
+            if overlapping_periods.exists():
+                raise ValidationError(
+                    "Период дистанционной работы пересекается с уже существующим."
+                )
+        else:
+            existing_permanent = RemoteWorkPeriod.objects.filter(
+                staff=self.staff, is_permanent=True
+            ).exclude(pk=self.pk)
+            if existing_permanent.exists():
+                raise ValidationError(
+                    "Уже существует постоянный период дистанционной работы для этого сотрудника."
+                )
+
+    class Meta:
+        verbose_name = "Период дистанционной работы"
+        verbose_name_plural = "Периоды дистанционной работы"
