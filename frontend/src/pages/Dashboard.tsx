@@ -8,7 +8,7 @@ import { AttendanceStats } from "../schemas/IData";
 import Notification from "../components/Notification";
 ChartJS.register(...registerables);
 
-const Dashboard: React.FC = () => {
+const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
   const [stats, setStats] = useState<AttendanceStats | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -24,10 +24,16 @@ const Dashboard: React.FC = () => {
     setError(null);
 
     try {
+      const params: any = { date: selectedDate };
+
+      if (pin) {
+        params.pin = pin;
+      }
+
       const response = await axiosInstance.get(
         `${apiUrl}/api/attendance/stats/`,
         {
-          params: { date: selectedDate },
+          params,
         }
       );
       setStats(response.data);
@@ -37,7 +43,7 @@ const Dashboard: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [selectedDate]);
+  }, [selectedDate, pin]);
 
   useEffect(() => {
     fetchData();
@@ -83,7 +89,7 @@ const Dashboard: React.FC = () => {
       .filter(
         (staff) =>
           staff.individual_percentage >= 5 &&
-          !["s34043434", "s89058945"].includes(staff.staff_pin)
+          !["s99999999", "s99999999998"].includes(staff.staff_pin)
       );
 
     const maxPercentage = Math.max(
