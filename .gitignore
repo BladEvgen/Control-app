@@ -303,3 +303,4 @@ backend/data-12-09-24.json
 backend/old_data-12-09-24.json
 *.sql
 /backend/static/media/absence_documents
+*.json
