@@ -1,6 +1,7 @@
 import os
 import socket
 from pathlib import Path
+from celery.schedules import crontab
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
@@ -10,7 +11,7 @@ DEBUG = True if socket.gethostname() in host_names else False
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
-DAYS = 1
+DAYS = 4
 
 
 DOTENV_PATH = BASE_DIR / ".env"
@@ -269,6 +270,16 @@ REDOC_SETTINGS = {
     "LAZY_RENDERING": True,
 }
 
+CELERY_BROKER_URL = 'redis://localhost:6379/0'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+
+CELERY_BEAT_SCHEDULE = {
+    'get-attendance-every-day-5am': {
+        'task': 'monitoring_app.tasks.get_all_attendance_task',
+        'schedule': crontab(hour=5, minute=0),
+    },
+}
 
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 if not os.path.exists(LOG_DIR):
