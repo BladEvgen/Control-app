@@ -1,16 +1,16 @@
 import os
 import shutil
 
-from django.contrib import messages
-from django.contrib.auth.models import User
-from django.core.exceptions import ValidationError
-from django.core.validators import FileExtensionValidator
-from django.db import models, transaction
-from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
-from django.dispatch import receiver
 from django.utils import timezone
+from django.contrib import messages
+from django.dispatch import receiver
+from django.db import models, transaction
+from django.contrib.auth.models import User
 from django.utils.crypto import get_random_string
+from django.core.exceptions import ValidationError
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.core.validators import FileExtensionValidator
+from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 
 from monitoring_app import utils
 
@@ -26,9 +26,7 @@ class PasswordResetTokenManager(models.Manager):
 
 
 class PasswordResetToken(models.Model):
-    user = models.ForeignKey(
-        User, on_delete=models.CASCADE, verbose_name="Пользователь"
-    )
+    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
     token = models.CharField(max_length=64, unique=True, verbose_name="Токен")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     _used = models.BooleanField(default=False, verbose_name="Статус использования")
@@ -62,9 +60,7 @@ class PasswordResetToken(models.Model):
 
 
 class PasswordResetRequestLog(models.Model):
-    user = models.ForeignKey(
-        User, on_delete=models.CASCADE, verbose_name="Пользователь"
-    )
+    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
     ip_address = models.GenericIPAddressField(verbose_name="IP-адрес")
     requested_at = models.DateTimeField(auto_now_add=True, verbose_name="Время запроса")
 
@@ -90,9 +86,7 @@ class PasswordResetRequestLog(models.Model):
 
     @staticmethod
     def can_request_again(user, ip_address):
-        last_request_time = PasswordResetRequestLog.get_last_request_time(
-            user, ip_address
-        )
+        last_request_time = PasswordResetRequestLog.get_last_request_time(user, ip_address)
         if not last_request_time:
             return True
         return timezone.now() >= last_request_time + timezone.timedelta(minutes=5)
@@ -111,9 +105,7 @@ class APIKey(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     key = models.CharField(max_length=256, editable=False, verbose_name="Ключ")
-    is_active = models.BooleanField(
-        default=True, editable=True, verbose_name="Статус активности"
-    )
+    is_active = models.BooleanField(default=True, editable=True, verbose_name="Статус активности")
 
     def __str__(self):
         status = "Активен" if self.is_active else "Деактивирован"
@@ -196,9 +188,7 @@ class FileCategory(models.Model):
 class ParentDepartment(models.Model):
     id = models.CharField(primary_key=True, verbose_name="Номер отдела", max_length=10)
     name = models.CharField(max_length=255, unique=True, verbose_name="Название отдела")
-    date_of_creation = models.DateTimeField(
-        auto_now_add=True, verbose_name="Дата создания"
-    )
+    date_of_creation = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
 
     def __str__(self):
         return self.name
@@ -215,9 +205,7 @@ class ParentDepartment(models.Model):
 class ChildDepartment(models.Model):
     id = models.CharField(primary_key=True, verbose_name="Номер отдела", max_length=10)
     name = models.CharField(max_length=255, verbose_name="Название отдела")
-    date_of_creation = models.DateTimeField(
-        auto_now_add=True, verbose_name="Дата создания"
-    )
+    date_of_creation = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     parent = models.ForeignKey(
         "self",
         on_delete=models.SET_NULL,
@@ -236,9 +224,7 @@ class ChildDepartment(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.id:
-            existing_child_department = ChildDepartment.objects.filter(
-                name=self.name
-            ).first()
+            existing_child_department = ChildDepartment.objects.filter(name=self.name).first()
             if existing_child_department:
                 self.id = existing_child_department.id
                 self.parent = existing_child_department.parent
@@ -265,9 +251,7 @@ class Position(models.Model):
         verbose_name="Профессия",
         default="Сотрудник",
     )
-    rate = models.DecimalField(
-        max_digits=4, decimal_places=2, verbose_name="Ставка", default=1
-    )
+    rate = models.DecimalField(max_digits=4, decimal_places=2, verbose_name="Ставка", default=1)
 
     def __str__(self):
         return f"{self.name} Ставка: {self.rate}"
@@ -291,9 +275,7 @@ class Staff(models.Model):
         editable=False,
     )
     name = models.CharField(max_length=255, blank=False, null=False, verbose_name="Имя")
-    surname = models.CharField(
-        max_length=255, blank=False, null=False, verbose_name="Фамилия"
-    )
+    surname = models.CharField(max_length=255, blank=False, null=False, verbose_name="Фамилия")
     department = models.ForeignKey(
         ChildDepartment, on_delete=models.SET_NULL, null=True, verbose_name="Отдел"
     )
@@ -347,11 +329,100 @@ def delete_avatar_on_staff_delete(sender, instance, **kwargs):
             try:
                 shutil.rmtree(avatar_dir)
             except Exception as e:
-                print(
-                    f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}"
-                )
+                print(f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}")
     else:
         print("Аватар отсутствует, ничего не удаляется.")
+
+
+class AbsentReason(models.Model):
+    ABSENT_REASON_CHOICES = [
+        ("business_trip", "Командировка"),
+        ("sick_leave", "Болезнь"),
+        ("other", "Другая причина"),
+    ]
+
+    staff = models.ForeignKey(
+        Staff, on_delete=models.CASCADE, related_name="absences", verbose_name="Сотрудник"
+    )
+    reason = models.CharField(
+        max_length=20, choices=ABSENT_REASON_CHOICES, verbose_name="Причина отсутствия"
+    )
+    start_date = models.DateField(verbose_name="Дата начала")
+    end_date = models.DateField(verbose_name="Дата окончания")
+    approved = models.BooleanField(default=False, verbose_name="Утверждено")
+    document = models.FileField(
+        upload_to="absence_documents/",
+        null=True,
+        blank=True,
+        validators=[FileExtensionValidator(allowed_extensions=["pdf", "jpg", "jpeg", "png"])],
+        verbose_name="Документ",
+    )
+
+    def save(self, *args, **kwargs):
+        if self.reason == "business_trip":
+            self.approved = True
+        elif self.reason == "sick_leave" and self.document:
+            self.approved = True
+
+        if self.document:
+            self.document.name = utils.transliterate(self.document.name)
+
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.staff} - {self.get_reason_display()} ({self.start_date} - {self.end_date})"
+
+    class Meta:
+        verbose_name = "Уважительная причина отсутствия"
+        verbose_name_plural = "Уважительные причины отсутствия"
+
+
+class RemoteWork(models.Model):
+    staff = models.ForeignKey(
+        Staff, on_delete=models.CASCADE, related_name="remote_work", verbose_name="Сотрудник"
+    )
+    start_date = models.DateField(verbose_name="Дата начала", null=True, blank=True)
+    end_date = models.DateField(verbose_name="Дата окончания", null=True, blank=True)
+    permanent_remote = models.BooleanField(
+        default=False, verbose_name="Постоянная дистанционная работа"
+    )
+
+    def clean(self):
+        if self.start_date and self.end_date and self.start_date > self.end_date:
+            raise ValidationError("Дата начала не может быть больше даты окончания.")
+        if self.permanent_remote and (self.start_date or self.end_date):
+            raise ValidationError("Постоянная дистанционная работа не требует указания дат.")
+
+    def __str__(self):
+        return f"{self.staff} - {self.get_remote_status()}"
+
+    def get_remote_status(self):
+        return (
+            "Постоянная дистанционная работа"
+            if self.permanent_remote
+            else f"Дистанционная работа ({self.start_date} - {self.end_date})"
+        )
+
+    class Meta:
+        verbose_name = "Дистанционная работа"
+        verbose_name_plural = "Дистанционная работа"
+
+
+@receiver(pre_save, sender=RemoteWork)
+def update_attendance_on_remote_work(sender, instance, **kwargs):
+    """Обновляет процент посещаемости для дней дистанционной работы."""
+    if instance.permanent_remote or (instance.start_date and instance.end_date):
+        if instance.permanent_remote:
+            attendance_qs = models.StaffAttendance.objects.filter(staff=instance.staff)
+        else:
+            attendance_qs = models.StaffAttendance.objects.filter(
+                staff=instance.staff, date_at__range=[instance.start_date, instance.end_date]
+            )
+
+        for attendance in attendance_qs:
+            attendance.first_in = timezone.now()
+            attendance.last_out = timezone.now() + timezone.timedelta(hours=8)
+            attendance.save()
 
 
 class StaffAttendance(models.Model):
@@ -381,6 +452,14 @@ class StaffAttendance(models.Model):
         default=None,
     )
 
+    absence_reason = models.ForeignKey(
+        AbsentReason,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        verbose_name="Причина отсутствия",
+    )
+
     def __str__(self) -> str:
         return f"{self.staff} {self.date_at.strftime('%d-%m-%Y')}"
 
@@ -393,9 +472,7 @@ class StaffAttendance(models.Model):
             if (
                 self.first_in != orig.first_in or self.last_out != orig.last_out
             ) and "admin" in kwargs:
-                raise ValidationError(
-                    "Нельзя изменять поля first_in и last_out через админку."
-                )
+                raise ValidationError("Нельзя изменять поля first_in и last_out через админку.")
 
         super().save(*args, **kwargs)
 
