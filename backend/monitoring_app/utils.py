@@ -68,9 +68,7 @@ class HierarchicalDepartmentFilter(SimpleListFilter):
         if self.value():
             department = models.ChildDepartment.objects.get(pk=self.value())
             child_departments = department.get_all_child_departments()
-            child_department_ids = [dept.id for dept in child_departments] + [
-                department.id
-            ]
+            child_department_ids = [dept.id for dept in child_departments] + [department.id]
             return queryset.filter(staff__department__in=child_department_ids)
         return queryset
 
@@ -195,9 +193,7 @@ def get_all_attendance():
                 timezone.datetime.fromisoformat(data[-1]["eventTime"])
             )
             last_event_time = (
-                timezone.make_aware(
-                    timezone.datetime.fromisoformat(data[0]["eventTime"])
-                )
+                timezone.make_aware(timezone.datetime.fromisoformat(data[0]["eventTime"]))
                 if len(data) > 1
                 else first_event_time
             )
@@ -219,9 +215,7 @@ def get_all_attendance():
 
     with transaction.atomic():
         if updates:
-            models.StaffAttendance.objects.bulk_update(
-                updates, ["first_in", "last_out"]
-            )
+            models.StaffAttendance.objects.bulk_update(updates, ["first_in", "last_out"])
 
 
 def password_check(password: str) -> bool:
@@ -243,9 +237,7 @@ def password_check(password: str) -> bool:
         bool: True, если пароль соответствует всем требованиям сложности, в противном случае — False
     """
     return bool(
-        re.match(
-            r"^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$", password
-        )
+        re.match(r"^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$", password)
     )
 
 
@@ -265,9 +257,7 @@ def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]
     holidays_cache = cache.get("holidays_cache")
 
     if not holidays_cache:
-        holidays_cache = {
-            holiday.date: holiday for holiday in models.PublicHoliday.objects.all()
-        }
+        holidays_cache = {holiday.date: holiday for holiday in models.PublicHoliday.objects.all()}
         cache.set("holidays_cache", holidays_cache, timeout=60 * 60 * 24)
 
     def parse_datetime_with_timezone(dt_str: Optional[str]) -> Optional[str]:
@@ -306,9 +296,7 @@ def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]
                             attendance_info = "Выходной"
                     else:
                         attendance_info = (
-                            f"{first_in} - {last_out}"
-                            if first_in and last_out
-                            else "Отсутствие"
+                            f"{first_in} - {last_out}" if first_in and last_out else "Отсутствие"
                         )
 
                     rows.append([staff_fio, department, date_str, attendance_info])
@@ -352,9 +340,7 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
     max_col_widths = [0] * len(df_flat_sorted.columns)
     max_row_heights = [0] * (len(df_flat_sorted) + 1)
 
-    for r_idx, r in enumerate(
-        dataframe_to_rows(df_flat_sorted, index=False, header=True), 1
-    ):
+    for r_idx, r in enumerate(dataframe_to_rows(df_flat_sorted, index=False, header=True), 1):
         for c_idx, value in enumerate(r, 1):
             cell = ws.cell(row=r_idx, column=c_idx, value=value)
             cell.font = data_font
@@ -372,9 +358,7 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
         cell.font = header_font
 
     for idx, col_width in enumerate(max_col_widths, 1):
-        ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = (
-            col_width + 2
-        )
+        ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = col_width + 2
 
     for idx, row_height in enumerate(max_row_heights, 1):
         ws.row_dimensions[idx].height = row_height * 3
@@ -474,3 +458,55 @@ def normalize_id(department_id):
     if department_id.isdigit():
         return str(int(department_id))
     return department_id
+
+
+def transliterate(name):
+    slovar = {
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "g",
+        "д": "d",
+        "е": "e",
+        "ё": "yo",
+        "ж": "zh",
+        "з": "z",
+        "и": "i",
+        "й": "y",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "h",
+        "ц": "ts",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "sch",
+        "ъ": "",
+        "ы": "y",
+        "ь": "",
+        "э": "e",
+        "ю": "yu",
+        "я": "ya",
+        " ": " ",
+        "-": "-",
+        ".": ".",
+        ",": ",",
+        "!": "!",
+        "?": "?",
+        ":": ":",
+    }
+
+    name = name.lower()
+    translit = []
+    for letter in name:
+        translit.append(slovar.get(letter, letter))
+
+    return ''.join(translit)
