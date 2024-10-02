@@ -20,6 +20,7 @@ from .models import (
     PasswordResetToken,
     PasswordResetRequestLog,
 )
+from django.contrib.admin import SimpleListFilter
 
 # Настройка заголовков административной панели
 admin.site.site_header = "Панель управления"
@@ -45,6 +46,40 @@ class UsedFilter(admin.SimpleListFilter):
         elif self.value() == "no":
             return queryset.filter(_used=False)
         return queryset
+
+
+class DepartmentHierarchyFilter(SimpleListFilter):
+    title = 'Отдел'
+    parameter_name = 'department_hierarchy'
+
+    def lookups(self, request, model_admin):
+        departments = ChildDepartment.objects.filter(parent__isnull=True)
+        lookup_list = []
+        for dept in departments:
+            lookup_list.extend(self.get_department_choices(dept))
+        return lookup_list
+
+    def queryset(self, request, queryset):
+        if self.value():
+            selected_department = ChildDepartment.objects.get(id=self.value())
+            department_ids = self.get_all_descendants(selected_department)
+            return queryset.filter(department__in=department_ids)
+        return queryset
+
+    def get_all_descendants(self, department):
+        descendants = [department.id]
+        children = ChildDepartment.objects.filter(parent=department)
+        for child in children:
+            descendants.extend(self.get_all_descendants(child))
+        return descendants
+
+    def get_department_choices(self, department, level=0):
+        indent = '—' * level
+        choices = [(department.id, f"{indent} {department.name}")]
+        children = ChildDepartment.objects.filter(parent=department)
+        for child in children:
+            choices.extend(self.get_department_choices(child, level + 1))
+        return choices
 
 
 # === Модели авторизации ===
@@ -251,10 +286,10 @@ class RemoteWorkInline(admin.TabularInline):
 @admin.register(Staff)
 class StaffAdmin(admin.ModelAdmin):
     list_display = ("pin", "full_name", "department", "display_positions", "avatar_thumbnail")
-    list_filter = ("department", "positions")
-    search_fields = ("surname", "name", "department__name")
+    list_filter = (DepartmentHierarchyFilter, "positions")
+    search_fields = ("pin", "surname", "name", "department__name")
     filter_horizontal = ("positions",)
-    actions = ["clear_avatars"]
+    actions = ["clear_avatars", "assign_position"]
     ordering = ("surname", "name")
     inlines = [SalaryInline, AbsentReasonInline, RemoteWorkInline]
     readonly_fields = ("pin", "avatar_thumbnail")
