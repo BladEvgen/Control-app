@@ -105,7 +105,7 @@ const DepartmentPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [startDate, setStartDate] = useState<string>(
-    formatDate(new Date(), -31)
+    formatDate(new Date(), -7)
   );
   const [endDate, setEndDate] = useState<string>(formatDate(new Date(), 0));
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
@@ -194,95 +194,95 @@ const DepartmentPage: React.FC = () => {
               </Link>
             )}
           </div>
-
-          <div className="flex flex-col md:flex-row md:space-x-4 mb-6">
-            <div className="flex flex-col mb-4 md:mb-0">
-              <label
-                htmlFor="startDate"
-                className="block mb-2 font-medium text-gray-200 dark:text-gray-400"
-              >
-                Дата начала:
-              </label>
-              <input
-                type="date"
-                id="startDate"
-                value={startDate}
-                onChange={(e) =>
-                  handleDateChange(
-                    e,
-                    setStartDate,
-                    endDate,
-                    (newDate, otherDate) => newDate > otherDate
-                  )
-                }
-                className="border border-gray-300 px-4 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
-              />
-            </div>
-            <div className="flex flex-col mb-4 md:mb-0">
-              <label
-                htmlFor="endDate"
-                className="block mb-2 font-medium text-gray-200 dark:text-gray-400"
-              >
-                Дата конца:
-              </label>
-              <input
-                type="date"
-                id="endDate"
-                value={endDate}
-                onChange={(e) =>
-                  handleDateChange(
-                    e,
-                    setEndDate,
-                    startDate,
-                    (newDate, otherDate) => newDate >= otherDate
-                  )
-                }
-                className="border border-gray-300 px-4 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
-              />
-            </div>
-            <div className="flex flex-col md:flex-row md:items-center">
-              <button
-                onClick={handleDownload}
-                disabled={isDownloadDisabled || isDownloading}
-                className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-lg text-white mt-4 md:mt-7 ${
-                  isDownloadDisabled || isDownloading
-                    ? "bg-gray-400 cursor-not-allowed dark:bg-gray-600"
-                    : "bg-green-500 hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-700"
-                } shadow-md`}
-              >
-                {isDownloading ? (
-                  <svg
-                    className="animate-spin h-5 w-5 mr-3 text-white"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    ></circle>
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8v8h8a8 8 0 11-16 0z"
-                    ></path>
-                  </svg>
-                ) : (
-                  <FaDownload className="mr-2" />
+          {shouldRenderLink(location.pathname) && (
+            <div className="flex flex-col md:flex-row md:space-x-4 mb-6">
+              <div className="flex flex-col mb-4 md:mb-0">
+                <label
+                  htmlFor="startDate"
+                  className="block mb-2 font-medium text-gray-200 dark:text-gray-400"
+                >
+                  Дата начала:
+                </label>
+                <input
+                  type="date"
+                  id="startDate"
+                  value={startDate}
+                  onChange={(e) =>
+                    handleDateChange(
+                      e,
+                      setStartDate,
+                      endDate,
+                      (newDate, otherDate) => newDate > otherDate
+                    )
+                  }
+                  className="border border-gray-300 px-4 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
+                />
+              </div>
+              <div className="flex flex-col mb-4 md:mb-0">
+                <label
+                  htmlFor="endDate"
+                  className="block mb-2 font-medium text-gray-200 dark:text-gray-400"
+                >
+                  Дата конца:
+                </label>
+                <input
+                  type="date"
+                  id="endDate"
+                  value={endDate}
+                  onChange={(e) =>
+                    handleDateChange(
+                      e,
+                      setEndDate,
+                      startDate,
+                      (newDate, otherDate) => newDate >= otherDate
+                    )
+                  }
+                  className="border border-gray-300 px-4 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
+                />
+              </div>
+              <div className="flex flex-col md:flex-row md:items-center">
+                <button
+                  onClick={handleDownload}
+                  disabled={isDownloadDisabled || isDownloading}
+                  className={`flex items-center justify-center w-full md:w-auto px-4 py-2 rounded-lg text-white mt-4 md:mt-7 ${
+                    isDownloadDisabled || isDownloading
+                      ? "bg-gray-400 cursor-not-allowed dark:bg-gray-600"
+                      : "bg-green-500 hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-700"
+                  } shadow-md`}
+                >
+                  {isDownloading ? (
+                    <svg
+                      className="animate-spin h-5 w-5 mr-3 text-white"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      ></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8v8h8a8 8 0 11-16 0z"
+                      ></path>
+                    </svg>
+                  ) : (
+                    <FaDownload className="mr-2" />
+                  )}
+                  {isDownloading ? "Загрузка" : "Скачать"}
+                </button>
+                {showWaitMessage && (
+                  <div className="mt-2 md:mt-6 md:ml-4 p-3 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse dark:bg-red-900 dark:text-red-200">
+                    Загрузка может занять некоторое время, пожалуйста,
+                    подождите...
+                  </div>
                 )}
-                {isDownloading ? "Загрузка" : "Скачать"}
-              </button>
-              {showWaitMessage && (
-                <div className="mt-2 md:mt-6 md:ml-4 p-3 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse dark:bg-red-900 dark:text-red-200">
-                  Загрузка может занять некоторое время, пожалуйста,
-                  подождите...
-                </div>
-              )}
+              </div>
             </div>
-          </div>
-
+          )}
           {data && <DepartmentTable data={data} />}
         </>
       )}
