@@ -805,7 +805,7 @@ def staff_detail(request, staff_pin):
     data = get_cache(
         cache_key,
         query=lambda: get_staff_detail(staff, start_date, end_date),
-        timeout=1 * 5 * 60,
+        timeout=1 * 1 * 60,
     )
 
     logger.info(f"Returning staff details for PIN {staff_pin}")
@@ -814,7 +814,8 @@ def staff_detail(request, staff_pin):
 
 def fetch_staff_data(staff_pin):
     """Получение данных о сотруднике из базы данных.
-
+    Args:
+        staff_pin (str): Уникальный идентификатор сотрудника (PIN).
     Returns:
         models.Staff: Объект сотрудника.
         None: Если сотрудник не найден.
@@ -826,13 +827,16 @@ def fetch_staff_data(staff_pin):
 
 
 def get_date_range(request):
-    """Получение даты начала и окончания периода из запроса.
+    """
+    Получение диапазона дат из параметров запроса.
+
+    Если даты не указаны, используется период последних 7 дней.
 
     Args:
-        request (HttpRequest): Запрос.
+        request (HttpRequest): Запрос с параметрами.
 
     Returns:
-        tuple: Кортеж с датами начала и окончания периода.
+        tuple: Кортеж с датами начала и окончания периода (datetime.date).
     """
     end_date_str = request.query_params.get("end_date", timezone.now().strftime("%Y-%m-%d"))
     start_date_str = request.query_params.get(
@@ -846,18 +850,21 @@ def get_date_range(request):
 
 
 def get_staff_detail(staff, start_date, end_date):
-    """Получение подробной информации о сотруднике.
+    """
+    Получение подробной информации о сотруднике за указанный период.
+
+    Включает данные о посещаемости, процент присутствия, заработную плату и тип контракта.
 
     Args:
-        staff (models.Staff): Объект сотрудника.
-        start_date (datetime.date): Дата начала текущего периода.
-        end_date (datetime.date): Дата окончания текущего периода.
+        staff (Staff): Объект сотрудника.
+        start_date (datetime.date): Дата начала периода.
+        end_date (datetime.date): Дата окончания периода.
 
     Returns:
         dict: Словарь с данными сотрудника.
     """
-    logger.info(f"Fetching staff detail for {staff.name} (PIN: {staff.pin})")
-    logger.debug(f"Date range: {start_date} to {end_date}")
+    logger.info(f"Получение деталей сотрудника {staff.name} (PIN: {staff.pin})")
+    logger.debug(f"Запрошенный диапазон дат: {start_date} до {end_date}")
 
     attendance_qs = models.StaffAttendance.objects.filter(
         staff=staff,
@@ -866,12 +873,12 @@ def get_staff_detail(staff, start_date, end_date):
             end_date + datetime.timedelta(days=1),
         ],
     )
-    logger.debug(f"Attendance records retrieved: {attendance_qs.count()}")
+    logger.debug(f"Получено записей о посещаемости: {attendance_qs.count()}")
 
     holidays = models.PublicHoliday.objects.filter(date__range=[start_date, end_date]).values_list(
         "date", "is_working_day"
     )
-    logger.debug(f"Public holidays within range: {len(holidays)}")
+    logger.debug(f"Государственные праздники в периоде: {len(holidays)}")
 
     holiday_dict = dict(holidays)
     attendance_data = {}
@@ -879,28 +886,113 @@ def get_staff_detail(staff, start_date, end_date):
     total_days_with_data = 0
     percent_for_period = 0
 
-    num_days = (end_date - start_date).days + 1
+    remote_work_qs = models.RemoteWork.objects.filter(staff=staff).filter(
+        Q(permanent_remote=True) | Q(start_date__lte=end_date, end_date__gte=start_date)
+    )
+    logger.debug(f"Получено периодов дистанционной работы: {remote_work_qs.count()}")
+
+    absent_reason_qs = models.AbsentReason.objects.filter(
+        staff=staff, start_date__lte=end_date, end_date__gte=start_date
+    )
+    logger.debug(f"Получено причин отсутствия: {absent_reason_qs.count()}")
+
+    dates = []
+
+    if attendance_qs.exists():
+        attendance_dates = [
+            attendance.date_at - datetime.timedelta(days=1) for attendance in attendance_qs
+        ]
+        dates.extend(attendance_dates)
+    else:
+        attendance_dates = []
+
+    if remote_work_qs.exists():
+        remote_dates = []
+        for remote_work in remote_work_qs:
+            if remote_work.permanent_remote:
+                remote_dates.extend(attendance_dates)
+            else:
+                remote_start = max(remote_work.start_date, start_date)
+                remote_end = min(remote_work.end_date, end_date)
+                remote_dates.extend(
+                    [
+                        remote_start + datetime.timedelta(days=x)
+                        for x in range((remote_end - remote_start).days + 1)
+                    ]
+                )
+        dates.extend(remote_dates)
+    else:
+        remote_dates = []
+
+    if absent_reason_qs.exists():
+        absent_dates = []
+        for absent_reason in absent_reason_qs:
+            absent_start = max(absent_reason.start_date, start_date)
+            absent_end = min(absent_reason.end_date, end_date)
+            absent_dates.extend(
+                [
+                    absent_start + datetime.timedelta(days=x)
+                    for x in range((absent_end - absent_start).days + 1)
+                ]
+            )
+        dates.extend(absent_dates)
+    else:
+        absent_dates = []
+
+    if not dates:
+        logger.warning(
+            "Нет данных о посещаемости, дистанционной работе или причинах отсутствия за указанный период."
+        )
+        staff_detail = {
+            "name": staff.name,
+            "surname": staff.surname if staff.surname != "Нет фамилии" else "",
+            "positions": [position.name for position in staff.positions.all()],
+            "avatar": staff.avatar.url if staff.avatar else "/media/images/no-avatar.png",
+            "department": staff.department.name if staff.department else "N/A",
+            "department_id": staff.department.id if staff.department else "N/A",
+            "attendance": {},
+            "percent_for_period": 0.0,
+            "contract_type": None,
+            "salary": None,
+        }
+        return staff_detail
+
+    min_date = max(min(dates), start_date)
+    max_date = min(max(dates), end_date)
+    logger.debug(f"Фактический диапазон дат с данными: {min_date} до {max_date}")
+
+    start_date = min_date
+    end_date = max_date
+
+    date_set = set(dates)
+    logger.debug(f"Общее количество уникальных дат с данными: {len(date_set)}")
+
+    num_days = len(date_set)
     cost_per_day = 100 / num_days
-    logger.debug(f"Number of days in period: {num_days}, cost per day: {cost_per_day}")
+    logger.debug(f"Количество дней с данными: {num_days}, стоимость дня: {cost_per_day}")
 
     average_attendance = get_average_attendance_for_period(staff, start_date, end_date)
-    logger.debug(f"Average attendance for period: {average_attendance}")
+    logger.debug(f"Средняя посещаемость за период: {average_attendance}")
 
     K_adj = 1.25
     penalty_rate = (100 / average_attendance) * K_adj
-    logger.debug(f"Penalty rate calculated: {penalty_rate}")
+    logger.debug(f"Расчет штрафного коэффициента: {penalty_rate}")
 
     salary_qs = models.Salary.objects.filter(staff=staff).first()
     contract_type = salary_qs.contract_type if salary_qs else "full_time"
     total_minutes_expected_per_day = get_expected_minutes_per_day(contract_type)
     logger.debug(
-        f"Contract type: {contract_type}, expected minutes per day: {total_minutes_expected_per_day}"
+        f"Тип контракта: {contract_type}, ожидаемые минуты в день: {total_minutes_expected_per_day}"
     )
 
-    for attendance in attendance_qs:
-        event_date = attendance.date_at - datetime.timedelta(days=1)
-        logger.debug(f"Processing attendance for date: {event_date}")
+    attendance_dict = {
+        attendance.date_at - datetime.timedelta(days=1): attendance for attendance in attendance_qs
+    }
 
+    for event_date in sorted(date_set):
+        logger.debug(f"Обработка даты: {event_date}")
+
+        attendance = attendance_dict.get(event_date)
         (
             attendance_record,
             total_minutes_for_period,
@@ -918,18 +1010,23 @@ def get_staff_detail(staff, start_date, end_date):
             total_minutes_for_period,
             total_days_with_data,
             percent_for_period,
+            remote_work_qs,
+            absent_reason_qs,
         )
 
         if attendance_record:
             attendance_data[event_date.strftime("%d-%m-%Y")] = attendance_record
-            logger.debug(f"Attendance record added for {event_date}: {attendance_record}")
+            logger.debug(f"Добавлена запись посещаемости для {event_date}: {attendance_record}")
 
     if total_days_with_data > 0:
         percent_for_period /= total_days_with_data
-        logger.debug(f"Final percent for period: {percent_for_period}")
+        logger.debug(f"Итоговый процент за период: {percent_for_period}")
+    else:
+        percent_for_period = 0.0
+        logger.debug("Нет рабочих дней для расчета процента за период.")
 
     avatar_url = staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
-    logger.debug(f"Avatar URL: {avatar_url}")
+    logger.debug(f"URL аватара: {avatar_url}")
 
     staff_detail = {
         "name": staff.name,
@@ -944,20 +1041,21 @@ def get_staff_detail(staff, start_date, end_date):
         "salary": salary_qs.total_salary if salary_qs else None,
     }
 
-    logger.info(f"Staff detail generation complete for {staff.name} (PIN: {staff.pin})")
+    logger.info(f"Генерация деталей сотрудника завершена для {staff.name} (PIN: {staff.pin})")
     return staff_detail
 
 
 def get_average_attendance_for_period(staff, start_date, end_date):
-    """Расчет среднего процента присутствия за аналогичный период в предыдущем месяце.
+    """
+    Расчет среднего процента присутствия за предыдущий аналогичный период.
 
     Args:
-        staff (models.Staff): Объект сотрудника.
+        staff (Staff): Объект сотрудника.
         start_date (datetime.date): Дата начала текущего периода.
         end_date (datetime.date): Дата окончания текущего периода.
 
     Returns:
-        float: Средний процент присутствия за аналогичный период в предыдущем месяце.
+        float: Средний процент присутствия за предыдущий период.
     """
     logger.info(
         f"Calculating average attendance for staff {staff.name} (PIN: {staff.pin}) from {start_date} to {end_date}"
@@ -999,7 +1097,7 @@ def get_average_attendance_for_period(staff, start_date, end_date):
         logger.warning(
             "No complete attendance days found for the previous period. Returning default average attendance of 85.0%"
         )
-        return 85.0  #
+        return 85.0
 
     average_attendance = (total_minutes / (total_days * 8 * 60)) * 100
     logger.info(f"Calculated average attendance for previous period: {average_attendance}%")
@@ -1007,13 +1105,14 @@ def get_average_attendance_for_period(staff, start_date, end_date):
 
 
 def get_expected_minutes_per_day(contract_type):
-    """Получение ожидаемого количества минут в день в зависимости от типа контракта.
+    """
+    Получение ожидаемого количества рабочих минут в день на основе типа контракта.
 
     Args:
-        contract_type (str): Тип контракта.
+        contract_type (str): Тип контракта сотрудника.
 
     Returns:
-        int: Ожидаемое количество минут в день.
+        int: Ожидаемые минуты в день.
     """
     if contract_type in ["part_time", "gph"]:
         return 4 * 60
@@ -1032,60 +1131,154 @@ def process_attendance(
     total_minutes_for_period,
     total_days_with_data,
     percent_for_period,
+    remote_work_qs,
+    absent_reason_qs,
 ):
-    """Обработка данных о посещаемости.
+    """
+    Обработка данных о посещаемости для конкретной даты с учетом новых требований.
 
     Args:
-        attendance (models.StaffAttendance): Объект данных о посещаемости.
-        event_date (datetime.date): Дата события.
-        start_date (datetime.date): Дата начала текущего периода.
-        end_date (datetime.date): Дата окончания текущего периода.
+        attendance (StaffAttendance): Запись о посещаемости за дату, если есть.
+        event_date (datetime.date): Дата, которую обрабатываем.
+        start_date (datetime.date): Дата начала периода.
+        end_date (datetime.date): Дата окончания периода.
         holiday_dict (dict): Словарь с информацией о праздничных днях.
-        total_minutes_expected_per_day (int): Ожидаемое количество минут в день.
+        total_minutes_expected_per_day (int): Ожидаемое количество минут работы в день.
         cost_per_day (float): Стоимость одного дня в процентах.
-        penalty_rate (float): Штрафной коэффициент.
+        penalty_rate (float): Штрафной коэффициент за отсутствие.
         total_minutes_for_period (float): Общее количество минут за период.
         total_days_with_data (int): Общее количество дней с данными.
         percent_for_period (float): Процент рабочего времени за период.
+        remote_work_qs (QuerySet): QuerySet с периодами дистанционной работы сотрудника.
+        absent_reason_qs (QuerySet): QuerySet с причинами отсутствия сотрудника.
 
     Returns:
-        tuple: Кортеж, содержащий словарь с обработанными данными о посещаемости и обновленные значения total_minutes_for_period, total_days_with_data и percent_for_period.
+        tuple: Кортеж, содержащий:
+            - attendance_record (dict): Обработанные данные о посещаемости за дату.
+            - total_minutes_for_period (float): Обновленное общее количество минут за период.
+            - total_days_with_data (int): Обновленное количество дней с данными.
+            - percent_for_period (float): Обновленный процент рабочего времени за период.
     """
-    logger.info(f"Processing attendance for event date {event_date}")
+    logger.info(f"Обработка посещаемости за дату {event_date}")
 
     if not (start_date <= event_date <= end_date):
         logger.warning(
-            f"Event date {event_date} is out of the given date range {start_date} to {end_date}"
+            f"Дата события {event_date} вне указанного диапазона {start_date} до {end_date}"
         )
         return None, total_minutes_for_period, total_days_with_data, percent_for_period
 
     is_off_day = check_off_day(event_date, holiday_dict)
-    logger.debug(f"Is off day: {is_off_day} for event date {event_date}")
+    logger.debug(f"Является ли выходным днем: {is_off_day} для даты {event_date}")
 
-    first_in, last_out = attendance.first_in, attendance.last_out
-    logger.debug(f"First in: {first_in}, Last out: {last_out}")
+    absent_reason = absent_reason_qs.filter(
+        start_date__lte=event_date, end_date__gte=event_date
+    ).first()
 
-    if first_in and last_out:
-        total_minutes_worked = (last_out - first_in).total_seconds() / 60
-        percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
+    first_in = attendance.first_in if attendance and attendance.first_in else None
+    last_out = attendance.last_out if attendance and attendance.last_out else None
+
+    if is_off_day:
+        if first_in and last_out:
+            total_minutes_worked = (last_out - first_in).total_seconds() / 60
+            percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
+            logger.info(
+                f"Сотрудник работал в выходной день {event_date}. Данные отображаются, но не влияют на расчеты."
+            )
+        else:
+            total_minutes_worked = 0
+            percent_day = 0
+            logger.info(f"Выходной день {event_date} без данных о посещаемости. Пропускаем.")
+
+        attendance_record = {
+            "first_in": (
+                first_in.astimezone(timezone.get_current_timezone()) if first_in else None
+            ),
+            "last_out": (
+                last_out.astimezone(timezone.get_current_timezone()) if last_out else None
+            ),
+            "percent_day": round(percent_day, 2),
+            "total_minutes": round(total_minutes_worked, 2),
+            "is_weekend": True,
+            "is_remote_work": False,
+            "is_absent_approved": False,
+            "absent_reason": None,
+            "approved": None,
+        }
+        return (
+            attendance_record,
+            total_minutes_for_period,
+            total_days_with_data,
+            percent_for_period,
+        )
+
+    is_remote_work = remote_work_qs.filter(
+        Q(permanent_remote=True) | Q(start_date__lte=event_date, end_date__gte=event_date)
+    ).exists()
+
+    is_absent_approved = False
+    absent_reason_display = None
+    absent_approved = None
+
+    if is_remote_work:
+        percent_day = 100.0
+        total_minutes_worked = total_minutes_expected_per_day
         total_minutes_for_period += total_minutes_worked
         total_days_with_data += 1
-        logger.debug(f"Total minutes worked: {total_minutes_worked}, Percent day: {percent_day}")
+        percent_for_period += percent_day
+        logger.info(f"{event_date} отмечен как день дистанционной работы.")
+    elif absent_reason:
+        is_absent_approved = absent_reason.approved
+        absent_reason_display = absent_reason.get_reason_display()
+        absent_approved = absent_reason.approved
+        if is_absent_approved:
+            logger.info(f"{event_date} утвержденная причина отсутствия: {absent_reason_display}.")
+            attendance_record = {
+                "first_in": (
+                    first_in.astimezone(timezone.get_current_timezone()) if first_in else None
+                ),
+                "last_out": (
+                    last_out.astimezone(timezone.get_current_timezone()) if last_out else None
+                ),
+                "percent_day": 0,
+                "total_minutes": 0,
+                "is_weekend": False,
+                "is_remote_work": False,
+                "is_absent_approved": True,
+                "absent_reason": absent_reason_display,
+                "approved": True,
+            }
+            return (
+                attendance_record,
+                total_minutes_for_period,
+                total_days_with_data,
+                percent_for_period,
+            )
+        else:
+            percent_day = 0
+            total_minutes_worked = 0
+            total_days_with_data += 1
+            penalty = penalty_rate * cost_per_day
+            percent_for_period -= penalty
+            logger.warning(
+                f"{event_date} неутвержденная причина отсутствия: {absent_reason_display}. Применяется штраф {penalty}%."
+            )
     else:
-        percent_day = 0
-        total_minutes_worked = 0
-        logger.warning(f"No valid attendance times found for event date {event_date}")
-
-    percent_for_period = update_percent_for_period(
-        percent_for_period,
-        percent_day,
-        is_off_day,
-        total_minutes_worked,
-        cost_per_day,
-        penalty_rate,
-    )
-    percent_for_period = 0 if percent_for_period < 0 else percent_for_period
-    logger.debug(f"Updated percent for period: {percent_for_period}")
+        if first_in and last_out:
+            total_minutes_worked = (last_out - first_in).total_seconds() / 60
+            percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
+            total_minutes_for_period += total_minutes_worked
+            total_days_with_data += 1
+            percent_for_period += percent_day
+            logger.debug(f"Отработано минут: {total_minutes_worked}, Процент дня: {percent_day}")
+        else:
+            percent_day = 0
+            total_minutes_worked = 0
+            total_days_with_data += 1
+            penalty = penalty_rate * cost_per_day
+            percent_for_period -= penalty
+            logger.warning(
+                f"Нет записей о посещаемости за дату {event_date}. Применяется штраф {penalty}%."
+            )
 
     attendance_record = {
         "first_in": (first_in.astimezone(timezone.get_current_timezone()) if first_in else None),
@@ -1093,8 +1286,12 @@ def process_attendance(
         "percent_day": round(percent_day, 2),
         "total_minutes": round(total_minutes_worked, 2),
         "is_weekend": is_off_day,
+        "is_remote_work": is_remote_work,
+        "is_absent_approved": is_absent_approved,
+        "absent_reason": absent_reason_display,
+        "approved": absent_approved,
     }
-    logger.info(f"Processed attendance record for event date {event_date}: {attendance_record}")
+    logger.info(f"Обработана запись посещаемости за дату {event_date}: {attendance_record}")
 
     return (
         attendance_record,
@@ -1105,10 +1302,11 @@ def process_attendance(
 
 
 def check_off_day(event_date, holiday_dict):
-    """Проверка, является ли день выходным или праздничным.
+    """
+    Проверка, является ли дата выходным или праздничным днем.
 
     Args:
-        event_date (datetime.date): Дата события.
+        event_date (datetime.date): Дата для проверки.
         holiday_dict (dict): Словарь с информацией о праздничных днях.
 
     Returns:
@@ -1129,37 +1327,37 @@ def update_percent_for_period(
     cost_per_day,
     penalty_rate,
 ):
-    """Обновление процента рабочего времени за период.
+    """
+    Обновление накопленного процента за период на основе ежедневной посещаемости.
 
     Args:
-        percent_for_period (float): Процент рабочего времени за период.
-        percent_day (float): Процент рабочего времени за день.
-        is_off_day (bool): Является ли день выходным или праздничным.
-        total_minutes_worked (float): Общее количество отработанных минут.
+        percent_for_period (float): Текущий накопленный процент.
+        percent_day (float): Процент присутствия за день.
+        is_off_day (bool): Является ли день выходным.
+        total_minutes_worked (float): Отработано минут за день.
         cost_per_day (float): Стоимость одного дня в процентах.
-        penalty_rate (float): Штрафной коэффициент.
+        penalty_rate (float): Штрафной коэффициент за отсутствие.
 
     Returns:
-        float: Обновленный процент рабочего времени за период.
+        float: Обновленный процент за период.
     """
     logger.debug(
         f"Updating percent for period. Initial: {percent_for_period}%, "
         f"Day percent: {percent_day}%, Is off day: {is_off_day}, "
         f"Total minutes worked: {total_minutes_worked}, "
-        f"Cost per day: {cost_per_day}, Penalty rate: {penalty_rate}"
+        f"Cost per day: {cost_per_day}%, Penalty rate: {penalty_rate}%"
     )
 
     if is_off_day and total_minutes_worked > 0:
-        logger.info(f"Off day with work. Increasing percent by {percent_day * 1.5}%.")
         percent_for_period += percent_day * 1.5
+        logger.info(f"Off day with work. Increasing percent by {percent_day * 1.5}%.")
     elif not is_off_day and total_minutes_worked == 0:
-        logger.warning(
-            f"Workday with no work. Decreasing percent by {penalty_rate * cost_per_day}%."
-        )
-        percent_for_period -= penalty_rate * cost_per_day
+        penalty = penalty_rate * cost_per_day
+        percent_for_period -= penalty
+        logger.warning(f"Workday with no work. Decreasing percent by {penalty}%.")
     else:
-        logger.info(f"Regular day. Adding {percent_day}% to the period percent.")
         percent_for_period += percent_day
+        logger.info(f"Regular day. Adding {percent_day}% to the period percent.")
 
     logger.debug(f"Updated percent for period: {percent_for_period}%")
     return percent_for_period
@@ -2523,7 +2721,7 @@ class APIKeyCheckView(APIView):
 def password_reset_request_view(request):
     if request.method == "POST":
         identifier = request.POST.get("identifier")
-        ip_address = utils.get_client_ip(request)  # Ensure you always get an IP address
+        ip_address = utils.get_client_ip(request)
         logger.error(str(ip_address))
         user = (
             User.objects.filter(username=identifier).first()
