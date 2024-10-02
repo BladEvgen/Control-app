@@ -290,7 +290,7 @@ class StaffAdmin(admin.ModelAdmin):
     search_fields = ("pin", "surname", "name", "department__name")
     filter_horizontal = ("positions",)
     actions = ["clear_avatars", "assign_position"]
-    ordering = ("surname", "name")
+    ordering = ("-pin", "-department", "surname", "name")
     inlines = [SalaryInline, AbsentReasonInline, RemoteWorkInline]
     readonly_fields = ("pin", "avatar_thumbnail")
 
@@ -316,8 +316,26 @@ class StaffAdmin(admin.ModelAdmin):
 
     def avatar_thumbnail(self, obj):
         if obj.avatar:
-            return format_html('<img src="{}" style="max-height: 100px;"/>', obj.avatar.url)
-        return format_html('<span style="color: #999;">Нет фото</span>')
+            return format_html(
+                '''
+                <div style="display: flex; justify-content: center; align-items: center; height: 80px; width: 80px; overflow: hidden; border-radius: 50%;">
+                    <img src="{}" style="
+                        height: 100%;
+                        width: 100%;
+                        object-fit: cover;
+                        display: block;
+                    "/>
+                </div>
+                ''',
+                obj.avatar.url,
+            )
+        return format_html(
+            '''
+            <div style="display: flex; justify-content: center; align-items: center; height: 80px; width: 80px; border-radius: 50%; background-color: #f0f0f0;">
+                <span style="color: #999; font-style: italic; text-align: center;">Нет фото</span>
+            </div>
+            '''
+        )
 
     avatar_thumbnail.short_description = "Фото"
 
