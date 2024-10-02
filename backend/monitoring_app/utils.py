@@ -2,7 +2,6 @@ import re
 import json
 import datetime
 from functools import wraps
-from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -20,11 +19,11 @@ from django.http import HttpRequest
 from cryptography.fernet import Fernet
 from django.core.mail import send_mail
 from django.utils.html import format_html
-from openpyxl.styles import Alignment, Font
 from rest_framework.response import Response
 from django.contrib.admin import SimpleListFilter
 from django.utils.translation import gettext_lazy as _
 from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import Alignment, Font, PatternFill
 
 from monitoring_app import models
 
@@ -258,7 +257,7 @@ def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]
 
     if not holidays_cache:
         holidays_cache = {holiday.date: holiday for holiday in models.PublicHoliday.objects.all()}
-        cache.set("holidays_cache", holidays_cache, timeout=60 * 60 * 24)
+        cache.set("holidays_cache", holidays_cache, timeout=1 * 12 * 60)
 
     def parse_datetime_with_timezone(dt_str: Optional[str]) -> Optional[str]:
         if not dt_str:
@@ -334,6 +333,9 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
     data_font = Font(name="Roboto", size=11)
     data_alignment = Alignment(horizontal="center", vertical="center")
 
+    absence_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+    absence_font = Font(color="FFFFFF")
+
     df_flat = df_pivot_sorted.reset_index()
     df_flat_sorted = df_flat.sort_values(by=["Отдел", "ФИО"])
 
@@ -345,6 +347,10 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
             cell = ws.cell(row=r_idx, column=c_idx, value=value)
             cell.font = data_font
             cell.alignment = data_alignment
+            if value == "Отсутствие":
+                cell.fill = absence_fill
+                cell.font = absence_font
+
             value_length = len(str(value))
 
             if value_length > max_col_widths[c_idx - 1]:
@@ -387,47 +393,45 @@ def add_api_key_header(func):
 
 
 def send_password_reset_email(user, request):
-    parsed_main_ip = urlparse(settings.MAIN_IP)
-    main_ip = parsed_main_ip.netloc if parsed_main_ip.netloc else parsed_main_ip.path
-
-    reset_link = f"{request.scheme}://{main_ip}{reverse('password_reset_confirm', args=[models.PasswordResetToken.generate_token(user)])}"
+    reset_link = f"{request.scheme}://{request.get_host()}{reverse('password_reset_confirm', args=[models.PasswordResetToken.generate_token(user)])}"
 
     subject = "Инструкция по сбросу пароля"
     html_message = format_html(
         """
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ececec; border-radius: 10px; background-color: #ffffff;">
-            <h2 style="color: #007bff; text-align: center; margin-bottom: 20px;">Сброс пароля для {username}</h2>
-            <p style="color: #333; line-height: 1.6; margin-bottom: 20px;">
-                Вы получили это письмо, потому что был запрошен сброс пароля для вашего аккаунта. Если это не вы, проигнорируйте это письмо, и ваш пароль останется неизменным.
+        <div style="font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ececec; border-radius: 10px; background-color: #ffffff;">
+            <h2 style="color: #007bff; text-align: center; margin-bottom: 20px;">Сброс пароля</h2>
+            <p style="color: #333; line-height: 1.6; margin-bottom: 20px; text-align: center;">
+                Здравствуйте, {username}. Вы запросили сброс пароля для своего аккаунта. 
+                Пожалуйста, нажмите кнопку ниже, чтобы сбросить пароль.
             </p>
-            <div style="text-align: center; margin-bottom: 20px;">
-                <a href="{reset_link}" style="display: inline-block; padding: 12px 24px; color: #ffffff; background-color: #007bff; text-decoration: none; border-radius: 5px; font-size: 16px;">
+            <div style="text-align: center; margin-bottom: 30px;">
+                <a href="{reset_link}" style="display: inline-block; padding: 15px 30px; color: #ffffff; background-color: #007bff; text-decoration: none; border-radius: 5px; font-size: 18px; font-weight: bold;">
                     Сбросить пароль
                 </a>
             </div>
-            <p style="color: #333; line-height: 1.6; margin-bottom: 20px;">
-                Эта ссылка будет действительна в течение 1 часа. Для вашей безопасности не передавайте эту ссылку другим лицам.
+            <p style="color: #555; line-height: 1.6; margin-bottom: 20px; text-align: center;">
+                Ссылка для сброса пароля действительна в течение <strong>1 часа</strong>. Если вы не запрашивали сброс пароля, просто проигнорируйте это письмо.
             </p>
-            <hr style="border: none; border-top: 1px solid #ececec; margin: 20px 0;">
+            <hr style="border: none; border-top: 1px solid #ececec; margin: 30px 0;">
             <p style="font-size: 12px; color: #999; text-align: center;">
-                Если вы не запрашивали сброс пароля, проигнорируйте это письмо. <br>
-                Если у вас есть вопросы, свяжитесь с нашей службой поддержки.
+                Мы рады помочь вам сохранить безопасность вашего аккаунта. 
             </p>
         </div>
         """,
         username=user.username,
         reset_link=reset_link,
     )
+
     plain_message = (
         f"Здравствуйте, {user.username}!\n\n"
         "Вы получили это письмо, потому что был запрошен сброс пароля для вашего аккаунта.\n\n"
         f"Для сброса пароля перейдите по следующей ссылке: {reset_link}\n\n"
         "Эта ссылка будет действительна в течение 1 часа. Для вашей безопасности не передавайте эту ссылку другим лицам.\n\n"
         "Если вы не запрашивали сброс пароля, проигнорируйте это письмо, и ваш пароль останется неизменным.\n\n"
-        "Если у вас есть вопросы, свяжитесь с нашей службой поддержки.\n\n"
         "С уважением,\n"
         "Команда поддержки."
     )
+
     send_mail(
         subject,
         plain_message,
