@@ -34,7 +34,7 @@ const ChildDepartmentPage = () => {
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [startDate, setStartDate] = useState<string>(
-    new Date(new Date().setDate(new Date().getDate() - 31))
+    new Date(new Date().setDate(new Date().getDate() - 7))
       .toISOString()
       .split("T")[0]
   );

@@ -16,7 +16,11 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
     () => localStorage.getItem("theme") || "light"
   );
   const [selectedDate] = useState<string>(
-    new Date().toISOString().split("T")[0]
+    (() => {
+      const date = new Date();
+      date.setDate(date.getDate() - 1);
+      return date.toISOString().split("T")[0];
+    })()
   );
 
   const fetchData = useCallback(async () => {

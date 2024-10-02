@@ -408,23 +408,6 @@ class RemoteWork(models.Model):
         verbose_name_plural = "Дистанционная работа"
 
 
-@receiver(pre_save, sender=RemoteWork)
-def update_attendance_on_remote_work(sender, instance, **kwargs):
-    """Обновляет процент посещаемости для дней дистанционной работы."""
-    if instance.permanent_remote or (instance.start_date and instance.end_date):
-        if instance.permanent_remote:
-            attendance_qs = models.StaffAttendance.objects.filter(staff=instance.staff)
-        else:
-            attendance_qs = models.StaffAttendance.objects.filter(
-                staff=instance.staff, date_at__range=[instance.start_date, instance.end_date]
-            )
-
-        for attendance in attendance_qs:
-            attendance.first_in = timezone.now()
-            attendance.last_out = timezone.now() + timezone.timedelta(hours=8)
-            attendance.save()
-
-
 class StaffAttendance(models.Model):
     staff = models.ForeignKey(
         Staff,
