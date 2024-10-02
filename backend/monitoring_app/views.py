@@ -805,7 +805,7 @@ def staff_detail(request, staff_pin):
     data = get_cache(
         cache_key,
         query=lambda: get_staff_detail(staff, start_date, end_date),
-        timeout=1 * 1 * 60,
+        timeout=1 * 1 * 30,
     )
 
     logger.info(f"Returning staff details for PIN {staff_pin}")
