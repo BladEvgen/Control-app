@@ -19,6 +19,12 @@ urlpatterns = [
         views.StaffAttendanceStatsView.as_view(),
         name="staff-attendance-stats",
     ),
+    path("api/lesson_attendance/", views.create_lesson_attendance, name="lesson-attendance"),
+    path(
+        "api/lesson_attendance/<int:id>/",
+        views.update_lesson_attendance,
+        name="update-lesson-attendance",
+    ),
     path(
         "api/child_department/<str:child_department_id>/",
         views.child_department_detail,
