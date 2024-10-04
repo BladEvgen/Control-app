@@ -188,33 +188,54 @@ def get_all_attendance():
     for pin, data in attendance_data.items():
         staff = models.Staff.objects.get(pin=pin)
         if data:
+            first_event = data[-1]
+            last_event = data[0] if len(data) > 1 else first_event
+
             first_event_time = timezone.make_aware(
-                timezone.datetime.fromisoformat(data[-1]["eventTime"])
+                timezone.datetime.fromisoformat(first_event["eventTime"])
             )
             last_event_time = (
-                timezone.make_aware(timezone.datetime.fromisoformat(data[0]["eventTime"]))
+                timezone.make_aware(timezone.datetime.fromisoformat(last_event["eventTime"]))
                 if len(data) > 1
                 else first_event_time
             )
+
+            first_area_name = first_event.get("areaName")
+            last_area_name = last_event.get("areaName")
+
+            area_name_in = first_area_name or "Unknown"
+            area_name_out = last_area_name or "Unknown"
+
         else:
             first_event_time = None
             last_event_time = None
+            area_name_in = "Unknown"
+            area_name_out = "Unknown"
 
         date_at = next_day.date()
 
         attendance, created = models.StaffAttendance.objects.get_or_create(
             staff=staff,
             date_at=date_at,
-            defaults={"first_in": first_event_time, "last_out": last_event_time},
+            defaults={
+                "first_in": first_event_time,
+                "last_out": last_event_time,
+                "area_name_in": area_name_in,
+                "area_name_out": area_name_out,
+            },
         )
         if not created:
             attendance.first_in = first_event_time
             attendance.last_out = last_event_time
+            attendance.area_name_in = area_name_in
+            attendance.area_name_out = area_name_out
             updates.append(attendance)
 
     with transaction.atomic():
         if updates:
-            models.StaffAttendance.objects.bulk_update(updates, ["first_in", "last_out"])
+            models.StaffAttendance.objects.bulk_update(
+                updates, ["first_in", "last_out", "area_name_in", "area_name_out"]
+            )
 
 
 def password_check(password: str) -> bool:
