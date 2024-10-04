@@ -13,6 +13,7 @@ from django.core.validators import FileExtensionValidator
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 
 from monitoring_app import utils
+from django_admin_geomap import GeoItem
 
 
 class PasswordResetTokenManager(models.Manager):
@@ -443,6 +444,13 @@ class StaffAttendance(models.Model):
         verbose_name="Причина отсутствия",
     )
 
+    area_name_in = models.CharField(
+        null=True, blank=True, max_length=300, verbose_name="Зона входа"
+    )
+    area_name_out = models.CharField(
+        null=True, blank=True, max_length=300, verbose_name="Зона выхода"
+    )
+
     def __str__(self) -> str:
         return f"{self.staff} {self.date_at.strftime('%d-%m-%Y')}"
 
@@ -464,6 +472,61 @@ class StaffAttendance(models.Model):
 
         verbose_name = "Посещаемость сотрудника"
         verbose_name_plural = "Посещаемость сотрудников"
+
+
+class LessonAttendance(models.Model, GeoItem):
+    staff = models.ForeignKey(
+        Staff,
+        on_delete=models.CASCADE,
+        related_name="lesson_attendance",
+        verbose_name="Сотрудник",
+        editable=False,
+    )
+    subject_name = models.CharField(
+        verbose_name="Название предмета", max_length=300, editable=False
+    )
+    tutor_id = models.IntegerField(verbose_name="Id преподавателя", editable=False)
+    tutor = models.CharField(verbose_name="ФИО преподавателя", max_length=300)
+    first_in = models.DateTimeField(verbose_name="Время начала занятия", null=False)
+    last_out = models.DateTimeField(verbose_name="Время окончания занятия", null=True, blank=True)
+    latitude = models.FloatField(
+        verbose_name="Широта", editable=False, help_text="Примерные координаты в радиусе 300 метров"
+    )
+    longitude = models.FloatField(
+        verbose_name="Долгота",
+        editable=False,
+        help_text="Примерные координаты в радиусе 300 метров",
+    )
+    date_at = models.DateField(verbose_name="Дата занятия", default=timezone.now)
+
+    @property
+    def geomap_longitude(self):
+        return str(self.longitude)
+
+    @property
+    def geomap_latitude(self):
+        return str(self.latitude)
+
+    @property
+    def formatted_first_in(self):
+        return self.first_in.strftime("%Y-%m-%d %H:%M:%S")
+
+    @property
+    def formatted_last_out(self):
+        if self.last_out:
+            return self.last_out.strftime("%Y-%m-%d %H:%M:%S")
+        return "Ongoing"
+
+    @property
+    def tutor_info(self):
+        return f"{self.tutor} (ID: {self.tutor_id})"
+
+    def __str__(self):
+        return f"{self.subject_name} ({self.staff}) [{self.date_at}]"
+
+    class Meta:
+        verbose_name = "Посещаемость занятия"
+        verbose_name_plural = "Посещаемость занятий"
 
 
 class Salary(models.Model):
