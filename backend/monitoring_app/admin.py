@@ -17,10 +17,13 @@ from .models import (
     ChildDepartment,
     StaffAttendance,
     ParentDepartment,
+    LessonAttendance,
     PasswordResetToken,
     PasswordResetRequestLog,
 )
 from django.contrib.admin import SimpleListFilter
+from django_admin_geomap import ModelAdmin
+
 
 # Настройка заголовков административной панели
 admin.site.site_header = "Панель управления"
@@ -361,6 +364,8 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         "date_at",
         "first_in",
         "last_out",
+        "area_name_in",
+        "area_name_out",
         "absence_reason",
     )
     list_filter = (
@@ -373,7 +378,8 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
     search_fields = ("staff__surname", "staff__name", "staff__pin")
     date_hierarchy = "date_at"
     ordering = ("-date_at", "staff")
-    readonly_fields = ("first_in", "last_out")
+
+    readonly_fields = ("staff", "date_at", "first_in", "last_out")
 
     fieldsets = (
         (
@@ -391,6 +397,69 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
     staff_department.admin_order_field = "staff__department__name"
 
 
+# === Посещаемость занятий ===
+
+
+class LessonAttendanceAdmin(ModelAdmin):
+    geomap_field_longitude = "id_longitude"
+    geomap_field_latitude = "id_latitude"
+    geomap_show_map_on_list = False
+    geomap_item_zoom = "14"
+    geomap_height = "450px"
+    geomap_default_zoom = "16"
+    geomap_autozoom = "15.9"
+
+    readonly_fields = (
+        "latitude",
+        "longitude",
+        "first_in",
+        "last_out",
+        "staff",
+        "subject_name",
+        "tutor",
+        "tutor_id",
+        "date_at",
+    )
+
+    fieldsets = (
+        (
+            None,
+            {
+                'fields': ('first_in', 'last_out'),
+                'description': 'Основная информация о занятии',
+            },
+        ),
+        (
+            'Преподаватель',
+            {
+                'fields': (
+                    'staff',
+                    'subject_name',
+                    'tutor_id',
+                    'tutor',
+                ),
+                'description': 'Информация о преподавателе и предмете',
+            },
+        ),
+    )
+
+    list_display = (
+        "staff",
+        "subject_name",
+        "tutor",
+        "formatted_first_in",
+        "formatted_last_out",
+        "date_at",
+    )
+
+    list_filter = ("date_at", "staff", "subject_name")
+    search_fields = ("staff__name", "subject_name", "tutor")
+
+    class Media:
+        css = {'all': ('custom_admin.css',)}
+
+
+admin.site.register(LessonAttendance, LessonAttendanceAdmin)
 # === Зарплата ===
 
 
