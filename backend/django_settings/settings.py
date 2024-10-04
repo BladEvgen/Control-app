@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework_simplejwt",
     "django_extensions",
+    "django_admin_geomap",
 ]
 
 #! On Release set False
@@ -300,9 +301,7 @@ LOGGING = {
         "file": {
             "level": "INFO" if DEBUG else "WARNING",
             "class": "logging.FileHandler",
-            "filename": os.path.join(
-                LOG_DIR, f'log-{datetime.now().strftime("%Y-%m-%d_%H")}.log'
-            ),
+            "filename": os.path.join(LOG_DIR, f'log-{datetime.now().strftime("%Y-%m-%d_%H")}.log'),
             "encoding": "utf-8",
             "formatter": "verbose",
         },
