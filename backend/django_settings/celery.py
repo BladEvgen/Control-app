@@ -7,9 +7,14 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'django_settings.settings')
 app = Celery('django_settings')
 
 app.conf.update(
-    broker_url='redis://localhost:6379/0',  
-    result_backend='redis://localhost:6379/0',  
+    broker_url='redis://localhost:6379/0',
+    result_backend='redis://localhost:6379/0',
+    broker_connection_retry_on_startup=True,  # Повторное подключение при старте
+    task_soft_time_limit=600,  # Ограничение времени выполнения задачи (10 минут)
+    task_time_limit=660,  # Жёсткое ограничение времени выполнения задачи (11 минут)
+    worker_max_memory_per_child=512000,  # Ограничение памяти для воркера (512 MB)
 )
+
 app.config_from_object('django.conf:settings', namespace='CELERY')
 
 app.autodiscover_tasks()
