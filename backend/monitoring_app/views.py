@@ -1433,12 +1433,12 @@ def check_lesson_task_status(request, task_id):
                         'tutor_id': openapi.Schema(
                             type=openapi.TYPE_INTEGER,
                             description="ID преподавателя",
-                            example=861,
+                            example=1,
                         ),
                         'tutor': openapi.Schema(
                             type=openapi.TYPE_STRING,
                             description="ФИО преподавателя",
-                            example="Вдовцев Александр Викторович",
+                            example="Иванов И.И.",
                         ),
                         'first_in': openapi.Schema(
                             type=openapi.TYPE_STRING,
