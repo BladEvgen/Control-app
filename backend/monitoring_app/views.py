@@ -32,15 +32,10 @@ from rest_framework.permissions import (
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from monitoring_app import models, permissions, serializers, utils
+from celery.result import AsyncResult
+from monitoring_app import models, permissions, serializers, utils, tasks
 
 logger = logging.getLogger(__name__)
-
-
-def example_function():
-    logger.info("This is an info message")
-    logger.warning("This is a warning message")
-    logger.error("This is an error message")
 
 
 class StaffAttendancePagination(PageNumberPagination):
@@ -1364,87 +1359,133 @@ def update_percent_for_period(
     return percent_for_period
 
 
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def check_lesson_task_status(request, task_id):
+    """
+    Проверка статуса задачи и получение lesson_id.
+    """
+    try:
+        task_result = AsyncResult(task_id)
+
+        if task_result.state == 'PENDING':
+            return Response(
+                {"status": "Pending", "message": "Задача в очереди, ожидайте завершения"},
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        elif task_result.state == 'SUCCESS':
+            result = task_result.result
+            return Response(
+                {"status": "Success", "lesson_ids": result.get('success_records', [])},
+                status=status.HTTP_200_OK,
+            )
+
+        elif task_result.state == 'FAILURE':
+            return Response(
+                {"status": "Failure", "error": str(task_result.info)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        else:
+            return Response(
+                {"status": task_result.state, "message": "Задача в процессе выполнения"},
+                status=status.HTTP_200_OK,
+            )
+
+    except Exception as e:
+        logger.error(f"Ошибка при проверке задачи: {str(e)}")
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @swagger_auto_schema(
     method="post",
-    operation_summary="Создание записи посещаемости занятия",
-    operation_description="Создает новую запись посещаемости для сотрудника на занятие. Обязательные параметры включают `staff_pin`, `subject_name`, `tutor_id`, `tutor`, `first_in`, `latitude` и `longitude`. Параметр `last_out` не требуется на этапе создания, так как занятие может быть ещё не завершено.",
+    operation_summary="Создание записей посещаемости занятий",
+    operation_description="Создает новые записи посещаемости для сотрудников на занятия. Параметры передаются в виде списка объектов, где обязательные параметры включают `staff_pin`, `subject_name`, `tutor_id`, `tutor`, `first_in`, `latitude` и `longitude`. Параметр `last_out` не требуется на этапе создания, так как занятие может быть ещё не завершено.",
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
-        required=[
-            'staff_pin',
-            'subject_name',
-            'tutor_id',
-            'tutor',
-            'first_in',
-            'latitude',
-            'longitude',
-        ],
+        required=['attendance_data'],
         properties={
-            'staff_pin': openapi.Schema(
-                type=openapi.TYPE_STRING,
-                description="PIN сотрудника",
-                example="s00260",
-            ),
-            'subject_name': openapi.Schema(
-                type=openapi.TYPE_STRING,
-                description="Название предмета",
-                example="Информатика",
-            ),
-            'tutor_id': openapi.Schema(
-                type=openapi.TYPE_INTEGER,
-                description="ID преподавателя",
-                example=102,
-            ),
-            'tutor': openapi.Schema(
-                type=openapi.TYPE_STRING,
-                description="ФИО преподавателя",
-                example="Иванов И.И.",
-            ),
-            'first_in': openapi.Schema(
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_DATETIME,
-                description="Время начала занятия в формате ISO 8601 с часовым поясом",
-                example="2024-01-01T16:30:25+05:00",
-            ),
-            'last_out': openapi.Schema(
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_DATETIME,
-                description="Время окончания занятия в формате ISO 8601 с часовым поясом. Необязательно при создании",
-                example="2024-01-01T18:30:30+05:00",
-            ),
-            'latitude': openapi.Schema(
-                type=openapi.TYPE_NUMBER,
-                format=openapi.FORMAT_FLOAT,
-                description="Широта места проведения",
-                example=43.222,
-            ),
-            'longitude': openapi.Schema(
-                type=openapi.TYPE_NUMBER,
-                format=openapi.FORMAT_FLOAT,
-                description="Долгота места проведения",
-                example=76.851,
-            ),
-            'date_at': openapi.Schema(
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_DATE,
-                description="Дата занятия. По умолчанию используется текущая дата",
-                example="2024-01-01",
+            'attendance_data': openapi.Schema(
+                type=openapi.TYPE_ARRAY,
+                items=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    required=[
+                        'staff_pin',
+                        'subject_name',
+                        'tutor_id',
+                        'tutor',
+                        'first_in',
+                        'latitude',
+                        'longitude',
+                    ],
+                    properties={
+                        'staff_pin': openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            description="PIN сотрудника",
+                            example="s00260",
+                        ),
+                        'subject_name': openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            description="Название предмета",
+                            example="Медицина",
+                        ),
+                        'tutor_id': openapi.Schema(
+                            type=openapi.TYPE_INTEGER,
+                            description="ID преподавателя",
+                            example=861,
+                        ),
+                        'tutor': openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            description="ФИО преподавателя",
+                            example="Вдовцев Александр Викторович",
+                        ),
+                        'first_in': openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            format=openapi.FORMAT_DATETIME,
+                            description="Время начала занятия в формате ISO 8601 с часовым поясом",
+                            example="2024-10-06T14:24:24+05:00",
+                        ),
+                        'last_out': openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            format=openapi.FORMAT_DATETIME,
+                            description="Время окончания занятия в формате ISO 8601 с часовым поясом. Необязательно при создании",
+                            example="2024-01-01T18:30:30+05:00",
+                        ),
+                        'latitude': openapi.Schema(
+                            type=openapi.TYPE_NUMBER,
+                            format=openapi.FORMAT_FLOAT,
+                            description="Широта места проведения",
+                            example=43.207674,
+                        ),
+                        'longitude': openapi.Schema(
+                            type=openapi.TYPE_NUMBER,
+                            format=openapi.FORMAT_FLOAT,
+                            description="Долгота места проведения",
+                            example=76.851377,
+                        ),
+                        'date_at': openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            format=openapi.FORMAT_DATE,
+                            description="Дата занятия. По умолчанию используется текущая дата",
+                            example="2024-01-01",
+                        ),
+                    },
+                ),
             ),
         },
     ),
     responses={
-        201: openapi.Response(
-            description="Запись успешно создана",
+        202: openapi.Response(
+            description="Задача по созданию записей принята в обработку",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
                     "message": openapi.Schema(
                         type=openapi.TYPE_STRING,
-                        description="Сообщение об успешном создании записи",
+                        description="Сообщение об успешном запуске задачи",
                     ),
-                    "id": openapi.Schema(
-                        type=openapi.TYPE_INTEGER, description="ID созданной записи"
-                    ),
+                    "task_id": openapi.Schema(type=openapi.TYPE_STRING, description="ID задачи"),
                 },
             ),
         ),
@@ -1472,63 +1513,44 @@ def update_percent_for_period(
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def create_lesson_attendance(request):
     """
-    Создание записи посещаемости занятия.
+    Создание записей посещаемости занятий.
 
-    Args:
-        request (Request): HTTP запрос, содержащий данные для создания записи.
+    Ожидается список записей для создания в виде параметра `attendance_data`.
 
-    Ожидаемые параметры:
-        staff_pin (str): PIN сотрудника.
-        subject_name (str): Название предмета.
-        tutor_id (int): ID преподавателя.
-        tutor (str): Имя преподавателя.
-        first_in (str): Время начала занятия в формате ISO 8601 с часовым поясом.
-        latitude (float): Широта места проведения.
-        longitude (float): Долгота места проведения.
-        date_at (str): Дата занятия (опционально, по умолчанию используется текущая дата).
+    Параметры каждой записи:
+        - staff_pin (str): PIN сотрудника.
+        - subject_name (str): Название предмета.
+        - tutor_id (int): ID преподавателя.
+        - tutor (str): Имя преподавателя.
+        - first_in (str): Время начала занятия в формате ISO 8601 с часовым поясом.
+        - latitude (float): Широта места проведения.
+        - longitude (float): Долгота места проведения.
+        - date_at (str, опционально): Дата занятия (по умолчанию используется текущая дата).
 
-    Returns:
-        Response: Возвращает сообщение об успешном создании записи и ID созданной записи.
+    Возвращает:
+        - 202 Accepted: Задача принята в обработку, возвращается task_id для отслеживания состояния задачи.
+        - 400 Bad Request: Если данные отсутствуют или некорректны.
+        - 500 Internal Server Error: При возникновении ошибки на сервере.
     """
     try:
-        staff_pin = request.data.get('staff_pin')
-        subject_name = request.data.get('subject_name')
-        tutor_id = request.data.get('tutor_id')
-        tutor = request.data.get('tutor')
-        first_in = request.data.get('first_in')
-        latitude = request.data.get('latitude')
-        longitude = request.data.get('longitude')
-        date_at = request.data.get('date_at', timezone.now().date())
-
-        if not all([staff_pin, subject_name, tutor_id, tutor, first_in, latitude, longitude]):
-            logger.error("Missing required fields in the request.")
+        data = request.data.get('attendance_data', [])
+        if not data:
             return Response(
-                {"error": "All required fields must be provided."},
-                status=status.HTTP_400_BAD_REQUEST,
+                {"error": "No attendance data provided"}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        staff = get_object_or_404(models.Staff, pin=staff_pin)
+        task = tasks.process_lesson_attendance_batch.delay(data)
 
-        lesson_attendance = models.LessonAttendance.objects.create(
-            staff=staff,
-            subject_name=subject_name,
-            tutor_id=tutor_id,
-            tutor=tutor,
-            first_in=first_in,
-            latitude=latitude,
-            longitude=longitude,
-            date_at=date_at,
-        )
+        logger.info("Task for creating lesson attendance started.")
 
-        logger.info(f"LessonAttendance created successfully with ID {lesson_attendance.id}")
         return Response(
-            {"message": "LessonAttendance created successfully", "id": lesson_attendance.id},
-            status=status.HTTP_201_CREATED,
+            {"message": "Задача принята в обработку", "task_id": task.id},
+            status=status.HTTP_202_ACCEPTED,
         )
 
     except Exception as e:
-        logger.exception(f"An error occurred while creating LessonAttendance: {str(e)}")
-        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        logger.error(f"Ошибка при запуске задачи: {str(e)}")
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @swagger_auto_schema(
@@ -1644,7 +1666,6 @@ def update_lesson_attendance(request, id):
         longitude = request.data.get('longitude', lesson_attendance.longitude)
 
         if not last_out:
-            logger.error(f"Missing 'last_out' in the request for LessonAttendance ID {id}")
             return Response(
                 {"error": "'last_out' is required for updating."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1656,21 +1677,14 @@ def update_lesson_attendance(request, id):
         lesson_attendance.longitude = longitude
         lesson_attendance.save()
 
-        logger.info(f"LessonAttendance with ID {lesson_attendance.id} updated successfully")
         return Response(
-            {"message": "LessonAttendance updated successfully"}, status=status.HTTP_200_OK
+            {"message": "LessonAttendance updated successfully", "lesson_id": lesson_attendance.id},
+            status=status.HTTP_200_OK,
         )
 
     except models.LessonAttendance.DoesNotExist:
-        logger.error(
-            f"LessonAttendance with ID {id} not found. User: {request.user}, Data: {request.data}"
-        )
         return Response({"error": "LessonAttendance not found."}, status=status.HTTP_404_NOT_FOUND)
-
     except Exception as e:
-        logger.exception(
-            f"An error occurred while updating LessonAttendance: {str(e)}. User: {request.user}, Data: {request.data}"
-        )
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
