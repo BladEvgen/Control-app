@@ -21,9 +21,8 @@ from .models import (
     PasswordResetToken,
     PasswordResetRequestLog,
 )
-from django.contrib.admin import SimpleListFilter
 from django_admin_geomap import ModelAdmin
-
+from django.contrib.admin import SimpleListFilter
 
 # Настройка заголовков административной панели
 admin.site.site_header = "Панель управления"
