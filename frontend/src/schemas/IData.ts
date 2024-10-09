@@ -113,3 +113,10 @@ export interface AttendanceStats {
   absent_data: Array<{ staff_pin: string; name: string }>;
   data_for_date : string;
 }
+
+export interface LocationData {
+  name: string;
+  lat: number;
+  lng: number;
+  employees: number;
+}

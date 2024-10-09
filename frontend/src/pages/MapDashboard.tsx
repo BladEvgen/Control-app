@@ -7,13 +7,7 @@ import { apiUrl } from "../../apiConfig";
 import Notification from "../components/Notification";
 import AnimatedMarker from "../components/AnimatedMarker";
 import { BaseAction } from "../schemas/BaseAction";
-
-interface LocationData {
-  name: string;
-  lat: number;
-  lng: number;
-  employees: number;
-}
+import { LocationData } from "../schemas/IData";
 
 const fallbackLocations: LocationData[] = [
   {
@@ -140,9 +134,7 @@ const MapPage: React.FC = () => {
   const [visiblePopup, setVisiblePopup] = useState<string | null>(null);
   const [theme] = useState<string>(localStorage.getItem("theme") || "light");
   const [tileLayerUrl] = useState(
-    theme === "dark"
-      ? "https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png"
-      : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+    "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
   );
   const [isMarkersVisible, setIsMarkersVisible] = useState(false);
   const mapRef = useRef<L.Map | null>(null);
@@ -154,13 +146,13 @@ const MapPage: React.FC = () => {
       setLoading(true);
       let fetchedLocations: LocationData[] = [];
       try {
-        const response = await axiosInstance.get(`${apiUrl}/locations`);
+        const response = await axiosInstance.get(`${apiUrl}/api/locations`);
         fetchedLocations = response.data;
         setLocations(fetchedLocations);
         new BaseAction(BaseAction.SET_DATA, fetchedLocations);
       } catch (error) {
         fetchedLocations = fallbackLocations;
-        // setError("Не удалось загрузить данные.");
+        setError("Не удалось загрузить данные.");
         setLocations(fallbackLocations);
         new BaseAction<string>(BaseAction.SET_ERROR, "Ошибка загрузки данных");
       } finally {
