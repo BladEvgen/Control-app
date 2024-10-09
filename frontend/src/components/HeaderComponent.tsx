@@ -19,6 +19,8 @@ import {
   FaMoon,
   FaSun,
 } from "react-icons/fa";
+import { FaMapLocationDot } from "react-icons/fa6";
+
 import { MdDashboard } from "react-icons/md";
 type HeaderComponentProps = {
   toggleTheme: () => void;
@@ -118,6 +120,12 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
             Dashboard
           </button>
         </Link>
+        <Link to="/map">
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
+            <FaMapLocationDot className="mr-2 text-yellow-500" />
+            Map
+          </button>
+        </Link>
         <a href={`${apiUrl}/upload`}>
           <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
             <FaUpload className="mr-2 text-green-500 hover:text-green-700" />
@@ -192,14 +200,11 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
         ref={dropdownRef}
         className="lg:hidden bg-primary-dark text-text-light shadow-md mt-2 p-4 rounded-md space-y-4"
       >
-        <Link
-          to="/dashboard"
-          className="block text-lg hover:bg-primary-dark px-4 py-2 rounded-md"
-        >
-          <div className="flex items-center">
-            <MdDashboard className="mr-2 text-blue-500" />
-            Dashboard
-          </div>
+        <Link to="/map">
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
+            <FaMapLocationDot className="mr-2 text-yellow-500" />
+            Map
+          </button>
         </Link>
         <a
           href={`${apiUrl}/upload`}
