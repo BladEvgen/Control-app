@@ -51,8 +51,8 @@ class UsedFilter(admin.SimpleListFilter):
 
 
 class DepartmentHierarchyFilter(SimpleListFilter):
-    title = 'Отдел'
-    parameter_name = 'department_hierarchy'
+    title = "Отдел"
+    parameter_name = "department_hierarchy"
 
     def lookups(self, request, model_admin):
         departments = ChildDepartment.objects.filter(parent__isnull=True)
@@ -76,7 +76,7 @@ class DepartmentHierarchyFilter(SimpleListFilter):
         return descendants
 
     def get_department_choices(self, department, level=0):
-        indent = '—' * level
+        indent = "—" * level
         choices = [(department.id, f"{indent} {department.name}")]
         children = ChildDepartment.objects.filter(parent=department)
         for child in children:
@@ -128,7 +128,12 @@ class PasswordResetRequestLogAdmin(admin.ModelAdmin):
         (
             None,
             {
-                "fields": ("user", "ip_address", "requested_at", "next_possible_request"),
+                "fields": (
+                    "user",
+                    "ip_address",
+                    "requested_at",
+                    "next_possible_request",
+                ),
             },
         ),
     )
@@ -287,7 +292,13 @@ class RemoteWorkInline(admin.TabularInline):
 
 @admin.register(Staff)
 class StaffAdmin(admin.ModelAdmin):
-    list_display = ("pin", "full_name", "department", "display_positions", "avatar_thumbnail")
+    list_display = (
+        "pin",
+        "full_name",
+        "department",
+        "display_positions",
+        "avatar_thumbnail",
+    )
     list_filter = (DepartmentHierarchyFilter, "positions")
     search_fields = ("pin", "surname", "name", "department__name")
     filter_horizontal = ("positions",)
@@ -319,7 +330,7 @@ class StaffAdmin(admin.ModelAdmin):
     def avatar_thumbnail(self, obj):
         if obj.avatar:
             return format_html(
-                '''
+                """
                 <div style="display: flex; justify-content: center; align-items: center; height: 80px; width: 80px; overflow: hidden; border-radius: 50%;">
                     <img src="{}" style="
                         height: 100%;
@@ -328,15 +339,15 @@ class StaffAdmin(admin.ModelAdmin):
                         display: block;
                     "/>
                 </div>
-                ''',
+                """,
                 obj.avatar.url,
             )
         return format_html(
-            '''
+            """
             <div style="display: flex; justify-content: center; align-items: center; height: 80px; width: 80px; border-radius: 50%; background-color: #f0f0f0;">
                 <span style="color: #999; font-style: italic; text-align: center;">Нет фото</span>
             </div>
-            '''
+            """
         )
 
     avatar_thumbnail.short_description = "Фото"
@@ -373,6 +384,8 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         "staff__surname",
         "staff__name",
         "absence_reason",
+        "area_name_in",
+        "area_name_out",
     )
     search_fields = ("staff__surname", "staff__name", "staff__pin")
     date_hierarchy = "date_at"
@@ -384,7 +397,13 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         (
             None,
             {
-                "fields": ("staff", "date_at", "first_in", "last_out", "absence_reason"),
+                "fields": (
+                    "staff",
+                    "date_at",
+                    "first_in",
+                    "last_out",
+                    "absence_reason",
+                ),
             },
         ),
     )
@@ -394,6 +413,29 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
     staff_department.short_description = "Отдел"
     staff_department.admin_order_field = "staff__department__name"
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return (
+            qs.exclude(area_name_in__isnull=True)
+            .exclude(area_name_out__isnull=True)
+            .exclude(area_name_in="Unknown")
+            .exclude(area_name_out="Unknown")
+        )
+
+    def area_name_in(self, obj):
+        return (
+            obj.area_name_in
+            if obj.area_name_in and obj.area_name_in != "Unknown"
+            else "N/A"
+        )
+
+    def area_name_out(self, obj):
+        return (
+            obj.area_name_out
+            if obj.area_name_out and obj.area_name_out != "Unknown"
+            else "N/A"
+        )
 
 
 # === Посещаемость занятий ===
@@ -424,20 +466,20 @@ class LessonAttendanceAdmin(ModelAdmin):
         (
             None,
             {
-                'fields': ('first_in', 'last_out'),
-                'description': 'Основная информация о занятии',
+                "fields": ("first_in", "last_out"),
+                "description": "Основная информация о занятии",
             },
         ),
         (
-            'Преподаватель',
+            "Преподаватель",
             {
-                'fields': (
-                    'staff',
-                    'subject_name',
-                    'tutor_id',
-                    'tutor',
+                "fields": (
+                    "staff",
+                    "subject_name",
+                    "tutor_id",
+                    "tutor",
                 ),
-                'description': 'Информация о преподавателе и предмете',
+                "description": "Информация о преподавателе и предмете",
             },
         ),
     )
@@ -455,7 +497,7 @@ class LessonAttendanceAdmin(ModelAdmin):
     search_fields = ("staff__name", "subject_name", "tutor")
 
     class Media:
-        css = {'all': ('custom_admin.css',)}
+        css = {"all": ("custom_admin.css",)}
 
 
 admin.site.register(LessonAttendance, LessonAttendanceAdmin)
@@ -513,7 +555,13 @@ class AbsentReasonAdmin(admin.ModelAdmin):
         (
             None,
             {
-                "fields": ("staff", "reason", ("start_date", "end_date"), "document", "approved"),
+                "fields": (
+                    "staff",
+                    "reason",
+                    ("start_date", "end_date"),
+                    "document",
+                    "approved",
+                ),
             },
         ),
     )
