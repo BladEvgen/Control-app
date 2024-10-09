@@ -1,15 +1,23 @@
 import React, { useEffect, useState, ReactNode } from "react";
 import { createBrowserRouter } from "react-router-dom";
 
-import MainPage from "./pages/MainPage.tsx";
-import HeaderComponent from "./components/HeaderComponent.tsx";
-import FooterComponent from "./components/FooterComponent.tsx";
-import LoginPage from "./pages/LoginPage.tsx";
-import DepartmentPage from "./pages/DepartmentPage.tsx";
-import ChildDepartmentPage from "./pages/ChildDepartmentPage.tsx";
-import StaffDetail from "./pages/StaffDetail.tsx";
+const MainPage = React.lazy(() => import("./pages/MainPage.tsx"));
+const HeaderComponent = React.lazy(
+  () => import("./components/HeaderComponent.tsx")
+);
+const FooterComponent = React.lazy(
+  () => import("./components/FooterComponent.tsx")
+);
+const LoginPage = React.lazy(() => import("./pages/LoginPage.tsx"));
+const DepartmentPage = React.lazy(() => import("./pages/DepartmentPage.tsx"));
+const ChildDepartmentPage = React.lazy(
+  () => import("./pages/ChildDepartmentPage.tsx")
+);
+const StaffDetail = React.lazy(() => import("./pages/StaffDetail.tsx"));
+const Dashboard = React.lazy(() => import("./pages/Dashboard.tsx"));
+const MapPage = React.lazy(() => import("./pages/MapDashboard.tsx"));
+
 import { addPrefix } from "./RouterUtils.tsx";
-import Dashboard from "./pages/Dashboard.tsx";
 interface LayoutProps {
   children: ReactNode;
 }
@@ -91,6 +99,14 @@ const router = createBrowserRouter([
     element: (
       <Layout>
         <Dashboard />
+      </Layout>
+    ),
+  },
+  {
+    path: addPrefix("/map"),
+    element: (
+      <Layout>
+        <MapPage />
       </Layout>
     ),
   },
