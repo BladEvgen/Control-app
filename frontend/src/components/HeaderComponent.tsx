@@ -111,30 +111,30 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
     () => (
       <div
         ref={dropdownRef}
-        className="absolute right-0 mt-2 w-48 bg-white dark:bg-background-dark text-gray-800 dark:text-text-light rounded-md shadow-lg z-50"
+        className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 text-gray-800 dark:text-text-light rounded-md shadow-lg z-50"
         onMouseLeave={() => setIsDropdownOpen(false)}
       >
         <Link to="/dashboard">
-          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-gray-300 rounded">
             <MdDashboard className="mr-2 text-blue-500" />
             Dashboard
           </button>
         </Link>
         <Link to="/map">
-          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-gray-300 rounded">
             <FaMapLocationDot className="mr-2 text-yellow-500" />
             Map
           </button>
         </Link>
         <a href={`${apiUrl}/upload`}>
-          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-gray-300 rounded">
             <FaUpload className="mr-2 text-green-500 hover:text-green-700" />
             Upload
           </button>
         </a>
         <button
           onClick={toggleTheme}
-          className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-t text-yellow-500"
+          className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-t text-yellow-500"
         >
           {currentTheme === "dark" ? (
             <FaSun className="mr-2 text-yellow-500" />
@@ -145,7 +145,7 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
         </button>
         <button
           onClick={handleLogout}
-          className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-t text-red-500"
+          className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-t text-red-500"
         >
           <FaSignOutAlt className="mr-2" />
           Logout
