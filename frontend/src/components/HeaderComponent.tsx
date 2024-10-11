@@ -7,8 +7,7 @@ import React, {
   useMemo,
 } from "react";
 import { Link, useNavigate } from "../RouterUtils";
-import Cookies from "js-cookie";
-import axiosInstance from "../api";
+import axiosInstance, { getCookie, setCookie, removeCookie } from "../api";
 import {
   FaSignOutAlt,
   FaUpload,
@@ -19,7 +18,9 @@ import {
   FaMoon,
   FaSun,
 } from "react-icons/fa";
+import { FaMapLocationDot } from "react-icons/fa6";
 import { MdDashboard } from "react-icons/md";
+
 type HeaderComponentProps = {
   toggleTheme: () => void;
   currentTheme: string;
@@ -31,10 +32,10 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
 }) => {
   const navigate = useNavigate();
   const [username, setUsername] = useState<string>(
-    () => Cookies.get("username") || ""
+    () => getCookie("username") || ""
   );
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
-    () => !!Cookies.get("access_token")
+    () => !!getCookie("access_token")
   );
   const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
@@ -42,8 +43,8 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
   const profileButtonRef = useRef<HTMLButtonElement>(null);
 
   const checkAuthentication = useCallback(async () => {
-    const accessToken = Cookies.get("access_token");
-    const refreshToken = Cookies.get("refresh_token");
+    const accessToken = getCookie("access_token");
+    const refreshToken = getCookie("refresh_token");
 
     if (accessToken && refreshToken) {
       if (!username) {
@@ -52,7 +53,7 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
           const fetchedUsername = userDetails.data.user.username;
 
           setUsername(fetchedUsername);
-          Cookies.set("username", fetchedUsername, { path: "/" });
+          setCookie("username", fetchedUsername, { path: "/" });
           setIsAuthenticated(true);
         } catch (error) {
           console.error("Error fetching user details:", error);
@@ -67,9 +68,9 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
   }, [username]);
 
   const handleLogout = useCallback(() => {
-    Cookies.remove("access_token");
-    Cookies.remove("refresh_token");
-    Cookies.remove("username");
+    removeCookie("access_token");
+    removeCookie("refresh_token");
+    removeCookie("username");
     setIsAuthenticated(false);
     setUsername("");
     navigate("/login");
@@ -109,24 +110,30 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
     () => (
       <div
         ref={dropdownRef}
-        className="absolute right-0 mt-2 w-48 bg-white dark:bg-background-dark text-gray-800 dark:text-text-light rounded-md shadow-lg z-50"
+        className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 text-gray-800 dark:text-text-light rounded-md shadow-lg z-50"
         onMouseLeave={() => setIsDropdownOpen(false)}
       >
         <Link to="/dashboard">
-          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-gray-300 rounded">
             <MdDashboard className="mr-2 text-blue-500" />
             Dashboard
           </button>
         </Link>
+        <Link to="/map">
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-gray-300 rounded">
+            <FaMapLocationDot className="mr-2 text-yellow-500" />
+            Map
+          </button>
+        </Link>
         <a href={`${apiUrl}/upload`}>
-          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-gray-300 rounded">
             <FaUpload className="mr-2 text-green-500 hover:text-green-700" />
             Upload
           </button>
         </a>
         <button
           onClick={toggleTheme}
-          className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-t text-yellow-500"
+          className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-t text-yellow-500"
         >
           {currentTheme === "dark" ? (
             <FaSun className="mr-2 text-yellow-500" />
@@ -137,7 +144,7 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
         </button>
         <button
           onClick={handleLogout}
-          className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-t text-red-500"
+          className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-t text-red-500"
         >
           <FaSignOutAlt className="mr-2" />
           Logout
@@ -192,14 +199,11 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
         ref={dropdownRef}
         className="lg:hidden bg-primary-dark text-text-light shadow-md mt-2 p-4 rounded-md space-y-4"
       >
-        <Link
-          to="/dashboard"
-          className="block text-lg hover:bg-primary-dark px-4 py-2 rounded-md"
-        >
-          <div className="flex items-center">
-            <MdDashboard className="mr-2 text-blue-500" />
-            Dashboard
-          </div>
+        <Link to="/map">
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-700 w-full text-left border-gray-300 rounded">
+            <FaMapLocationDot className="mr-2 text-yellow-500" />
+            Map
+          </button>
         </Link>
         <a
           href={`${apiUrl}/upload`}

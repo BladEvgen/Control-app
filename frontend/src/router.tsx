@@ -10,6 +10,7 @@ import ChildDepartmentPage from "./pages/ChildDepartmentPage.tsx";
 import StaffDetail from "./pages/StaffDetail.tsx";
 import { addPrefix } from "./RouterUtils.tsx";
 import Dashboard from "./pages/Dashboard.tsx";
+import MapPage from "./pages/MapDashboard.tsx";
 interface LayoutProps {
   children: ReactNode;
 }
@@ -36,7 +37,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         <div
           className={`absolute top-0 left-0 right-0 h-full w-full ${
             theme === "dark" ? "animate-dripDark" : "animate-drip"
-          } bg-gradient-to-b from-primary-dark via-primary-mid to-footer-light dark:via-background-darker dark:to-background-dark`}
+          } bg-gradient-to-b from-primary-dark via-primary-mid to-footer-light  dark:to-background-dark`}
         ></div>
         <div className="relative z-10 animate-fadeIn">{children}</div>
       </div>
@@ -91,6 +92,14 @@ const router = createBrowserRouter([
     element: (
       <Layout>
         <Dashboard />
+      </Layout>
+    ),
+  },
+  {
+    path: addPrefix("/map"),
+    element: (
+      <Layout>
+        <MapPage />
       </Layout>
     ),
   },

@@ -385,6 +385,191 @@ class StaffAttendanceStatsView(APIView):
 
 @swagger_auto_schema(
     method="GET",
+    operation_summary="Получить данные о локациях и сотрудниках по турникетам",
+    operation_description="Метод возвращает данные по количеству сотрудников, зарегистрированных в разных локациях на основе зоны турникетов.",
+    responses={
+        200: openapi.Response(
+            description="Успешный запрос. Возвращается список данных о локациях с количеством сотрудников.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_ARRAY,
+                items=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "name": openapi.Schema(
+                            type=openapi.TYPE_STRING, description="Название здания или локации."
+                        ),
+                        "lat": openapi.Schema(
+                            type=openapi.TYPE_NUMBER,
+                            format="float",
+                            description="Широта координаты.",
+                        ),
+                        "lng": openapi.Schema(
+                            type=openapi.TYPE_NUMBER,
+                            format="float",
+                            description="Долгота координаты.",
+                        ),
+                        "employees": openapi.Schema(
+                            type=openapi.TYPE_INTEGER, description="Количество сотрудников."
+                        ),
+                    },
+                ),
+            ),
+        ),
+        404: openapi.Response(
+            description="Данные не найдены для запрашиваемой даты.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            ),
+        ),
+        500: openapi.Response(
+            description="Внутренняя ошибка сервера.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            ),
+        ),
+    },
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def map_location(request):
+    """
+    Возвращает данные о локациях и количестве сотрудников в них на основе турникетов за указанную дату.
+
+    Args:
+        request (HttpRequest): HTTP-запрос с необязательным параметром `date_at`, который используется для фильтрации данных.
+
+    Returns:
+        JsonResponse: JSON-ответ с данными о локациях, если запрос успешен, либо сообщение об ошибке.
+
+    Raises:
+        KeyError: Если в данных присутствует неверный ключ.
+        ValueError: Если параметры запроса содержат неверные значения.
+        Exception: Для обработки любых других непредвиденных исключений.
+    """
+    try:
+        zone_mapping = {
+            "Второй Корпус (Торекулова)": {
+                "lat": 43.2655509,
+                "lng": 76.9299558,
+                "areas": ["Торекулва турникет"],
+            },
+            "Третий Корпус (Карасай батыра)": {
+                "lat": 43.251326,
+                "lng": 76.9349449,
+                "areas": ["карасай батыра турникет"],
+            },
+            "Главный Корпус (Абылайхана)": {
+                "lat": 43.2644734,
+                "lng": 76.9393907,
+                "areas": [
+                    "Абылайхана турникет",
+                    "вход в 8 этаж",
+                    "военные 3 этаж",
+                    "лифтовые с 1 по 7",
+                    "выход ЦОС",
+                ],
+            },
+        }
+
+        date_at = request.GET.get("date_at", None)
+        if not date_at:
+            logger.warning("No date_at parameter provided, using current date.")
+            date_at = timezone.now().date()
+        else:
+            logger.info(f"Date parameter provided: {date_at}")
+
+        cache_key = f"map_location_{date_at}"
+
+        cached_data = get_cache(
+            cache_key,
+            query=lambda: generate_map_data(zone_mapping, date_at),
+            timeout=1 * 60 * 60,
+            cache=Cache,
+        )
+
+        return Response(cached_data, status=status.HTTP_200_OK)
+
+    except KeyError as ke:
+        logger.error(f"KeyError encountered: {str(ke)}", exc_info=True)
+        return Response(
+            {"error": "Internal error: data inconsistency."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    except ValueError as ve:
+        logger.error(f"ValueError encountered: {str(ve)}", exc_info=True)
+        return Response({"error": "Invalid input provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+    except Exception as e:
+        logger.critical(f"Critical error in map_location: {str(e)}", exc_info=True)
+        return Response(
+            {"error": "A critical error occurred. Please try again later."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+def generate_map_data(zone_mapping, date_at):
+    """
+    Генерирует данные по локациям и количеству сотрудников для указанной даты.
+
+    Args:
+        zone_mapping (dict): Словарь с информацией о зонах.
+        date_at (str): Дата для фильтрации данных.
+
+    Returns:
+        list: Список данных по локациям и количеству сотрудников.
+    """
+    try:
+        attendance_data = (
+            models.StaffAttendance.objects.filter(date_at=date_at, first_in__isnull=False)
+            .values("area_name_in")
+            .annotate(employees=Count("staff"))
+        )
+        logger.info(f"Attendance data retrieved for date: {date_at}")
+    except models.StaffAttendance.DoesNotExist:
+        logger.error(f"No attendance records found for date: {date_at}")
+        return []
+
+    zone_result = {}
+
+    for record in attendance_data:
+        area_name = record["area_name_in"]
+        matched = False
+
+        for zone_name, zone_info in zone_mapping.items():
+            if area_name in zone_info["areas"]:
+                if zone_name in zone_result:
+                    zone_result[zone_name]['employees'] += record['employees']
+                    logger.info(
+                        f"Updated employee count for {zone_name}: {zone_result[zone_name]['employees']}"
+                    )
+                else:
+                    zone_result[zone_name] = {
+                        "name": zone_name,
+                        "lat": zone_info["lat"],
+                        "lng": zone_info["lng"],
+                        "employees": record['employees'],
+                    }
+                    logger.info(
+                        f"Added new zone entry: {zone_name} with {record['employees']} employees."
+                    )
+                matched = True
+                break
+
+        if not matched:
+            logger.warning(f"Unknown area_name_in '{area_name}' found in attendance data. Skipped.")
+
+    return list(zone_result.values())
+
+
+@swagger_auto_schema(
+    method="GET",
     operation_summary="Получить ID всех родительских департаментов",
     operation_description="Метод для получения списка всех родительских департаментов.",
     responses={
@@ -942,7 +1127,7 @@ def get_staff_detail(staff, start_date, end_date):
             "name": staff.name,
             "surname": staff.surname if staff.surname != "Нет фамилии" else "",
             "positions": [position.name for position in staff.positions.all()],
-            "avatar": staff.avatar.url if staff.avatar else "/media/images/no-avatar.png",
+            "avatar": (staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"),
             "department": staff.department.name if staff.department else "N/A",
             "department_id": staff.department.id if staff.department else "N/A",
             "attendance": {},
@@ -1198,7 +1383,6 @@ def process_attendance(
             "is_remote_work": False,
             "is_absent_approved": False,
             "absent_reason": None,
-            "approved": None,
         }
         return (
             attendance_record,
@@ -1241,7 +1425,6 @@ def process_attendance(
                 "is_remote_work": False,
                 "is_absent_approved": True,
                 "absent_reason": absent_reason_display,
-                "approved": True,
             }
             return (
                 attendance_record,
@@ -1285,7 +1468,6 @@ def process_attendance(
         "is_remote_work": is_remote_work,
         "is_absent_approved": is_absent_approved,
         "absent_reason": absent_reason_display,
-        "approved": absent_approved,
     }
     logger.info(f"Обработана запись посещаемости за дату {event_date}: {attendance_record}")
 
@@ -1368,20 +1550,23 @@ def check_lesson_task_status(request, task_id):
     try:
         task_result = AsyncResult(task_id)
 
-        if task_result.state == 'PENDING':
+        if task_result.state == "PENDING":
             return Response(
-                {"status": "Pending", "message": "Задача в очереди, ожидайте завершения"},
+                {
+                    "status": "Pending",
+                    "message": "Задача в очереди, ожидайте завершения",
+                },
                 status=status.HTTP_202_ACCEPTED,
             )
 
-        elif task_result.state == 'SUCCESS':
+        elif task_result.state == "SUCCESS":
             result = task_result.result
             return Response(
-                {"status": "Success", "lesson_ids": result.get('success_records', [])},
+                {"status": "Success", "lesson_ids": result.get("success_records", [])},
                 status=status.HTTP_200_OK,
             )
 
-        elif task_result.state == 'FAILURE':
+        elif task_result.state == "FAILURE":
             return Response(
                 {"status": "Failure", "error": str(task_result.info)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1389,7 +1574,10 @@ def check_lesson_task_status(request, task_id):
 
         else:
             return Response(
-                {"status": task_result.state, "message": "Задача в процессе выполнения"},
+                {
+                    "status": task_result.state,
+                    "message": "Задача в процессе выполнения",
+                },
                 status=status.HTTP_200_OK,
             )
 
@@ -1404,67 +1592,67 @@ def check_lesson_task_status(request, task_id):
     operation_description="Создает новые записи посещаемости для сотрудников на занятия. Параметры передаются в виде списка объектов, где обязательные параметры включают `staff_pin`, `subject_name`, `tutor_id`, `tutor`, `first_in`, `latitude` и `longitude`. Параметр `last_out` не требуется на этапе создания, так как занятие может быть ещё не завершено.",
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
-        required=['attendance_data'],
+        required=["attendance_data"],
         properties={
-            'attendance_data': openapi.Schema(
+            "attendance_data": openapi.Schema(
                 type=openapi.TYPE_ARRAY,
                 items=openapi.Schema(
                     type=openapi.TYPE_OBJECT,
                     required=[
-                        'staff_pin',
-                        'subject_name',
-                        'tutor_id',
-                        'tutor',
-                        'first_in',
-                        'latitude',
-                        'longitude',
+                        "staff_pin",
+                        "subject_name",
+                        "tutor_id",
+                        "tutor",
+                        "first_in",
+                        "latitude",
+                        "longitude",
                     ],
                     properties={
-                        'staff_pin': openapi.Schema(
+                        "staff_pin": openapi.Schema(
                             type=openapi.TYPE_STRING,
                             description="PIN сотрудника",
                             example="s00260",
                         ),
-                        'subject_name': openapi.Schema(
+                        "subject_name": openapi.Schema(
                             type=openapi.TYPE_STRING,
                             description="Название предмета",
                             example="Медицина",
                         ),
-                        'tutor_id': openapi.Schema(
+                        "tutor_id": openapi.Schema(
                             type=openapi.TYPE_INTEGER,
                             description="ID преподавателя",
                             example=1,
                         ),
-                        'tutor': openapi.Schema(
+                        "tutor": openapi.Schema(
                             type=openapi.TYPE_STRING,
                             description="ФИО преподавателя",
                             example="Иванов И.И.",
                         ),
-                        'first_in': openapi.Schema(
+                        "first_in": openapi.Schema(
                             type=openapi.TYPE_STRING,
                             format=openapi.FORMAT_DATETIME,
                             description="Время начала занятия в формате ISO 8601 с часовым поясом",
                             example="2024-10-06T14:24:24+05:00",
                         ),
-                        'last_out': openapi.Schema(
+                        "last_out": openapi.Schema(
                             type=openapi.TYPE_STRING,
                             format=openapi.FORMAT_DATETIME,
                             description="Время окончания занятия в формате ISO 8601 с часовым поясом. Необязательно при создании",
                             example="2024-01-01T18:30:30+05:00",
                         ),
-                        'latitude': openapi.Schema(
+                        "latitude": openapi.Schema(
                             type=openapi.TYPE_NUMBER,
                             format=openapi.FORMAT_FLOAT,
                             description="Широта места проведения",
                             example=43.207674,
                         ),
-                        'longitude': openapi.Schema(
+                        "longitude": openapi.Schema(
                             type=openapi.TYPE_NUMBER,
                             format=openapi.FORMAT_FLOAT,
                             description="Долгота места проведения",
                             example=76.851377,
                         ),
-                        'date_at': openapi.Schema(
+                        "date_at": openapi.Schema(
                             type=openapi.TYPE_STRING,
                             format=openapi.FORMAT_DATE,
                             description="Дата занятия. По умолчанию используется текущая дата",
@@ -1533,10 +1721,11 @@ def create_lesson_attendance(request):
         - 500 Internal Server Error: При возникновении ошибки на сервере.
     """
     try:
-        data = request.data.get('attendance_data', [])
+        data = request.data.get("attendance_data", [])
         if not data:
             return Response(
-                {"error": "No attendance data provided"}, status=status.HTTP_400_BAD_REQUEST
+                {"error": "No attendance data provided"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         task = tasks.process_lesson_attendance_batch.delay(data)
@@ -1568,27 +1757,27 @@ def create_lesson_attendance(request):
     ],
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
-        required=['last_out'],
+        required=["last_out"],
         properties={
-            'first_in': openapi.Schema(
+            "first_in": openapi.Schema(
                 type=openapi.TYPE_STRING,
                 format=openapi.FORMAT_DATETIME,
                 description="Время начала занятия в формате ISO 8601 с часовым поясом. Опционально",
                 example="2024-09-16T17:28:24+05:00",
             ),
-            'last_out': openapi.Schema(
+            "last_out": openapi.Schema(
                 type=openapi.TYPE_STRING,
                 format=openapi.FORMAT_DATETIME,
                 description="Время окончания занятия в формате ISO 8601 с часовым поясом. Обязательно",
                 example="2024-09-16T18:28:24+05:00",
             ),
-            'latitude': openapi.Schema(
+            "latitude": openapi.Schema(
                 type=openapi.TYPE_NUMBER,
                 format=openapi.FORMAT_FLOAT,
                 description="Широта места проведения. Опционально",
                 example=43.222,
             ),
-            'longitude': openapi.Schema(
+            "longitude": openapi.Schema(
                 type=openapi.TYPE_NUMBER,
                 format=openapi.FORMAT_FLOAT,
                 description="Долгота места проведения. Опционально",
@@ -1660,10 +1849,10 @@ def update_lesson_attendance(request, id):
     try:
         lesson_attendance = get_object_or_404(models.LessonAttendance, id=id)
 
-        first_in = request.data.get('first_in', lesson_attendance.first_in)
-        last_out = request.data.get('last_out')
-        latitude = request.data.get('latitude', lesson_attendance.latitude)
-        longitude = request.data.get('longitude', lesson_attendance.longitude)
+        first_in = request.data.get("first_in", lesson_attendance.first_in)
+        last_out = request.data.get("last_out")
+        latitude = request.data.get("latitude", lesson_attendance.latitude)
+        longitude = request.data.get("longitude", lesson_attendance.longitude)
 
         if not last_out:
             return Response(
@@ -1678,7 +1867,10 @@ def update_lesson_attendance(request, id):
         lesson_attendance.save()
 
         return Response(
-            {"message": "LessonAttendance updated successfully", "lesson_id": lesson_attendance.id},
+            {
+                "message": "LessonAttendance updated successfully",
+                "lesson_id": lesson_attendance.id,
+            },
             status=status.HTTP_200_OK,
         )
 

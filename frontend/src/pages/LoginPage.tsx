@@ -1,10 +1,10 @@
 import { useState, useCallback } from "react";
-import axiosInstance from "../api";
-import Cookies from "js-cookie";
+import axiosInstance, { setCookie } from "../api";
 import { useNavigate } from "../RouterUtils";
 import { FaEye, FaEyeSlash, FaInfoCircle } from "react-icons/fa";
 import { FaBug } from "react-icons/fa6";
 import { apiUrl } from "../../apiConfig";
+
 const LoginPage = () => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -22,9 +22,9 @@ const LoginPage = () => {
         password,
       });
 
-      Cookies.set("access_token", res.data.access, { path: "/" });
-      Cookies.set("refresh_token", res.data.refresh, { path: "/" });
-      Cookies.set("username", formattedUsername, { path: "/" });
+      setCookie("access_token", res.data.access, { path: "/" });
+      setCookie("refresh_token", res.data.refresh, { path: "/" });
+      setCookie("username", formattedUsername, { path: "/" });
 
       navigate("/");
       window.location.reload();

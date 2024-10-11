@@ -97,6 +97,9 @@ export interface AttendanceData {
   percent_day: number;
   total_minutes: number;
   is_weekend: boolean;
+  is_remote_work: boolean;
+  is_absent_approved: boolean;
+  absent_reason: string | null;
 }
 
 export interface AttendanceStats {
@@ -112,4 +115,11 @@ export interface AttendanceStats {
   }>;
   absent_data: Array<{ staff_pin: string; name: string }>;
   data_for_date : string;
+}
+
+export interface LocationData {
+  name: string;
+  lat: number;
+  lng: number;
+  employees: number;
 }

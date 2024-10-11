@@ -19,6 +19,7 @@ urlpatterns = [
         views.StaffAttendanceStatsView.as_view(),
         name="staff-attendance-stats",
     ),
+    path("api/locations", views.map_location, name="locations"),
     path("api/lesson_attendance/", views.create_lesson_attendance, name="create_lesson_attendance"),
     path(
         "api/lesson_attendance/<int:id>/",
