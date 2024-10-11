@@ -10,7 +10,7 @@ import { formatDepartmentName } from "../utils/utils";
 import Notification from "../components/Notification";
 import DateForm from "./DateForm";
 import AttendanceTable from "./AttendanceTable";
-import { formatDateRu, formatNumber, declensionDays } from "../utils/utils";
+import { formatDateRu, declensionDays } from "../utils/utils";
 
 const CONTRACT_TYPE_CHOICES = [
   ["full_time", "Полная занятость"],
@@ -103,25 +103,50 @@ const StaffDetail = () => {
     }
   };
 
+  const generateLegendItems = (attendance: Record<string, AttendanceData>) => {
+    const legend = new Set<string>();
+
+    Object.values(attendance).forEach((data) => {
+      if (data.is_weekend && !data.first_in && !data.last_out) {
+        legend.add("Выходной день");
+      }
+      if (data.is_weekend && data.first_in && data.last_out) {
+        legend.add("Работа в выходной");
+      } else if (data.is_remote_work) {
+        legend.add("Дистанционная работа");
+      } else if (!data.is_weekend && !data.first_in && !data.last_out) {
+        if (data.is_absent_approved) {
+          legend.add(
+            `Отсутствие (Одобрено ${data.absent_reason || "Без причины"})`
+          );
+        } else {
+          legend.add(
+            `Отсутствие (Не одобрено: ${data.absent_reason || "Без причины"})`
+          );
+        }
+      }
+    });
+
+    return Array.from(legend);
+  };
+
+  const legendItems = generateLegendItems(attendance);
+
   let bonusPercentage = 0;
   if (
     staffData &&
-    staffData.contract_type !== "gph" &&
-    staffData.salary !== null &&
     Object.keys(staffData.attendance).length > 28 &&
     Object.keys(staffData.attendance).length < 32
   ) {
     const percent_for_period = staffData.percent_for_period;
 
-    if (percent_for_period > 106) {
-      if (percent_for_period > 100) {
-        if (percent_for_period >= 119) {
-          bonusPercentage = 20;
-        } else if (percent_for_period >= 113) {
-          bonusPercentage = 15;
-        } else {
-          bonusPercentage = 10;
-        }
+    if (percent_for_period > 125) {
+      if (percent_for_period >= 145) {
+        bonusPercentage = 20;
+      } else if (percent_for_period >= 135) {
+        bonusPercentage = 15;
+      } else {
+        bonusPercentage = 10;
       }
     }
   }
@@ -186,12 +211,6 @@ const StaffDetail = () => {
                         {staffData.positions.join(", ")}
                       </p>
                     )}
-                    {staffData.salary !== null && (
-                      <p className="text-lg font-semibold mb-1">
-                        <strong>Зарплата:</strong>{" "}
-                        {formatNumber(staffData.salary)}
-                      </p>
-                    )}
                     {staffData.contract_type && (
                       <p className="text-lg font-semibold mb-1">
                         <strong>Тип занятости:</strong>{" "}
@@ -222,12 +241,8 @@ const StaffDetail = () => {
                 </div>
                 {bonusPercentage > 0 && (
                   <p className="text-lg text-green-600 dark:text-green-400 mt-4">
-                    Сотрудник может получить премию в размере {bonusPercentage}%
-                    (
-                    {formatNumber(
-                      ((staffData.salary ?? 0) * bonusPercentage) / 100
-                    )}
-                    )
+                    Сотрудник может получить доплату в размере {bonusPercentage}
+                    %
                   </p>
                 )}
               </div>
@@ -237,20 +252,32 @@ const StaffDetail = () => {
               </h2>
 
               <div className="flex flex-wrap justify-center gap-4 text-sm text-gray-700 dark:text-gray-400 mt-4">
-                <div className="flex items-center space-x-2">
-                  <div className="w-4 h-4 rounded-full bg-yellow-400 dark:bg-yellow-500"></div>
-                  <span className="font-semibold">Выходной день</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <div className="w-4 h-4 rounded-full bg-red-400 dark:bg-red-500"></div>
-                  <span className="font-semibold">Работник отсутствовал</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <div className="w-4 h-4 rounded-full bg-green-400 dark:bg-green-500"></div>
-                  <span className="font-semibold">
-                    Работник был на работе в выходной
-                  </span>
-                </div>
+                {legendItems.map((item, index) => {
+                  let colorClass = "";
+
+                  if (item === "Выходной день") {
+                    colorClass = "bg-amber-400 dark:bg-amber-500";
+                  } else if (item.includes("Работа в выходной")) {
+                    colorClass = "bg-green-400 dark:bg-green-500";
+                  } else if (item.includes("Дистанционная работа")) {
+                    colorClass = "bg-sky-400 dark:bg-sky-500";
+                  } else if (item.includes("Одобрено")) {
+                    colorClass = "bg-violet-400 dark:bg-violet-500";
+                  } else if (item.includes("Не одобрено")) {
+                    colorClass = "bg-rose-400 dark:bg-rose-500";
+                  } else {
+                    colorClass = "bg-gray-400 dark:bg-gray-500";
+                  }
+
+                  return (
+                    <div key={index} className="flex items-center space-x-2">
+                      <div
+                        className={`w-4 h-4 rounded-full ${colorClass}`}
+                      ></div>
+                      <span className="font-semibold">{item}</span>
+                    </div>
+                  );
+                })}
               </div>
 
               <DateForm
