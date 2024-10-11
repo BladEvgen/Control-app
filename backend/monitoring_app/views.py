@@ -1383,7 +1383,6 @@ def process_attendance(
             "is_remote_work": False,
             "is_absent_approved": False,
             "absent_reason": None,
-            "approved": None,
         }
         return (
             attendance_record,
@@ -1426,7 +1425,6 @@ def process_attendance(
                 "is_remote_work": False,
                 "is_absent_approved": True,
                 "absent_reason": absent_reason_display,
-                "approved": True,
             }
             return (
                 attendance_record,
@@ -1470,7 +1468,6 @@ def process_attendance(
         "is_remote_work": is_remote_work,
         "is_absent_approved": is_absent_approved,
         "absent_reason": absent_reason_display,
-        "approved": absent_approved,
     }
     logger.info(f"Обработана запись посещаемости за дату {event_date}: {attendance_record}")
 
