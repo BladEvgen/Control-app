@@ -236,10 +236,10 @@ SIMPLE_JWT = {
 if DEBUG:
     SIMPLE_JWT.update(
         {
-            "ACCESS_TOKEN_LIFETIME": timedelta(minutes=1),
-            "REFRESH_TOKEN_LIFETIME": timedelta(minutes=5),
-            "SLIDING_TOKEN_LIFETIME": timedelta(minutes=1),
-            "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(minutes=5),
+            "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
+            "REFRESH_TOKEN_LIFETIME": timedelta(minutes=30),
+            "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10),
+            "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(minutes=30),
         }
     )
 else:
