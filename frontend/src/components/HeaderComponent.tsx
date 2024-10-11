@@ -7,8 +7,7 @@ import React, {
   useMemo,
 } from "react";
 import { Link, useNavigate } from "../RouterUtils";
-import Cookies from "js-cookie";
-import axiosInstance from "../api";
+import axiosInstance, { getCookie, setCookie, removeCookie } from "../api";
 import {
   FaSignOutAlt,
   FaUpload,
@@ -20,8 +19,8 @@ import {
   FaSun,
 } from "react-icons/fa";
 import { FaMapLocationDot } from "react-icons/fa6";
-
 import { MdDashboard } from "react-icons/md";
+
 type HeaderComponentProps = {
   toggleTheme: () => void;
   currentTheme: string;
@@ -33,10 +32,10 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
 }) => {
   const navigate = useNavigate();
   const [username, setUsername] = useState<string>(
-    () => Cookies.get("username") || ""
+    () => getCookie("username") || ""
   );
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
-    () => !!Cookies.get("access_token")
+    () => !!getCookie("access_token")
   );
   const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
@@ -44,8 +43,8 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
   const profileButtonRef = useRef<HTMLButtonElement>(null);
 
   const checkAuthentication = useCallback(async () => {
-    const accessToken = Cookies.get("access_token");
-    const refreshToken = Cookies.get("refresh_token");
+    const accessToken = getCookie("access_token");
+    const refreshToken = getCookie("refresh_token");
 
     if (accessToken && refreshToken) {
       if (!username) {
@@ -54,7 +53,7 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
           const fetchedUsername = userDetails.data.user.username;
 
           setUsername(fetchedUsername);
-          Cookies.set("username", fetchedUsername, { path: "/" });
+          setCookie("username", fetchedUsername, { path: "/" });
           setIsAuthenticated(true);
         } catch (error) {
           console.error("Error fetching user details:", error);
@@ -69,9 +68,9 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
   }, [username]);
 
   const handleLogout = useCallback(() => {
-    Cookies.remove("access_token");
-    Cookies.remove("refresh_token");
-    Cookies.remove("username");
+    removeCookie("access_token");
+    removeCookie("refresh_token");
+    removeCookie("username");
     setIsAuthenticated(false);
     setUsername("");
     navigate("/login");
