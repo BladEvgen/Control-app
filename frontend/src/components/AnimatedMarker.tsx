@@ -68,7 +68,7 @@ const AnimatedMarker: React.FC<AnimatedMarkerProps> = ({
               <div className="p-2 text-center">
                 <h2 className="font-bold text-sm text-gray-800 ">{name}</h2>
                 <p className="text-xs text-gray-600 ">
-                  Сотрудников: {employees}
+                  Количество уникальных посещений: {employees}
                 </p>
               </div>
             </Popup>
