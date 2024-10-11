@@ -97,6 +97,9 @@ export interface AttendanceData {
   percent_day: number;
   total_minutes: number;
   is_weekend: boolean;
+  is_remote_work: boolean;
+  is_absent_approved: boolean;
+  absent_reason: string | null;
 }
 
 export interface AttendanceStats {
