@@ -1,23 +1,30 @@
 import Cookies from "js-cookie";
-import { apiUrl } from "../apiConfig";
 import { addPrefix } from "./RouterUtils";
 import axios, { AxiosResponse } from "axios";
+import { apiUrl, isDebug } from "../apiConfig";
 
 const setCookie = (name: string, value: string, options = {}) => {
   Cookies.set(name, value, {
     path: "/",
-    secure: true,
+    secure: !isDebug,
+    sameSite: "Strict",
+    maxAge: 3600,
+    ...options,
+  });
+};
+
+const removeCookie = (name: string, options = {}) => {
+  Cookies.remove(name, {
+    path: "/",
+    secure: !isDebug,
     sameSite: "Strict",
     ...options,
   });
 };
 
-const removeCookie = (name: string) => {
-  Cookies.remove(name, { path: "/" });
-};
-
 const getCookie = (name: string) => {
-  return Cookies.get(name);
+  const cookieValue = Cookies.get(name);
+  return cookieValue !== undefined ? cookieValue : null;
 };
 
 const axiosInstance = axios.create({
