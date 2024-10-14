@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import logging
 import zipfile
@@ -595,14 +596,16 @@ def generate_map_data(zone_mapping, date_at):
 
     result_list = list(zone_result.values())
 
-    main_building = next((item for item in result_list if item["name"] == "Главный Корпус (Абылайхана)"), None)
-    
+    main_building = next(
+        (item for item in result_list if item["name"] == "Главный Корпус (Абылайхана)"),
+        None,
+    )
+
     if main_building:
         result_list.remove(main_building)
         result_list.insert(0, main_building)
 
     return result_list
-
 
 
 @swagger_auto_schema(
@@ -1684,10 +1687,15 @@ def check_lesson_task_status(request, task_id):
 @swagger_auto_schema(
     method="post",
     operation_summary="Создание записей посещаемости занятий",
-    operation_description="Создает новые записи посещаемости для сотрудников на занятия. Параметры передаются в виде списка объектов, где обязательные параметры включают `staff_pin`, `subject_name`, `tutor_id`, `tutor`, `first_in`, `latitude` и `longitude`. Параметр `last_out` не требуется на этапе создания, так как занятие может быть ещё не завершено.",
+    operation_description=(
+        "Создаёт новые записи посещаемости для сотрудников на занятия. "
+        "Каждая запись должна содержать обязательные параметры: "
+        "`staff_pin`, `subject_name`, `tutor_id`, `tutor`, `first_in`, `latitude`, `longitude`. "
+        "`image` должен быть отправлен как отдельный файл в запросе."
+    ),
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
-        required=["attendance_data"],
+        required=["attendance_data", "image"],
         properties={
             "attendance_data": openapi.Schema(
                 type=openapi.TYPE_ARRAY,
@@ -1726,14 +1734,8 @@ def check_lesson_task_status(request, task_id):
                         "first_in": openapi.Schema(
                             type=openapi.TYPE_STRING,
                             format=openapi.FORMAT_DATETIME,
-                            description="Время начала занятия в формате ISO 8601 с часовым поясом",
+                            description="Время начала занятия в формате ISO 8601",
                             example="2024-10-06T14:24:24+05:00",
-                        ),
-                        "last_out": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            format=openapi.FORMAT_DATETIME,
-                            description="Время окончания занятия в формате ISO 8601 с часовым поясом. Необязательно при создании",
-                            example="2024-01-01T18:30:30+05:00",
                         ),
                         "latitude": openapi.Schema(
                             type=openapi.TYPE_NUMBER,
@@ -1747,14 +1749,13 @@ def check_lesson_task_status(request, task_id):
                             description="Долгота места проведения",
                             example=76.851377,
                         ),
-                        "date_at": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            format=openapi.FORMAT_DATE,
-                            description="Дата занятия. По умолчанию используется текущая дата",
-                            example="2024-01-01",
-                        ),
                     },
                 ),
+            ),
+            "staff_image": openapi.Schema(
+                type=openapi.TYPE_STRING,
+                format=openapi.FORMAT_BINARY,
+                description="Фотография сотрудника в бинарном формате.",
             ),
         },
     ),
@@ -1768,9 +1769,7 @@ def check_lesson_task_status(request, task_id):
                         type=openapi.TYPE_STRING,
                         description="Сообщение об успешном запуске задачи",
                     ),
-                    "task_id": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="ID задачи"
-                    ),
+                    "task_id": openapi.Schema(type=openapi.TYPE_STRING, description="ID задачи"),
                 },
             ),
         ),
@@ -1779,7 +1778,9 @@ def check_lesson_task_status(request, task_id):
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
-                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                    "error": openapi.Schema(
+                        type=openapi.TYPE_STRING, description="Описание ошибки"
+                    ),
                 },
             ),
         ),
@@ -1788,7 +1789,9 @@ def check_lesson_task_status(request, task_id):
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
-                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                    "error": openapi.Schema(
+                        type=openapi.TYPE_STRING, description="Описание ошибки"
+                    ),
                 },
             ),
         ),
@@ -1798,36 +1801,65 @@ def check_lesson_task_status(request, task_id):
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def create_lesson_attendance(request):
     """
-    Создание записей посещаемости занятий.
+    Обрабатывает POST-запрос для создания записей посещаемости сотрудников на занятия.
 
-    Ожидается список записей для создания в виде параметра `attendance_data`.
+    Функция принимает JSON-данные о посещаемости и файл с фотографией сотрудника, проверяет
+    корректность данных и запускает асинхронную задачу Celery для сохранения данных и фотографии.
 
-    Параметры каждой записи:
-        - staff_pin (str): PIN сотрудника.
-        - subject_name (str): Название предмета.
-        - tutor_id (int): ID преподавателя.
-        - tutor (str): Имя преподавателя.
-        - first_in (str): Время начала занятия в формате ISO 8601 с часовым поясом.
-        - latitude (float): Широта места проведения.
-        - longitude (float): Долгота места проведения.
-        - date_at (str, опционально): Дата занятия (по умолчанию используется текущая дата).
+    Args:
+        request (Request): Объект запроса, содержащий:
+            - attendance_data (list): Список объектов с данными о посещаемости, каждый объект содержит:
+                - staff_pin (str): PIN сотрудника.
+                - subject_name (str): Название предмета.
+                - tutor_id (int): ID преподавателя.
+                - tutor (str): ФИО преподавателя.
+                - first_in (str): Время начала занятия в формате ISO 8601.
+                - latitude (float): Широта места проведения занятия.
+                - longitude (float): Долгота места проведения занятия.
+            - staff_image (File): Файл с фотографией сотрудника.
 
-    Возвращает:
-        - 202 Accepted: Задача принята в обработку, возвращается task_id для отслеживания состояния задачи.
-        - 400 Bad Request: Если данные отсутствуют или некорректны.
-        - 500 Internal Server Error: При возникновении ошибки на сервере.
+    Returns:
+        Response:
+            - 202 Accepted: Задача по созданию записей принята в обработку.
+            - 400 Bad Request: Если переданы некорректные данные или отсутствуют обязательные параметры.
+            - 500 Internal Server Error: В случае возникновения ошибки на сервере.
+
+    Raises:
+        Exception: Любые исключения логируются, и сервер возвращает ответ с кодом 500.
     """
     try:
-        data = request.data.get("attendance_data", [])
-        if not data:
+        staff_image = request.FILES.get("image")
+        attendance_data_raw = request.data.get("attendance_data")
+
+        attendance_data = json.loads(attendance_data_raw)
+
+        if not attendance_data or not staff_image:
             return Response(
-                {"error": "No attendance data provided"},
+                {"error": "Attendance data or staff image is missing"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        task = tasks.process_lesson_attendance_batch.delay(data)
+        for record in attendance_data:
+            required_fields = [
+                "staff_pin",
+                "subject_name",
+                "tutor_id",
+                "tutor",
+                "first_in",
+                "latitude",
+                "longitude",
+            ]
+            if not all(record.get(field) for field in required_fields):
+                return Response(
+                    {"error": f"Missing required fields in record: {record}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        logger.info("Task for creating lesson attendance started.")
+        image_content = staff_image.read()
+
+        task = tasks.process_lesson_attendance_batch.apply_async(
+            args=[attendance_data, staff_image.name, image_content]
+        )
 
         return Response(
             {"message": "Задача принята в обработку", "task_id": task.id},
