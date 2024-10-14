@@ -1752,7 +1752,7 @@ def check_lesson_task_status(request, task_id):
                     },
                 ),
             ),
-            "staff_image": openapi.Schema(
+            "image": openapi.Schema(
                 type=openapi.TYPE_STRING,
                 format=openapi.FORMAT_BINARY,
                 description="Фотография сотрудника в бинарном формате.",
