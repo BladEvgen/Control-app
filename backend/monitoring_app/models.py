@@ -1,6 +1,7 @@
 import os
 import shutil
 
+from django.conf import settings
 from django.utils import timezone
 from django.contrib import messages
 from django.dispatch import receiver
@@ -507,10 +508,11 @@ class LessonAttendance(models.Model, GeoItem):
 
     @property
     def image_url(self):
-        if self.staff_image_path and os.path.exists(self.staff_image_path):
-            return self.staff_image_path
-        elif self.is_photo_expired():
-            return "/static/media/images/no-avatar.png"
+        if self.staff_image_path:
+            if self.staff_image_path.startswith(settings.ATTENDANCE_ROOT):
+                relative_path = self.staff_image_path.replace(settings.ATTENDANCE_ROOT, "")
+                return f"{settings.ATTENDANCE_URL}{relative_path}"
+            return f"{settings.MEDIA_URL}{self.staff_image_path.split('media/')[-1]}"
         return "/static/media/images/no-avatar.png"
 
     def is_photo_expired(self):

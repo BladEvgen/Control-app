@@ -68,9 +68,9 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
             filename = f"{staff_pin}_{timestamp}.{image_name.split('.')[-1]}"
 
             base_path = (
-                f"static/media/control_image/{staff_pin}/{date_path}"
+                f"{settings.MEDIA_ROOT}/control_image/{staff_pin}/{date_path}"
                 if settings.DEBUG
-                else f"/mnt/disk/control_image/{staff_pin}/{date_path}"
+                else f"{settings.ATTENDANCE_ROOT}/{staff_pin}/{date_path}"
             )
 
             os.makedirs(base_path, exist_ok=True)

@@ -192,6 +192,8 @@ STATICFILES_DIRS = [
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "static/media"
 
+ATTENDANCE_URL = "/attendance_media/"
+ATTENDANCE_ROOT = "/mnt/disk/control_image/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
