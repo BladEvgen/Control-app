@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib import admin
 from django.utils import timezone
 from django.utils.html import format_html
@@ -23,6 +24,7 @@ from .models import (
 )
 from django_admin_geomap import ModelAdmin
 from django.contrib.admin import SimpleListFilter
+from django.utils.translation import gettext_lazy as _
 
 # Настройка заголовков административной панели
 admin.site.site_header = "Панель управления"
@@ -460,13 +462,14 @@ class LessonAttendanceAdmin(ModelAdmin):
         "tutor",
         "tutor_id",
         "date_at",
+        "photo_preview",
     )
 
     fieldsets = (
         (
             None,
             {
-                "fields": ("first_in", "last_out"),
+                "fields": ("first_in", "last_out", "photo_preview"),
                 "description": "Основная информация о занятии",
             },
         ),
@@ -491,6 +494,7 @@ class LessonAttendanceAdmin(ModelAdmin):
         "formatted_first_in",
         "formatted_last_out",
         "date_at",
+        "has_photo",
     )
 
     list_filter = ("date_at", "staff", "subject_name")
@@ -499,8 +503,43 @@ class LessonAttendanceAdmin(ModelAdmin):
     class Media:
         css = {"all": ("custom_admin.css",)}
 
+    def has_photo(self, obj):
+        if obj.staff_image_path and obj.staff_image_path != "/static/media/images/no-avatar.png":
+            return True
+        return False
+
+    has_photo.short_description = _("Фотография")
+    has_photo.boolean = True
+
+    def photo_preview(self, obj):
+        if obj.staff_image_path and obj.staff_image_path != "/media/images/no-avatar.png":
+            photo_url = f"{settings.MEDIA_URL}{obj.staff_image_path.split('media/')[-1]}"
+            return format_html(
+                """
+                <div style="display: flex; justify-content: center; align-items: center; height: 80px; width: 80px; overflow: hidden; border-radius: 50%;">
+                    <img src="{}" style="
+                        height: 100%;
+                        width: 100%;
+                        object-fit: cover;
+                        display: block;
+                    "/>
+                </div>
+                """,
+                photo_url,
+            )
+        return format_html(
+            """
+            <div style="display: flex; justify-content: center; align-items: center; height: 80px; width: 80px; border-radius: 50%; background-color: #f0f0f0;">
+                <span style="color: #999; font-style: italic; text-align: center;">Нет фото</span>
+            </div>
+            """
+        )
+
+    photo_preview.short_description = "Фото (превью)"
+
 
 admin.site.register(LessonAttendance, LessonAttendanceAdmin)
+
 # === Зарплата ===
 
 

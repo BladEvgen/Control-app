@@ -498,6 +498,23 @@ class LessonAttendance(models.Model, GeoItem):
         help_text="Примерные координаты в радиусе 300 метров",
     )
     date_at = models.DateField(verbose_name="Дата занятия", default=timezone.now)
+    staff_image_path = models.CharField(
+        max_length=500,
+        verbose_name="Путь к фотографии сотрудника",
+        null=True,
+        blank=True,
+    )
+
+    @property
+    def image_url(self):
+        if self.staff_image_path and os.path.exists(self.staff_image_path):
+            return self.staff_image_path
+        elif self.is_photo_expired():
+            return "/static/media/images/no-avatar.png"
+        return "/static/media/images/no-avatar.png"
+
+    def is_photo_expired(self):
+        return (timezone.now().date() - self.date_at).days > 31
 
     @property
     def geomap_longitude(self):
