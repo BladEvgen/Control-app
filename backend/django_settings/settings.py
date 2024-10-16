@@ -12,6 +12,7 @@ DEBUG = True if socket.gethostname() in host_names else False
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 DAYS = 1
+FACE_RECOGNITION_THRESHOLD = 0.8
 
 
 DOTENV_PATH = BASE_DIR / ".env"
@@ -195,6 +196,10 @@ MEDIA_ROOT = BASE_DIR / "static/media"
 ATTENDANCE_URL = "/attendance_media/"
 ATTENDANCE_ROOT = "/mnt/disk/control_image/"
 
+AUGMENT_URL = '/augment_media/'
+AUGMENT_ROOT = '/mnt/disk/augment_images/'
+
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # * JWT LOGIC GOES HERE
@@ -286,6 +291,10 @@ CELERY_BEAT_SCHEDULE = {
     'update-lesson-attendance-last-out-every-10-minutes': {
         'task': 'monitoring_app.tasks.update_lesson_attendance_last_out',
         'schedule': crontab(minute='*/5'),  
+    },
+    'augment-images-every-day': {
+        'task': 'monitoring_app.tasks.augment_user_images',
+        'schedule': crontab(hour=2, minute=0),
     },
 }
 
