@@ -501,7 +501,6 @@ def map_location(request):
                 "areas": ["карасай батыра турникет"],
             },
         }
-
         date_at = request.GET.get("date_at", None)
         if not date_at:
             logger.warning("No date_at parameter provided, using current date.")
@@ -1929,7 +1928,6 @@ def create_lesson_attendance(request):
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-
 @swagger_auto_schema(
     method="put",
     operation_summary="Обновление записи посещаемости занятия",
@@ -2377,7 +2375,6 @@ def staff_detail_by_department_id(request, department_id):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             data={"error": str(e)},
         )
-
 
 
 @swagger_auto_schema(
