@@ -1481,7 +1481,6 @@ def process_attendance(
 
     is_absent_approved = False
     absent_reason_display = None
-    absent_approved = None
 
     if is_remote_work:
         percent_day = 100.0
@@ -1493,7 +1492,6 @@ def process_attendance(
     elif absent_reason:
         is_absent_approved = absent_reason.approved
         absent_reason_display = absent_reason.get_reason_display()
-        absent_approved = absent_reason.approved
         if is_absent_approved:
             logger.info(
                 f"{event_date} утвержденная причина отсутствия: {absent_reason_display}."
