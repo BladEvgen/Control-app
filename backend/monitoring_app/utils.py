@@ -1,49 +1,46 @@
 import os
 import re
 import json
+import logging
 import datetime
 from functools import wraps
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
+import cv2
 import pytz
+import torch
 import requests
+import torch.amp
+import numpy as np
 import pandas as pd
+import torch.nn as nn
 from openpyxl import Workbook
 from django.urls import reverse
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
+from monitoring_app import models
 from django.core.cache import cache
 from django.http import HttpRequest
 from cryptography.fernet import Fernet
 from django.core.mail import send_mail
+from torch.utils.data import DataLoader
+from insightface.app import FaceAnalysis
 from django.utils.html import format_html
 from rest_framework.response import Response
 from django.contrib.admin import SimpleListFilter
+from sklearn.model_selection import train_test_split
+from rest_framework.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import Alignment, Font, PatternFill
-
-import cv2
-import torch
-import logging
-import numpy as np
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from insightface.app import FaceAnalysis
-from torchvision import models as torch_models
-from sklearn.model_selection import train_test_split
 from sklearn.metrics.pairwise import cosine_similarity
-
-from monitoring_app import models
-from rest_framework.exceptions import ValidationError
+from openpyxl.styles import Alignment, Font, PatternFill
 
 DAYS = settings.DAYS
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('django')
 
 arcface_model = None
 
@@ -51,147 +48,190 @@ arcface_model = None
 class FaceRecognitionResNet(nn.Module):
     def __init__(self, input_size):
         super(FaceRecognitionResNet, self).__init__()
-        self.resnet = torch_models.resnet50(pretrained=True)
-        self.resnet.fc = nn.Linear(self.resnet.fc.in_features, 512)
-        self.fc1 = nn.Linear(512, 128)
-        self.fc2 = nn.Linear(128, 1)
+        self.fc1 = nn.Linear(input_size, 512)
+        self.bn1 = nn.BatchNorm1d(512)
+        self.fc2 = nn.Linear(512, 256)
+        self.bn2 = nn.BatchNorm1d(256)
+        self.fc3 = nn.Linear(256, 128)
+        self.bn3 = nn.BatchNorm1d(128)
+        self.fc4 = nn.Linear(128, 1)
 
     def forward(self, x):
-        x = self.resnet(x)
-        x = torch.relu(self.fc1(x))
-        x = torch.sigmoid(self.fc2(x))
-        return x
+        x = torch.relu(self.bn1(self.fc1(x)))
+        x = torch.relu(self.bn2(self.fc2(x)))
+        x = torch.relu(self.bn3(self.fc3(x)))
+        return self.fc4(x)
 
 
-def train_face_recognition_model(staff, embeddings, negative_embeddings):
+def create_embeddings_from_images(image_paths):
+    embeddings = []
+    for image_path in image_paths:
+        if os.path.exists(image_path):
+            image = cv2.imread(image_path)
+            if image is None:
+                logger.error(f"Failed to load image: {image_path}")
+                continue
+            image = preprocess_image(image)
+            embedding = create_face_encoding(image)
+            embeddings.append(embedding)
+    return embeddings
+
+def preprocess_image(image):
+    height, width = image.shape[:2]
+    if height < 640 or width < 640:
+        scale_factor = max(640 / height, 640 / width)
+        new_size = (int(width * scale_factor), int(height * scale_factor))
+        image = cv2.resize(image, new_size, interpolation=cv2.INTER_CUBIC)
+    return image
+
+
+def load_image_on_gpu(image_path):
+    image = cv2.imread(image_path)
+    if image is None:
+        raise ValueError(f"Failed to load image: {image_path}")
+    image_tensor = torch.from_numpy(image).to(get_device())
+    return image_tensor
+
+def train_face_recognition_model(staff):
     try:
         device = get_device()
-
-        embeddings_combined = np.vstack([embeddings, negative_embeddings])
-        labels = [1] * len(embeddings) + [0] * len(negative_embeddings)
-
+    
+        avatar_image = str(staff.avatar.path)
+        augmented_image_dir = str(settings.AUGMENT_ROOT).format(staff_pin=staff.pin)
+        augmented_images = [os.path.join(augmented_image_dir, img) for img in os.listdir(augmented_image_dir)]
+    
+        positive_embeddings = create_embeddings_from_images([avatar_image] + augmented_images)
+        negative_embeddings = generate_negative_samples(staff)
+    
+        positive_embeddings = torch.tensor(positive_embeddings, dtype=torch.float32).to(device)
+        negative_embeddings = torch.tensor(negative_embeddings, dtype=torch.float32).to(device)
+    
+        if positive_embeddings.size(0) == 0 or negative_embeddings.size(0) == 0:
+            raise ValueError(f"Insufficient data for training model for {staff.pin}.")
+    
+        embeddings_combined = torch.cat([positive_embeddings, negative_embeddings], dim=0)
+        labels = torch.tensor(
+            [1] * positive_embeddings.size(0) + [0] * negative_embeddings.size(0),
+            dtype=torch.float32
+        ).to(device)
+    
         inputs_train, inputs_val, labels_train, labels_val = train_test_split(
             embeddings_combined, labels, test_size=0.2, random_state=42
         )
-
+    
         train_data = list(zip(inputs_train, labels_train))
         val_data = list(zip(inputs_val, labels_val))
-
-        train_loader = DataLoader(train_data, batch_size=32, shuffle=True, num_workers=4)
-        val_loader = DataLoader(val_data, batch_size=32, shuffle=False, num_workers=4)
-
-        model = FaceRecognitionResNet(input_size=len(embeddings[0]))
-        model = nn.DataParallel(model)
-        model.to(device)
-
-        criterion = nn.BCELoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-        epochs = 20
-        for epoch in range(epochs):
+    
+        train_loader = DataLoader(train_data, batch_size=256, shuffle=True, num_workers=0)
+        val_loader = DataLoader(val_data, batch_size=256, shuffle=False, num_workers=0)
+    
+        model = FaceRecognitionResNet(input_size=positive_embeddings.shape[1]).to(device)
+    
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-4)
+        scaler = torch.cuda.amp.GradScaler()
+    
+        for epoch in range(20):
             model.train()
             train_loss = 0.0
-
+    
             for batch_inputs, batch_labels in train_loader:
-                batch_inputs = torch.tensor(batch_inputs, dtype=torch.float32).to(device)
-                batch_labels = torch.tensor(batch_labels, dtype=torch.float32).to(device)
-
+                batch_inputs = batch_inputs.to(device)
+                batch_labels = batch_labels.to(device)
+    
                 optimizer.zero_grad()
-                outputs = model(batch_inputs)
-                loss = criterion(outputs.squeeze(), batch_labels)
-                loss.backward()
-                optimizer.step()
-
+                with torch.cuda.amp.autocast():
+                    outputs = model(batch_inputs).squeeze()
+                    loss = criterion(outputs, batch_labels)
+    
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+    
                 train_loss += loss.item()
-
+    
+            logger.info(f'Epoch {epoch+1}, Train Loss: {train_loss / len(train_loader)}')
+    
             model.eval()
             val_loss = 0.0
             with torch.no_grad():
                 for batch_inputs, batch_labels in val_loader:
-                    batch_inputs = torch.tensor(batch_inputs, dtype=torch.float32).to(device)
-                    batch_labels = torch.tensor(batch_labels, dtype=torch.float32).to(device)
-
-                    outputs = model(batch_inputs)
-                    loss = criterion(outputs.squeeze(), batch_labels)
+                    batch_inputs = batch_inputs.to(device)
+                    batch_labels = batch_labels.to(device)
+    
+                    outputs = model(batch_inputs).squeeze()
+                    loss = criterion(outputs, batch_labels)
                     val_loss += loss.item()
-
-            print(
-                f'Epoch {epoch+1}/{epochs}, Train Loss: {train_loss/len(train_loader)}, Validation Loss: {val_loss/len(val_loader)}'
-            )
-
-        model_path = os.path.join(
-            os.path.dirname(staff.avatar.path), f'{staff.pin}_resnet_model.pkl'
-        )
+    
+            logger.info(f'Epoch {epoch+1}, Validation Loss: {val_loss / len(val_loader)}')
+    
+        model_path = os.path.join(os.path.dirname(staff.avatar.path), f'{staff.pin}_model.pkl')
         torch.save(model.state_dict(), model_path)
-        logger.info(f"ResNet model for {staff.pin} saved at {model_path}")
-
+        logger.info(f"Model for {staff.pin} saved at {model_path}")
+    
     except Exception as e:
         logger.error(f"Error training model for {staff.pin}: {str(e)}")
         raise e
 
 
+
+
+
 def load_model_for_staff(staff):
-    """
-    Загружает ранее обученную нейронную сеть для указанного сотрудника.
-
-    Args:
-        staff (Staff): Объект сотрудника, для которого загружается модель.
-
-    Returns:
-        FaceRecognitionNN: Загрузка модели нейросети для использования.
-
-    Raises:
-        ValueError: Если модель не найдена.
-    """
     model_path = os.path.join(os.path.dirname(staff.avatar.path), f'{staff.pin}_model.pkl')
     if not os.path.exists(model_path):
         raise ValueError(f"Модель для {staff.pin} не найдена")
 
+    device = get_device()
     model = FaceRecognitionResNet(input_size=512)
-    model.load_state_dict(torch.load(model_path))
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.to(device)
     model.eval()
     return model
+
 
 
 def load_arcface_model():
     """
     Загружает модель ArcFace для распознавания лиц.
 
-    Инициализирует модель ArcFace, если она еще не загружена.
+    Инициализирует модель ArcFace с предпочтительным использованием GPU (если доступен),
+    и использует CPU, если GPU недоступен.
     """
     global arcface_model
     if arcface_model is None:
-        arcface_model = FaceAnalysis(providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-        arcface_model.prepare(ctx_id=0, det_size=(640, 640))
-        logger.info("ArcFace model loaded and ready.")
+        ctx_id = 0 if torch.cuda.is_available() else -1
+        logger.info(f"Using {'GPU' if ctx_id >= 0 else 'CPU'} for ArcFace model")
+        arcface_model = FaceAnalysis(name='buffalo_l', ctx_id=ctx_id)
+        arcface_model.prepare(ctx_id=ctx_id, det_size=(640, 640))
+
+
 
 
 def get_device():
     """
-    Определяет доступное устройство (GPU или CPU).
-
-    Использует CUDA, если оно доступно, в противном случае использует CPU.
+    Определяет доступное устройство для вычислений (GPU или CPU).
 
     Returns:
-        torch.device: Возвращает устройство для выполнения операций (GPU или CPU).
+        torch.device: Устройство для выполнения операций (GPU или CPU).
     """
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Selected device: {device}")
+    return device
 
 
 def load_image_from_memory(file):
     """
-    Загружает изображение из InMemoryUploadedFile и конвертирует его в numpy array.
+    Загружает изображение из загруженного файла в формате InMemoryUploadedFile и преобразует его в numpy array.
 
-    Использует OpenCV для чтения изображения из загруженного файла. Преобразует
-    изображение в формат numpy array для дальнейшей обработки.
     Args:
-        file (InMemoryUploadedFile): Файл, загруженный через Django.
+        file (InMemoryUploadedFile): Загруженный файл изображения.
 
     Returns:
-        numpy.ndarray: Изображение в виде массива numpy.
+        numpy.ndarray: Изображение в формате numpy array.
 
     Raises:
-        ValidationError: Если не удается прочитать изображение.
+        ValidationError: Если изображение не удалось загрузить или прочитать.
     """
     try:
         file_bytes = np.frombuffer(file.read(), np.uint8)
@@ -202,114 +242,97 @@ def load_image_from_memory(file):
     except Exception as e:
         logger.error(f"Ошибка при чтении изображения: {e}")
         raise ValidationError(f"Ошибка чтения изображения: {str(e)}")
-
-
-def create_face_encoding(image_file):
+    
+def create_face_encoding(image_or_path):
     """
-    Создает face encoding (закодированное лицо) для изображения с использованием ArcFace.
+    Создает face encoding для изображения с использованием модели ArcFace.
 
     Args:
-        image_file (str, numpy.ndarray или InMemoryUploadedFile): Путь к изображению, numpy array или загруженный файл.
+        image_or_path (str или numpy.ndarray): Путь к изображению или само изображение в виде numpy массива.
 
     Returns:
-        list: Закодированное лицо (embedding) в виде списка чисел.
+        list: Эмбеддинг лица в виде списка чисел.
 
     Raises:
-        ValidationError: Если не удается создать encoding для изображения.
+        ValueError: Если не удалось создать эмбеддинг лица.
     """
     try:
         load_arcface_model()
-
-        if isinstance(image_file, str):
-            img = cv2.imread(image_file)
-
-        elif isinstance(image_file, np.ndarray):
-            img = image_file
-
+        if isinstance(image_or_path, str):
+            image = cv2.imread(image_or_path)
+            if image is None:
+                raise ValueError(f"Failed to load image: {image_or_path}")
+            image = preprocess_image(image)
         else:
-            img = load_image_from_memory(image_file)
+            image = image_or_path
 
-        faces = arcface_model.get(img)
+        faces = arcface_model.get(image)
         if not faces:
-            raise ValidationError("Лицо не найдено на изображении")
-
+            raise ValueError("Лицо не найдено на изображении")
         return faces[0].embedding.tolist()
-
     except Exception as e:
         logger.error(f"Ошибка при создании encoding: {e}")
-        raise ValidationError(f"Ошибка создания encoding: {str(e)}")
+        raise ValueError(f"Ошибка создания encoding: {str(e)}")
 
 
-def compare_face(staff, image_file):
+def generate_negative_samples(staff, neighbors_count=6):
     """
-    Сравнивает лицо сотрудника с новым изображением, используя косинусное расстояние.
-
-    Эта функция получает ранее сохраненное закодированное лицо сотрудника и сравнивает
-    его с закодированным лицом, созданным на основе нового изображения. Для сравнения
-    используется косинусное расстояние.
+    Генерирует негативные эмбеддинги для обучения модели.
 
     Args:
-        staff (Staff): Сотрудник, чье лицо сравнивается.
-        image_file (InMemoryUploadedFile): Новое изображение для сравнения.
+        staff (Staff): Объект сотрудника, для которого создаются негативные примеры.
+        neighbors_count (int): Количество негативных эмбеддингов, которые нужно создать.
 
     Returns:
-        tuple: (verified, cosine_distance):
-            - verified (bool): Результат сравнения (True, если лица совпадают).
-            - cosine_distance (float): Фактическое косинусное расстояние между эмбеддингами.
-
-    Raises:
-        ValidationError: Если возникает ошибка при сравнении лиц.
+        list: Список негативных эмбеддингов.
     """
-    try:
-        stored_mask = np.array(staff.face_mask.mask_encoding)
-        new_encoding = create_face_encoding(image_file)
+    staff_list = list(models.Staff.objects.filter(avatar__isnull=False).exclude(id=staff.id))
+    negative_embeddings = []
 
-        cosine_distance = cosine_similarity([stored_mask], [new_encoding])[0][0]
+    for neighbor in staff_list:
+        try:
+            image_path = neighbor.avatar.path
+            if not os.path.exists(image_path):
+                continue
 
-        cosine_distance = (1 + cosine_distance) / 2
+            image = cv2.imread(image_path)
+            if image is None:
+                logger.error(f"Failed to load image: {image_path}")
+                continue
 
-        threshold = settings.FACE_RECOGNITION_THRESHOLD
+            image = preprocess_image(image)
 
-        verified = cosine_distance > threshold
+            encoding = create_face_encoding(image)
+            negative_embeddings.append(encoding)
 
-        return verified, cosine_distance
-    except Exception as e:
-        logger.error(f"Ошибка при сравнении лица: {e}")
-        raise ValidationError(f"Ошибка сравнения лица: {str(e)}")
+        except Exception as e:
+            logger.warning(f"Failed to create encoding for negative sample from {neighbor.pin}: {e}")
+
+        if len(negative_embeddings) >= neighbors_count:
+            break
+
+    return negative_embeddings
+
+
 
 
 def compare_face_with_nn(staff, image_file):
     """
-    Сравнивает лицо сотрудника с новым изображением, используя обученную нейронную сеть.
-
-    Использует предобученную нейронную сеть для проверки совпадения лиц.
+    Сравнивает лицо сотрудника с новым изображением, используя нейронную сеть.
 
     Args:
         staff (Staff): Сотрудник, чье лицо сравнивается.
         image_file (InMemoryUploadedFile): Новое изображение для сравнения.
 
     Returns:
-        tuple: (verified, distance):
-            - verified (bool): True, если лица совпадают.
-            - distance (float): Косинусное расстояние между эмбеддингами.
-
-    Raises:
-        ValidationError: Если возникает ошибка при сравнении лиц.
+        tuple: (verified (bool), distance (float)) - результат сравнения и расстояние.
     """
     try:
         load_arcface_model()
-
-        new_encoding = create_face_encoding(image_file)
-
-        model_path = os.path.join(os.path.dirname(staff.avatar.path), f'{staff.pin}_model.pkl')
         device = get_device()
 
-        if not os.path.exists(model_path):
-            raise ValueError(f"Модель для {staff.pin} не найдена")
-
-        model = FaceRecognitionResNet()(input_size=len(new_encoding)).to(device)
-        model.load_state_dict(torch.load(model_path))
-        model.eval()
+        new_encoding = create_face_encoding(image_file)
+        model = load_model_for_staff(staff)
 
         input_tensor = torch.tensor([new_encoding], dtype=torch.float32).to(device)
         output = model(input_tensor).item()
@@ -317,16 +340,84 @@ def compare_face_with_nn(staff, image_file):
         threshold = settings.FACE_RECOGNITION_THRESHOLD
         verified = output > threshold
 
-        logger.info(f"Face comparison using NN for {staff.pin}: cosine distance = {output}")
+        logger.info(f"Face comparison using NN for {staff.pin}: output = {output}")
 
         return verified, output
 
     except Exception as e:
         logger.error(f"Ошибка при сравнении лица с нейронной сетью для {staff.pin}: {str(e)}")
-        raise ValidationError(
-            f"Ошибка при сравнении лица с нейронной сетью для {staff.pin}: {str(e)}"
-        )
+        raise ValueError(f"Ошибка при сравнении лица с нейронной сетью для {staff.pin}: {str(e)}")
 
+
+def recognize_faces_in_image(image_file):
+    """
+    Распознает лица на изображении и возвращает информацию о сотрудниках и неизвестных лицах.
+
+    Args:
+        image_file (InMemoryUploadedFile): Изображение для распознавания.
+
+    Returns:
+        tuple: (recognized_staff (list), unknown_faces (list)) - Список распознанных сотрудников и неизвестных лиц.
+
+    Raises:
+        ValidationError: Если возникает ошибка при распознавании лиц.
+    """
+    try:
+        load_arcface_model()
+        img = load_image_from_memory(image_file)
+        faces = arcface_model.get(img)
+
+        if not faces:
+            raise ValidationError("Лица не найдены на изображении")
+
+        recognized_staff = []
+        unknown_faces = []
+
+        staff_with_masks = models.Staff.objects.filter(face_mask__isnull=False)
+        staff_embeddings = []
+        staff_info = []
+        for staff in staff_with_masks:
+            staff_embeddings.append(staff.face_mask.mask_encoding)
+            staff_info.append(staff)
+
+        staff_embeddings = np.array(staff_embeddings)
+
+        for face in faces:
+            face_embedding = np.array(face.embedding)
+            similarities = cosine_similarity(staff_embeddings, [face_embedding]).flatten()
+            best_match_index = np.argmax(similarities)
+            best_similarity = similarities[best_match_index]
+
+            cosine_distance = (1 + best_similarity) / 2
+
+            if cosine_distance > settings.FACE_RECOGNITION_THRESHOLD:
+                staff = staff_info[best_match_index]
+                bbox = face.bbox.astype(int).tolist()
+                recognized_staff.append(
+                    {
+                        "pin": staff.pin,
+                        "name": staff.name,
+                        "surname": staff.surname,
+                        "department": staff.department.name if staff.department else None,
+                        "distance": cosine_distance,
+                        "bbox": bbox,
+                    }
+                )
+            else:
+                bbox = face.bbox.astype(int).tolist()
+                unknown_faces.append(
+                    {
+                        "status": "unknown",
+                        "bbox": bbox,
+                    }
+                )
+
+        return recognized_staff, unknown_faces
+
+    except Exception as e:
+        logger.error(f"Ошибка при распознавании лиц: {str(e)}")
+        raise ValidationError(f"Ошибка при распознавании лиц: {str(e)}")
+    
 
 def get_client_ip(request):
     """Get the client IP address from the request, considering proxy setups."""
