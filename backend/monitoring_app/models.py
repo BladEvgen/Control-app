@@ -13,7 +13,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.validators import FileExtensionValidator
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 
-from monitoring_app import utils, tasks
+from monitoring_app import utils
 from django_admin_geomap import GeoItem
 
 
@@ -291,7 +291,7 @@ class Staff(models.Model):
         null=True,
         blank=True,
         verbose_name="Фото Пользователя",
-        validators=[FileExtensionValidator(allowed_extensions=["jpg"])],
+        validators=[FileExtensionValidator(allowed_extensions=["jpg", "jpeg", "png"])],
     )
     needs_training = models.BooleanField(default=True)
 
@@ -301,9 +301,9 @@ class Staff(models.Model):
     def save(self, *args, **kwargs):
         if self.pk:
             old_avatar = Staff.objects.filter(pk=self.pk).values("avatar").first()
-            if old_avatar and old_avatar["avatar"] != self.avatar and self.avatar:
+            if old_avatar and old_avatar["avatar"] != self.avatar.name and self.avatar:
                 try:
-                    old_avatar_path = old_avatar["avatar"]
+                    old_avatar_path = os.path.join(settings.MEDIA_ROOT, old_avatar["avatar"])
                     if os.path.exists(old_avatar_path):
                         os.remove(old_avatar_path)
                 except Exception as e:
@@ -348,13 +348,8 @@ class StaffFaceMask(models.Model):
         verbose_name_plural = "Маски лиц сотрудников"
 
     def __str__(self):
-        return f"Face mask for {self.staff.name} {self.staff.surname}"
+        return f"Face mask for {self.staff.name} {self.staff.surname} {self.staff.pin}"
 
-
-@receiver(post_save, sender=Staff)
-def handle_staff_avatar_change(sender, instance, created, **kwargs):
-    if created or (instance.avatar and instance.avatar != Staff.objects.get(pk=instance.pk).avatar):
-        transaction.on_commit(lambda: tasks.augment_user_images.delay(remove_old_files=True))
 
 class AbsentReason(models.Model):
     ABSENT_REASON_CHOICES = [
