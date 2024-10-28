@@ -3645,35 +3645,28 @@ def verify_face(request):
     staff_image = request.FILES.get("image")
 
     if not staff_pin or not staff_image:
-        return Response(
-            {"error": "Необходимо указать pin и изображение"}, status=status.HTTP_400_BAD_REQUEST
-        )
+        logger.error("Необходимо указать pin и изображение")
+        return Response({"error": "Необходимо указать pin и изображение"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         staff = models.Staff.objects.get(pin=staff_pin)
+        logger.info(f"Сотрудник найден: {staff_pin}")
     except models.Staff.DoesNotExist:
+        logger.error(f"Сотрудник с PIN {staff_pin} не найден")
         return Response({"error": "Сотрудник не найден"}, status=status.HTTP_404_NOT_FOUND)
 
     if not hasattr(staff, 'face_mask'):
-        return Response(
-            {"error": "Маска для данного сотрудника не найдена"}, status=status.HTTP_400_BAD_REQUEST
-        )
+        logger.error(f"Маска для сотрудника {staff_pin} не найдена")
+        return Response({"error": "Маска для данного сотрудника не найдена"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        logger.info(f"Сравнение лиц для PIN: {staff_pin}")
-        model = utils.load_model_for_staff(staff)
+        verified, distance = utils.compare_face_with_nn(staff, staff_image)
+        return Response({"verified": verified, "distance": distance}, status=status.HTTP_200_OK)
 
-        new_encoding = utils.create_face_encoding(staff_image)
-        input_tensor = torch.tensor([new_encoding], dtype=torch.float32).to(utils.get_device())
-
-        output = model(input_tensor).item()
-        threshold = settings.FACE_RECOGNITION_THRESHOLD
-        verified = output > threshold
-
-        return Response({"verified": verified, "distance": output}, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Ошибка при сравнении лиц для PIN {staff_pin}: {str(e)}")
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 @api_view(['POST'])
@@ -3687,50 +3680,7 @@ def recognize_faces(request):
         )
 
     try:
-        utils.load_arcface_model()
-
-        img = utils.load_image_from_memory(staff_image)
-        faces = utils.arcface_model.get(img)
-
-        if not faces:
-            return Response(
-                {"error": "Лица не найдены на изображении"}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        recognized_staff = []
-        unknown_faces = []
-
-        for face in faces:
-            face_embedding = face.embedding.tolist()
-            bbox = face.bbox
-            recognized = False
-
-            for staff in models.Staff.objects.filter(face_mask__isnull=False):
-                stored_mask = staff.face_mask.mask_encoding
-                cosine_distance = utils.cosine_similarity([stored_mask], [face_embedding])[0][0]
-                cosine_distance = (1 + cosine_distance) / 2
-
-                if cosine_distance > settings.FACE_RECOGNITION_THRESHOLD:
-                    recognized_staff.append(
-                        {
-                            "pin": staff.pin,
-                            "name": staff.name,
-                            "surname": staff.surname,
-                            "department": staff.department.name if staff.department else None,
-                            "distance": cosine_distance,
-                            "bbox": [int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])],
-                        }
-                    )
-                    recognized = True
-                    break
-
-            if not recognized:
-                unknown_faces.append(
-                    {
-                        "status": "unknown",
-                        "bbox": [int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])],
-                    }
-                )
+        recognized_staff, unknown_faces = utils.recognize_faces_in_image(staff_image)
 
         if not recognized_staff and not unknown_faces:
             return Response({"error": "Сотрудники не найдены"}, status=status.HTTP_404_NOT_FOUND)
