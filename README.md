@@ -44,6 +44,8 @@ DRF-React-Control-personal is a system designed for managing employee attendance
 - **Python 3.11**
 - **Node.js & npm**
 - **PostgreSQL/MySQL**
+- **Cuda 12**
+
 
 ### Backend Setup
 
@@ -170,7 +172,7 @@ server {
 server {
     listen 443 ssl;
     server_name your_domain.com;
-    client_max_body_size 100M;
+    client_max_body_size 2G;
 
     # SSL Configuration
     ssl_certificate /etc/letsencrypt/live/your_domain.com/fullchain.pem;
@@ -202,16 +204,42 @@ server {
         access_log off;
     }
 
-    # Proxy requests to Gunicorn
+    location /media/ {
+        alias /var/www/control_app/static/media;
+        expires 30d;
+        add_header Cache-Control "public";
+        access_log off;
+    }
+
+    location = /favicon.ico {
+        alias /var/www/control_app/static/favicon.ico;
+        access_log off;
+        log_not_found off;
+    }
+
     location / {
+        proxy_pass http://control_application;
+        
+        proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Host $http_host;
-        proxy_pass http://control_application;
+
+        proxy_method $request_method;
+
+        proxy_redirect off;
+        proxy_buffering off;
+        proxy_http_version 1.1;
+        proxy_set_header Connection keep-alive;
+
+        proxy_read_timeout 600s;
+        proxy_connect_timeout 600s;
+        proxy_send_timeout 600s;
+        send_timeout 600s;
+        proxy_buffers 8 16k;
+        proxy_buffer_size 32k;
     }
 
-    # Gzip Compression
     gzip on;
     gzip_comp_level 6;
     gzip_min_length 256;
@@ -222,16 +250,24 @@ server {
         application/javascript
         application/json
         application/xml
+        application/xml+rss
+        application/x-font-ttf
+        application/x-web-app-manifest+json
+        application/vnd.ms-fontobject
+        font/eot
+        font/opentype
         image/svg+xml
+        image/x-icon
         text/css
         text/plain
-        text/javascript;
+        text/javascript
+        text/xml;
     gzip_disable "msie6";
 
-    # Logs
     error_log /var/log/nginx/control_app_error.log;
     access_log /var/log/nginx/control_app_access.log;
 }
+
 
 ```
 
@@ -288,3 +324,68 @@ For example, on a server with 4 CPU cores:
 - **Threads**: Start with `2`, and adjust based on the application's performance.
 
 These values can be adjusted based on the specific needs of your application and server.
+
+
+
+# Celery service creation
+
+```bash
+# vim or nano /etc/systemd/system/celery_appName.service
+
+[Unit]
+Description=Celery Service for control_app
+After=network.target
+
+[Service]
+User=ubuntu
+Group=www-data
+WorkingDirectory=/path/to/project/dir/backend/
+
+ExecStart=/path/to/project/dir/venv/bin/celery -A django_settings worker \
+    --loglevel=warning \
+    --logfile=/path/to/project/dir/backend/logs/celery_worker.log \
+    --concurrency=2 \
+    --prefetch-multiplier=4 \
+    --max-tasks-per-child=1000
+
+Restart=on-failure
+RestartSec=10
+TimeoutSec=300
+
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
+```
+
+
+
+# Celery Beat service creation
+
+```bash
+# vim or nano /etc/systemd/system/celery_beat_appName.service
+
+[Unit]
+Description=Celery Beat Service for control_app
+After=network.target
+
+[Service]
+User=ubuntu
+Group=www-data
+WorkingDirectory=/path/to/project/dir/backend/
+
+ExecStart=/path/to/project/dir/venv/bin/celery -A django_settings beat \
+    --loglevel=warning \
+    --logfile=/path/to/project/dir/backend/logs/celery_beat.log \
+    --max-interval=10
+
+
+Restart=on-failure
+RestartSec=5
+TimeoutSec=700
+
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
+```
