@@ -43,7 +43,7 @@ LOGOUT_URL = "/logout/"
 if DEBUG:
     ALLOWED_HOSTS = ["*"]
 else:
-    ALLOWED_HOSTS = ["control.krmu.edu.kz", "dot.medkrmu.kz", "localhost", "127.0.0.1"]
+    ALLOWED_HOSTS = ["control.krmu.edu.kz", "dot.medkrmu.kz", "localhost", "127.0.0.1", "172.30.0.1"]
 
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50 МБ
