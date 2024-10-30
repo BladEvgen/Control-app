@@ -283,6 +283,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'monitoring_app.tasks.get_all_attendance_task',
         'schedule': crontab(hour=5, minute=0),
     },
+    'update-lesson-attendance-last-out-every-10-minutes': {
+        'task': 'monitoring_app.tasks.update_lesson_attendance_last_out',
+        'schedule': crontab(minute='*/5'),  
+    },
 }
 
 LOG_DIR = os.path.join(BASE_DIR, "logs")

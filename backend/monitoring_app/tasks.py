@@ -1,10 +1,10 @@
 import os
 import logging
+import datetime
 from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
 from monitoring_app import utils, models
-
 
 @shared_task
 def get_all_attendance_task():
@@ -17,35 +17,80 @@ def get_all_attendance_task():
 logger = logging.getLogger(__name__)
 
 
+
+@shared_task
+def update_lesson_attendance_last_out():
+    """
+    Периодическая задача Celery для обновления поля last_out в LessonAttendance.
+    
+    Условия выполнения:
+    - last_out не установлен (last_out is null).
+    - Прошло более 3 часов с момента first_in.
+    
+    Процесс:
+    1. Определяет все записи, которые соответствуют условиям.
+    2. Для каждой записи рассчитывает значение last_out:
+       - Устанавливает last_out как first_in + 3 часа.
+       - Если first_in + 3 часа выходит за пределы текущего дня, устанавливает last_out
+         на максимально допустимое время в пределах дня (23:59:59).
+    3. Изменяет записи в БД.
+
+    Логирует информацию, предупреждения и ошибки для отслеживания процесса.
+    """
+    try:
+        three_hours_ago = timezone.now() - datetime.timedelta(hours=3)
+
+        lessons = models.LessonAttendance.objects.filter(last_out__isnull=True, first_in__lte=three_hours_ago)
+
+        if not lessons.exists():
+            logger.warning("Нет записей для обновления Lesson Attendance last_out.")
+            return
+
+        updated_lessons = []
+        for lesson in lessons:
+            first_in = lesson.first_in
+            end_of_day = first_in.replace(hour=23, minute=59, second=59, microsecond=0)
+
+            lesson.last_out = min(first_in + datetime.timedelta(hours=3), end_of_day)
+            updated_lessons.append(lesson)
+
+        models.LessonAttendance.objects.bulk_update(updated_lessons, ['last_out'])
+
+        logger.warning(f"Обновлено {len(updated_lessons)} записей: last_out установлен успешно.")
+
+    except Exception as e:
+        logger.error(f"Ошибка при выполнении update_lesson_attendance_last_out: {e}")
+
+
+
 @shared_task
 def process_lesson_attendance_batch(attendance_data, image_name, image_content):
     """
-    Обрабатывает создание записей посещаемости занятий с сохранением фотографий сотрудников.
+    Асинхронная задача для создания записей посещаемости с сохранением фотографий сотрудников.
 
-    Эта функция выполняется в асинхронной задаче через Celery и создаёт записи в базе данных
-    для каждого сотрудника на основе переданных данных посещаемости. Если фотография доступна,
-    она сохраняется в файловой системе.
+    Функция обрабатывает список посещаемости и создает соответствующие записи в базе данных.
+    Если фотография предоставлена, она сохраняется в файловой системе. Добавлены расширенные
+    логирования для отслеживания ошибок и предупреждений.
 
     Args:
-        attendance_data (list): Список объектов с данными о посещаемости. Каждый объект должен содержать:
-            - staff_pin (str): PIN сотрудника.
-            - tutor_id (int): ID преподавателя.
+        attendance_data (list): Данные посещаемости, где каждый элемент содержит:
+            - staff_pin (str): Уникальный PIN сотрудника.
+            - tutor_id (int): Идентификатор преподавателя.
             - tutor (str): ФИО преподавателя.
-            - first_in (str): Время начала занятия в формате ISO 8601.
-            - latitude (float): Широта места проведения занятия.
-            - longitude (float): Долгота места проведения занятия.
-        image_name (str): Имя файла фотографии сотрудника.
-        image_content (bytes): Содержимое фотографии в байтах.
+            - first_in (str): Дата и время начала занятия в формате ISO 8601.
+            - latitude (float): Географическая широта места занятия.
+            - longitude (float): Географическая долгота места занятия.
+        image_name (str): Название файла для сохранения фотографии.
+        image_content (bytes): Содержимое изображения в формате байтов.
 
     Returns:
-        dict: Словарь с успешными и ошибочными записями:
-            - "success_records" (list): Список ID успешно созданных записей.
-            - "error_records" (list): Список ошибок с указанием PIN сотрудника и описанием ошибки.
+        dict: Результат обработки задачи с информацией об успешных и неудачных записях:
+            - "success_records" (list): ID успешно созданных записей.
+            - "error_records" (list): Ошибки с описанием проблемы.
 
     Raises:
-        Exception: Если возникает ошибка при сохранении фотографии или создании записи в базе данных.
+        Exception: Логирует подробные ошибки при сохранении записи или изображения.
     """
-
     success_records = []
     error_records = []
 
@@ -72,7 +117,7 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
             )
 
             os.makedirs(base_path, exist_ok=True)
-            logger.info(f"Создан путь: {base_path}")
+            logger.info(f"Создан путь для сохранения изображений: {base_path}")
 
             file_path = os.path.join(base_path, image_name)
 
@@ -81,7 +126,7 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
                     destination.write(image_content)
                 logger.info(f"Фотография успешно сохранена: {file_path}")
             except Exception as e:
-                logger.error(f"Ошибка при сохранении файла: {str(e)}")
+                logger.error(f"Ошибка при сохранении файла изображения: {str(e)}")
                 raise
 
             lesson_attendance = models.LessonAttendance.objects.create(
@@ -94,19 +139,19 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
                 date_at=timezone.now().date(),
                 staff_image_path=file_path,
             )
-            logger.info(f"Запись создана с ID: {lesson_attendance.id}")
+            logger.info(f"Запись посещаемости успешно создана с ID: {lesson_attendance.id}")
 
             success_records.append({"id": lesson_attendance.id})
 
         except models.Staff.DoesNotExist:
             error_message = f"Сотрудник с PIN {staff_pin} не найден."
-            logger.error(error_message)
+            logger.warning(error_message)
             error_records.append({"staff_pin": staff_pin, "error": error_message})
         except Exception as e:
-            logger.error(f"Ошибка при обработке записи: {str(e)}")
+            logger.error(f"Общая ошибка при обработке записи посещаемости: {str(e)}")
             error_records.append({"staff_pin": staff_pin, "error": str(e)})
 
-    logger.info(f"Успешные записи: {success_records}")
-    logger.info(f"Ошибочные записи: {error_records}")
+    logger.info(f"Итоговые успешные записи: {success_records}")
+    logger.warning(f"Итоговые ошибки записи: {error_records}")
 
     return {"success_records": success_records, "error_records": error_records}
