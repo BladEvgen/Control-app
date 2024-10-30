@@ -1752,6 +1752,7 @@ def check_lesson_task_status(request, task_id):
             ),
         },
     ),
+    consumes=["multipart/form-data"],
     responses={
         202: openapi.Response(
             description="Задача по созданию записей принята в обработку",
@@ -1808,7 +1809,7 @@ def create_lesson_attendance(request):
                 - first_in (str): Время начала занятия в формате ISO 8601.
                 - latitude (float): Широта места проведения занятия.
                 - longitude (float): Долгота места проведения занятия.
-            - staff_image (File): Файл с фотографией сотрудника.
+            - image (File): Файл с фотографией сотрудника.
 
     Returns:
         Response:
@@ -1820,13 +1821,13 @@ def create_lesson_attendance(request):
         Exception: Любые исключения логируются, и сервер возвращает ответ с кодом 500.
     """
 
-    logger.info(f"Получен запрос: {request.method }{request.path}{request}")
+    logger.info(f"Получен запрос: {request.method} {request.path} {request}")
     logger.info(f"Заголовки запроса: {request.headers}")
 
     if request.body:
         try:
             if request.content_type == "application/json":
-                logger.info(f"Тело запроса: {str(request.body.decode("utf-8"))}" )
+                logger.info(f"Тело запроса: {str(request.body.decode('utf-8'))}") 
             else:
                 logger.info("Тело запроса содержит бинарные данные")
         except Exception as e:
