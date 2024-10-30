@@ -10,11 +10,11 @@ app.conf.update(
     broker_url='redis://localhost:6379/0',
     result_backend='redis://localhost:6379/0',
     broker_connection_retry_on_startup=True,  # Повторное подключение при старте
-    task_soft_time_limit=600,  # Ограничение времени выполнения задачи (10 минут)
-    task_time_limit=660,  # Жёсткое ограничение времени выполнения задачи (11 минут)
-    worker_max_memory_per_child=512000,  # Ограничение памяти для воркера (512 MB)
+    task_soft_time_limit=21600,  # Ограничение времени выполнения задачи (6 часов)
+    task_time_limit=21660,  # Жёсткое ограничение времени выполнения задачи (6 часов 1 минута)
+    worker_max_memory_per_child=2048000,  # Ограничение памяти для воркера (2 GB)
 )
 
-app.config_from_object('django.conf:settings', namespace='CELERY')
+app.config_from_object('django.conf:settings', namespace='Django-CELERY')
 
 app.autodiscover_tasks()
