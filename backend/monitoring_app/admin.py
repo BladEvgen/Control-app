@@ -495,6 +495,20 @@ class LessonAttendanceAdmin(ModelAdmin):
         "date_at",
         "has_photo",
     )
+    
+    def formatted_first_in(self, obj):
+        if obj.first_in:
+            local_time = timezone.localtime(obj.first_in)
+            return local_time.strftime("%H:%M:%S")
+        return "-"
+    formatted_first_in.short_description = "Время начала (локальное)"
+
+    def formatted_last_out(self, obj):
+        if obj.last_out:
+            local_time = timezone.localtime(obj.last_out)
+            return local_time.strftime("%H:%M:%S")
+        return "-"
+    formatted_last_out.short_description = "Время окончания (локальное)"
 
     list_filter = ("date_at", "staff", "subject_name")
     search_fields = ("staff__name", "subject_name", "tutor")
@@ -537,6 +551,7 @@ class LessonAttendanceAdmin(ModelAdmin):
 
 
 admin.site.register(LessonAttendance, LessonAttendanceAdmin)
+
 
 # === Зарплата ===
 
