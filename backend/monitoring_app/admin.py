@@ -489,7 +489,6 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     list_display = (
         "staff",
-        "subject_name",
         "tutor",
         "formatted_first_in",
         "formatted_last_out",

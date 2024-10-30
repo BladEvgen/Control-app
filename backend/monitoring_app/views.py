@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import base64
 import logging
 import zipfile
 import datetime
@@ -1688,7 +1689,7 @@ def check_lesson_task_status(request, task_id):
     operation_description=(
         "Создаёт новые записи посещаемости для сотрудников на занятия. "
         "Каждая запись должна содержать обязательные параметры: "
-        "`staff_pin`, `subject_name`, `tutor_id`, `tutor`, `first_in`, `latitude`, `longitude`. "
+        "`staff_pin`, `tutor_id`, `tutor`, `first_in`, `latitude`, `longitude`. "
         "`image` должен быть отправлен как отдельный файл в запросе."
     ),
     request_body=openapi.Schema(
@@ -1701,7 +1702,6 @@ def check_lesson_task_status(request, task_id):
                     type=openapi.TYPE_OBJECT,
                     required=[
                         "staff_pin",
-                        "subject_name",
                         "tutor_id",
                         "tutor",
                         "first_in",
@@ -1713,11 +1713,6 @@ def check_lesson_task_status(request, task_id):
                             type=openapi.TYPE_STRING,
                             description="PIN сотрудника",
                             example="s00260",
-                        ),
-                        "subject_name": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            description="Название предмета",
-                            example="Медицина",
                         ),
                         "tutor_id": openapi.Schema(
                             type=openapi.TYPE_INTEGER,
@@ -1808,7 +1803,6 @@ def create_lesson_attendance(request):
         request (Request): Объект запроса, содержащий:
             - attendance_data (list): Список объектов с данными о посещаемости, каждый объект содержит:
                 - staff_pin (str): PIN сотрудника.
-                - subject_name (str): Название предмета.
                 - tutor_id (int): ID преподавателя.
                 - tutor (str): ФИО преподавателя.
                 - first_in (str): Время начала занятия в формате ISO 8601.
@@ -1825,48 +1819,87 @@ def create_lesson_attendance(request):
     Raises:
         Exception: Любые исключения логируются, и сервер возвращает ответ с кодом 500.
     """
+
+    logger.info(f"Получен запрос: {request.method }{request.path}{request}")
+    logger.info(f"Заголовки запроса: {request.headers}")
+
+    if request.body:
+        try:
+            if request.content_type == "application/json":
+                logger.info(f"Тело запроса: {str(request.body.decode("utf-8"))}" )
+            else:
+                logger.info("Тело запроса содержит бинарные данные")
+        except Exception as e:
+            logger.error(f"Ошибка при декодировании тела запроса: {str(e)}")
+
     try:
-        staff_image = request.FILES.get("image")
         attendance_data_raw = request.data.get("attendance_data")
+        image_base64 = request.data.get("image")  
 
-        attendance_data = json.loads(attendance_data_raw)
-
-        if not attendance_data or not staff_image:
+        if not attendance_data_raw:
+            logger.error("Отсутствуют данные о посещаемости")
             return Response(
-                {"error": "Attendance data or staff image is missing"},
+                {"error": "Attendance data is missing"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if isinstance(attendance_data_raw, list):
+            attendance_data = attendance_data_raw  
+        elif isinstance(attendance_data_raw, (str, bytes)):
+            attendance_data_raw = attendance_data_raw.decode("utf-8") if isinstance(attendance_data_raw, bytes) else attendance_data_raw
+            attendance_data = json.loads(attendance_data_raw)
+        else:
+            attendance_data = []
+
         for record in attendance_data:
-            required_fields = [
-                "staff_pin",
-                "subject_name",
-                "tutor_id",
-                "tutor",
-                "first_in",
-                "latitude",
-                "longitude",
-            ]
+            required_fields = ["staff_pin", "tutor_id", "tutor", "first_in", "latitude", "longitude"]
             if not all(record.get(field) for field in required_fields):
+                logger.error(f"Отсутствуют обязательные поля в записи: {record}")
                 return Response(
                     {"error": f"Missing required fields in record: {record}"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        image_content = staff_image.read()
+        image_content = None
+        image_name = None  
+
+        if image_base64:
+            logger.warning("Получено изображение в формате Base64")
+            try:
+                image_content = base64.b64decode(image_base64)
+                logger.warning("Изображение успешно декодировано в байты")
+            except Exception as e:
+                logger.error("Ошибка декодирования Base64 изображения: %s", e)
+                return Response(
+                    {"error": "Invalid Base64 image format"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        elif request.FILES.get("image"):
+            staff_image = request.FILES["image"]
+            image_content = staff_image.read()
+            logger.info("Изображение прочитано как бинарные данные")
+
+        if not image_content:
+            logger.error("Изображение отсутствует")
+            return Response(
+                {"error": "Image is missing"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         task = tasks.process_lesson_attendance_batch.apply_async(
-            args=[attendance_data, staff_image.name, image_content]
+            args=[attendance_data, image_name, image_content]
         )
+        logger.info(f"Задача успешно принята: ID задачи {task.id}")
 
         return Response(
-            {"message": "Задача принята в обработку", "task_id": task.id},
+            {"message": "Task accepted", "task_id": task.id},
             status=status.HTTP_202_ACCEPTED,
         )
 
     except Exception as e:
-        logger.error(f"Ошибка при запуске задачи: {str(e)}")
+        logger.error("Ошибка при запуске задачи: %s", str(e))
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 @swagger_auto_schema(

@@ -29,7 +29,6 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
     Args:
         attendance_data (list): Список объектов с данными о посещаемости. Каждый объект должен содержать:
             - staff_pin (str): PIN сотрудника.
-            - subject_name (str): Название предмета.
             - tutor_id (int): ID преподавателя.
             - tutor (str): ФИО преподавателя.
             - first_in (str): Время начала занятия в формате ISO 8601.
@@ -53,20 +52,19 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
     for record in attendance_data:
         try:
             staff_pin = record.get("staff_pin")
-            subject_name = record.get("subject_name")
             tutor_id = record.get("tutor_id")
             tutor = record.get("tutor")
             first_in = record.get("first_in")
             latitude = record.get("latitude")
             longitude = record.get("longitude")
 
+            timestamp = int(timezone.now().timestamp())
+            image_name = f"{staff_pin}_{timestamp}.jpg"
+
             staff = models.Staff.objects.get(pin=staff_pin)
             logger.info(f"Найден сотрудник с PIN: {staff_pin}")
 
             date_path = timezone.now().strftime("%Y-%m-%d")
-            timestamp = int(timezone.now().timestamp())
-            filename = f"{staff_pin}_{timestamp}.{image_name.split('.')[-1]}"
-
             base_path = (
                 f"{settings.MEDIA_ROOT}/control_image/{staff_pin}/{date_path}"
                 if settings.DEBUG
@@ -76,7 +74,7 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
             os.makedirs(base_path, exist_ok=True)
             logger.info(f"Создан путь: {base_path}")
 
-            file_path = os.path.join(base_path, filename)
+            file_path = os.path.join(base_path, image_name)
 
             try:
                 with open(file_path, "wb") as destination:
@@ -88,7 +86,6 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
 
             lesson_attendance = models.LessonAttendance.objects.create(
                 staff=staff,
-                subject_name=subject_name,
                 tutor_id=tutor_id,
                 tutor=tutor,
                 first_in=first_in,
