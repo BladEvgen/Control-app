@@ -199,16 +199,11 @@ class StaffAttendanceByDateSerializer(serializers.Serializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         date = data.pop("date")
-        department = (
-            instance.staff.department.name
-            if instance.staff.department
-            else "Unknown Department"
-        )
+        department = data.pop("department")
         return {
             date: {
                 "department": department,
-                "attendance": self.context.get(date, [])
-                + [
+                "attendance": [
                     {
                         "staff_fio": data["staff_fio"],
                         "first_in": data["first_in"],
@@ -217,3 +212,4 @@ class StaffAttendanceByDateSerializer(serializers.Serializer):
                 ],
             }
         }
+

@@ -42,9 +42,9 @@ logger = logging.getLogger(__name__)
 
 
 class StaffAttendancePagination(PageNumberPagination):
-    page_size = 200
+    page_size = 5000
     page_size_query_param = "page_size"
-    max_page_size = 600
+    max_page_size = 20000
 
 
 Cache = caches["default"]
@@ -2073,7 +2073,7 @@ def update_lesson_attendance(request, id):
 @swagger_auto_schema(
     method="get",
     operation_summary="Посещаемость сотрудников по отделу",
-    operation_description="Получить данные о посещаемости сотрудников по ID подразделения",
+    operation_description="Получить данные о посещаемости сотрудников по ID подразделения и его дочерним подразделениям за указанный период.",
     responses={
         200: openapi.Response(
             description="Успешный ответ",
@@ -2103,7 +2103,7 @@ def update_lesson_attendance(request, id):
                                 properties={
                                     "department": openapi.Schema(
                                         type=openapi.TYPE_STRING,
-                                        description="Название подразделения",
+                                        description="Название отдела сотрудника",
                                     ),
                                     "attendance": openapi.Schema(
                                         type=openapi.TYPE_ARRAY,
@@ -2206,12 +2206,14 @@ def staff_detail_by_department_id(request, department_id):
     Параметры запроса:
     - end_date: Конечная дата периода в формате YYYY-MM-DD.
     - start_date: Начальная дата периода в формате YYYY-MM-DD.
+    - page: Номер страницы для пагинации (по умолчанию 1).
+    - page_size: Количество записей на странице (максимум 500).
 
     Возвращаемые данные:
     - count: Общее количество записей.
     - next: URL следующей страницы результатов.
     - previous: URL предыдущей страницы результатов.
-    - results: Список посещаемости сотрудников, сгруппированных по датам и по сотрудникам.
+    - results: Список посещаемости сотрудников, сгруппированных по датам и по каждому сотруднику.
 
     Пример ответа:
     {
@@ -2224,11 +2226,15 @@ def staff_detail_by_department_id(request, department_id):
                     "department": "Test",
                     "attendance": [
                         {
-                            "staff_fio": "Testov Test",
-                            "first_in": "2024-10-29T11:11:03+05:00",
-                            "last_out": "2024-10-29T16:55:11+05:00"
+                            "staff_fio": "Иванов Иван",
+                            "first_in": "2024-10-29T08:00:00+05:00",
+                            "last_out": "2024-10-29T17:00:00+05:00"
                         },
-                        ...
+                        {
+                            "staff_fio": "Петров Петр",
+                            "first_in": "2024-10-29T09:15:00+05:00",
+                            "last_out": "2024-10-29T16:45:00+05:00"
+                        }
                     ]
                 }
             },
@@ -2241,6 +2247,10 @@ def staff_detail_by_department_id(request, department_id):
     - 404: Подразделение не найдено или данные о посещаемости не найдены.
     - 500: Внутренняя ошибка сервера.
     """
+    logger.info(
+        f"Request received for staff attendance by department ID {department_id}"
+    )
+
     logger.info(
         f"Request received for staff attendance by department ID {department_id}"
     )
@@ -2305,42 +2315,21 @@ def staff_detail_by_department_id(request, department_id):
                 date_at__range=(start_date, end_date),
             ).select_related("staff").order_by("date_at", "staff__surname", "staff__name")
 
-            attendance_data = defaultdict(lambda: {"department": department.name, "attendance": []})
+            all_records = list(staff_attendance) + list(lesson_attendance)
+            serializer = serializers.StaffAttendanceByDateSerializer(all_records, many=True)
 
-            for record in staff_attendance:
-                date_key = (record.date_at - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-                staff_fio = f"{record.staff.surname} {record.staff.name}"
-                
-                attendance_data[date_key]["attendance"].append({
-                    "staff_fio": staff_fio,
-                    "first_in": record.first_in.astimezone(timezone.get_default_timezone()) if record.first_in else None,
-                    "last_out": record.last_out.astimezone(timezone.get_default_timezone()) if record.last_out else None,
-                })
+            results = []
+            date_attendance_map = defaultdict(lambda: defaultdict(list))
 
-            for record in lesson_attendance:
-                date_key = record.date_at.strftime("%Y-%m-%d")
-                staff_fio = f"{record.staff.surname} {record.staff.name}"
+            for record in serializer.data:
+                for date, entry in record.items():
+                    dept = entry["department"]
+                    staff_info = entry["attendance"][0]  
+                    date_attendance_map[date][dept].append(staff_info)
 
-                matching_attendance = next(
-                    (att for att in attendance_data[date_key]["attendance"] if att["staff_fio"] == staff_fio),
-                    None
-                )
-
-                if matching_attendance:
-                    matching_attendance["first_in"] = min(
-                        filter(None, [matching_attendance["first_in"], record.first_in.astimezone(timezone.get_default_timezone())])
-                    )
-                    matching_attendance["last_out"] = max(
-                        filter(None, [matching_attendance["last_out"], record.last_out.astimezone(timezone.get_default_timezone())])
-                    )
-                else:
-                    attendance_data[date_key]["attendance"].append({
-                        "staff_fio": staff_fio,
-                        "first_in": record.first_in.astimezone(timezone.get_default_timezone()) if record.first_in else None,
-                        "last_out": record.last_out.astimezone(timezone.get_default_timezone()) if record.last_out else None,
-                    })
-
-            results = [{date: data} for date, data in attendance_data.items()]
+            for date, departments in date_attendance_map.items():
+                for dept, attendance in departments.items():
+                    results.append({date: {"department": dept, "attendance": attendance}})
 
             paginator = StaffAttendancePagination()
             result_page = paginator.paginate_queryset(results, request)
