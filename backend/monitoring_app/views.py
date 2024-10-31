@@ -2317,13 +2317,13 @@ def staff_detail_by_department_id(request, department_id):
                     existing_record = date_attendance_map[date_key][department][staff_fio]
                     existing_record["first_in"] = (
                         min(existing_record["first_in"], record.first_in.astimezone(timezone.get_default_timezone()))
-                        if existing_record["first_in"]
-                        else record.first_in.astimezone(timezone.get_default_timezone())
+                        if existing_record["first_in"] and record.first_in
+                        else (record.first_in.astimezone(timezone.get_default_timezone()) if record.first_in else None)
                     )
                     existing_record["last_out"] = (
-                        max(existing_record["last_out"], record.last_out.astimezone(timezone.get_default_timezone()))
-                        if existing_record["last_out"]
-                        else record.last_out.astimezone(timezone.get_default_timezone())
+                            max(existing_record["last_out"], record.last_out.astimezone(timezone.get_default_timezone()))
+                        if existing_record["last_out"] and record.last_out
+                        else (record.last_out.astimezone(timezone.get_default_timezone()) if record.last_out else None)
                     )
                 else:
                     date_attendance_map[date_key][department][staff_fio] = {
