@@ -5,6 +5,7 @@ import base64
 import logging
 import zipfile
 import datetime
+from collections import defaultdict
 from tempfile import NamedTemporaryFile
 from concurrent.futures import ThreadPoolExecutor
 
@@ -16,6 +17,7 @@ from openpyxl import load_workbook
 from django.contrib import messages
 from django.core.cache import caches
 from django.http import HttpResponse
+from celery.result import AsyncResult
 from django.db.models import Count, Q
 from django.views.generic import View
 from django.contrib.auth.models import User
@@ -34,16 +36,15 @@ from rest_framework.permissions import (
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from celery.result import AsyncResult
-from monitoring_app import models, permissions, serializers, utils, tasks
+from monitoring_app import models, permissions, serializers, tasks, utils
 
 logger = logging.getLogger(__name__)
 
 
 class StaffAttendancePagination(PageNumberPagination):
-    page_size = 5000
+    page_size = 200
     page_size_query_param = "page_size"
-    max_page_size = 20000
+    max_page_size = 600
 
 
 Cache = caches["default"]
@@ -2053,41 +2054,58 @@ def update_lesson_attendance(request, id):
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
-                    "department_name": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="Название подразделения",
+                    "count": openapi.Schema(
+                        type=openapi.TYPE_INTEGER,
+                        description="Общее количество записей",
                     ),
-                    "attendance": openapi.Schema(
+                    "next": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="URL следующей страницы результатов",
+                        nullable=True,
+                    ),
+                    "previous": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="URL предыдущей страницы результатов",
+                        nullable=True,
+                    ),
+                    "results": openapi.Schema(
                         type=openapi.TYPE_ARRAY,
                         items=openapi.Schema(
                             type=openapi.TYPE_OBJECT,
-                            properties={
-                                "date": openapi.Schema(
-                                    type=openapi.TYPE_ARRAY,
-                                    items=openapi.Schema(
-                                        type=openapi.TYPE_OBJECT,
-                                        properties={
-                                            "staff_fio": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                description="ФИО сотрудника",
-                                            ),
-                                            "first_in": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                format=openapi.FORMAT_DATETIME,
-                                                description="Время первого входа сотрудника",
-                                            ),
-                                            "last_out": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                format=openapi.FORMAT_DATETIME,
-                                                description="Время последнего выхода сотрудника",
-                                            ),
-                                        },
+                            additional_properties=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "department": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        description="Название подразделения",
                                     ),
-                                    description="Список сотрудников и их посещаемость за дату",
-                                )
-                            },
+                                    "attendance": openapi.Schema(
+                                        type=openapi.TYPE_ARRAY,
+                                        items=openapi.Schema(
+                                            type=openapi.TYPE_OBJECT,
+                                            properties={
+                                                "staff_fio": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    description="ФИО сотрудника",
+                                                ),
+                                                "first_in": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    format=openapi.FORMAT_DATETIME,
+                                                    description="Время первого входа сотрудника",
+                                                    nullable=True,
+                                                ),
+                                                "last_out": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    format=openapi.FORMAT_DATETIME,
+                                                    description="Время последнего выхода сотрудника",
+                                                    nullable=True,
+                                                ),
+                                            },
+                                        ),
+                                    ),
+                                },
+                            ),
                         ),
-                        description="Список посещаемости по датам",
                     ),
                 },
             ),
@@ -2135,6 +2153,20 @@ def update_lesson_attendance(request, id):
             type=openapi.TYPE_STRING,
             required=True,
         ),
+        openapi.Parameter(
+            "page",
+            openapi.IN_QUERY,
+            description="Номер страницы для пагинации",
+            type=openapi.TYPE_INTEGER,
+            required=False,
+        ),
+        openapi.Parameter(
+            "page_size",
+            openapi.IN_QUERY,
+            description="Количество записей на странице (максимум 500)",
+            type=openapi.TYPE_INTEGER,
+            required=False,
+        ),
     ],
 )
 @api_view(["GET"])
@@ -2150,22 +2182,29 @@ def staff_detail_by_department_id(request, department_id):
     - start_date: Начальная дата периода в формате YYYY-MM-DD.
 
     Возвращаемые данные:
-    - department_name: Название подразделения.
-    - attendance: Список посещаемости сотрудников, сгруппированных по датам.
+    - count: Общее количество записей.
+    - next: URL следующей страницы результатов.
+    - previous: URL предыдущей страницы результатов.
+    - results: Список посещаемости сотрудников, сгруппированных по датам и по сотрудникам.
 
     Пример ответа:
     {
-        "department_name": "отдел цифровизации образовательных технологий",
-        "attendance": [
+        "count": 1,
+        "next": null,
+        "previous": null,
+        "results": [
             {
-                "2024-07-01": [
-                    {
-                        "staff_fio": "Testov Test",
-                        "first_in": "2024-07-01T00:00:00+05:00",
-                        "last_out": "2024-07-01T23:59:59+05:00"
-                    },
-                    ...
-                ]
+                "2024-10-29": {
+                    "department": "Test",
+                    "attendance": [
+                        {
+                            "staff_fio": "Testov Test",
+                            "first_in": "2024-10-29T11:11:03+05:00",
+                            "last_out": "2024-10-29T16:55:11+05:00"
+                        },
+                        ...
+                    ]
+                }
             },
             ...
         ]
@@ -2229,25 +2268,57 @@ def staff_detail_by_department_id(request, department_id):
 
         def query():
             logger.info("Querying staff attendance data")
-            staff_attendance = (
-                models.StaffAttendance.objects.filter(
-                    staff__department_id__in=department_ids,
-                    date_at__range=(start_date, end_date),
+
+            staff_attendance = models.StaffAttendance.objects.filter(
+                staff__department_id__in=department_ids,
+                date_at__range=(start_date, end_date),
+            ).select_related("staff").order_by("date_at", "staff__surname", "staff__name")
+
+            lesson_attendance = models.LessonAttendance.objects.filter(
+                staff__department_id__in=department_ids,
+                date_at__range=(start_date, end_date),
+            ).select_related("staff").order_by("date_at", "staff__surname", "staff__name")
+
+            attendance_data = defaultdict(lambda: {"department": department.name, "attendance": []})
+
+            for record in staff_attendance:
+                date_key = (record.date_at - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+                staff_fio = f"{record.staff.surname} {record.staff.name}"
+                
+                attendance_data[date_key]["attendance"].append({
+                    "staff_fio": staff_fio,
+                    "first_in": record.first_in.astimezone(timezone.get_default_timezone()) if record.first_in else None,
+                    "last_out": record.last_out.astimezone(timezone.get_default_timezone()) if record.last_out else None,
+                })
+
+            for record in lesson_attendance:
+                date_key = record.date_at.strftime("%Y-%m-%d")
+                staff_fio = f"{record.staff.surname} {record.staff.name}"
+
+                matching_attendance = next(
+                    (att for att in attendance_data[date_key]["attendance"] if att["staff_fio"] == staff_fio),
+                    None
                 )
-                .select_related("staff")
-                .order_by("date_at", "staff__surname", "staff__name")
-            )
+
+                if matching_attendance:
+                    matching_attendance["first_in"] = min(
+                        filter(None, [matching_attendance["first_in"], record.first_in.astimezone(timezone.get_default_timezone())])
+                    )
+                    matching_attendance["last_out"] = max(
+                        filter(None, [matching_attendance["last_out"], record.last_out.astimezone(timezone.get_default_timezone())])
+                    )
+                else:
+                    attendance_data[date_key]["attendance"].append({
+                        "staff_fio": staff_fio,
+                        "first_in": record.first_in.astimezone(timezone.get_default_timezone()) if record.first_in else None,
+                        "last_out": record.last_out.astimezone(timezone.get_default_timezone()) if record.last_out else None,
+                    })
+
+            results = [{date: data} for date, data in attendance_data.items()]
 
             paginator = StaffAttendancePagination()
-            result_page = paginator.paginate_queryset(staff_attendance, request)
-            serializer = serializers.StaffAttendanceByDateSerializer(
-                result_page,
-                many=True,
-                context={"department_name": department.name},
-            )
-
-            logger.info("Staff attendance data query completed")
-            return paginator.get_paginated_response(serializer.data).data
+            result_page = paginator.paginate_queryset(results, request)
+            return paginator.get_paginated_response(result_page).data
 
         cached_data = get_cache(cache_key, query=query, timeout=1 * 60 * 60)
         logger.info("Returning cached or queried data")
@@ -2259,6 +2330,7 @@ def staff_detail_by_department_id(request, department_id):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             data={"error": str(e)},
         )
+
 
 
 @swagger_auto_schema(
