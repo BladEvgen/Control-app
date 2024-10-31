@@ -9,7 +9,6 @@ from collections import defaultdict
 from tempfile import NamedTemporaryFile
 from concurrent.futures import ThreadPoolExecutor
 
-import torch
 from drf_yasg import openapi
 from django.conf import settings
 from django.utils import timezone
@@ -1120,36 +1119,50 @@ def get_staff_detail(staff, start_date, end_date):
             end_date + datetime.timedelta(days=1),
         ],
     )
-    
+
     lesson_qs = models.LessonAttendance.objects.filter(
         staff=staff,
         date_at__range=[start_date, end_date],
     )
-    
+
     combined_attendance = {}
     for record in attendance_qs:
-        date_key = record.date_at - datetime.timedelta(days=1)  
+        date_key = record.date_at - datetime.timedelta(days=1)
         if date_key not in combined_attendance:
-            combined_attendance[date_key] = {"first_in": record.first_in, "last_out": record.last_out}
+            combined_attendance[date_key] = {
+                "first_in": record.first_in,
+                "last_out": record.last_out,
+            }
         else:
-            combined_attendance[date_key]["first_in"] = min(
-                combined_attendance[date_key]["first_in"], record.first_in
-            ) if combined_attendance[date_key]["first_in"] else record.first_in
-            combined_attendance[date_key]["last_out"] = max(
-                combined_attendance[date_key]["last_out"], record.last_out
-            ) if combined_attendance[date_key]["last_out"] else record.last_out
+            combined_attendance[date_key]["first_in"] = (
+                min(combined_attendance[date_key]["first_in"], record.first_in)
+                if combined_attendance[date_key]["first_in"]
+                else record.first_in
+            )
+            combined_attendance[date_key]["last_out"] = (
+                max(combined_attendance[date_key]["last_out"], record.last_out)
+                if combined_attendance[date_key]["last_out"]
+                else record.last_out
+            )
 
     for record in lesson_qs:
-        date_key = record.date_at  
+        date_key = record.date_at
         if date_key not in combined_attendance:
-            combined_attendance[date_key] = {"first_in": record.first_in, "last_out": record.last_out}
+            combined_attendance[date_key] = {
+                "first_in": record.first_in,
+                "last_out": record.last_out,
+            }
         else:
-            combined_attendance[date_key]["first_in"] = min(
-                combined_attendance[date_key]["first_in"], record.first_in
-            ) if combined_attendance[date_key]["first_in"] else record.first_in
-            combined_attendance[date_key]["last_out"] = max(
-                combined_attendance[date_key]["last_out"], record.last_out
-            ) if combined_attendance[date_key]["last_out"] else record.last_out
+            combined_attendance[date_key]["first_in"] = (
+                min(combined_attendance[date_key]["first_in"], record.first_in)
+                if combined_attendance[date_key]["first_in"]
+                else record.first_in
+            )
+            combined_attendance[date_key]["last_out"] = (
+                max(combined_attendance[date_key]["last_out"], record.last_out)
+                if combined_attendance[date_key]["last_out"]
+                else record.last_out
+            )
 
     logger.debug(f"Объединенные данные посещаемости: {combined_attendance}")
 
@@ -1271,7 +1284,7 @@ def get_staff_detail(staff, start_date, end_date):
     for event_date in sorted(date_set):
         logger.debug(f"Обработка даты: {event_date}")
 
-        attendance = combined_attendance.get(event_date)  
+        attendance = combined_attendance.get(event_date)
         (
             attendance_record,
             total_minutes_for_period,
@@ -1790,7 +1803,9 @@ def check_lesson_task_status(request, task_id):
                         type=openapi.TYPE_STRING,
                         description="Сообщение об успешном запуске задачи",
                     ),
-                    "task_id": openapi.Schema(type=openapi.TYPE_STRING, description="ID задачи"),
+                    "task_id": openapi.Schema(
+                        type=openapi.TYPE_STRING, description="ID задачи"
+                    ),
                 },
             ),
         ),
@@ -1854,7 +1869,7 @@ def create_lesson_attendance(request):
     if request.body:
         try:
             if request.content_type == "application/json":
-                logger.info(f"Тело запроса: {str(request.body.decode('utf-8'))}") 
+                logger.info(f"Тело запроса: {str(request.body.decode('utf-8'))}")
             else:
                 logger.info("Тело запроса содержит бинарные данные")
         except Exception as e:
@@ -1862,7 +1877,7 @@ def create_lesson_attendance(request):
 
     try:
         attendance_data_raw = request.data.get("attendance_data")
-        image_base64 = request.data.get("image")  
+        image_base64 = request.data.get("image")
 
         if not attendance_data_raw:
             logger.error("Отсутствуют данные о посещаемости")
@@ -1872,15 +1887,26 @@ def create_lesson_attendance(request):
             )
 
         if isinstance(attendance_data_raw, list):
-            attendance_data = attendance_data_raw  
+            attendance_data = attendance_data_raw
         elif isinstance(attendance_data_raw, (str, bytes)):
-            attendance_data_raw = attendance_data_raw.decode("utf-8") if isinstance(attendance_data_raw, bytes) else attendance_data_raw
+            attendance_data_raw = (
+                attendance_data_raw.decode("utf-8")
+                if isinstance(attendance_data_raw, bytes)
+                else attendance_data_raw
+            )
             attendance_data = json.loads(attendance_data_raw)
         else:
             attendance_data = []
 
         for record in attendance_data:
-            required_fields = ["staff_pin", "tutor_id", "tutor", "first_in", "latitude", "longitude"]
+            required_fields = [
+                "staff_pin",
+                "tutor_id",
+                "tutor",
+                "first_in",
+                "latitude",
+                "longitude",
+            ]
             if not all(record.get(field) for field in required_fields):
                 logger.error(f"Отсутствуют обязательные поля в записи: {record}")
                 return Response(
@@ -1889,7 +1915,7 @@ def create_lesson_attendance(request):
                 )
 
         image_content = None
-        image_name = None  
+        image_name = None
 
         if image_base64:
             logger.warning("Получено изображение в формате Base64")
@@ -2246,7 +2272,9 @@ def staff_detail_by_department_id(request, department_id):
     - 404: Подразделение не найдено или данные о посещаемости не найдены.
     - 500: Внутренняя ошибка сервера.
     """
-    logger.info(f"Request received for staff attendance by department ID {department_id}")
+    logger.info(
+        f"Request received for staff attendance by department ID {department_id}"
+    )
 
     try:
         end_date_str = request.query_params.get("end_date")
@@ -2290,77 +2318,139 @@ def staff_detail_by_department_id(request, department_id):
         department_ids = [department_id] + get_all_child_department_ids(department_id)
         logger.debug(f"Department IDs for attendance query: {department_ids}")
 
-        cache_key = f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
+        cache_key = (
+            f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
+        )
         logger.debug(f"Generated cache key: {cache_key}")
 
         def query():
             logger.info("Querying staff attendance data")
 
-            staff_attendance = models.StaffAttendance.objects.filter(
-                staff__department_id__in=department_ids,
-                date_at__range=(start_date, end_date),
-            ).select_related("staff").order_by("date_at", "staff__surname", "staff__name")
+            staff_attendance = (
+                models.StaffAttendance.objects.filter(
+                    staff__department_id__in=department_ids,
+                    date_at__range=(start_date, end_date),
+                )
+                .select_related("staff")
+                .order_by("date_at", "staff__surname", "staff__name")
+            )
 
-            lesson_attendance = models.LessonAttendance.objects.filter(
-                staff__department_id__in=department_ids,
-                date_at__range=(start_date, end_date),
-            ).select_related("staff").order_by("date_at", "staff__surname", "staff__name")
+            lesson_attendance = (
+                models.LessonAttendance.objects.filter(
+                    staff__department_id__in=department_ids,
+                    date_at__range=(start_date, end_date),
+                )
+                .select_related("staff")
+                .order_by("date_at", "staff__surname", "staff__name")
+            )
 
             date_attendance_map = defaultdict(lambda: defaultdict(dict))
 
             for record in staff_attendance:
-                date_key = (record.date_at - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+                date_key = (record.date_at - datetime.timedelta(days=1)).strftime(
+                    "%Y-%m-%d"
+                )
                 staff_fio = f"{record.staff.surname} {record.staff.name}"
-                department = record.staff.department.name if record.staff.department else "Unknown Department"
+                department = (
+                    record.staff.department.name
+                    if record.staff.department
+                    else "Unknown Department"
+                )
 
                 if staff_fio in date_attendance_map[date_key][department]:
-                    existing_record = date_attendance_map[date_key][department][staff_fio]
+                    existing_record = date_attendance_map[date_key][department][
+                        staff_fio
+                    ]
                     existing_record["first_in"] = (
-                        min(existing_record["first_in"], record.first_in.astimezone(timezone.get_default_timezone()))
+                        min(
+                            existing_record["first_in"],
+                            record.first_in.astimezone(timezone.get_default_timezone()),
+                        )
                         if existing_record["first_in"] and record.first_in
-                        else (record.first_in.astimezone(timezone.get_default_timezone()) if record.first_in else None)
+                        else (
+                            record.first_in.astimezone(timezone.get_default_timezone())
+                            if record.first_in
+                            else None
+                        )
                     )
                     existing_record["last_out"] = (
-                            max(existing_record["last_out"], record.last_out.astimezone(timezone.get_default_timezone()))
+                        max(
+                            existing_record["last_out"],
+                            record.last_out.astimezone(timezone.get_default_timezone()),
+                        )
                         if existing_record["last_out"] and record.last_out
-                        else (record.last_out.astimezone(timezone.get_default_timezone()) if record.last_out else None)
+                        else (
+                            record.last_out.astimezone(timezone.get_default_timezone())
+                            if record.last_out
+                            else None
+                        )
                     )
                 else:
                     date_attendance_map[date_key][department][staff_fio] = {
                         "staff_fio": staff_fio,
-                        "first_in": record.first_in.astimezone(timezone.get_default_timezone()) if record.first_in else None,
-                        "last_out": record.last_out.astimezone(timezone.get_default_timezone()) if record.last_out else None,
+                        "first_in": (
+                            record.first_in.astimezone(timezone.get_default_timezone())
+                            if record.first_in
+                            else None
+                        ),
+                        "last_out": (
+                            record.last_out.astimezone(timezone.get_default_timezone())
+                            if record.last_out
+                            else None
+                        ),
                     }
 
             for record in lesson_attendance:
                 date_key = record.date_at.strftime("%Y-%m-%d")
                 staff_fio = f"{record.staff.surname} {record.staff.name}"
-                department = record.staff.department.name if record.staff.department else "Unknown Department"
+                department = (
+                    record.staff.department.name
+                    if record.staff.department
+                    else "Unknown Department"
+                )
 
                 if staff_fio in date_attendance_map[date_key][department]:
-                    existing_record = date_attendance_map[date_key][department][staff_fio]
+                    existing_record = date_attendance_map[date_key][department][
+                        staff_fio
+                    ]
                     existing_record["first_in"] = (
-                        min(existing_record["first_in"], record.first_in.astimezone(timezone.get_default_timezone()))
+                        min(
+                            existing_record["first_in"],
+                            record.first_in.astimezone(timezone.get_default_timezone()),
+                        )
                         if existing_record["first_in"]
                         else record.first_in.astimezone(timezone.get_default_timezone())
                     )
                     existing_record["last_out"] = (
-                        max(existing_record["last_out"], record.last_out.astimezone(timezone.get_default_timezone()))
+                        max(
+                            existing_record["last_out"],
+                            record.last_out.astimezone(timezone.get_default_timezone()),
+                        )
                         if existing_record["last_out"]
                         else record.last_out.astimezone(timezone.get_default_timezone())
                     )
                 else:
                     date_attendance_map[date_key][department][staff_fio] = {
                         "staff_fio": staff_fio,
-                        "first_in": record.first_in.astimezone(timezone.get_default_timezone()) if record.first_in else None,
-                        "last_out": record.last_out.astimezone(timezone.get_default_timezone()) if record.last_out else None,
+                        "first_in": (
+                            record.first_in.astimezone(timezone.get_default_timezone())
+                            if record.first_in
+                            else None
+                        ),
+                        "last_out": (
+                            record.last_out.astimezone(timezone.get_default_timezone())
+                            if record.last_out
+                            else None
+                        ),
                     }
 
             results = []
             for date, departments in date_attendance_map.items():
                 for dept, staff_data in departments.items():
                     attendance = list(staff_data.values())
-                    results.append({date: {"department": dept, "attendance": attendance}})
+                    results.append(
+                        {date: {"department": dept, "attendance": attendance}}
+                    )
 
             paginator = StaffAttendancePagination()
             result_page = paginator.paginate_queryset(results, request)
@@ -3639,51 +3729,63 @@ def password_reset_confirm_view(request, token):
     return render(request, "password_reset_confirm.html", {"token": token})
 
 
-@api_view(['POST'])
+@api_view(["POST"])
 def verify_face(request):
     staff_pin = request.data.get("pin")
     staff_image = request.FILES.get("image")
 
     if not staff_pin or not staff_image:
         logger.error("Необходимо указать pin и изображение")
-        return Response({"error": "Необходимо указать pin и изображение"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"error": "Необходимо указать pin и изображение"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     try:
         staff = models.Staff.objects.get(pin=staff_pin)
         logger.info(f"Сотрудник найден: {staff_pin}")
     except models.Staff.DoesNotExist:
         logger.error(f"Сотрудник с PIN {staff_pin} не найден")
-        return Response({"error": "Сотрудник не найден"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"error": "Сотрудник не найден"}, status=status.HTTP_404_NOT_FOUND
+        )
 
-    if not hasattr(staff, 'face_mask'):
+    if not hasattr(staff, "face_mask"):
         logger.error(f"Маска для сотрудника {staff_pin} не найдена")
-        return Response({"error": "Маска для данного сотрудника не найдена"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"error": "Маска для данного сотрудника не найдена"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     try:
         verified, distance = utils.compare_face_with_nn(staff, staff_image)
-        return Response({"verified": verified, "distance": distance}, status=status.HTTP_200_OK)
+        return Response(
+            {"verified": verified, "distance": distance}, status=status.HTTP_200_OK
+        )
 
     except Exception as e:
         logger.error(f"Ошибка при сравнении лиц для PIN {staff_pin}: {str(e)}")
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-
-@api_view(['POST'])
+@api_view(["POST"])
 def recognize_faces(request):
     staff_image = request.FILES.get("image")
 
     if not staff_image:
         logger.warning("Изображение не предоставлено")
         return Response(
-            {"error": "Необходимо предоставить изображение"}, status=status.HTTP_400_BAD_REQUEST
+            {"error": "Необходимо предоставить изображение"},
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     try:
         recognized_staff, unknown_faces = utils.recognize_faces_in_image(staff_image)
 
         if not recognized_staff and not unknown_faces:
-            return Response({"error": "Сотрудники не найдены"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Сотрудники не найдены"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         return Response(
             {"recognized_staff": recognized_staff, "unknown_faces": unknown_faces},

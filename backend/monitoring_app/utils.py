@@ -40,7 +40,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 DAYS = settings.DAYS
 
-logger = logging.getLogger('django')
+logger = logging.getLogger("django")
 
 arcface_model = None
 
@@ -76,6 +76,7 @@ def create_embeddings_from_images(image_paths):
             embeddings.append(embedding)
     return embeddings
 
+
 def preprocess_image(image):
     height, width = image.shape[:2]
     if height < 640 or width < 640:
@@ -92,93 +93,114 @@ def load_image_on_gpu(image_path):
     image_tensor = torch.from_numpy(image).to(get_device())
     return image_tensor
 
+
 def train_face_recognition_model(staff):
     try:
         device = get_device()
-    
+
         avatar_image = str(staff.avatar.path)
         augmented_image_dir = str(settings.AUGMENT_ROOT).format(staff_pin=staff.pin)
-        augmented_images = [os.path.join(augmented_image_dir, img) for img in os.listdir(augmented_image_dir)]
-    
-        positive_embeddings = create_embeddings_from_images([avatar_image] + augmented_images)
+        augmented_images = [
+            os.path.join(augmented_image_dir, img)
+            for img in os.listdir(augmented_image_dir)
+        ]
+
+        positive_embeddings = create_embeddings_from_images(
+            [avatar_image] + augmented_images
+        )
         negative_embeddings = generate_negative_samples(staff)
-    
-        positive_embeddings = torch.tensor(positive_embeddings, dtype=torch.float32).to(device)
-        negative_embeddings = torch.tensor(negative_embeddings, dtype=torch.float32).to(device)
-    
+
+        positive_embeddings = torch.tensor(positive_embeddings, dtype=torch.float32).to(
+            device
+        )
+        negative_embeddings = torch.tensor(negative_embeddings, dtype=torch.float32).to(
+            device
+        )
+
         if positive_embeddings.size(0) == 0 or negative_embeddings.size(0) == 0:
             raise ValueError(f"Insufficient data for training model for {staff.pin}.")
-    
-        embeddings_combined = torch.cat([positive_embeddings, negative_embeddings], dim=0)
+
+        embeddings_combined = torch.cat(
+            [positive_embeddings, negative_embeddings], dim=0
+        )
         labels = torch.tensor(
             [1] * positive_embeddings.size(0) + [0] * negative_embeddings.size(0),
-            dtype=torch.float32
+            dtype=torch.float32,
         ).to(device)
-    
+
         inputs_train, inputs_val, labels_train, labels_val = train_test_split(
             embeddings_combined, labels, test_size=0.2, random_state=42
         )
-    
+
         train_data = list(zip(inputs_train, labels_train))
         val_data = list(zip(inputs_val, labels_val))
-    
-        train_loader = DataLoader(train_data, batch_size=256, shuffle=True, num_workers=0)
+
+        train_loader = DataLoader(
+            train_data, batch_size=256, shuffle=True, num_workers=0
+        )
         val_loader = DataLoader(val_data, batch_size=256, shuffle=False, num_workers=0)
-    
-        model = FaceRecognitionResNet(input_size=positive_embeddings.shape[1]).to(device)
-    
+
+        model = FaceRecognitionResNet(input_size=positive_embeddings.shape[1]).to(
+            device
+        )
+
         criterion = nn.BCEWithLogitsLoss()
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-4)
         scaler = torch.cuda.amp.GradScaler()
-    
+
         for epoch in range(20):
             model.train()
             train_loss = 0.0
-    
+
             for batch_inputs, batch_labels in train_loader:
                 batch_inputs = batch_inputs.to(device)
                 batch_labels = batch_labels.to(device)
-    
+
                 optimizer.zero_grad()
                 with torch.cuda.amp.autocast():
                     outputs = model(batch_inputs).squeeze()
                     loss = criterion(outputs, batch_labels)
-    
+
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
-    
+
                 train_loss += loss.item()
-    
-            logger.info(f'Epoch {epoch+1}, Train Loss: {train_loss / len(train_loader)}')
-    
+
+            logger.info(
+                f"Epoch {epoch+1}, Train Loss: {train_loss / len(train_loader)}"
+            )
+
             model.eval()
             val_loss = 0.0
             with torch.no_grad():
                 for batch_inputs, batch_labels in val_loader:
                     batch_inputs = batch_inputs.to(device)
                     batch_labels = batch_labels.to(device)
-    
+
                     outputs = model(batch_inputs).squeeze()
                     loss = criterion(outputs, batch_labels)
                     val_loss += loss.item()
-    
-            logger.info(f'Epoch {epoch+1}, Validation Loss: {val_loss / len(val_loader)}')
-    
-        model_path = os.path.join(os.path.dirname(staff.avatar.path), f'{staff.pin}_model.pkl')
+
+            logger.info(
+                f"Epoch {epoch+1}, Validation Loss: {val_loss / len(val_loader)}"
+            )
+
+        model_path = os.path.join(
+            os.path.dirname(staff.avatar.path), f"{staff.pin}_model.pkl"
+        )
         torch.save(model.state_dict(), model_path)
         logger.info(f"Model for {staff.pin} saved at {model_path}")
-    
+
     except Exception as e:
         logger.error(f"Error training model for {staff.pin}: {str(e)}")
         raise e
 
 
-
-
-
 def load_model_for_staff(staff):
-    model_path = os.path.join(os.path.dirname(staff.avatar.path), f'{staff.pin}_model.pkl')
+    model_path = os.path.join(
+        os.path.dirname(staff.avatar.path), f"{staff.pin}_model.pkl"
+    )
     if not os.path.exists(model_path):
         raise ValueError(f"Модель для {staff.pin} не найдена")
 
@@ -188,7 +210,6 @@ def load_model_for_staff(staff):
     model.to(device)
     model.eval()
     return model
-
 
 
 def load_arcface_model():
@@ -202,10 +223,8 @@ def load_arcface_model():
     if arcface_model is None:
         ctx_id = 0 if torch.cuda.is_available() else -1
         logger.info(f"Using {'GPU' if ctx_id >= 0 else 'CPU'} for ArcFace model")
-        arcface_model = FaceAnalysis(name='buffalo_l', ctx_id=ctx_id)
+        arcface_model = FaceAnalysis(name="buffalo_l", ctx_id=ctx_id)
         arcface_model.prepare(ctx_id=ctx_id, det_size=(640, 640))
-
-
 
 
 def get_device():
@@ -242,7 +261,8 @@ def load_image_from_memory(file):
     except Exception as e:
         logger.error(f"Ошибка при чтении изображения: {e}")
         raise ValidationError(f"Ошибка чтения изображения: {str(e)}")
-    
+
+
 def create_face_encoding(image_or_path):
     """
     Создает face encoding для изображения с использованием модели ArcFace.
@@ -286,7 +306,9 @@ def generate_negative_samples(staff, neighbors_count=6):
     Returns:
         list: Список негативных эмбеддингов.
     """
-    staff_list = list(models.Staff.objects.filter(avatar__isnull=False).exclude(id=staff.id))
+    staff_list = list(
+        models.Staff.objects.filter(avatar__isnull=False).exclude(id=staff.id)
+    )
     negative_embeddings = []
 
     for neighbor in staff_list:
@@ -306,14 +328,14 @@ def generate_negative_samples(staff, neighbors_count=6):
             negative_embeddings.append(encoding)
 
         except Exception as e:
-            logger.warning(f"Failed to create encoding for negative sample from {neighbor.pin}: {e}")
+            logger.warning(
+                f"Failed to create encoding for negative sample from {neighbor.pin}: {e}"
+            )
 
         if len(negative_embeddings) >= neighbors_count:
             break
 
     return negative_embeddings
-
-
 
 
 def compare_face_with_nn(staff, image_file):
@@ -345,8 +367,12 @@ def compare_face_with_nn(staff, image_file):
         return verified, output
 
     except Exception as e:
-        logger.error(f"Ошибка при сравнении лица с нейронной сетью для {staff.pin}: {str(e)}")
-        raise ValueError(f"Ошибка при сравнении лица с нейронной сетью для {staff.pin}: {str(e)}")
+        logger.error(
+            f"Ошибка при сравнении лица с нейронной сетью для {staff.pin}: {str(e)}"
+        )
+        raise ValueError(
+            f"Ошибка при сравнении лица с нейронной сетью для {staff.pin}: {str(e)}"
+        )
 
 
 def recognize_faces_in_image(image_file):
@@ -384,7 +410,9 @@ def recognize_faces_in_image(image_file):
 
         for face in faces:
             face_embedding = np.array(face.embedding)
-            similarities = cosine_similarity(staff_embeddings, [face_embedding]).flatten()
+            similarities = cosine_similarity(
+                staff_embeddings, [face_embedding]
+            ).flatten()
             best_match_index = np.argmax(similarities)
             best_similarity = similarities[best_match_index]
 
@@ -398,7 +426,9 @@ def recognize_faces_in_image(image_file):
                         "pin": staff.pin,
                         "name": staff.name,
                         "surname": staff.surname,
-                        "department": staff.department.name if staff.department else None,
+                        "department": (
+                            staff.department.name if staff.department else None
+                        ),
                         "distance": cosine_distance,
                         "bbox": bbox,
                     }
@@ -417,7 +447,7 @@ def recognize_faces_in_image(image_file):
     except Exception as e:
         logger.error(f"Ошибка при распознавании лиц: {str(e)}")
         raise ValidationError(f"Ошибка при распознавании лиц: {str(e)}")
-    
+
 
 def get_client_ip(request):
     """Get the client IP address from the request, considering proxy setups."""
@@ -456,7 +486,9 @@ class HierarchicalDepartmentFilter(SimpleListFilter):
         if self.value():
             department = models.ChildDepartment.objects.get(pk=self.value())
             child_departments = department.get_all_child_departments()
-            child_department_ids = [dept.id for dept in child_departments] + [department.id]
+            child_department_ids = [dept.id for dept in child_departments] + [
+                department.id
+            ]
             return queryset.filter(staff__department__in=child_department_ids)
         return queryset
 
@@ -584,7 +616,9 @@ def get_all_attendance():
                 timezone.datetime.fromisoformat(first_event["eventTime"])
             )
             last_event_time = (
-                timezone.make_aware(timezone.datetime.fromisoformat(last_event["eventTime"]))
+                timezone.make_aware(
+                    timezone.datetime.fromisoformat(last_event["eventTime"])
+                )
                 if len(data) > 1
                 else first_event_time
             )
@@ -646,7 +680,9 @@ def password_check(password: str) -> bool:
         bool: True, если пароль соответствует всем требованиям сложности, в противном случае — False
     """
     return bool(
-        re.match(r"^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$", password)
+        re.match(
+            r"^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$", password
+        )
     )
 
 
@@ -666,7 +702,9 @@ def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]
     holidays_cache = cache.get("holidays_cache")
 
     if not holidays_cache:
-        holidays_cache = {holiday.date: holiday for holiday in models.PublicHoliday.objects.all()}
+        holidays_cache = {
+            holiday.date: holiday for holiday in models.PublicHoliday.objects.all()
+        }
         cache.set("holidays_cache", holidays_cache, timeout=1 * 12 * 60)
 
     def parse_datetime_with_timezone(dt_str: Optional[str]) -> Optional[str]:
@@ -705,7 +743,9 @@ def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]
                             attendance_info = "Выходной"
                     else:
                         attendance_info = (
-                            f"{first_in} - {last_out}" if first_in and last_out else "Отсутствие"
+                            f"{first_in} - {last_out}"
+                            if first_in and last_out
+                            else "Отсутствие"
                         )
 
                     rows.append([staff_fio, department, date_str, attendance_info])
@@ -743,7 +783,9 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
     data_font = Font(name="Roboto", size=11)
     data_alignment = Alignment(horizontal="center", vertical="center")
 
-    absence_fill = PatternFill(start_color="ab0a0a", end_color="ab0a0a", fill_type="solid")
+    absence_fill = PatternFill(
+        start_color="ab0a0a", end_color="ab0a0a", fill_type="solid"
+    )
     absence_font = Font(color="FFFFFF")
 
     df_flat = df_pivot_sorted.reset_index()
@@ -752,7 +794,9 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
     max_col_widths = [0] * len(df_flat_sorted.columns)
     max_row_heights = [0] * (len(df_flat_sorted) + 1)
 
-    for r_idx, r in enumerate(dataframe_to_rows(df_flat_sorted, index=False, header=True), 1):
+    for r_idx, r in enumerate(
+        dataframe_to_rows(df_flat_sorted, index=False, header=True), 1
+    ):
         for c_idx, value in enumerate(r, 1):
             cell = ws.cell(row=r_idx, column=c_idx, value=value)
             cell.font = data_font
@@ -774,7 +818,9 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
         cell.font = header_font
 
     for idx, col_width in enumerate(max_col_widths, 1):
-        ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = col_width + 2
+        ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = (
+            col_width + 2
+        )
 
     for idx, row_height in enumerate(max_row_heights, 1):
         ws.row_dimensions[idx].height = row_height * 3
@@ -923,4 +969,4 @@ def transliterate(name):
     for letter in name:
         translit.append(slovar.get(letter, letter))
 
-    return ''.join(translit)
+    return "".join(translit)

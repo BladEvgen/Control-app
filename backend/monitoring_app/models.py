@@ -5,6 +5,7 @@ from django.conf import settings
 from django.utils import timezone
 from django.contrib import messages
 from django.dispatch import receiver
+from django_admin_geomap import GeoItem
 from django.db import models, transaction
 from django.contrib.auth.models import User
 from django.utils.crypto import get_random_string
@@ -14,7 +15,6 @@ from django.core.validators import FileExtensionValidator
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 
 from monitoring_app import utils
-from django_admin_geomap import GeoItem
 
 
 class PasswordResetTokenManager(models.Manager):
@@ -28,7 +28,9 @@ class PasswordResetTokenManager(models.Manager):
 
 
 class PasswordResetToken(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, verbose_name="Пользователь"
+    )
     token = models.CharField(max_length=64, unique=True, verbose_name="Токен")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     _used = models.BooleanField(default=False, verbose_name="Статус использования")
@@ -62,7 +64,9 @@ class PasswordResetToken(models.Model):
 
 
 class PasswordResetRequestLog(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, verbose_name="Пользователь"
+    )
     ip_address = models.GenericIPAddressField(verbose_name="IP-адрес")
     requested_at = models.DateTimeField(auto_now_add=True, verbose_name="Время запроса")
 
@@ -88,7 +92,9 @@ class PasswordResetRequestLog(models.Model):
 
     @staticmethod
     def can_request_again(user, ip_address):
-        last_request_time = PasswordResetRequestLog.get_last_request_time(user, ip_address)
+        last_request_time = PasswordResetRequestLog.get_last_request_time(
+            user, ip_address
+        )
         if not last_request_time:
             return True
         return timezone.now() >= last_request_time + timezone.timedelta(minutes=5)
@@ -107,7 +113,9 @@ class APIKey(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     key = models.CharField(max_length=256, editable=False, verbose_name="Ключ")
-    is_active = models.BooleanField(default=True, editable=True, verbose_name="Статус активности")
+    is_active = models.BooleanField(
+        default=True, editable=True, verbose_name="Статус активности"
+    )
 
     def __str__(self):
         status = "Активен" if self.is_active else "Деактивирован"
@@ -190,7 +198,9 @@ class FileCategory(models.Model):
 class ParentDepartment(models.Model):
     id = models.CharField(primary_key=True, verbose_name="Номер отдела", max_length=10)
     name = models.CharField(max_length=255, unique=True, verbose_name="Название отдела")
-    date_of_creation = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
+    date_of_creation = models.DateTimeField(
+        auto_now_add=True, verbose_name="Дата создания"
+    )
 
     def __str__(self):
         return self.name
@@ -207,7 +217,9 @@ class ParentDepartment(models.Model):
 class ChildDepartment(models.Model):
     id = models.CharField(primary_key=True, verbose_name="Номер отдела", max_length=10)
     name = models.CharField(max_length=255, verbose_name="Название отдела")
-    date_of_creation = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
+    date_of_creation = models.DateTimeField(
+        auto_now_add=True, verbose_name="Дата создания"
+    )
     parent = models.ForeignKey(
         "self",
         on_delete=models.SET_NULL,
@@ -226,7 +238,9 @@ class ChildDepartment(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.id:
-            existing_child_department = ChildDepartment.objects.filter(name=self.name).first()
+            existing_child_department = ChildDepartment.objects.filter(
+                name=self.name
+            ).first()
             if existing_child_department:
                 self.id = existing_child_department.id
                 self.parent = existing_child_department.parent
@@ -253,7 +267,9 @@ class Position(models.Model):
         verbose_name="Профессия",
         default="Сотрудник",
     )
-    rate = models.DecimalField(max_digits=4, decimal_places=2, verbose_name="Ставка", default=1)
+    rate = models.DecimalField(
+        max_digits=4, decimal_places=2, verbose_name="Ставка", default=1
+    )
 
     def __str__(self):
         return f"{self.name} Ставка: {self.rate}"
@@ -277,7 +293,9 @@ class Staff(models.Model):
         editable=False,
     )
     name = models.CharField(max_length=255, blank=False, null=False, verbose_name="Имя")
-    surname = models.CharField(max_length=255, blank=False, null=False, verbose_name="Фамилия")
+    surname = models.CharField(
+        max_length=255, blank=False, null=False, verbose_name="Фамилия"
+    )
     department = models.ForeignKey(
         ChildDepartment, on_delete=models.SET_NULL, null=True, verbose_name="Отдел"
     )
@@ -303,7 +321,9 @@ class Staff(models.Model):
             old_avatar = Staff.objects.filter(pk=self.pk).values("avatar").first()
             if old_avatar and old_avatar["avatar"] != self.avatar.name and self.avatar:
                 try:
-                    old_avatar_path = os.path.join(settings.MEDIA_ROOT, old_avatar["avatar"])
+                    old_avatar_path = os.path.join(
+                        settings.MEDIA_ROOT, old_avatar["avatar"]
+                    )
                     if os.path.exists(old_avatar_path):
                         os.remove(old_avatar_path)
                 except Exception as e:
@@ -332,14 +352,20 @@ def delete_avatar_on_staff_delete(sender, instance, **kwargs):
             try:
                 shutil.rmtree(avatar_dir)
             except Exception as e:
-                print(f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}")
+                print(
+                    f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}"
+                )
     else:
         print("Аватар отсутствует, ничего не удаляется.")
 
 
 class StaffFaceMask(models.Model):
-    staff = models.OneToOneField(Staff, on_delete=models.CASCADE, related_name="face_mask")
-    mask_encoding = models.JSONField(verbose_name="Вектор лица", blank=False, null=False)
+    staff = models.OneToOneField(
+        Staff, on_delete=models.CASCADE, related_name="face_mask"
+    )
+    mask_encoding = models.JSONField(
+        verbose_name="Вектор лица", blank=False, null=False
+    )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Дата обновления")
 
@@ -359,7 +385,10 @@ class AbsentReason(models.Model):
     ]
 
     staff = models.ForeignKey(
-        Staff, on_delete=models.CASCADE, related_name="absences", verbose_name="Сотрудник"
+        Staff,
+        on_delete=models.CASCADE,
+        related_name="absences",
+        verbose_name="Сотрудник",
     )
     reason = models.CharField(
         max_length=20, choices=ABSENT_REASON_CHOICES, verbose_name="Причина отсутствия"
@@ -371,7 +400,9 @@ class AbsentReason(models.Model):
         upload_to="absence_documents/",
         null=True,
         blank=True,
-        validators=[FileExtensionValidator(allowed_extensions=["pdf", "jpg", "jpeg", "png"])],
+        validators=[
+            FileExtensionValidator(allowed_extensions=["pdf", "jpg", "jpeg", "png"])
+        ],
         verbose_name="Документ",
     )
 
@@ -396,7 +427,10 @@ class AbsentReason(models.Model):
 
 class RemoteWork(models.Model):
     staff = models.ForeignKey(
-        Staff, on_delete=models.CASCADE, related_name="remote_work", verbose_name="Сотрудник"
+        Staff,
+        on_delete=models.CASCADE,
+        related_name="remote_work",
+        verbose_name="Сотрудник",
     )
     start_date = models.DateField(verbose_name="Дата начала", null=True, blank=True)
     end_date = models.DateField(verbose_name="Дата окончания", null=True, blank=True)
@@ -408,7 +442,9 @@ class RemoteWork(models.Model):
         if self.start_date and self.end_date and self.start_date > self.end_date:
             raise ValidationError("Дата начала не может быть больше даты окончания.")
         if self.permanent_remote and (self.start_date or self.end_date):
-            raise ValidationError("Постоянная дистанционная работа не требует указания дат.")
+            raise ValidationError(
+                "Постоянная дистанционная работа не требует указания дат."
+            )
 
     def __str__(self):
         return f"{self.staff} - {self.get_remote_status()}"
@@ -479,7 +515,9 @@ class StaffAttendance(models.Model):
             if (
                 self.first_in != orig.first_in or self.last_out != orig.last_out
             ) and "admin" in kwargs:
-                raise ValidationError("Нельзя изменять поля first_in и last_out через админку.")
+                raise ValidationError(
+                    "Нельзя изменять поля first_in и last_out через админку."
+                )
 
         super().save(*args, **kwargs)
 
@@ -504,9 +542,13 @@ class LessonAttendance(models.Model, GeoItem):
     tutor_id = models.IntegerField(verbose_name="Id преподавателя", editable=False)
     tutor = models.CharField(verbose_name="ФИО преподавателя", max_length=300)
     first_in = models.DateTimeField(verbose_name="Время начала занятия", null=False)
-    last_out = models.DateTimeField(verbose_name="Время окончания занятия", null=True, blank=True)
+    last_out = models.DateTimeField(
+        verbose_name="Время окончания занятия", null=True, blank=True
+    )
     latitude = models.FloatField(
-        verbose_name="Широта", editable=False, help_text="Примерные координаты в радиусе 300 метров"
+        verbose_name="Широта",
+        editable=False,
+        help_text="Примерные координаты в радиусе 300 метров",
     )
     longitude = models.FloatField(
         verbose_name="Долгота",
@@ -525,7 +567,9 @@ class LessonAttendance(models.Model, GeoItem):
     def image_url(self):
         if self.staff_image_path:
             if self.staff_image_path.startswith(settings.ATTENDANCE_ROOT):
-                relative_path = self.staff_image_path.replace(settings.ATTENDANCE_ROOT, "")
+                relative_path = self.staff_image_path.replace(
+                    settings.ATTENDANCE_ROOT, ""
+                )
                 return f"{settings.ATTENDANCE_URL}{relative_path}"
             return f"{settings.MEDIA_URL}{self.staff_image_path.split('media/')[-1]}"
         return "/static/media/images/no-avatar.png"

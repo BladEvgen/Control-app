@@ -1,15 +1,18 @@
 import logging
-from monitoring_app import models
+
 from rest_framework.permissions import BasePermission
 from rest_framework_simplejwt.authentication import JWTAuthentication
-from rest_framework_simplejwt.exceptions import InvalidToken, AuthenticationFailed
+from rest_framework_simplejwt.exceptions import AuthenticationFailed, InvalidToken
+
+from monitoring_app import models
 
 logger = logging.getLogger(__name__)
+
 
 class IsAuthenticatedOrAPIKey(BasePermission):
 
     def has_permission(self, request, view):
-        
+
         logger.info("Checking permissions for request")
 
         if request.user and request.user.is_authenticated:
@@ -21,7 +24,7 @@ class IsAuthenticatedOrAPIKey(BasePermission):
             auth_result = jwt_authenticator.authenticate(request)
             if auth_result is not None:
                 user, token = auth_result
-                if token.payload.get('token_type') == 'access':
+                if token.payload.get("token_type") == "access":
                     logger.info("User authenticated via JWT")
                     return True
         except (InvalidToken, AuthenticationFailed) as e:

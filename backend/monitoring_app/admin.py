@@ -1,4 +1,5 @@
 import os
+
 from django.conf import settings
 from django.contrib import admin
 from django.utils import timezone
@@ -9,7 +10,6 @@ from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 
 from monitoring_app import utils
-
 from monitoring_app.models import (
     Staff,
     APIKey,
@@ -369,7 +369,11 @@ class StaffAdmin(admin.ModelAdmin):
     avatar_thumbnail.short_description = "Фото"
 
     def needs_training_status(self, obj):
-        return "Нуждается в тренировке" if obj.needs_training else "Тренировка не требуется"
+        return (
+            "Нуждается в тренировке"
+            if obj.needs_training
+            else "Тренировка не требуется"
+        )
 
     needs_training_status.short_description = "Статус тренировки ML"
 
@@ -400,24 +404,30 @@ class StaffAdmin(admin.ModelAdmin):
 
 @admin.register(StaffFaceMask)
 class StaffFaceMaskAdmin(admin.ModelAdmin):
-    list_display = ('staff', 'staff_department', 'created_at', 'updated_at', 'staff_avatar')
-    search_fields = ('staff__name', 'staff__surname', 'staff__pin')
+    list_display = (
+        "staff",
+        "staff_department",
+        "created_at",
+        "updated_at",
+        "staff_avatar",
+    )
+    search_fields = ("staff__name", "staff__surname", "staff__pin")
     readonly_fields = (
-        'created_at',
-        'updated_at',
-        'mask_encoding',
-        'staff',
-        'staff_avatar',
-        'augmented_images',
+        "created_at",
+        "updated_at",
+        "mask_encoding",
+        "staff",
+        "staff_avatar",
+        "augmented_images",
     )
     list_filter = (
-        'created_at',
-        'updated_at',
+        "created_at",
+        "updated_at",
         utils.HierarchicalDepartmentFilter,
     )
     ordering = (
-        'staff__department',
-        '-updated_at',
+        "staff__department",
+        "-updated_at",
     )
 
     def staff_avatar(self, obj):
@@ -436,17 +446,15 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
         if os.path.exists(augmented_dir):
             images_html = ""
             for i in range(11):
-                filename = f'{obj.staff.pin}_augmented_{i}.jpg'
+                filename = f"{obj.staff.pin}_augmented_{i}.jpg"
                 file_path = os.path.join(augmented_dir, filename)
 
                 file_url = os.path.join(
-                    settings.AUGMENT_URL, obj.staff.pin, 'augmented_images', filename
+                    settings.AUGMENT_URL, obj.staff.pin, "augmented_images", filename
                 )
 
                 if os.path.exists(file_path):
-                    images_html += (
-                        f'<img src="{file_url}" width="80" height="80" style="margin: 5px;" />'
-                    )
+                    images_html += f'<img src="{file_url}" width="80" height="80" style="margin: 5px;" />'
             return format_html(images_html)
 
         return "No Augmented Images"
@@ -457,32 +465,32 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
         return obj.staff.department
 
     staff_department.short_description = "Отдел"
-    staff_department.admin_order_field = 'staff__department'
+    staff_department.admin_order_field = "staff__department"
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related('staff')
+        return super().get_queryset(request).select_related("staff")
 
     fieldsets = (
         (
             None,
             {
-                'fields': (
-                    'staff',
-                    'staff_avatar',
-                    'augmented_images',
+                "fields": (
+                    "staff",
+                    "staff_avatar",
+                    "augmented_images",
                 )
             },
         ),
         (
-            'Временные метки',
+            "Временные метки",
             {
-                'fields': ('created_at', 'updated_at'),
+                "fields": ("created_at", "updated_at"),
             },
         ),
         (
-            'Encoded Faces',
+            "Encoded Faces",
             {
-                'fields': ('mask_encoding',),
+                "fields": ("mask_encoding",),
             },
         ),
     )
@@ -618,12 +626,13 @@ class LessonAttendanceAdmin(ModelAdmin):
         "date_at",
         "has_photo",
     )
-    
+
     def formatted_first_in(self, obj):
         if obj.first_in:
             local_time = timezone.localtime(obj.first_in)
             return local_time.strftime("%H:%M:%S")
         return "-"
+
     formatted_first_in.short_description = "Время начала (локальное)"
 
     def formatted_last_out(self, obj):
@@ -631,6 +640,7 @@ class LessonAttendanceAdmin(ModelAdmin):
             local_time = timezone.localtime(obj.last_out)
             return local_time.strftime("%H:%M:%S")
         return "-"
+
     formatted_last_out.short_description = "Время окончания (локальное)"
 
     list_filter = ("date_at", "staff", "subject_name")
@@ -640,7 +650,10 @@ class LessonAttendanceAdmin(ModelAdmin):
         css = {"all": ("custom_admin.css",)}
 
     def has_photo(self, obj):
-        if obj.staff_image_path and obj.staff_image_path != "/static/media/images/no-avatar.png":
+        if (
+            obj.staff_image_path
+            and obj.staff_image_path != "/static/media/images/no-avatar.png"
+        ):
             return True
         return False
 
