@@ -354,7 +354,7 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
     data_font = Font(name="Roboto", size=11)
     data_alignment = Alignment(horizontal="center", vertical="center")
 
-    absence_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+    absence_fill = PatternFill(start_color="ab0a0a", end_color="ab0a0a", fill_type="solid")
     absence_font = Font(color="FFFFFF")
 
     df_flat = df_pivot_sorted.reset_index()
