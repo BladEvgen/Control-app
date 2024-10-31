@@ -2247,13 +2247,7 @@ def staff_detail_by_department_id(request, department_id):
     - 404: Подразделение не найдено или данные о посещаемости не найдены.
     - 500: Внутренняя ошибка сервера.
     """
-    logger.info(
-        f"Request received for staff attendance by department ID {department_id}"
-    )
-
-    logger.info(
-        f"Request received for staff attendance by department ID {department_id}"
-    )
+    logger.info(f"Request received for staff attendance by department ID {department_id}")
 
     try:
         end_date_str = request.query_params.get("end_date")
@@ -2297,9 +2291,7 @@ def staff_detail_by_department_id(request, department_id):
         department_ids = [department_id] + get_all_child_department_ids(department_id)
         logger.debug(f"Department IDs for attendance query: {department_ids}")
 
-        cache_key = (
-            f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
-        )
+        cache_key = f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
         logger.debug(f"Generated cache key: {cache_key}")
 
         def query():
@@ -2315,20 +2307,60 @@ def staff_detail_by_department_id(request, department_id):
                 date_at__range=(start_date, end_date),
             ).select_related("staff").order_by("date_at", "staff__surname", "staff__name")
 
-            all_records = list(staff_attendance) + list(lesson_attendance)
-            serializer = serializers.StaffAttendanceByDateSerializer(all_records, many=True)
+            date_attendance_map = defaultdict(lambda: defaultdict(dict))
+
+            for record in staff_attendance:
+                date_key = (record.date_at - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+                staff_fio = f"{record.staff.surname} {record.staff.name}"
+                department = record.staff.department.name if record.staff.department else "Unknown Department"
+
+                if staff_fio in date_attendance_map[date_key][department]:
+                    existing_record = date_attendance_map[date_key][department][staff_fio]
+                    existing_record["first_in"] = (
+                        min(existing_record["first_in"], record.first_in.astimezone(timezone.get_default_timezone()))
+                        if existing_record["first_in"]
+                        else record.first_in.astimezone(timezone.get_default_timezone())
+                    )
+                    existing_record["last_out"] = (
+                        max(existing_record["last_out"], record.last_out.astimezone(timezone.get_default_timezone()))
+                        if existing_record["last_out"]
+                        else record.last_out.astimezone(timezone.get_default_timezone())
+                    )
+                else:
+                    date_attendance_map[date_key][department][staff_fio] = {
+                        "staff_fio": staff_fio,
+                        "first_in": record.first_in.astimezone(timezone.get_default_timezone()) if record.first_in else None,
+                        "last_out": record.last_out.astimezone(timezone.get_default_timezone()) if record.last_out else None,
+                    }
+
+            for record in lesson_attendance:
+                date_key = record.date_at.strftime("%Y-%m-%d")
+                staff_fio = f"{record.staff.surname} {record.staff.name}"
+                department = record.staff.department.name if record.staff.department else "Unknown Department"
+
+                if staff_fio in date_attendance_map[date_key][department]:
+                    existing_record = date_attendance_map[date_key][department][staff_fio]
+                    existing_record["first_in"] = (
+                        min(existing_record["first_in"], record.first_in.astimezone(timezone.get_default_timezone()))
+                        if existing_record["first_in"]
+                        else record.first_in.astimezone(timezone.get_default_timezone())
+                    )
+                    existing_record["last_out"] = (
+                        max(existing_record["last_out"], record.last_out.astimezone(timezone.get_default_timezone()))
+                        if existing_record["last_out"]
+                        else record.last_out.astimezone(timezone.get_default_timezone())
+                    )
+                else:
+                    date_attendance_map[date_key][department][staff_fio] = {
+                        "staff_fio": staff_fio,
+                        "first_in": record.first_in.astimezone(timezone.get_default_timezone()) if record.first_in else None,
+                        "last_out": record.last_out.astimezone(timezone.get_default_timezone()) if record.last_out else None,
+                    }
 
             results = []
-            date_attendance_map = defaultdict(lambda: defaultdict(list))
-
-            for record in serializer.data:
-                for date, entry in record.items():
-                    dept = entry["department"]
-                    staff_info = entry["attendance"][0]  
-                    date_attendance_map[date][dept].append(staff_info)
-
             for date, departments in date_attendance_map.items():
-                for dept, attendance in departments.items():
+                for dept, staff_data in departments.items():
+                    attendance = list(staff_data.values())
                     results.append({date: {"department": dept, "attendance": attendance}})
 
             paginator = StaffAttendancePagination()
