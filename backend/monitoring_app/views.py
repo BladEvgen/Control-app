@@ -1120,7 +1120,38 @@ def get_staff_detail(staff, start_date, end_date):
             end_date + datetime.timedelta(days=1),
         ],
     )
-    logger.debug(f"Получено записей о посещаемости: {attendance_qs.count()}")
+    
+    lesson_qs = models.LessonAttendance.objects.filter(
+        staff=staff,
+        date_at__range=[start_date, end_date],
+    )
+    
+    combined_attendance = {}
+    for record in attendance_qs:
+        date_key = record.date_at - datetime.timedelta(days=1)  
+        if date_key not in combined_attendance:
+            combined_attendance[date_key] = {"first_in": record.first_in, "last_out": record.last_out}
+        else:
+            combined_attendance[date_key]["first_in"] = min(
+                combined_attendance[date_key]["first_in"], record.first_in
+            ) if combined_attendance[date_key]["first_in"] else record.first_in
+            combined_attendance[date_key]["last_out"] = max(
+                combined_attendance[date_key]["last_out"], record.last_out
+            ) if combined_attendance[date_key]["last_out"] else record.last_out
+
+    for record in lesson_qs:
+        date_key = record.date_at  
+        if date_key not in combined_attendance:
+            combined_attendance[date_key] = {"first_in": record.first_in, "last_out": record.last_out}
+        else:
+            combined_attendance[date_key]["first_in"] = min(
+                combined_attendance[date_key]["first_in"], record.first_in
+            ) if combined_attendance[date_key]["first_in"] else record.first_in
+            combined_attendance[date_key]["last_out"] = max(
+                combined_attendance[date_key]["last_out"], record.last_out
+            ) if combined_attendance[date_key]["last_out"] else record.last_out
+
+    logger.debug(f"Объединенные данные посещаемости: {combined_attendance}")
 
     holidays = models.PublicHoliday.objects.filter(
         date__range=[start_date, end_date]
@@ -1237,15 +1268,10 @@ def get_staff_detail(staff, start_date, end_date):
         f"Тип контракта: {contract_type}, ожидаемые минуты в день: {total_minutes_expected_per_day}"
     )
 
-    attendance_dict = {
-        attendance.date_at - datetime.timedelta(days=1): attendance
-        for attendance in attendance_qs
-    }
-
     for event_date in sorted(date_set):
         logger.debug(f"Обработка даты: {event_date}")
 
-        attendance = attendance_dict.get(event_date)
+        attendance = combined_attendance.get(event_date)  
         (
             attendance_record,
             total_minutes_for_period,
@@ -1434,8 +1460,8 @@ def process_attendance(
         start_date__lte=event_date, end_date__gte=event_date
     ).first()
 
-    first_in = attendance.first_in if attendance and attendance.first_in else None
-    last_out = attendance.last_out if attendance and attendance.last_out else None
+    first_in = attendance.get("first_in") if attendance else None
+    last_out = attendance.get("last_out") if attendance else None
 
     if is_off_day:
         if first_in and last_out:
