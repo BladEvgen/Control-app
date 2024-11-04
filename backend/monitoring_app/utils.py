@@ -973,7 +973,7 @@ def transliterate(name):
     return "".join(translit)
 
 
-def is_within_radius(lat1, lon1, lat2, lon2, radius=120):
+def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
     R = 6371000
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     delta_phi = math.radians(lat2 - lat1)
