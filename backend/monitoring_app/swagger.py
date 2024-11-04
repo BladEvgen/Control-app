@@ -25,8 +25,8 @@ schema_view = get_schema_view(
         contact=openapi.Contact(email="ekozlov00@mail.ru"),
         license=openapi.License(name="MIT License"),
     ),
-    public=False,  
-    permission_classes=(IsAuthenticatedOrReadOnly,),  
+    public=False,
+    permission_classes=(IsAuthenticatedOrReadOnly,),
 )
 
 urlpatterns = [

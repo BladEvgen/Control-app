@@ -1,6 +1,6 @@
 from django.db import transaction
 from django.core.management.base import BaseCommand
-from monitoring_app.models import ChildDepartment, Staff, Position
+from monitoring_app.models import ChildDepartment, Position, Staff
 
 
 class Command(BaseCommand):
@@ -18,7 +18,7 @@ class Command(BaseCommand):
         parent_id: int - ID родительского отдела, для которого необходимо обновить позиции сотрудников.
         """
         parser.add_argument(
-            'parent_id',
+            "parent_id",
             type=int,
             help='ID родительского отдела, в котором и в его дочерних отделах будут обновлены позиции всех сотрудников на "Сотрудник".',
         )
@@ -31,14 +31,14 @@ class Command(BaseCommand):
         Аргументы:
         parent_id: int - ID родительского отдела, для которого нужно обновить позиции сотрудников.
         """
-        parent_id = kwargs['parent_id']
+        parent_id = kwargs["parent_id"]
 
         try:
             parent_department = ChildDepartment.objects.get(id=parent_id)
         except ChildDepartment.DoesNotExist:
             self.stdout.write(
                 self.style.ERROR(
-                    f'Отдел с id {parent_id} не найден. Убедитесь, что указанный ID корректен.'
+                    f"Отдел с id {parent_id} не найден. Убедитесь, что указанный ID корректен."
                 )
             )
             return
@@ -59,13 +59,13 @@ class Command(BaseCommand):
 
         updated_count = 0
         for staff in staff_to_update:
-            staff.positions.clear()  
-            staff.positions.add(employee_position)  
+            staff.positions.clear()
+            staff.positions.add(employee_position)
             updated_count += 1
 
         self.stdout.write(
             self.style.SUCCESS(
-                f'Обновлено позиции у {updated_count} сотрудников в отделе {parent_department.name} и его дочерних отделах.'
+                f"Обновлено позиции у {updated_count} сотрудников в отделе {parent_department.name} и его дочерних отделах."
             )
         )
 

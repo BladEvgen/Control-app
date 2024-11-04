@@ -1,13 +1,15 @@
 import os
-import cv2
 import logging
+
+import cv2
 import numpy as np
 import nvidia.dali.fn as fn
 from django.conf import settings
-from monitoring_app import utils, models
 from nvidia.dali.pipeline import pipeline_def
 from nvidia.dali.auto_aug import augmentations
 from nvidia.dali.auto_aug.core import signed_bin
+
+from monitoring_app import models, utils
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

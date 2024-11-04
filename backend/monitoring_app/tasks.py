@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 def update_lesson_attendance_last_out():
     """
     Периодическая задача Celery для обновления поля last_out в LessonAttendance.
-    
+
     Условия выполнения:
     - last_out не установлен (last_out is null).
     - Прошло более 3 часов с момента first_in.
-    
+
     Процесс:
     1. Определяет все записи, которые соответствуют условиям.
     2. Для каждой записи рассчитывает значение last_out:
@@ -42,7 +42,9 @@ def update_lesson_attendance_last_out():
     try:
         three_hours_ago = timezone.now() - datetime.timedelta(hours=3)
 
-        lessons = models.LessonAttendance.objects.filter(last_out__isnull=True, first_in__lte=three_hours_ago)
+        lessons = models.LessonAttendance.objects.filter(
+            last_out__isnull=True, first_in__lte=three_hours_ago
+        )
 
         if not lessons.exists():
             logger.warning("Нет записей для обновления Lesson Attendance last_out.")
@@ -56,13 +58,14 @@ def update_lesson_attendance_last_out():
             lesson.last_out = min(first_in + datetime.timedelta(hours=3), end_of_day)
             updated_lessons.append(lesson)
 
-        models.LessonAttendance.objects.bulk_update(updated_lessons, ['last_out'])
+        models.LessonAttendance.objects.bulk_update(updated_lessons, ["last_out"])
 
-        logger.warning(f"Обновлено {len(updated_lessons)} записей: last_out установлен успешно.")
+        logger.warning(
+            f"Обновлено {len(updated_lessons)} записей: last_out установлен успешно."
+        )
 
     except Exception as e:
         logger.error(f"Ошибка при выполнении update_lesson_attendance_last_out: {e}")
-
 
 
 @shared_task
@@ -141,7 +144,9 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
                 date_at=timezone.now().date(),
                 staff_image_path=file_path,
             )
-            logger.info(f"Запись посещаемости успешно создана с ID: {lesson_attendance.id}")
+            logger.info(
+                f"Запись посещаемости успешно создана с ID: {lesson_attendance.id}"
+            )
 
             success_records.append({"id": lesson_attendance.id})
 
