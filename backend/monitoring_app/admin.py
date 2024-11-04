@@ -21,6 +21,7 @@ from monitoring_app.models import (
     FileCategory,
     PublicHoliday,
     StaffFaceMask,
+    ClassLocation,
     ChildDepartment,
     StaffAttendance,
     LessonAttendance,
@@ -600,7 +601,14 @@ class LessonAttendanceAdmin(ModelAdmin):
         (
             None,
             {
-                "fields": ("first_in", "last_out", "photo_preview"),
+                "fields": (
+                    "first_in",
+                    "last_out",
+                    "photo_preview",
+                    "latitude",
+                    "longitude",
+                    "date_at",
+                ),
                 "description": "Основная информация о занятии",
             },
         ),
@@ -646,9 +654,6 @@ class LessonAttendanceAdmin(ModelAdmin):
     list_filter = ("date_at", "staff", "subject_name")
     search_fields = ("staff__name", "subject_name", "tutor")
 
-    class Media:
-        css = {"all": ("custom_admin.css",)}
-
     def has_photo(self, obj):
         if (
             obj.staff_image_path
@@ -688,6 +693,58 @@ class LessonAttendanceAdmin(ModelAdmin):
 
 admin.site.register(LessonAttendance, LessonAttendanceAdmin)
 
+
+# === Локации занятий ===
+class ClassLocationAdmin(ModelAdmin):
+    geomap_field_longitude = "longitude"
+    geomap_field_latitude = "latitude"
+    geomap_show_map_on_list = False
+    geomap_item_zoom = "14"
+    geomap_height = "450px"
+    geomap_default_zoom = "16"
+    geomap_autozoom = "15.9"
+
+    readonly_fields = ("created_at", "updated_at")
+
+    fieldsets = (
+        (
+            "Основная информация",
+            {
+                "fields": ("name", "address", "latitude", "longitude"),
+                "description": "Информация о локации учебного заведения и координаты",
+            },
+        ),
+        (
+            "Системная информация",
+            {
+                "fields": ("created_at", "updated_at"),
+                "description": "Внутренние поля системы",
+            },
+        ),
+    )
+
+    list_display = (
+        "name",
+        "address",
+        "formatted_latitude",
+        "formatted_longitude",
+        "created_at",
+    )
+    list_filter = ("created_at",)
+    search_fields = ("name", "address")
+
+    def formatted_latitude(self, obj):
+        return f"{obj.latitude:.6f}"
+
+    formatted_latitude.short_description = "Широта"
+
+    def formatted_longitude(self, obj):
+        return f"{obj.longitude:.6f}"
+
+    formatted_longitude.short_description = "Долгота"
+
+
+admin.site.register(ClassLocation, ClassLocationAdmin)
 
 # === Зарплата ===
 

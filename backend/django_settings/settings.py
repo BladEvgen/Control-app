@@ -41,10 +41,23 @@ LOGIN_URL = "/login_view/"
 LOGOUT_URL = "/logout/"
 
 
-if DEBUG:
-    ALLOWED_HOSTS = ["*"]
-else:
-    ALLOWED_HOSTS = ["control.krmu.edu.kz", "dot.medkrmu.kz", "localhost", "127.0.0.1", "172.30.0.1"]
+def get_local_ip():
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))
+            ip_address = s.getsockname()[0]
+    except socket.error as e:
+        print(f"Socket error occurred: {e}")
+        ip_address = "127.0.0.1"
+    except Exception as e:
+        print(f"Unexpected error occurred: {e}")
+        ip_address = "127.0.0.1"
+    return ip_address
+
+
+LOCAL_IP = get_local_ip()
+
+ALLOWED_HOSTS = ["*"] if DEBUG else ["control.krmu.edu.kz", "dot.medkrmu.kz", LOCAL_IP]
 
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50 МБ
@@ -76,14 +89,9 @@ INSTALLED_APPS = [
 CORS_ALLOW_ALL_ORIGINS = False
 
 CORS_ALLOWED_ORIGINS = [
-    "http://127.0.0.1:8000",
-    "http://127.0.0.1:5002",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:3000",
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "http://localhost:8000",
-    "http://localhost:5002",
+    f"http://{LOCAL_IP}:8000",
+    f"http://{LOCAL_IP}:3000",
+    f"http://{LOCAL_IP}:5173",
     "https://dot.medkrmu.kz",
     "https://control.krmu.edu.kz",
 ]
@@ -196,11 +204,11 @@ MEDIA_ROOT = BASE_DIR / "static/media"
 ATTENDANCE_URL = "/attendance_media/"
 ATTENDANCE_ROOT = "/mnt/disk/control_image/"
 
-AUGMENT_URL = '/augment_media/'
+AUGMENT_URL = "/augment_media/"
 if DEBUG:
-    AUGMENT_ROOT = Path(MEDIA_ROOT / 'user_images' / '{staff_pin}' / 'augmented_images')
+    AUGMENT_ROOT = Path(MEDIA_ROOT / "user_images" / "{staff_pin}" / "augmented_images")
 else:
-    AUGMENT_ROOT = '/mnt/disk/augment_images/augmented_images/{staff_pin}'
+    AUGMENT_ROOT = "/mnt/disk/augment_images/augmented_images/{staff_pin}"
 
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -282,22 +290,22 @@ REDOC_SETTINGS = {
     "LAZY_RENDERING": True,
 }
 
-CELERY_BROKER_URL = 'redis://localhost:6379/0'
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
+CELERY_BROKER_URL = "redis://localhost:6379/0"
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
 
 CELERY_BEAT_SCHEDULE = {
-    'get-attendance-every-day-5am': {
-        'task': 'monitoring_app.tasks.get_all_attendance_task',
-        'schedule': crontab(hour=5, minute=0),
+    "get-attendance-every-day-5am": {
+        "task": "monitoring_app.tasks.get_all_attendance_task",
+        "schedule": crontab(hour=5, minute=0),
     },
-    'update-lesson-attendance-last-out-every-10-minutes': {
-        'task': 'monitoring_app.tasks.update_lesson_attendance_last_out',
-        'schedule': crontab(minute='*/5'),  
+    "update-lesson-attendance-last-out-every-10-minutes": {
+        "task": "monitoring_app.tasks.update_lesson_attendance_last_out",
+        "schedule": crontab(minute="*/5"),
     },
-    'augment-images-every-day': {
-        'task': 'monitoring_app.tasks.augment_user_images',
-        'schedule': crontab(day_of_month='*/3', hour=1, minute=0),
+    "augment-images-every-day": {
+        "task": "monitoring_app.tasks.augment_user_images",
+        "schedule": crontab(day_of_month="*/3", hour=1, minute=0),
     },
 }
 
@@ -310,7 +318,7 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {
         "verbose": {
-            'format': '{levelname} {asctime} {module} {message}',
+            "format": "{levelname} {asctime} {module} {message}",
             "style": "{",
             "datefmt": "%Y-%m-%d %H:%M",
         },
@@ -319,7 +327,9 @@ LOGGING = {
         "file": {
             "level": "INFO" if DEBUG else "WARNING",
             "class": "logging.FileHandler",
-            "filename": os.path.join(LOG_DIR, f'log-{datetime.now().strftime("%Y-%m-%d_%H")}.log'),
+            "filename": os.path.join(
+                LOG_DIR, f'log-{datetime.now().strftime("%Y-%m-%d_%H")}.log'
+            ),
             "encoding": "utf-8",
             "formatter": "verbose",
         },

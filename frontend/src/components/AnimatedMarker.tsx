@@ -1,16 +1,17 @@
 import React, { useEffect, useRef } from "react";
 import { Marker, Circle, Popup } from "react-leaflet";
 import L from "leaflet";
+import { FaMapMarkerAlt, FaUsers } from "react-icons/fa";
 
 interface AnimatedMarkerProps {
   position: [number, number];
   name: string;
+  address: string;
   employees: number;
   isVisible: boolean;
   icon: L.Icon;
   onClick: () => void;
   popupVisible: boolean;
-  theme: string;
   radius: number;
   color: string;
 }
@@ -18,6 +19,7 @@ interface AnimatedMarkerProps {
 const AnimatedMarker: React.FC<AnimatedMarkerProps> = ({
   position,
   name,
+  address,
   employees,
   isVisible,
   icon,
@@ -65,11 +67,22 @@ const AnimatedMarker: React.FC<AnimatedMarkerProps> = ({
           />
           {popupVisible && (
             <Popup position={position} autoPan={false} closeButton={false}>
-              <div className="p-2 text-center">
-                <h2 className="font-bold text-sm text-gray-800 ">{name}</h2>
-                <p className="text-xs text-gray-600 ">
-                  Количество уникальных посещений: {employees}
-                </p>
+              <div
+                className="p-3 rounded-lg shadow-lg bg-white text-gray-800 w-72 max-w-full mx-auto text-center"
+                style={{
+                  minWidth: "250px",
+                  maxWidth: "320px",
+                }}
+              >
+                <h2 className="text-lg font-semibold truncate">{name}</h2>
+                <div className="flex items-center justify-center mt-1 space-x-2">
+                  <FaMapMarkerAlt className="text-blue-500 text-base" />
+                  <p className="text-sm truncate">{address}</p>
+                </div>
+                <div className="flex items-center justify-center mt-1 space-x-2">
+                  <FaUsers className="text-green-500 text-base" />
+                  <p className="text-sm truncate">Посещения: {employees}</p>
+                </div>
               </div>
             </Popup>
           )}
