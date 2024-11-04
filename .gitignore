@@ -160,7 +160,6 @@ cython_debug/
 #.idea/
 *.jpg
 
-
 logs
 *.log
 npm-debug.log*
@@ -308,3 +307,4 @@ backend/old_data-12-09-24.json
 *.pkl
 *.db
 backend/monitoring_app/test_face.py
+*.backup
