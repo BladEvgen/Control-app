@@ -1869,7 +1869,9 @@ def create_lesson_attendance(request):
     if request.body:
         try:
             if request.content_type == "application/json":
-                logger.info(f"Тело запроса: {str(request.body.decode('utf-8'))}")
+                # logger.info(f"Тело запроса: {str(request.body.decode('utf-8'))}")
+                logger.info("Тело запроса: содержит b64")
+
             else:
                 logger.info("Тело запроса содержит бинарные данные")
         except Exception as e:
@@ -2351,99 +2353,123 @@ def staff_detail_by_department_id(request, department_id):
                     "%Y-%m-%d"
                 )
                 staff_fio = f"{record.staff.surname} {record.staff.name}"
-                department = (
+                department_name = (
                     record.staff.department.name
                     if record.staff.department
                     else "Unknown Department"
                 )
 
-                if staff_fio in date_attendance_map[date_key][department]:
-                    existing_record = date_attendance_map[date_key][department][
-                        staff_fio
-                    ]
-                    existing_record["first_in"] = (
-                        min(
-                            existing_record["first_in"],
-                            record.first_in.astimezone(timezone.get_default_timezone()),
-                        )
-                        if existing_record["first_in"] and record.first_in
-                        else (
-                            record.first_in.astimezone(timezone.get_default_timezone())
-                            if record.first_in
-                            else None
-                        )
-                    )
-                    existing_record["last_out"] = (
-                        max(
-                            existing_record["last_out"],
-                            record.last_out.astimezone(timezone.get_default_timezone()),
-                        )
-                        if existing_record["last_out"] and record.last_out
-                        else (
-                            record.last_out.astimezone(timezone.get_default_timezone())
-                            if record.last_out
-                            else None
-                        )
-                    )
-                else:
-                    date_attendance_map[date_key][department][staff_fio] = {
-                        "staff_fio": staff_fio,
-                        "first_in": (
-                            record.first_in.astimezone(timezone.get_default_timezone())
-                            if record.first_in
-                            else None
-                        ),
-                        "last_out": (
-                            record.last_out.astimezone(timezone.get_default_timezone())
-                            if record.last_out
-                            else None
-                        ),
-                    }
+                logger.debug(
+                    f"Processing record for {staff_fio} on {date_key} in {department_name}"
+                )
 
+                first_in, last_out = record.first_in, record.last_out
+                if first_in is None or last_out is None:
+                    logger.debug(
+                        f"Missing time data for {staff_fio} on {date_key}: first_in={first_in}, last_out={last_out}"
+                    )
+
+                try:
+                    if staff_fio in date_attendance_map[date_key][department_name]:
+                        existing_record = date_attendance_map[date_key][
+                            department_name
+                        ][staff_fio]
+                        existing_record["first_in"] = (
+                            min(
+                                existing_record["first_in"],
+                                first_in.astimezone(timezone.get_default_timezone()),
+                            )
+                            if existing_record["first_in"] and first_in
+                            else first_in
+                        )
+                        existing_record["last_out"] = (
+                            max(
+                                existing_record["last_out"],
+                                last_out.astimezone(timezone.get_default_timezone()),
+                            )
+                            if existing_record["last_out"] and last_out
+                            else last_out
+                        )
+                    else:
+                        date_attendance_map[date_key][department_name][staff_fio] = {
+                            "staff_fio": staff_fio,
+                            "first_in": (
+                                first_in.astimezone(timezone.get_default_timezone())
+                                if first_in
+                                else None
+                            ),
+                            "last_out": (
+                                last_out.astimezone(timezone.get_default_timezone())
+                                if last_out
+                                else None
+                            ),
+                        }
+                except AttributeError as e:
+                    logger.error(
+                        f"Error processing time for {staff_fio} on {date_key}: {e}"
+                    )
+
+            # Аналогичные логи для lesson_attendance
             for record in lesson_attendance:
                 date_key = record.date_at.strftime("%Y-%m-%d")
                 staff_fio = f"{record.staff.surname} {record.staff.name}"
-                department = (
+                department_name = (
                     record.staff.department.name
                     if record.staff.department
                     else "Unknown Department"
                 )
 
-                if staff_fio in date_attendance_map[date_key][department]:
-                    existing_record = date_attendance_map[date_key][department][
-                        staff_fio
-                    ]
-                    existing_record["first_in"] = (
-                        min(
-                            existing_record["first_in"],
-                            record.first_in.astimezone(timezone.get_default_timezone()),
-                        )
-                        if existing_record["first_in"]
-                        else record.first_in.astimezone(timezone.get_default_timezone())
-                    )
-                    existing_record["last_out"] = (
-                        max(
-                            existing_record["last_out"],
-                            record.last_out.astimezone(timezone.get_default_timezone()),
-                        )
-                        if existing_record["last_out"]
-                        else record.last_out.astimezone(timezone.get_default_timezone())
-                    )
-                else:
-                    date_attendance_map[date_key][department][staff_fio] = {
-                        "staff_fio": staff_fio,
-                        "first_in": (
-                            record.first_in.astimezone(timezone.get_default_timezone())
-                            if record.first_in
-                            else None
-                        ),
-                        "last_out": (
-                            record.last_out.astimezone(timezone.get_default_timezone())
-                            if record.last_out
-                            else None
-                        ),
-                    }
+                logger.debug(
+                    f"Processing lesson record for {staff_fio} on {date_key} in {department_name}"
+                )
 
+                first_in, last_out = record.first_in, record.last_out
+                if first_in is None or last_out is None:
+                    logger.debug(
+                        f"Missing lesson time data for {staff_fio} on {date_key}: first_in={first_in}, last_out={last_out}"
+                    )
+
+                try:
+                    if staff_fio in date_attendance_map[date_key][department_name]:
+                        existing_record = date_attendance_map[date_key][
+                            department_name
+                        ][staff_fio]
+                        existing_record["first_in"] = (
+                            min(
+                                existing_record["first_in"],
+                                first_in.astimezone(timezone.get_default_timezone()),
+                            )
+                            if existing_record["first_in"]
+                            else first_in
+                        )
+                        existing_record["last_out"] = (
+                            max(
+                                existing_record["last_out"],
+                                last_out.astimezone(timezone.get_default_timezone()),
+                            )
+                            if existing_record["last_out"]
+                            else last_out
+                        )
+                    else:
+                        date_attendance_map[date_key][department_name][staff_fio] = {
+                            "staff_fio": staff_fio,
+                            "first_in": (
+                                first_in.astimezone(timezone.get_default_timezone())
+                                if first_in
+                                else None
+                            ),
+                            "last_out": (
+                                last_out.astimezone(timezone.get_default_timezone())
+                                if last_out
+                                else None
+                            ),
+                        }
+                except AttributeError as e:
+                    logger.error(
+                        f"Error processing lesson time for {staff_fio} on {date_key}: {e}"
+                    )
+
+            logger.info("Attendance data successfully processed")
             results = []
             for date, departments in date_attendance_map.items():
                 for dept, staff_data in departments.items():
@@ -3074,7 +3100,7 @@ def sent_excel(request, department_id):
     end_date += datetime.timedelta(days=1)
     start_date += datetime.timedelta(days=1)
 
-    main_ip = settings.MAIN_IP
+    main_ip = request.build_absolute_uri('/')[:-1]    
     rows = []
     page = 1
 
