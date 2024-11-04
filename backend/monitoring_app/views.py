@@ -470,180 +470,47 @@ class StaffAttendanceStatsView(APIView):
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def map_location(request):
     """
-    Получить данные локаций для отображения на карте.
+    Возвращает данные о локациях и количестве сотрудников и студентов на основе турникетов и занятий за указанную дату.
 
-    Параметры:
-        - date_at (str, опционально): Дата для фильтрации посещений в формате 'YYYY-MM-DD'.
-        Если не указана, используется текущая дата.
-        - employees (bool, опционально): Флаг для включения данных о сотрудниках. Если True, включаются данные
-        о сотрудниках в локациях. По умолчанию False.
+    Args:
+        request (HttpRequest): HTTP-запрос с параметром `date_at` для фильтрации данных и параметром `employees` для включения данных о сотрудниках.
 
-    Возвращает:
-        Response: JSON ответ с данными локаций для карты.
+    Returns:
+        JsonResponse: JSON-ответ с данными о локациях, если запрос успешен, либо сообщение об ошибке.
 
-    Исключения:
-        - Exception: Обрабатывается и возвращается ошибка с кодом 500.
+    Raises:
+        Exception: Для обработки любых непредвиденных исключений.
     """
     try:
         date_at_str = request.GET.get("date_at", None)
         employees_required = request.GET.get("employees", "false").lower() == "true"
 
-        if not date_at_str:
-            logger.warning("No date_at parameter provided, using current date.")
-            date_at = timezone.now().date()
-        else:
-            date_at = timezone.datetime.strptime(date_at_str, "%Y-%m-%d").date()
-            logger.info(f"Date parameter provided: {date_at}")
+        date_at = (
+            timezone.datetime.strptime(date_at_str, "%Y-%m-%d").date()
+            if date_at_str
+            else timezone.now().date()
+        )
+        logger.info(f"Using date: {date_at}")
 
-        locations = models.ClassLocation.objects.all()
-        logger.info(f"Total locations loaded: {len(locations)}")
+        locations = models.ClassLocation.objects.only(
+            "address", "name", "latitude", "longitude"
+        )
 
-        if date_at == timezone.now().date():
-            if employees_required:
-                result = generate_map_data(
-                    locations, date_at, search_staff_attendance=False, filter_empty=True
-                )
-                logger.info(f"Generated map data for today with only lesson attendance: {result}")
-                return Response(result, status=status.HTTP_200_OK)
-            else:
-                location_list = [
-                    {
-                        "name": location.name,
-                        "address": location.address,
-                        "lat": location.latitude,
-                        "lng": location.longitude,
-                    }
-                    for location in locations
-                ]
-                return Response(location_list, status=status.HTTP_200_OK)
-
-        if employees_required:
-            result = generate_map_data(
-                locations, date_at, search_staff_attendance=True, filter_empty=True
-            )
-            logger.info(f"Generated map data with employees: {result}")
-            return Response(result, status=status.HTTP_200_OK)
+        result = utils.generate_map_data(
+            locations,
+            date_at,
+            search_staff_attendance=employees_required,
+            filter_empty=not employees_required,
+        )
+        logger.info(f"Generated map data with employees: {result}")
+        return Response(result, status=status.HTTP_200_OK)
 
     except Exception as e:
-        logger.critical(f"Critical error in map_location: {str(e)}", exc_info=True)
+        logger.error(f"Critical error in map_location: {str(e)}", exc_info=True)
         return Response(
             {"error": "A critical error occurred. Please try again later."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-
-
-def generate_map_data(locations, date_at, search_staff_attendance=True, filter_empty=False):
-    """
-    Генерирует данные локаций для отображения на карте, включая посещения сотрудников и занятий.
-
-    Аргументы:
-        locations (QuerySet): Список объектов локаций (models.ClassLocation).
-        date_at (date): Дата, для которой собираются данные посещений.
-        search_staff_attendance (bool, по умолчанию True): Если True, включает посещения сотрудников.
-        filter_empty (bool, по умолчанию False): Если True, исключает локации с нулевым количеством посещений.
-
-    Возвращает:
-        list: Список словарей с данными локаций, готовых для отображения на карте, с полями:
-            - name (str): Название локации.
-            - address (str): Адрес локации.
-            - lat (float): Широта локации.
-            - lng (float): Долгота локации.
-            - employees (int): Количество сотрудников или посещений.
-
-    Исключения:
-        - models.StaffAttendance.DoesNotExist: Логируется и возвращается пустой список.
-
-    Примечания:
-        - Локации с нулевым количеством посещений исключаются, если filter_empty=True.
-        - Зоны локаций определены статически для сопоставления данных посещений с конкретными зданиями.
-    """
-    try:
-        zone_areas = {
-            "Главный Корпус": [
-                "Абылайхана турникет",
-                "вход в 8 этаж",
-                "военные 3 этаж",
-                "лифтовые с 1 по 7",
-                "выход ЦОС",
-            ],
-            "Второй Корпус": ["Торекулва турникет"],
-            "Третий Корпус": ["карасай батыра турникет"],
-        }
-
-        location_dict = {
-            loc.name: {
-                "name": loc.name,
-                "address": loc.address,
-                "lat": loc.latitude,
-                "lng": loc.longitude,
-                "employees": 0,
-            }
-            for loc in locations
-        }
-
-        if search_staff_attendance:
-            staff_date_at = date_at + datetime.timedelta(days=1)
-            attendance_data = (
-                models.StaffAttendance.objects.filter(date_at=staff_date_at, first_in__isnull=False)
-                .values("area_name_in")
-                .annotate(employees=Count("staff"))
-            )
-            logger.info(
-                f"Staff attendance data retrieved for date: {staff_date_at}, entries found: {len(attendance_data)}"
-            )
-
-            for record in attendance_data:
-                area_name = record["area_name_in"]
-                employees = record["employees"]
-                logger.debug(f"Processing area: {area_name}, employees: {employees}")
-
-                matched = False
-                for loc_name, areas in zone_areas.items():
-                    if area_name in areas and loc_name in location_dict:
-                        location_dict[loc_name]["employees"] += employees
-                        logger.info(
-                            f"Added {employees} employees to {loc_name}. Total now: {location_dict[loc_name]['employees']}"
-                        )
-                        matched = True
-                        break
-
-                if not matched:
-                    logger.warning(f"Area name '{area_name}' did not match any predefined zones.")
-
-        lesson_attendance_data = models.LessonAttendance.objects.filter(date_at=date_at)
-        for lesson in lesson_attendance_data:
-            for loc in locations:
-                if utils.is_within_radius(
-                    loc.latitude, loc.longitude, lesson.latitude, lesson.longitude
-                ):
-                    location_dict[loc.name]["employees"] += 1
-                    logger.info(
-                        f"Lesson at ({lesson.latitude}, {lesson.longitude}) counted for {loc.name}. "
-                        f"Total employees now: {location_dict[loc.name]['employees']}"
-                    )
-                    break
-
-        result_list = [
-            location
-            for location in location_dict.values()
-            if not filter_empty or location["employees"] > 0
-        ]
-
-        main_building = next(
-            (item for item in result_list if item["name"] == "Главный Корпус (Абылайхана)"),
-            None,
-        )
-
-        if main_building:
-            result_list.remove(main_building)
-            result_list.insert(0, main_building)
-
-        logger.info(f"Final generated map data: {result_list}")
-        return result_list
-
-    except models.StaffAttendance.DoesNotExist:
-        logger.error(f"No attendance records found for date: {date_at}")
-        return []
 
 
 @swagger_auto_schema(
@@ -3137,7 +3004,7 @@ def sent_excel(request, department_id):
     end_date += datetime.timedelta(days=1)
     start_date += datetime.timedelta(days=1)
 
-    main_ip = request.build_absolute_uri('/')[:-1]    
+    main_ip = request.build_absolute_uri("/")[:-1]
     rows = []
     page = 1
 
@@ -3362,7 +3229,10 @@ class UploadFileView(View):
                 else:
                     to_create.append(
                         models.ClassLocation(
-                            name=name, address=address, latitude=latitude, longitude=longitude
+                            name=name,
+                            address=address,
+                            latitude=latitude,
+                            longitude=longitude,
                         )
                     )
             except Exception as e:
@@ -3374,7 +3244,9 @@ class UploadFileView(View):
             logger.info(f"Создано новых записей: {len(to_create)}")
 
         if to_update:
-            models.ClassLocation.objects.bulk_update(to_update, ["latitude", "longitude"])
+            models.ClassLocation.objects.bulk_update(
+                to_update, ["latitude", "longitude"]
+            )
             logger.info(f"Обновлено существующих записей: {len(to_update)}")
 
         messages.success(

@@ -972,6 +972,111 @@ def transliterate(name):
 
     return "".join(translit)
 
+
+def generate_map_data(
+    locations, date_at, search_staff_attendance=True, filter_empty=False
+):
+    """
+    Генерирует данные по локациям, включая посещения сотрудников и занятия.
+
+    Args:
+        locations (QuerySet): Локации из модели ClassLocation.
+        date_at (date): Дата для фильтрации данных.
+        search_staff_attendance (bool): Если True, включает данные из StaffAttendance и LessonAttendance.
+        filter_empty (bool): Если True, исключает локации с нулевым количеством посещений.
+
+    Returns:
+        list: Список словарей с данными по локациям, готовых для отображения на карте.
+    """
+    area_address_mapping = {
+        "Абылайхана турникет": "Проспект Абылай хана, 51/53",
+        "вход в 8 этаж": "Проспект Абылай хана, 51/53",
+        "военные 3 этаж": "Проспект Абылай хана, 51/53",
+        "лифтовые с 1 по 7": "Проспект Абылай хана, 51/53",
+        "выход ЦОС": "Проспект Абылай хана, 51/53",
+        "Торекулва турникет": "Улица Торекулова, 71",
+        "карасай батыра турникет": "Улица Карасай батыра, 75",
+    }
+
+    if search_staff_attendance:
+        staff_data = models.StaffAttendance.objects.filter(
+            date_at=date_at + datetime.timedelta(days=1), first_in__isnull=False
+        ).values("staff_id", "area_name_in")
+
+        staff_by_address = {}
+        unique_staff_ids = set()
+
+        for record in staff_data:
+            staff_id = record["staff_id"]
+            area_name = record["area_name_in"]
+            address = area_address_mapping.get(area_name)
+
+            if address:
+                if staff_id not in unique_staff_ids:
+                    staff_by_address[address] = staff_by_address.get(address, 0) + 1
+                    unique_staff_ids.add(staff_id)
+
+        lesson_data = models.LessonAttendance.objects.filter(date_at=date_at).values(
+            "staff_id", "latitude", "longitude"
+        )
+        lesson_attendance_by_location = {}
+
+        for lesson in lesson_data:
+            staff_id = lesson["staff_id"]
+            lesson_lat = lesson["latitude"]
+            lesson_lng = lesson["longitude"]
+
+            for loc in locations:
+                if is_within_radius(
+                    loc.latitude, loc.longitude, lesson_lat, lesson_lng
+                ):
+                    if loc.address not in lesson_attendance_by_location:
+                        lesson_attendance_by_location[loc.address] = set()
+                    if staff_id not in lesson_attendance_by_location[loc.address]:
+                        lesson_attendance_by_location[loc.address].add(staff_id)
+                    break
+    else:
+        staff_by_address = {}
+        lesson_attendance_by_location = {}
+
+    result_list = []
+    for loc in locations:
+        location_data = {
+            "name": loc.name,
+            "address": loc.address,
+            "lat": loc.latitude,
+            "lng": loc.longitude,
+        }
+        if search_staff_attendance:
+            employees_count = staff_by_address.get(loc.address, 0) + len(
+                lesson_attendance_by_location.get(loc.address, set())
+            )
+            if employees_count > 0:
+                location_data["employees"] = employees_count
+                if filter_empty and employees_count <= 1:
+                    continue
+            else:
+                continue
+        else:
+            location_data.pop("employees", None)
+
+        result_list.append(location_data)
+
+    main_location = next(
+        (
+            item
+            for item in result_list
+            if item["address"] == "Проспект Абылай хана, 51/53"
+        ),
+        None,
+    )
+    if main_location:
+        result_list.remove(main_location)
+        result_list.insert(0, main_location)
+
+    return result_list
+
+
 def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
     R = 6371000
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -984,4 +1089,3 @@ def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     distance = R * c
     return distance <= radius
-
