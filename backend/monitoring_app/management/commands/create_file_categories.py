@@ -11,7 +11,7 @@ class Command(BaseCommand):
             {"name": "Сотрудники", "slug": "staff"},
             {"name": "Удаление сотрудников", "slug": "delete_staff"},
             {"name": "Фото", "slug": "photo"},
-            
+            {"name": "Загрузка Клин. Баз", "slug": "load_geo"},
         ]
 
         for category_data in categories:
