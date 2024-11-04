@@ -599,7 +599,14 @@ class LessonAttendanceAdmin(ModelAdmin):
         (
             None,
             {
-                "fields": ("first_in", "last_out", "photo_preview"),
+                "fields": (
+                    "first_in",
+                    "last_out",
+                    "photo_preview",
+                    "latitude",
+                    "longitude",
+                    "date_at",
+                ),
                 "description": "Основная информация о занятии",
             },
         ),

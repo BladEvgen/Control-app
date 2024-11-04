@@ -496,21 +496,20 @@ class LessonAttendance(models.Model, GeoItem):
         on_delete=models.CASCADE,
         related_name="lesson_attendance",
         verbose_name="Сотрудник",
-        editable=False,
     )
     subject_name = models.CharField(
-        verbose_name="Название предмета", max_length=300, editable=False
+        verbose_name="Название предмета",
+        max_length=300,
     )
-    tutor_id = models.IntegerField(verbose_name="Id преподавателя", editable=False)
+    tutor_id = models.IntegerField(verbose_name="Id преподавателя")
     tutor = models.CharField(verbose_name="ФИО преподавателя", max_length=300)
     first_in = models.DateTimeField(verbose_name="Время начала занятия", null=False)
     last_out = models.DateTimeField(verbose_name="Время окончания занятия", null=True, blank=True)
     latitude = models.FloatField(
-        verbose_name="Широта", editable=False, help_text="Примерные координаты в радиусе 300 метров"
+        verbose_name="Широта", help_text="Примерные координаты в радиусе 300 метров"
     )
     longitude = models.FloatField(
         verbose_name="Долгота",
-        editable=False,
         help_text="Примерные координаты в радиусе 300 метров",
     )
     date_at = models.DateField(verbose_name="Дата занятия", default=timezone.now)
