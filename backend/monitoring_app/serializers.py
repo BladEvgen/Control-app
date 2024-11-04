@@ -212,4 +212,3 @@ class StaffAttendanceByDateSerializer(serializers.Serializer):
                 ],
             }
         }
-
