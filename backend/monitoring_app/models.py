@@ -563,6 +563,40 @@ class LessonAttendance(models.Model, GeoItem):
         verbose_name_plural = "Посещаемость занятий"
 
 
+class ClassLocation(models.Model, GeoItem):
+    name = models.CharField(max_length=255, verbose_name="Название учебного места", editable=True)
+    address = models.CharField(max_length=255, verbose_name="Адрес", editable=True)
+    latitude = models.FloatField(
+        verbose_name="Широта",
+        help_text="Введите широту для отображения на карте",
+        editable=True,
+    )
+    longitude = models.FloatField(
+        verbose_name="Долгота",
+        help_text="Введите долготу для отображения на карте",
+        editable=True,
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True, verbose_name="Дата создания", editable=False
+    )
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Дата обновления", editable=False)
+
+    class Meta:
+        verbose_name = "Локация для занятий"
+        verbose_name_plural = "Локации для занятий"
+
+    def __str__(self):
+        return f"{self.name}, {self.address} ({self.latitude}, {self.longitude})"
+
+    @property
+    def geomap_latitude(self):
+        return str(self.latitude)
+
+    @property
+    def geomap_longitude(self):
+        return str(self.longitude)
+
+
 class Salary(models.Model):
     CONTRACT_TYPE_CHOICES = [
         ("full_time", "Полная занятость"),

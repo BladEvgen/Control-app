@@ -21,6 +21,7 @@ from monitoring_app.models import (
     FileCategory,
     PublicHoliday,
     StaffFaceMask,
+    ClassLocation,
     ChildDepartment,
     StaffAttendance,
     LessonAttendance,
@@ -400,24 +401,30 @@ class StaffAdmin(admin.ModelAdmin):
 
 @admin.register(StaffFaceMask)
 class StaffFaceMaskAdmin(admin.ModelAdmin):
-    list_display = ('staff', 'staff_department', 'created_at', 'updated_at', 'staff_avatar')
-    search_fields = ('staff__name', 'staff__surname', 'staff__pin')
+    list_display = (
+        "staff",
+        "staff_department",
+        "created_at",
+        "updated_at",
+        "staff_avatar",
+    )
+    search_fields = ("staff__name", "staff__surname", "staff__pin")
     readonly_fields = (
-        'created_at',
-        'updated_at',
-        'mask_encoding',
-        'staff',
-        'staff_avatar',
-        'augmented_images',
+        "created_at",
+        "updated_at",
+        "mask_encoding",
+        "staff",
+        "staff_avatar",
+        "augmented_images",
     )
     list_filter = (
-        'created_at',
-        'updated_at',
+        "created_at",
+        "updated_at",
         utils.HierarchicalDepartmentFilter,
     )
     ordering = (
-        'staff__department',
-        '-updated_at',
+        "staff__department",
+        "-updated_at",
     )
 
     def staff_avatar(self, obj):
@@ -436,11 +443,11 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
         if os.path.exists(augmented_dir):
             images_html = ""
             for i in range(11):
-                filename = f'{obj.staff.pin}_augmented_{i}.jpg'
+                filename = f"{obj.staff.pin}_augmented_{i}.jpg"
                 file_path = os.path.join(augmented_dir, filename)
 
                 file_url = os.path.join(
-                    settings.AUGMENT_URL, obj.staff.pin, 'augmented_images', filename
+                    settings.AUGMENT_URL, obj.staff.pin, "augmented_images", filename
                 )
 
                 if os.path.exists(file_path):
@@ -457,32 +464,32 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
         return obj.staff.department
 
     staff_department.short_description = "Отдел"
-    staff_department.admin_order_field = 'staff__department'
+    staff_department.admin_order_field = "staff__department"
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related('staff')
+        return super().get_queryset(request).select_related("staff")
 
     fieldsets = (
         (
             None,
             {
-                'fields': (
-                    'staff',
-                    'staff_avatar',
-                    'augmented_images',
+                "fields": (
+                    "staff",
+                    "staff_avatar",
+                    "augmented_images",
                 )
             },
         ),
         (
-            'Временные метки',
+            "Временные метки",
             {
-                'fields': ('created_at', 'updated_at'),
+                "fields": ("created_at", "updated_at"),
             },
         ),
         (
-            'Encoded Faces',
+            "Encoded Faces",
             {
-                'fields': ('mask_encoding',),
+                "fields": ("mask_encoding",),
             },
         ),
     )
@@ -618,12 +625,13 @@ class LessonAttendanceAdmin(ModelAdmin):
         "date_at",
         "has_photo",
     )
-    
+
     def formatted_first_in(self, obj):
         if obj.first_in:
             local_time = timezone.localtime(obj.first_in)
             return local_time.strftime("%H:%M:%S")
         return "-"
+
     formatted_first_in.short_description = "Время начала (локальное)"
 
     def formatted_last_out(self, obj):
@@ -631,13 +639,11 @@ class LessonAttendanceAdmin(ModelAdmin):
             local_time = timezone.localtime(obj.last_out)
             return local_time.strftime("%H:%M:%S")
         return "-"
+
     formatted_last_out.short_description = "Время окончания (локальное)"
 
     list_filter = ("date_at", "staff", "subject_name")
     search_fields = ("staff__name", "subject_name", "tutor")
-
-    class Media:
-        css = {"all": ("custom_admin.css",)}
 
     def has_photo(self, obj):
         if obj.staff_image_path and obj.staff_image_path != "/static/media/images/no-avatar.png":
@@ -675,6 +681,58 @@ class LessonAttendanceAdmin(ModelAdmin):
 
 admin.site.register(LessonAttendance, LessonAttendanceAdmin)
 
+
+# === Локации занятий ===
+class ClassLocationAdmin(ModelAdmin):
+    geomap_field_longitude = "longitude"
+    geomap_field_latitude = "latitude"
+    geomap_show_map_on_list = False
+    geomap_item_zoom = "14"
+    geomap_height = "450px"
+    geomap_default_zoom = "16"
+    geomap_autozoom = "15.9"
+
+    readonly_fields = ("created_at", "updated_at")
+
+    fieldsets = (
+        (
+            "Основная информация",
+            {
+                "fields": ("name", "address", "latitude", "longitude"),
+                "description": "Информация о локации учебного заведения и координаты",
+            },
+        ),
+        (
+            "Системная информация",
+            {
+                "fields": ("created_at", "updated_at"),
+                "description": "Внутренние поля системы",
+            },
+        ),
+    )
+
+    list_display = (
+        "name",
+        "address",
+        "formatted_latitude",
+        "formatted_longitude",
+        "created_at",
+    )
+    list_filter = ("created_at",)
+    search_fields = ("name", "address")
+
+    def formatted_latitude(self, obj):
+        return f"{obj.latitude:.6f}"
+
+    formatted_latitude.short_description = "Широта"
+
+    def formatted_longitude(self, obj):
+        return f"{obj.longitude:.6f}"
+
+    formatted_longitude.short_description = "Долгота"
+
+
+admin.site.register(ClassLocation, ClassLocationAdmin)
 
 # === Зарплата ===
 
