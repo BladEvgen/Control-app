@@ -12,38 +12,23 @@ import { LocationData } from "../schemas/IData";
 const fallbackLocations: LocationData[] = [
   {
     name: "Главный Корпус (Абылайхана)",
+    address: "Абылай хана 51/53",
     lat: 43.2644734,
     lng: 76.9393907,
     employees: 1000,
   },
   {
-    name: "Второй Корпус (Торекулова)",
-    lat: 43.2655509,
-    lng: 76.9299558,
-    employees: 500,
+    name: "Второй Корпус",
+    address: "Торекулова 71",
+    lat: 43.265548,
+    lng: 76.932683,
+    employees: 220,
   },
   {
-    name: "Третий Корпус (Карасай батыра)",
-    lat: 43.251326,
-    lng: 76.9349449,
-    employees: 200,
-  },
-  {
-    name: "Тест",
-    lat: 43.271326,
-    lng: 76.9349449,
-    employees: 200,
-  },
-  {
-    name: "Тест2",
-    lat: 43.251326,
-    lng: 76.9649449,
-    employees: 200,
-  },
-  {
-    name: "Тест3",
-    lat: 43.253396,
-    lng: 76.9649449,
+    name: "Третий Корпус",
+    address: "Карасай батыра 75",
+    lat: 43.251186,
+    lng: 76.935776,
     employees: 200,
   },
 ];
@@ -56,15 +41,8 @@ const generateColorSet = (numColors: number, theme: string): string[] => {
       hue = (hue + 60) % 360;
     }
 
-    const saturation =
-      theme === "dark"
-        ? `${30 + Math.random() * 30}%`
-        : `${70 + Math.random() * 30}%`;
-    const lightness =
-      theme === "dark"
-        ? `${60 + Math.random() * 10}%`
-        : `${40 + Math.random() * 20}%`;
-
+    const saturation = theme === "dark" ? "40%" : "80%";
+    const lightness = theme === "dark" ? "50%" : "60%";
     colors.push(`hsl(${hue}, ${saturation}, ${lightness})`);
   }
   return colors;
@@ -88,12 +66,12 @@ const calculateDistance = (
   lon2: number
 ) => {
   const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const dLat = ((lat2 - lat1) * Math.PI) / 200;
+  const dLon = ((lon2 - lon1) * Math.PI) / 200;
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
+    Math.cos((lat1 * Math.PI) / 200) *
+      Math.cos((lat2 * Math.PI) / 200) *
       Math.sin(dLon / 2) *
       Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
@@ -108,7 +86,7 @@ const selectBestColor = (
 ): string => {
   for (let color of colors) {
     let isValid = true;
-    for (let loc of existingLocations) {
+    for (let loc of existingLocations.slice(-2)) {
       const distance = calculateDistance(
         location.lat,
         location.lng,
@@ -132,11 +110,11 @@ const MapPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [visiblePopup, setVisiblePopup] = useState<string | null>(null);
+  const [isMarkersVisible, setIsMarkersVisible] = useState(false);
   const [theme] = useState<string>(localStorage.getItem("theme") || "light");
-  const [tileLayerUrl] = useState(
+  const [tileLayerUrl] = useState<string>(
     "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
   );
-  const [isMarkersVisible, setIsMarkersVisible] = useState(false);
   const mapRef = useRef<L.Map | null>(null);
   const colors = useRef<string[]>([]);
   const assignedColors: { [key: string]: string } = {};
@@ -146,8 +124,12 @@ const MapPage: React.FC = () => {
       setLoading(true);
       let fetchedLocations: LocationData[] = [];
       try {
-        const response = await axiosInstance.get(`${apiUrl}/api/locations`);
-        fetchedLocations = response.data;
+        const response = await axiosInstance.get(
+          `${apiUrl}/api/locations?employees=true&date_at=2024-10-31`
+        );
+        fetchedLocations = response.data.filter(
+          (loc: LocationData) => loc.employees > 0
+        );
         setLocations(fetchedLocations);
         new BaseAction(BaseAction.SET_DATA, fetchedLocations);
       } catch (error) {
@@ -162,14 +144,9 @@ const MapPage: React.FC = () => {
       colors.current = generateColorSet(fetchedLocations.length, theme);
 
       setTimeout(() => {
+        const firstLocation = fetchedLocations[0]?.name;
         setIsMarkersVisible(true);
-        const firstLocation =
-          fetchedLocations.length > 0
-            ? fetchedLocations[0].name
-            : fallbackLocations[0].name;
-        setTimeout(() => {
-          setVisiblePopup(firstLocation);
-        }, 1500);
+        setTimeout(() => setVisiblePopup(firstLocation), 1500);
       }, 1000);
     };
 
@@ -239,12 +216,12 @@ const MapPage: React.FC = () => {
               key={index}
               position={[location.lat, location.lng]}
               name={location.name}
+              address={location.address}
               employees={location.employees}
               isVisible={isMarkersVisible}
               icon={customIcon}
               onClick={() => toggleVisibility(location)}
               popupVisible={visiblePopup === location.name}
-              theme={theme}
               radius={120}
               color={circleColor}
             />

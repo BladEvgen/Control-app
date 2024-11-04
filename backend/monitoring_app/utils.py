@@ -1,18 +1,21 @@
 import os
 import re
-import cv2
+import math
 import json
-import pytz
-import torch
 import logging
 import datetime
+from functools import wraps
+from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+
+import cv2
+import pytz
+import torch
 import requests
 import torch.amp
 import numpy as np
 import pandas as pd
 import torch.nn as nn
-from functools import wraps
-from dateutil import parser
 from openpyxl import Workbook
 from django.urls import reverse
 from django.conf import settings
@@ -27,9 +30,7 @@ from django.core.mail import send_mail
 from torch.utils.data import DataLoader
 from insightface.app import FaceAnalysis
 from django.utils.html import format_html
-from typing import Any, Dict, List, Optional
 from rest_framework.response import Response
-from concurrent.futures import ThreadPoolExecutor
 from django.contrib.admin import SimpleListFilter
 from sklearn.model_selection import train_test_split
 from rest_framework.exceptions import ValidationError
@@ -688,29 +689,20 @@ def password_check(password: str) -> bool:
 
 def fetch_data(url: str) -> Dict[str, Any]:
     try:
-        logger.info(f"Fetching data from URL: {url}")
         response = requests.get(url, timeout=20)
         response.raise_for_status()
-
-        data = response.json()
-        if not data:
-            logger.warning("Received empty data from API.")
-            return {}
-
-        logger.info("Data fetched successfully")
-        return data
+        return response.json()
     except requests.RequestException as e:
-        logger.error(f"Error fetching data: {e}")
+        print(f"Error fetching data: {e}")
         return {}
 
 
 def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]]]:
-    logger.info("Starting attendance data parsing")
     rows: List[List[Optional[str]]] = []
+    timezone_pattern = re.compile(r"\+\d{2}:\d{2}")
     holidays_cache = cache.get("holidays_cache")
 
     if not holidays_cache:
-        logger.info("Loading holidays into cache")
         holidays_cache = {
             holiday.date: holiday for holiday in models.PublicHoliday.objects.all()
         }
@@ -719,12 +711,12 @@ def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]
     def parse_datetime_with_timezone(dt_str: Optional[str]) -> Optional[str]:
         if not dt_str:
             return None
-        try:
-            parsed_dt = parser.parse(dt_str)
-            return parsed_dt.strftime("%H:%M:%S")
-        except ValueError as e:
-            logger.error(f"Error parsing datetime with timezone: {e}")
-            return None
+        match = timezone_pattern.search(dt_str)
+        if match:
+            timezone = match.group(0)
+            dt_format = f"%Y-%m-%dT%H:%M:%S{timezone}"
+            return datetime.datetime.strptime(dt_str, dt_format).strftime("%H:%M:%S")
+        return None
 
     for record in data:
         for date, details in record.items():
@@ -732,7 +724,7 @@ def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]
                 date_obj = datetime.datetime.strptime(date, "%Y-%m-%d")
                 date_str = date_obj.strftime("%d.%m.%Y")
             except ValueError as e:
-                logger.warning(f"Error parsing date '{date}': {e}")
+                print(f"Error parsing date: {e}")
                 continue
 
             public_holiday = holidays_cache.get(date_obj)
@@ -758,19 +750,14 @@ def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]
                         )
 
                     rows.append([staff_fio, department, date_str, attendance_info])
-                    logger.debug(f"Processed attendance for {staff_fio} on {date_str}")
                 except KeyError as e:
-                    logger.warning(f"Missing expected key: {e}")
+                    print(f"Missing expected key: {e}")
                 except Exception as e:
-                    logger.error(
-                        f"Error processing attendance record for {staff_fio} on {date_str}: {e}"
-                    )
-    logger.info("Attendance data parsing completed")
+                    print(f"Error processing record: {e}")
     return rows
 
 
 def create_dataframe(rows: List[List[Optional[str]]]) -> pd.DataFrame:
-    logger.info("Creating DataFrame from parsed attendance data")
     df = pd.DataFrame(rows, columns=["ФИО", "Отдел", "Дата", "Посещаемость"])
     df_pivot = df.pivot_table(
         index=["ФИО", "Отдел"],
@@ -787,58 +774,58 @@ def create_dataframe(rows: List[List[Optional[str]]]) -> pd.DataFrame:
         ),
         axis=1,
     )
-    logger.info("DataFrame created and sorted successfully")
     return df_pivot_sorted
 
 
 def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
-    logger.info("Saving DataFrame to Excel workbook")
-
     wb = Workbook()
     ws = wb.active
 
     data_font = Font(name="Roboto", size=11)
     data_alignment = Alignment(horizontal="center", vertical="center")
+
     absence_fill = PatternFill(
         start_color="ab0a0a", end_color="ab0a0a", fill_type="solid"
     )
     absence_font = Font(color="FFFFFF")
-    header_font = Font(name="Roboto", size=14, bold=True)
 
     df_flat = df_pivot_sorted.reset_index()
     df_flat_sorted = df_flat.sort_values(by=["Отдел", "ФИО"])
 
-    max_col_widths = [len(str(col)) for col in df_flat_sorted.columns]
-    max_row_heights = [15] * (len(df_flat_sorted) + 1)
+    max_col_widths = [0] * len(df_flat_sorted.columns)
+    max_row_heights = [0] * (len(df_flat_sorted) + 1)
 
-    for r_idx, row in enumerate(
-        dataframe_to_rows(df_flat_sorted, index=False, header=True), start=1
+    for r_idx, r in enumerate(
+        dataframe_to_rows(df_flat_sorted, index=False, header=True), 1
     ):
-        for c_idx, value in enumerate(row, start=1):
+        for c_idx, value in enumerate(r, 1):
             cell = ws.cell(row=r_idx, column=c_idx, value=value)
-            cell.font = header_font if r_idx == 1 else data_font
+            cell.font = data_font
             cell.alignment = data_alignment
             if value == "Отсутствие":
                 cell.fill = absence_fill
                 cell.font = absence_font
 
             value_length = len(str(value))
-            max_col_widths[c_idx - 1] = max(max_col_widths[c_idx - 1], value_length)
-            max_row_heights[r_idx - 1] = max(
-                max_row_heights[r_idx - 1], value_length * 1.2
-            )
 
-    for idx, col_width in enumerate(max_col_widths, start=1):
+            if value_length > max_col_widths[c_idx - 1]:
+                max_col_widths[c_idx - 1] = value_length
+
+            if value_length > max_row_heights[r_idx - 1]:
+                max_row_heights[r_idx - 1] = value_length
+
+    header_font = Font(name="Roboto", size=14, bold=True)
+    for cell in ws[1]:
+        cell.font = header_font
+
+    for idx, col_width in enumerate(max_col_widths, 1):
         ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = (
             col_width + 2
         )
-    logger.info("Column widths set")
 
-    for idx, row_height in enumerate(max_row_heights, start=1):
-        ws.row_dimensions[idx].height = row_height
-    logger.info("Row heights set")
+    for idx, row_height in enumerate(max_row_heights, 1):
+        ws.row_dimensions[idx].height = row_height * 3
 
-    logger.info("Excel workbook created successfully")
     return wb
 
 
@@ -984,3 +971,17 @@ def transliterate(name):
         translit.append(slovar.get(letter, letter))
 
     return "".join(translit)
+
+def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(delta_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    distance = R * c
+    return distance <= radius
+

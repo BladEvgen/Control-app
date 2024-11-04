@@ -119,6 +119,7 @@ export interface AttendanceStats {
 
 export interface LocationData {
   name: string;
+  address: string;
   lat: number;
   lng: number;
   employees: number;
