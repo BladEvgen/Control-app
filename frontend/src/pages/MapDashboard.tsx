@@ -8,55 +8,12 @@ import Notification from "../components/Notification";
 import AnimatedMarker from "../components/AnimatedMarker";
 import { BaseAction } from "../schemas/BaseAction";
 import { LocationData } from "../schemas/IData";
+import { FaExpand, FaCompress } from "react-icons/fa";
 
-const fallbackLocations: LocationData[] = [
-  {
-    name: "Главный Корпус (Абылайхана)",
-    address: "Абылай хана 51/53",
-    lat: 43.2644734,
-    lng: 76.9393907,
-    employees: 1000,
-  },
-  {
-    name: "Второй Корпус",
-    address: "Торекулова 71",
-    lat: 43.265548,
-    lng: 76.932683,
-    employees: 220,
-  },
-  {
-    name: "Третий Корпус",
-    address: "Карасай батыра 75",
-    lat: 43.251186,
-    lng: 76.935776,
-    employees: 200,
-  },
-];
-
-const generateColorSet = (numColors: number, theme: string): string[] => {
-  const colors = [];
-  for (let i = 0; i < numColors; i++) {
-    let hue = (i * 137) % 360;
-    if (theme === "light" && ((hue >= 0 && hue <= 30) || hue >= 330)) {
-      hue = (hue + 60) % 360;
-    }
-
-    const saturation = theme === "dark" ? "40%" : "80%";
-    const lightness = theme === "dark" ? "50%" : "60%";
-    colors.push(`hsl(${hue}, ${saturation}, ${lightness})`);
-  }
-  return colors;
-};
-
-const areColorsSimilar = (
-  color1: string,
-  color2: string,
-  tolerance: number
-): boolean => {
-  const hue1 = parseInt(color1.match(/\d+/)![0]);
-  const hue2 = parseInt(color2.match(/\d+/)![0]);
-  const hueDiff = Math.abs(hue1 - hue2);
-  return hueDiff < tolerance;
+const getFormattedDateAt = (): string => {
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  return yesterday.toISOString().split("T")[0];
 };
 
 const calculateDistance = (
@@ -64,45 +21,34 @@ const calculateDistance = (
   lon1: number,
   lat2: number,
   lon2: number
-) => {
+): number => {
   const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 200;
-  const dLon = ((lon2 - lon1) * Math.PI) / 200;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 200) *
-      Math.cos((lat2 * Math.PI) / 200) *
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
       Math.sin(dLon / 2) *
       Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 };
 
-const selectBestColor = (
-  colors: string[],
-  location: LocationData,
-  existingLocations: LocationData[],
-  assignedColors: { [key: string]: string }
-): string => {
-  for (let color of colors) {
-    let isValid = true;
-    for (let loc of existingLocations.slice(-2)) {
-      const distance = calculateDistance(
-        location.lat,
-        location.lng,
-        loc.lat,
-        loc.lng
-      );
-      const assignedColor = assignedColors[loc.name];
+const generateDistinctColors = (numColors: number, theme: string): string[] => {
+  const colors = [];
+  for (let i = 0; i < numColors; i++) {
+    let hue = (i * 137) % 360;
 
-      if (distance < 0.3 && areColorsSimilar(color, assignedColor, 20)) {
-        isValid = false;
-        break;
-      }
+    if (theme === "light" && hue >= 45 && hue <= 75) {
+      hue = (hue + 90) % 360;
     }
-    if (isValid) return color;
+
+    const saturation = theme === "dark" ? "40%" : "70%";
+    const lightness = theme === "dark" ? "50%" : "50%";
+
+    colors.push(`hsl(${hue}, ${saturation}, ${lightness})`);
   }
-  return colors[0];
+  return colors;
 };
 
 const MapPage: React.FC = () => {
@@ -112,58 +58,112 @@ const MapPage: React.FC = () => {
   const [visiblePopup, setVisiblePopup] = useState<string | null>(null);
   const [isMarkersVisible, setIsMarkersVisible] = useState(false);
   const [theme] = useState<string>(localStorage.getItem("theme") || "light");
-  const [tileLayerUrl] = useState<string>(
-    "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-  );
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const mapRef = useRef<L.Map | null>(null);
-  const colors = useRef<string[]>([]);
-  const assignedColors: { [key: string]: string } = {};
+  const [assignedColors, setAssignedColors] = useState<{
+    [key: string]: string;
+  }>({});
 
-  useEffect(() => {
-    const fetchLocations = async () => {
-      setLoading(true);
-      let fetchedLocations: LocationData[] = [];
-      try {
-        const response = await axiosInstance.get(
-          `${apiUrl}/api/locations?employees=true&date_at=2024-10-31`
-        );
-        fetchedLocations = response.data.filter(
-          (loc: LocationData) => loc.employees > 0
-        );
-        setLocations(fetchedLocations);
-        new BaseAction(BaseAction.SET_DATA, fetchedLocations);
-      } catch (error) {
-        fetchedLocations = fallbackLocations;
-        setError("Не удалось загрузить данные.");
-        setLocations(fallbackLocations);
-        new BaseAction<string>(BaseAction.SET_ERROR, "Ошибка загрузки данных");
-      } finally {
-        setLoading(false);
+  const fetchLocations = async () => {
+    setLoading(true);
+    const dateAt = getFormattedDateAt();
+    console.log(`Запрос API с параметрами: employees=true, date_at=${dateAt}`);
+
+    try {
+      const response = await axiosInstance.get(
+        `${apiUrl}/api/locations?employees=true&date_at=${dateAt}`
+      );
+      console.log("Ответ API:", response.data);
+
+      const fetchedLocations: LocationData[] = response.data.filter(
+        (loc: LocationData) => loc.employees > 0
+      );
+      setLocations(fetchedLocations);
+
+      interface LocationNode {
+        location: LocationData;
+        neighbors: number[];
       }
 
-      colors.current = generateColorSet(fetchedLocations.length, theme);
+      const locationNodes: LocationNode[] = fetchedLocations.map((loc) => ({
+        location: loc,
+        neighbors: [],
+      }));
 
-      setTimeout(() => {
-        const firstLocation = fetchedLocations[0]?.name;
-        setIsMarkersVisible(true);
-        setTimeout(() => setVisiblePopup(firstLocation), 1500);
-      }, 1000);
-    };
+      const distanceThreshold = 0.4; // 0.4 км
 
+      for (let i = 0; i < fetchedLocations.length; i++) {
+        for (let j = i + 1; j < fetchedLocations.length; j++) {
+          const distance = calculateDistance(
+            fetchedLocations[i].lat,
+            fetchedLocations[i].lng,
+            fetchedLocations[j].lat,
+            fetchedLocations[j].lng
+          );
+          if (distance < distanceThreshold) {
+            locationNodes[i].neighbors.push(j);
+            locationNodes[j].neighbors.push(i);
+          }
+        }
+      }
+
+      const numColors = Math.max(fetchedLocations.length, 20);
+      const colors = generateDistinctColors(numColors, theme);
+
+      const tempAssignedColors: { [key: string]: string } = {};
+      for (let i = 0; i < locationNodes.length; i++) {
+        const node = locationNodes[i];
+        const usedColorIndices = new Set<number>();
+        for (const neighborIndex of node.neighbors) {
+          const neighbor = locationNodes[neighborIndex];
+          const neighborColor = tempAssignedColors[neighbor.location.name];
+          if (neighborColor) {
+            const colorIndex = colors.indexOf(neighborColor);
+            if (colorIndex !== -1) {
+              usedColorIndices.add(colorIndex);
+            }
+          }
+        }
+        let colorAssigned = false;
+        for (let colorIndex = 0; colorIndex < colors.length; colorIndex++) {
+          if (!usedColorIndices.has(colorIndex)) {
+            tempAssignedColors[node.location.name] = colors[colorIndex];
+            colorAssigned = true;
+            break;
+          }
+        }
+        if (!colorAssigned) {
+          tempAssignedColors[node.location.name] = colors[0];
+        }
+      }
+
+      setAssignedColors(tempAssignedColors);
+
+      setVisiblePopup(
+        `${fetchedLocations[0].name}-${fetchedLocations[0].address}-0`
+      );
+      new BaseAction(BaseAction.SET_DATA, fetchedLocations);
+    } catch (error) {
+      setError("Не удалось загрузить данные.");
+      new BaseAction<string>(BaseAction.SET_ERROR, "Ошибка загрузки данных");
+    } finally {
+      setLoading(false);
+    }
+    setTimeout(() => setIsMarkersVisible(true), 1000);
+  };
+
+  useEffect(() => {
     fetchLocations();
   }, [theme]);
 
-  const toggleVisibility = (location: LocationData) => {
-    setVisiblePopup(visiblePopup === location.name ? null : location.name);
-    if (mapRef.current) {
-      mapRef.current.setView(
-        [location.lat, location.lng],
-        mapRef.current.getZoom(),
-        {
-          animate: true,
-        }
-      );
-    }
+  const toggleVisibility = (location: LocationData, index: number) => {
+    const identifier = `${location.name}-${location.address}-${index}`;
+    setVisiblePopup(visiblePopup === identifier ? null : identifier);
+    mapRef.current?.setView(
+      [location.lat, location.lng],
+      mapRef.current.getZoom(),
+      { animate: true }
+    );
   };
 
   const customIcon = L.icon({
@@ -173,61 +173,82 @@ const MapPage: React.FC = () => {
     popupAnchor: [0, -40],
   });
 
-  if (loading) {
+  const handleFullscreenToggle = () => {
+    if (!isFullscreen) {
+      document.documentElement.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
+    setIsFullscreen(!isFullscreen);
+  };
+
+  if (loading)
     return (
-      <div className="flex flex-col items-center justify-center h-screen">
-        <div className="loader"></div>
-        <p className="mt-4 text-lg text-gray-300 dark:text-gray-400">
-          Данные загружаются, пожалуйста, подождите...
+      <div className="flex flex-col justify-center items-center h-screen text-gray-700">
+        <div className="loader w-16 h-16 border-4 border-gray-300 border-t-4 border-t-blue-500 rounded-full animate-spin"></div>
+        <p className="mt-4 text-lg font-medium text-white">
+          Загрузка данных, пожалуйста, подождите...
         </p>
       </div>
     );
-  }
 
-  if (error) {
-    return <Notification message={error} type="error" link="/" />;
-  }
+  if (error) return <Notification message={error} type="error" link="/" />;
 
   return (
-    <div className="relative h-screen w-screen p-4 md:p-8 lg:p-12">
-      <MapContainer
-        center={[43.2644734, 76.9393907]}
-        zoom={13.5}
-        style={{ width: "100%", height: "100%" }}
-        className="rounded-lg shadow-lg border border-gray-300 dark:border-gray-700"
-        tap={false}
-        ref={mapRef}
+    <div className={`relative h-screen w-screen`}>
+      <button
+        onClick={handleFullscreenToggle}
+        className="absolute top-4 right-4 z-10 bg-white text-gray-700 p-2 rounded-full shadow-lg hover:bg-gray-100 transition-all duration-200"
+        aria-label={
+          isFullscreen
+            ? "Выйти из полноэкранного режима"
+            : "Перейти в полноэкранный режим"
+        }
       >
-        <TileLayer url={tileLayerUrl} />
+        {isFullscreen ? (
+          <FaCompress className="w-5 h-5" />
+        ) : (
+          <FaExpand className="w-5 h-5" />
+        )}
+      </button>
 
-        {locations.map((location, index) => {
-          if (!assignedColors[location.name]) {
-            assignedColors[location.name] = selectBestColor(
-              colors.current,
-              location,
-              locations.slice(0, index),
-              assignedColors
+      <div
+        className="max-w-[90%] max-h-[90%] mx-auto my-4 border-2 rounded-lg shadow-lg"
+        style={{ padding: "2%", height: isFullscreen ? "95vh" : "80vh" }}
+      >
+        <MapContainer
+          center={[43.2644734, 76.9393907]}
+          zoom={13.5}
+          style={{
+            width: "100%",
+            height: "100%",
+            borderRadius: "12px",
+            boxShadow: "0 4px 12px rgba(0, 0, 0, 0.1)",
+          }}
+          tap={false}
+          ref={mapRef}
+        >
+          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          {locations.map((location, index) => {
+            const identifier = `${location.name}-${location.address}-${index}`;
+            return (
+              <AnimatedMarker
+                key={identifier}
+                position={[location.lat, location.lng]}
+                name={location.name}
+                address={location.address}
+                employees={location.employees}
+                isVisible={isMarkersVisible}
+                icon={customIcon}
+                onClick={() => toggleVisibility(location, index)}
+                popupVisible={visiblePopup === identifier}
+                radius={120}
+                color={assignedColors[location.name]}
+              />
             );
-          }
-          const circleColor = assignedColors[location.name];
-
-          return (
-            <AnimatedMarker
-              key={index}
-              position={[location.lat, location.lng]}
-              name={location.name}
-              address={location.address}
-              employees={location.employees}
-              isVisible={isMarkersVisible}
-              icon={customIcon}
-              onClick={() => toggleVisibility(location)}
-              popupVisible={visiblePopup === location.name}
-              radius={120}
-              color={circleColor}
-            />
-          );
-        })}
-      </MapContainer>
+          })}
+        </MapContainer>
+      </div>
     </div>
   );
 };

@@ -61,27 +61,28 @@ const AnimatedMarker: React.FC<AnimatedMarkerProps> = ({
             pathOptions={{
               color: color,
               fillColor: color,
-              fillOpacity: 0.7,
+              fillOpacity: 0.3,
             }}
             className="animate-expand"
           />
           {popupVisible && (
             <Popup position={position} autoPan={false} closeButton={false}>
-              <div
-                className="p-3 rounded-lg shadow-lg bg-white text-gray-800 w-72 max-w-full mx-auto text-center"
-                style={{
-                  minWidth: "250px",
-                  maxWidth: "320px",
-                }}
-              >
-                <h2 className="text-lg font-semibold truncate">{name}</h2>
-                <div className="flex items-center justify-center mt-1 space-x-2">
-                  <FaMapMarkerAlt className="text-blue-500 text-base" />
-                  <p className="text-sm truncate">{address}</p>
+              <div className="p-4 rounded-xl shadow-xl bg-white text-gray-800 w-70 max-w-full mx-auto">
+                <h2 className="text-xl font-bold text-gray-900 mb-1 leading-tight">
+                  {name}
+                </h2>
+                <div className="flex items-center mb-3">
+                  <FaMapMarkerAlt className="text-blue-500 text-lg mr-2" />
+                  <p className="text-base text-gray-700 break-words hyphens-auto">
+                    {address}
+                  </p>
                 </div>
-                <div className="flex items-center justify-center mt-1 space-x-2">
-                  <FaUsers className="text-green-500 text-base" />
-                  <p className="text-sm truncate">Посещения: {employees}</p>
+                <div className="flex items-center justify-start space-x-3">
+                  <FaUsers className="text-green-500 text-lg" />
+                  <p className="text-base font-medium text-gray-700">
+                    Посещения:{" "}
+                    <span className="font-semibold">{employees}</span>
+                  </p>
                 </div>
               </div>
             </Popup>
