@@ -471,180 +471,47 @@ class StaffAttendanceStatsView(APIView):
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def map_location(request):
     """
-    Получить данные локаций для отображения на карте.
+    Возвращает данные о локациях и количестве сотрудников и студентов на основе турникетов и занятий за указанную дату.
 
-    Параметры:
-        - date_at (str, опционально): Дата для фильтрации посещений в формате 'YYYY-MM-DD'.
-        Если не указана, используется текущая дата.
-        - employees (bool, опционально): Флаг для включения данных о сотрудниках. Если True, включаются данные
-        о сотрудниках в локациях. По умолчанию False.
+    Args:
+        request (HttpRequest): HTTP-запрос с параметром `date_at` для фильтрации данных и параметром `employees` для включения данных о сотрудниках.
 
-    Возвращает:
-        Response: JSON ответ с данными локаций для карты.
+    Returns:
+        JsonResponse: JSON-ответ с данными о локациях, если запрос успешен, либо сообщение об ошибке.
 
-    Исключения:
-        - Exception: Обрабатывается и возвращается ошибка с кодом 500.
+    Raises:
+        Exception: Для обработки любых непредвиденных исключений.
     """
     try:
         date_at_str = request.GET.get("date_at", None)
         employees_required = request.GET.get("employees", "false").lower() == "true"
 
-        if not date_at_str:
-            logger.warning("No date_at parameter provided, using current date.")
-            date_at = timezone.now().date()
-        else:
-            date_at = timezone.datetime.strptime(date_at_str, "%Y-%m-%d").date()
-            logger.info(f"Date parameter provided: {date_at}")
+        date_at = (
+            timezone.datetime.strptime(date_at_str, "%Y-%m-%d").date()
+            if date_at_str
+            else timezone.now().date()
+        )
+        logger.info(f"Using date: {date_at}")
 
-        locations = models.ClassLocation.objects.all()
-        logger.info(f"Total locations loaded: {len(locations)}")
+        locations = models.ClassLocation.objects.only(
+            "address", "name", "latitude", "longitude"
+        )
 
-        if date_at == timezone.now().date():
-            if employees_required:
-                result = generate_map_data(
-                    locations, date_at, search_staff_attendance=False, filter_empty=True
-                )
-                logger.info(f"Generated map data for today with only lesson attendance: {result}")
-                return Response(result, status=status.HTTP_200_OK)
-            else:
-                location_list = [
-                    {
-                        "name": location.name,
-                        "address": location.address,
-                        "lat": location.latitude,
-                        "lng": location.longitude,
-                    }
-                    for location in locations
-                ]
-                return Response(location_list, status=status.HTTP_200_OK)
-
-        if employees_required:
-            result = generate_map_data(
-                locations, date_at, search_staff_attendance=True, filter_empty=True
-            )
-            logger.info(f"Generated map data with employees: {result}")
-            return Response(result, status=status.HTTP_200_OK)
+        result = utils.generate_map_data(
+            locations,
+            date_at,
+            search_staff_attendance=employees_required,
+            filter_empty=not employees_required,
+        )
+        logger.info(f"Generated map data with employees: {result}")
+        return Response(result, status=status.HTTP_200_OK)
 
     except Exception as e:
-        logger.critical(f"Critical error in map_location: {str(e)}", exc_info=True)
+        logger.error(f"Critical error in map_location: {str(e)}", exc_info=True)
         return Response(
             {"error": "A critical error occurred. Please try again later."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-
-
-def generate_map_data(locations, date_at, search_staff_attendance=True, filter_empty=False):
-    """
-    Генерирует данные локаций для отображения на карте, включая посещения сотрудников и занятий.
-
-    Аргументы:
-        locations (QuerySet): Список объектов локаций (models.ClassLocation).
-        date_at (date): Дата, для которой собираются данные посещений.
-        search_staff_attendance (bool, по умолчанию True): Если True, включает посещения сотрудников.
-        filter_empty (bool, по умолчанию False): Если True, исключает локации с нулевым количеством посещений.
-
-    Возвращает:
-        list: Список словарей с данными локаций, готовых для отображения на карте, с полями:
-            - name (str): Название локации.
-            - address (str): Адрес локации.
-            - lat (float): Широта локации.
-            - lng (float): Долгота локации.
-            - employees (int): Количество сотрудников или посещений.
-
-    Исключения:
-        - models.StaffAttendance.DoesNotExist: Логируется и возвращается пустой список.
-
-    Примечания:
-        - Локации с нулевым количеством посещений исключаются, если filter_empty=True.
-        - Зоны локаций определены статически для сопоставления данных посещений с конкретными зданиями.
-    """
-    try:
-        zone_areas = {
-            "Главный Корпус": [
-                "Абылайхана турникет",
-                "вход в 8 этаж",
-                "военные 3 этаж",
-                "лифтовые с 1 по 7",
-                "выход ЦОС",
-            ],
-            "Второй Корпус": ["Торекулва турникет"],
-            "Третий Корпус": ["карасай батыра турникет"],
-        }
-
-        location_dict = {
-            loc.name: {
-                "name": loc.name,
-                "address": loc.address,
-                "lat": loc.latitude,
-                "lng": loc.longitude,
-                "employees": 0,
-            }
-            for loc in locations
-        }
-
-        if search_staff_attendance:
-            staff_date_at = date_at + datetime.timedelta(days=1)
-            attendance_data = (
-                models.StaffAttendance.objects.filter(date_at=staff_date_at, first_in__isnull=False)
-                .values("area_name_in")
-                .annotate(employees=Count("staff"))
-            )
-            logger.info(
-                f"Staff attendance data retrieved for date: {staff_date_at}, entries found: {len(attendance_data)}"
-            )
-
-            for record in attendance_data:
-                area_name = record["area_name_in"]
-                employees = record["employees"]
-                logger.debug(f"Processing area: {area_name}, employees: {employees}")
-
-                matched = False
-                for loc_name, areas in zone_areas.items():
-                    if area_name in areas and loc_name in location_dict:
-                        location_dict[loc_name]["employees"] += employees
-                        logger.info(
-                            f"Added {employees} employees to {loc_name}. Total now: {location_dict[loc_name]['employees']}"
-                        )
-                        matched = True
-                        break
-
-                if not matched:
-                    logger.warning(f"Area name '{area_name}' did not match any predefined zones.")
-
-        lesson_attendance_data = models.LessonAttendance.objects.filter(date_at=date_at)
-        for lesson in lesson_attendance_data:
-            for loc in locations:
-                if utils.is_within_radius(
-                    loc.latitude, loc.longitude, lesson.latitude, lesson.longitude
-                ):
-                    location_dict[loc.name]["employees"] += 1
-                    logger.info(
-                        f"Lesson at ({lesson.latitude}, {lesson.longitude}) counted for {loc.name}. "
-                        f"Total employees now: {location_dict[loc.name]['employees']}"
-                    )
-                    break
-
-        result_list = [
-            location
-            for location in location_dict.values()
-            if not filter_empty or location["employees"] > 0
-        ]
-
-        main_building = next(
-            (item for item in result_list if item["name"] == "Главный Корпус (Абылайхана)"),
-            None,
-        )
-
-        if main_building:
-            result_list.remove(main_building)
-            result_list.insert(0, main_building)
-
-        logger.info(f"Final generated map data: {result_list}")
-        return result_list
-
-    except models.StaffAttendance.DoesNotExist:
-        logger.error(f"No attendance records found for date: {date_at}")
-        return []
 
 
 @swagger_auto_schema(
@@ -1841,7 +1708,9 @@ def check_lesson_task_status(request, task_id):
                         type=openapi.TYPE_STRING,
                         description="Сообщение об успешном запуске задачи",
                     ),
-                    "task_id": openapi.Schema(type=openapi.TYPE_STRING, description="ID задачи"),
+                    "task_id": openapi.Schema(
+                        type=openapi.TYPE_STRING, description="ID задачи"
+                    ),
                 },
             ),
         ),
@@ -1898,25 +1767,33 @@ def create_lesson_attendance(request):
     Raises:
         Exception: Любые исключения логируются, и сервер возвращает ответ с кодом 500.
     """
+    ip_address = request.META.get("REMOTE_ADDR", "Неизвестный IP")
+    domain = request.get_host()
 
-    logger.info(f"Получен запрос: {request.method} {request.path} {request}")
+    logger.info(
+        f"Запрос получен от IP: {ip_address}, домен: {domain} Получен запрос: {request.method} {request.path} {request}"
+    )
     logger.info(f"Заголовки запроса: {request.headers}")
 
     if request.body:
         try:
             if request.content_type == "application/json":
-                logger.info(f"Тело запроса: {str(request.body.decode('utf-8'))}")
+                logger.info("Тело запроса: содержит JSON данные")
             else:
                 logger.info("Тело запроса содержит бинарные данные")
         except Exception as e:
-            logger.error(f"Ошибка при декодировании тела запроса: {str(e)}")
+            logger.error(
+                f"Ошибка при декодировании тела запроса: {str(e)}, IP: {ip_address}, домен: {domain}"
+            )
 
     try:
         attendance_data_raw = request.data.get("attendance_data")
         image_base64 = request.data.get("image")
 
         if not attendance_data_raw:
-            logger.error("Отсутствуют данные о посещаемости")
+            logger.error(
+                f"Отсутствуют данные о посещаемости, IP: {ip_address}, домен: {domain}"
+            )
             return Response(
                 {"error": "Attendance data is missing"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1944,9 +1821,11 @@ def create_lesson_attendance(request):
                 "longitude",
             ]
             if not all(record.get(field) for field in required_fields):
-                logger.error(f"Отсутствуют обязательные поля в записи: {record}")
+                logger.error(
+                    f"Отсутствуют обязательные поля в записи: {record} IP: {ip_address}, домен: {domain}"
+                )
                 return Response(
-                    {"error": f"Missing required fields in record: {record}"},
+                    {"error": "Missing required fields in record"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -1954,10 +1833,10 @@ def create_lesson_attendance(request):
         image_name = None
 
         if image_base64:
-            logger.warning("Получено изображение в формате Base64")
+            logger.info("Получено изображение в формате Base64")
             try:
                 image_content = base64.b64decode(image_base64)
-                logger.warning("Изображение успешно декодировано в байты")
+                logger.info("Изображение успешно декодировано в байты")
             except Exception as e:
                 logger.error("Ошибка декодирования Base64 изображения: %s", e)
                 return Response(
@@ -1970,7 +1849,7 @@ def create_lesson_attendance(request):
             logger.info("Изображение прочитано как бинарные данные")
 
         if not image_content:
-            logger.error("Изображение отсутствует")
+            logger.error(f"Изображение отсутствует, IP: {ip_address}, домен: {domain}")
             return Response(
                 {"error": "Image is missing"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1979,7 +1858,9 @@ def create_lesson_attendance(request):
         task = tasks.process_lesson_attendance_batch.apply_async(
             args=[attendance_data, image_name, image_content]
         )
-        logger.info(f"Задача успешно принята: ID задачи {task.id}")
+        logger.info(
+            f"Задача успешно принята: ID задачи {task.id}, IP: {ip_address}, домен: {domain}"
+        )
 
         return Response(
             {"message": "Task accepted", "task_id": task.id},
@@ -1987,8 +1868,13 @@ def create_lesson_attendance(request):
         )
 
     except Exception as e:
-        logger.error("Ошибка при запуске задачи: %s", str(e))
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.error(
+            f"Ошибка при запуске задачи: {str(e)}, IP: {ip_address}, домен: {domain}"
+        )
+        return Response(
+            {"error": "Error with creating job"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 @swagger_auto_schema(
@@ -2308,7 +2194,9 @@ def staff_detail_by_department_id(request, department_id):
     - 404: Подразделение не найдено или данные о посещаемости не найдены.
     - 500: Внутренняя ошибка сервера.
     """
-    logger.info(f"Request received for staff attendance by department ID {department_id}")
+    logger.info(
+        f"Request received for staff attendance by department ID {department_id}"
+    )
 
     try:
         end_date_str = request.query_params.get("end_date")
@@ -2352,7 +2240,9 @@ def staff_detail_by_department_id(request, department_id):
         department_ids = [department_id] + get_all_child_department_ids(department_id)
         logger.debug(f"Department IDs for attendance query: {department_ids}")
 
-        cache_key = f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
+        cache_key = (
+            f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
+        )
         logger.debug(f"Generated cache key: {cache_key}")
 
         def query():
@@ -2379,7 +2269,9 @@ def staff_detail_by_department_id(request, department_id):
             date_attendance_map = defaultdict(lambda: defaultdict(dict))
 
             for record in staff_attendance:
-                date_key = (record.date_at - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+                date_key = (record.date_at - datetime.timedelta(days=1)).strftime(
+                    "%Y-%m-%d"
+                )
                 staff_fio = f"{record.staff.surname} {record.staff.name}"
                 department = (
                     record.staff.department.name
@@ -2388,7 +2280,9 @@ def staff_detail_by_department_id(request, department_id):
                 )
 
                 if staff_fio in date_attendance_map[date_key][department]:
-                    existing_record = date_attendance_map[date_key][department][staff_fio]
+                    existing_record = date_attendance_map[date_key][department][
+                        staff_fio
+                    ]
                     existing_record["first_in"] = (
                         min(
                             existing_record["first_in"],
@@ -2430,7 +2324,9 @@ def staff_detail_by_department_id(request, department_id):
                 )
 
                 if staff_fio in date_attendance_map[date_key][department]:
-                    existing_record = date_attendance_map[date_key][department][staff_fio]
+                    existing_record = date_attendance_map[date_key][department][
+                        staff_fio
+                    ]
                     existing_record["first_in"] = (
                         min(
                             existing_record["first_in"],
@@ -2466,7 +2362,9 @@ def staff_detail_by_department_id(request, department_id):
             for date, departments in date_attendance_map.items():
                 for dept, staff_data in departments.items():
                     attendance = list(staff_data.values())
-                    results.append({date: {"department": dept, "attendance": attendance}})
+                    results.append(
+                        {date: {"department": dept, "attendance": attendance}}
+                    )
 
             paginator = StaffAttendancePagination()
             result_page = paginator.paginate_queryset(results, request)
@@ -3315,7 +3213,10 @@ class UploadFileView(View):
                 else:
                     to_create.append(
                         models.ClassLocation(
-                            name=name, address=address, latitude=latitude, longitude=longitude
+                            name=name,
+                            address=address,
+                            latitude=latitude,
+                            longitude=longitude,
                         )
                     )
             except Exception as e:
@@ -3327,7 +3228,9 @@ class UploadFileView(View):
             logger.info(f"Создано новых записей: {len(to_create)}")
 
         if to_update:
-            models.ClassLocation.objects.bulk_update(to_update, ["latitude", "longitude"])
+            models.ClassLocation.objects.bulk_update(
+                to_update, ["latitude", "longitude"]
+            )
             logger.info(f"Обновлено существующих записей: {len(to_update)}")
 
         messages.success(
@@ -3815,7 +3718,9 @@ def verify_face(request):
         logger.info(f"Сотрудник найден: {staff_pin}")
     except models.Staff.DoesNotExist:
         logger.error(f"Сотрудник с PIN {staff_pin} не найден")
-        return Response({"error": "Сотрудник не найден"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"error": "Сотрудник не найден"}, status=status.HTTP_404_NOT_FOUND
+        )
 
     if not hasattr(staff, "face_mask"):
         logger.error(f"Маска для сотрудника {staff_pin} не найдена")
@@ -3826,7 +3731,9 @@ def verify_face(request):
 
     try:
         verified, distance = utils.compare_face_with_nn(staff, staff_image)
-        return Response({"verified": verified, "distance": distance}, status=status.HTTP_200_OK)
+        return Response(
+            {"verified": verified, "distance": distance}, status=status.HTTP_200_OK
+        )
 
     except Exception as e:
         logger.error(f"Ошибка при сравнении лиц для PIN {staff_pin}: {str(e)}")
@@ -3848,7 +3755,9 @@ def recognize_faces(request):
         recognized_staff, unknown_faces = utils.recognize_faces_in_image(staff_image)
 
         if not recognized_staff and not unknown_faces:
-            return Response({"error": "Сотрудники не найдены"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Сотрудники не найдены"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         return Response(
             {"recognized_staff": recognized_staff, "unknown_faces": unknown_faces},

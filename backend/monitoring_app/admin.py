@@ -370,7 +370,11 @@ class StaffAdmin(admin.ModelAdmin):
     avatar_thumbnail.short_description = "Фото"
 
     def needs_training_status(self, obj):
-        return "Нуждается в тренировке" if obj.needs_training else "Тренировка не требуется"
+        return (
+            "Нуждается в тренировке"
+            if obj.needs_training
+            else "Тренировка не требуется"
+        )
 
     needs_training_status.short_description = "Статус тренировки ML"
 
@@ -451,9 +455,7 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
                 )
 
                 if os.path.exists(file_path):
-                    images_html += (
-                        f'<img src="{file_url}" width="80" height="80" style="margin: 5px;" />'
-                    )
+                    images_html += f'<img src="{file_url}" width="80" height="80" style="margin: 5px;" />'
             return format_html(images_html)
 
         return "No Augmented Images"
@@ -653,7 +655,10 @@ class LessonAttendanceAdmin(ModelAdmin):
     search_fields = ("staff__name", "subject_name", "tutor")
 
     def has_photo(self, obj):
-        if obj.staff_image_path and obj.staff_image_path != "/static/media/images/no-avatar.png":
+        if (
+            obj.staff_image_path
+            and obj.staff_image_path != "/static/media/images/no-avatar.png"
+        ):
             return True
         return False
 
