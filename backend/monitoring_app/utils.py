@@ -1,7 +1,7 @@
 import os
 import re
-import math
 import json
+import math
 import logging
 import datetime
 from functools import wraps
@@ -22,7 +22,6 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
-from monitoring_app import models
 from django.core.cache import cache
 from django.http import HttpRequest
 from cryptography.fernet import Fernet
@@ -38,6 +37,8 @@ from django.utils.translation import gettext_lazy as _
 from openpyxl.utils.dataframe import dataframe_to_rows
 from sklearn.metrics.pairwise import cosine_similarity
 from openpyxl.styles import Alignment, Font, PatternFill
+
+from monitoring_app import models
 
 DAYS = settings.DAYS
 
@@ -67,18 +68,35 @@ class FaceRecognitionResNet(nn.Module):
 def create_embeddings_from_images(image_paths):
     embeddings = []
     for image_path in image_paths:
-        if os.path.exists(image_path):
-            image = cv2.imread(image_path)
-            if image is None:
-                logger.error(f"Failed to load image: {image_path}")
-                continue
-            image = preprocess_image(image)
-            embedding = create_face_encoding(image)
-            embeddings.append(embedding)
+        if not os.path.exists(image_path):
+            logger.warning(f"Image file does not exist: {image_path}")
+            continue
+
+        image = cv2.imread(image_path)
+        if image is None:
+            logger.warning(f"Failed to load image (possibly corrupted): {image_path}")
+            continue
+
+        image = preprocess_image(image)
+        embedding = create_face_encoding(image)
+        embeddings.append(embedding)
+
     return embeddings
 
 
 def preprocess_image(image):
+    """
+    Масштабирует изображение, если оно меньше 640x640, и проверяет тип данных.
+
+    Args:
+        image (numpy.ndarray): Изображение в формате numpy.
+
+    Returns:
+        numpy.ndarray: Масштабированное изображение.
+    """
+    if not isinstance(image, np.ndarray):
+        raise ValueError("Expected image as numpy array, got different format.")
+
     height, width = image.shape[:2]
     if height < 640 or width < 640:
         scale_factor = max(640 / height, 640 / width)
@@ -280,20 +298,32 @@ def create_face_encoding(image_or_path):
     try:
         load_arcface_model()
         if isinstance(image_or_path, str):
+            if not os.path.exists(image_or_path):
+                logger.warning(f"Image file not found: {image_or_path}")
+                return None
+
             image = cv2.imread(image_or_path)
             if image is None:
-                raise ValueError(f"Failed to load image: {image_or_path}")
+                logger.warning(f"Failed to load image: {image_or_path}")
+                return None
+
             image = preprocess_image(image)
         else:
+            if not isinstance(image_or_path, np.ndarray):
+                logger.warning("Invalid image format, expected numpy array.")
+                return None
             image = image_or_path
 
         faces = arcface_model.get(image)
         if not faces:
-            raise ValueError("Лицо не найдено на изображении")
+            logger.warning(f"No face detected in image {str(image_or_path)}")
+            return None
+
         return faces[0].embedding.tolist()
+
     except Exception as e:
         logger.error(f"Ошибка при создании encoding: {e}")
-        raise ValueError(f"Ошибка создания encoding: {str(e)}")
+        return None
 
 
 def generate_negative_samples(staff, neighbors_count=6):

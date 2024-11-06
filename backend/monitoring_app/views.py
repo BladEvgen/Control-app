@@ -2411,8 +2411,6 @@ def staff_detail_by_department_id(request, department_id):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             data={"error": str(e)},
         )
-
-
 @swagger_auto_schema(
     method="post",
     operation_summary="Зарегистрировать нового пользователя (доступно только для администратора)",
