@@ -1,11 +1,12 @@
 absl-py==2.1.0
 albucore==0.0.19
-albumentations==1.4.19
+albumentations==1.4.20
 amqp==5.2.0
 annotated-types==0.7.0
 anyio==4.6.0
 asgiref==3.8.1
 astunparse==1.6.3
+bcrypt==4.2.0
 beautifulsoup4==4.12.3
 billiard==4.2.1
 black==24.4.2
@@ -39,7 +40,7 @@ easydict==1.13
 et-xmlfile==1.1.0
 eval_type_backport==0.2.0
 eventlet==0.37.0
-face-recognition-models==0.3.0
+face_recognition_models==0.3.0
 filelock==3.16.1
 fire==0.7.0
 flake8==7.0.0
@@ -111,6 +112,7 @@ opt_einsum==3.4.0
 optree==0.13.0
 packaging==24.0
 pandas==2.2.2
+paramiko==3.4.1
 pathspec==0.12.1
 pillow==10.3.0
 platformdirs==4.2.2
@@ -124,6 +126,7 @@ pydantic_core==2.23.4
 pyflakes==3.2.0
 Pygments==2.18.0
 PyJWT==2.8.0
+PyNaCl==1.5.0
 pyparsing==3.2.0
 PySocks==1.7.1
 python-dateutil==2.9.0.post0
