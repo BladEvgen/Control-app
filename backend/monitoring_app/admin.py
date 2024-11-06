@@ -1,5 +1,6 @@
 import os
 
+from django.db.models import Q
 from django.conf import settings
 from django.contrib import admin
 from django.utils import timezone
@@ -7,7 +8,6 @@ from django.utils.html import format_html
 from django_admin_geomap import ModelAdmin
 from django.contrib.admin import SimpleListFilter
 from django.core.exceptions import ValidationError
-from django.utils.translation import gettext_lazy as _
 
 from monitoring_app import utils
 from monitoring_app.models import (
@@ -19,9 +19,9 @@ from monitoring_app.models import (
     UserProfile,
     AbsentReason,
     FileCategory,
+    ClassLocation,
     PublicHoliday,
     StaffFaceMask,
-    ClassLocation,
     ChildDepartment,
     StaffAttendance,
     LessonAttendance,
@@ -573,8 +573,6 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
 
 # === Посещаемость занятий ===
-
-
 class LessonAttendanceAdmin(ModelAdmin):
     geomap_field_longitude = "id_longitude"
     geomap_field_latitude = "id_latitude"
@@ -596,6 +594,7 @@ class LessonAttendanceAdmin(ModelAdmin):
         "date_at",
         "photo_preview",
     )
+    date_hierarchy = "date_at"
 
     fieldsets = (
         (
@@ -633,12 +632,30 @@ class LessonAttendanceAdmin(ModelAdmin):
         "formatted_last_out",
         "date_at",
         "has_photo",
+        "closest_location",
     )
+
+    list_filter = (
+        "date_at",
+        "staff",
+        "subject_name",
+        ("first_in", admin.DateFieldListFilter),
+        ("last_out", admin.DateFieldListFilter),
+    )
+
+    search_fields = (
+        "staff__name",
+        "subject_name",
+        "tutor",
+        "tutor_id",
+    )
+
+    ordering = ("-date_at", "-first_in")
 
     def formatted_first_in(self, obj):
         if obj.first_in:
             local_time = timezone.localtime(obj.first_in)
-            return local_time.strftime("%H:%M:%S")
+            return local_time.strftime("%H:%M:%S %d.%m.%Y")
         return "-"
 
     formatted_first_in.short_description = "Время начала (локальное)"
@@ -646,24 +663,47 @@ class LessonAttendanceAdmin(ModelAdmin):
     def formatted_last_out(self, obj):
         if obj.last_out:
             local_time = timezone.localtime(obj.last_out)
-            return local_time.strftime("%H:%M:%S")
-        return "-"
+            return local_time.strftime("%H:%M:%S %d.%m.%Y")
+        return "Продолжается"
 
     formatted_last_out.short_description = "Время окончания (локальное)"
 
-    list_filter = ("date_at", "staff", "subject_name")
-    search_fields = ("staff__name", "subject_name", "tutor")
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        photo_expired = request.GET.get("photo_expired")
+        if photo_expired == "yes":
+            thirty_days_ago = timezone.now().date() - timezone.timedelta(days=31)
+            qs = qs.filter(date_at__lt=thirty_days_ago)
+        elif photo_expired == "no":
+            thirty_days_ago = timezone.now().date() - timezone.timedelta(days=31)
+            qs = qs.filter(date_at__gte=thirty_days_ago)
+        return qs
 
     def has_photo(self, obj):
-        if (
+        return (
             obj.staff_image_path
             and obj.staff_image_path != "/static/media/images/no-avatar.png"
-        ):
-            return True
-        return False
+        )
 
-    has_photo.short_description = _("Фотография")
     has_photo.boolean = True
+    has_photo.short_description = "Фотография"
+
+    def closest_location(self, obj):
+        locations = ClassLocation.objects.all()
+        for location in locations:
+            if utils.is_within_radius(
+                location.latitude,
+                location.longitude,
+                obj.latitude,
+                obj.longitude,
+                radius=200,
+            ):
+                return format_html(
+                    "{}<br><small>{}</small>", location.name, location.address
+                )
+        return "N/A"
+
+    closest_location.short_description = "Ближайшая локация"
 
     def photo_preview(self, obj):
         if obj.staff_image_path:
