@@ -1766,27 +1766,33 @@ def create_lesson_attendance(request):
     Raises:
         Exception: Любые исключения логируются, и сервер возвращает ответ с кодом 500.
     """
+    ip_address = request.META.get("REMOTE_ADDR", "Неизвестный IP")
+    domain = request.get_host()
 
-    logger.info(f"Получен запрос: {request.method} {request.path} {request}")
+    logger.info(
+        f"Запрос получен от IP: {ip_address}, домен: {domain} Получен запрос: {request.method} {request.path} {request}"
+    )
     logger.info(f"Заголовки запроса: {request.headers}")
 
     if request.body:
         try:
             if request.content_type == "application/json":
-                # logger.info(f"Тело запроса: {str(request.body.decode('utf-8'))}")
-                logger.info("Тело запроса: содержит b64")
-
+                logger.info("Тело запроса: содержит JSON данные")
             else:
                 logger.info("Тело запроса содержит бинарные данные")
         except Exception as e:
-            logger.error(f"Ошибка при декодировании тела запроса: {str(e)}")
+            logger.error(
+                f"Ошибка при декодировании тела запроса: {str(e)}, IP: {ip_address}, домен: {domain}"
+            )
 
     try:
         attendance_data_raw = request.data.get("attendance_data")
         image_base64 = request.data.get("image")
 
         if not attendance_data_raw:
-            logger.error("Отсутствуют данные о посещаемости")
+            logger.error(
+                f"Отсутствуют данные о посещаемости, IP: {ip_address}, домен: {domain}"
+            )
             return Response(
                 {"error": "Attendance data is missing"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1814,9 +1820,11 @@ def create_lesson_attendance(request):
                 "longitude",
             ]
             if not all(record.get(field) for field in required_fields):
-                logger.error(f"Отсутствуют обязательные поля в записи: {record}")
+                logger.error(
+                    f"Отсутствуют обязательные поля в записи: {record} IP: {ip_address}, домен: {domain}"
+                )
                 return Response(
-                    {"error": f"Missing required fields in record: {record}"},
+                    {"error": "Missing required fields in record"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -1824,10 +1832,10 @@ def create_lesson_attendance(request):
         image_name = None
 
         if image_base64:
-            logger.warning("Получено изображение в формате Base64")
+            logger.info("Получено изображение в формате Base64")
             try:
                 image_content = base64.b64decode(image_base64)
-                logger.warning("Изображение успешно декодировано в байты")
+                logger.info("Изображение успешно декодировано в байты")
             except Exception as e:
                 logger.error("Ошибка декодирования Base64 изображения: %s", e)
                 return Response(
@@ -1840,7 +1848,7 @@ def create_lesson_attendance(request):
             logger.info("Изображение прочитано как бинарные данные")
 
         if not image_content:
-            logger.error("Изображение отсутствует")
+            logger.error(f"Изображение отсутствует, IP: {ip_address}, домен: {domain}")
             return Response(
                 {"error": "Image is missing"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1849,7 +1857,9 @@ def create_lesson_attendance(request):
         task = tasks.process_lesson_attendance_batch.apply_async(
             args=[attendance_data, image_name, image_content]
         )
-        logger.info(f"Задача успешно принята: ID задачи {task.id}")
+        logger.info(
+            f"Задача успешно принята: ID задачи {task.id}, IP: {ip_address}, домен: {domain}"
+        )
 
         return Response(
             {"message": "Task accepted", "task_id": task.id},
@@ -1857,8 +1867,13 @@ def create_lesson_attendance(request):
         )
 
     except Exception as e:
-        logger.error("Ошибка при запуске задачи: %s", str(e))
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.error(
+            f"Ошибка при запуске задачи: {str(e)}, IP: {ip_address}, домен: {domain}"
+        )
+        return Response(
+            {"error": "Error with creating job"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 @swagger_auto_schema(
