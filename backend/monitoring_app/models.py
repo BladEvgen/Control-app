@@ -606,7 +606,9 @@ class LessonAttendance(models.Model, GeoItem):
 
 
 class ClassLocation(models.Model, GeoItem):
-    name = models.CharField(max_length=255, verbose_name="Название учебного места", editable=True)
+    name = models.CharField(
+        max_length=255, verbose_name="Название учебного места", editable=True
+    )
     address = models.CharField(max_length=255, verbose_name="Адрес", editable=True)
     latitude = models.FloatField(
         verbose_name="Широта",
@@ -621,7 +623,9 @@ class ClassLocation(models.Model, GeoItem):
     created_at = models.DateTimeField(
         auto_now_add=True, verbose_name="Дата создания", editable=False
     )
-    updated_at = models.DateTimeField(auto_now=True, verbose_name="Дата обновления", editable=False)
+    updated_at = models.DateTimeField(
+        auto_now=True, verbose_name="Дата обновления", editable=False
+    )
 
     class Meta:
         verbose_name = "Локация для занятий"
