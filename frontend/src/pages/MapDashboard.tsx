@@ -38,14 +38,11 @@ const generateDistinctColors = (numColors: number, theme: string): string[] => {
   const colors = [];
   for (let i = 0; i < numColors; i++) {
     let hue = (i * 137) % 360;
-
     if (theme === "light" && hue >= 45 && hue <= 75) {
       hue = (hue + 90) % 360;
     }
-
     const saturation = theme === "dark" ? "40%" : "70%";
     const lightness = theme === "dark" ? "50%" : "50%";
-
     colors.push(`hsl(${hue}, ${saturation}, ${lightness})`);
   }
   return colors;
@@ -63,15 +60,18 @@ const MapPage: React.FC = () => {
   const [assignedColors, setAssignedColors] = useState<{
     [key: string]: string;
   }>({});
+  const [dateAt, setDateAt] = useState<string>(getFormattedDateAt());
+  const [responseDate, setResponseDate] = useState<string>(dateAt);
 
-  const fetchLocations = async () => {
+  const fetchLocations = async (selectedDate: string) => {
     setLoading(true);
-    const dateAt = getFormattedDateAt();
-    console.log(`Запрос API с параметрами: employees=true, date_at=${dateAt}`);
+    console.log(
+      `Запрос API с параметрами: employees=true, date_at=${selectedDate}`
+    );
 
     try {
       const response = await axiosInstance.get(
-        `${apiUrl}/api/locations?employees=true&date_at=${dateAt}`
+        `${apiUrl}/api/locations?employees=true&date_at=${selectedDate}`
       );
       console.log("Ответ API:", response.data);
 
@@ -89,8 +89,7 @@ const MapPage: React.FC = () => {
         location: loc,
         neighbors: [],
       }));
-
-      const distanceThreshold = 0.4; // 0.4 км
+      const distanceThreshold = 0.4;
 
       for (let i = 0; i < fetchedLocations.length; i++) {
         for (let j = i + 1; j < fetchedLocations.length; j++) {
@@ -109,7 +108,6 @@ const MapPage: React.FC = () => {
 
       const numColors = Math.max(fetchedLocations.length, 20);
       const colors = generateDistinctColors(numColors, theme);
-
       const tempAssignedColors: { [key: string]: string } = {};
       for (let i = 0; i < locationNodes.length; i++) {
         const node = locationNodes[i];
@@ -138,7 +136,6 @@ const MapPage: React.FC = () => {
       }
 
       setAssignedColors(tempAssignedColors);
-
       setVisiblePopup(
         `${fetchedLocations[0].name}-${fetchedLocations[0].address}-0`
       );
@@ -153,8 +150,21 @@ const MapPage: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchLocations();
-  }, [theme]);
+    fetchLocations(dateAt);
+  }, [theme, dateAt]);
+
+  const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedDate = event.target.value;
+    const today = new Date().toISOString().split("T")[0];
+
+    if (selectedDate > today) {
+      setDateAt(today);
+      fetchLocations(today);
+    } else {
+      setDateAt(selectedDate);
+      fetchLocations(selectedDate);
+    }
+  };
 
   const toggleVisibility = (location: LocationData, index: number) => {
     const identifier = `${location.name}-${location.address}-${index}`;
@@ -196,6 +206,16 @@ const MapPage: React.FC = () => {
 
   return (
     <div className={`relative h-screen w-screen`}>
+      <div className="flex flex-col items-center justify-center mb-4">
+        <div className="text-white text-center">Дата данных:</div>
+        <input
+          type="date"
+          value={dateAt}
+          onChange={handleDateChange}
+          className="mt-2 p-2 border rounded shadow-lg text-gray-700"
+        />
+      </div>
+
       <button
         onClick={handleFullscreenToggle}
         className="absolute top-4 right-4 z-10 bg-white text-gray-700 p-2 rounded-full shadow-lg hover:bg-gray-100 transition-all duration-200"
