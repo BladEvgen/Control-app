@@ -1,13 +1,16 @@
 import os
+from collections import defaultdict
 
-from django.db.models import Q
 from django.conf import settings
 from django.contrib import admin
 from django.utils import timezone
+from django.core.cache import cache
 from django.utils.html import format_html
 from django_admin_geomap import ModelAdmin
+from django.db.models import F, Func, Q, Value
 from django.contrib.admin import SimpleListFilter
 from django.core.exceptions import ValidationError
+from django.db.models.functions import Power, Sqrt
 
 from monitoring_app import utils
 from monitoring_app.models import (
@@ -61,37 +64,50 @@ class DepartmentHierarchyFilter(SimpleListFilter):
     parameter_name = "department_hierarchy"
 
     def lookups(self, request, model_admin):
-        departments = ChildDepartment.objects.filter(parent__isnull=True)
-        lookup_list = []
-        for dept in departments:
-            lookup_list.extend(self.get_department_choices(dept))
+        departments = ChildDepartment.objects.all().select_related("parent")
+        hierarchy = self.build_hierarchy(departments)
+        lookup_list = self.get_department_choices(hierarchy)
         return lookup_list
 
     def queryset(self, request, queryset):
         if self.value():
-            selected_department = ChildDepartment.objects.get(id=self.value())
-            department_ids = self.get_all_descendants(selected_department)
+            department_ids = self.get_all_descendants(self.value())
             return queryset.filter(department__in=department_ids)
         return queryset
 
-    def get_all_descendants(self, department):
-        descendants = [department.id]
-        children = ChildDepartment.objects.filter(parent=department)
-        for child in children:
-            descendants.extend(self.get_all_descendants(child))
+    def build_hierarchy(self, departments):
+        hierarchy = defaultdict(list)
+        for dept in departments:
+            hierarchy[dept.parent_id].append(dept)
+        return hierarchy
+
+    def get_all_descendants(self, department_id):
+        queue = [department_id]
+        descendants = set(queue)
+        while queue:
+            current = queue.pop(0)
+            children = ChildDepartment.objects.filter(parent_id=current).values_list("id", flat=True)
+            queue.extend(children)
+            descendants.update(children)
         return descendants
 
-    def get_department_choices(self, department, level=0):
-        indent = "—" * level
-        choices = [(department.id, f"{indent} {department.name}")]
-        children = ChildDepartment.objects.filter(parent=department)
-        for child in children:
-            choices.extend(self.get_department_choices(child, level + 1))
+    def get_department_choices(self, hierarchy, parent_id=None, level=0):
+        choices = []
+        if parent_id is None:
+            root_departments = hierarchy[None]
+        else:
+            root_departments = hierarchy.get(parent_id, [])
+
+        for dept in root_departments:
+            indent = "—" * level
+            choices.append((dept.id, f"{indent} {dept.name}"))
+            choices.extend(self.get_department_choices(hierarchy, dept.id, level + 1))
+
         return choices
 
 
-# === Модели авторизации ===
 
+# === Модели авторизации ===
 
 @admin.register(PasswordResetToken)
 class PasswordResetTokenAdmin(admin.ModelAdmin):
@@ -202,6 +218,11 @@ class UserProfileAdmin(admin.ModelAdmin):
             },
         ),
     )
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        qs = qs.select_related('user')
+        return qs
+
 
 
 # === Категории файлов ===
@@ -345,27 +366,34 @@ class StaffAdmin(admin.ModelAdmin):
     full_name.short_description = "Полное имя"
 
     def avatar_thumbnail(self, obj):
+        cache_key = f"avatar_thumbnail_{obj.pin}"
+        cached_html = cache.get(cache_key)
+
+        if cached_html:
+            return format_html(cached_html)
+
         if obj.avatar:
-            return format_html(
+            html = format_html(
                 """
                 <div style="display: flex; justify-content: center; align-items: center; height: 80px; width: 80px; overflow: hidden; border-radius: 50%;">
-                    <img src="{}" style="
-                        height: 100%;
-                        width: 100%;
-                        object-fit: cover;
-                        display: block;
-                    "/>
+                    <img src="{}" style="height: 100%; width: 100%; object-fit: cover; display: block;"/>
                 </div>
                 """,
                 obj.avatar.url,
             )
-        return format_html(
+            cache.set(cache_key, html, timeout=86400)  
+            return html
+
+        no_photo_html = format_html(
             """
             <div style="display: flex; justify-content: center; align-items: center; height: 80px; width: 80px; border-radius: 50%; background-color: #f0f0f0;">
                 <span style="color: #999; font-style: italic; text-align: center;">Нет фото</span>
             </div>
             """
         )
+        cache.set(cache_key, no_photo_html, timeout=86400)
+        return no_photo_html
+
 
     avatar_thumbnail.short_description = "Фото"
 
@@ -380,6 +408,11 @@ class StaffAdmin(admin.ModelAdmin):
 
     def display_positions(self, obj):
         return ", ".join(position.name for position in obj.positions.all())
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        qs = qs.select_related('department').prefetch_related('positions')
+        return qs
 
     display_positions.short_description = "Должности"
 
@@ -442,23 +475,31 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
     staff_avatar.short_description = "Аватар сотрудника"
 
     def augmented_images(self, obj):
-        augmented_dir = str(settings.AUGMENT_ROOT).format(staff_pin=obj.staff.pin)
+        cache_key = f"augmented_images_{obj.staff.pin}"
+        images_html = cache.get(cache_key)
+        
+        if images_html is None:
+            augmented_dir = str(settings.AUGMENT_ROOT).format(staff_pin=obj.staff.pin)
+            if not os.path.exists(augmented_dir):
+                return "No Augmented Images"
 
-        if os.path.exists(augmented_dir):
+            pattern = f"{obj.staff.pin}_augmented_"
             images_html = ""
-            for i in range(11):
-                filename = f"{obj.staff.pin}_augmented_{i}.jpg"
-                file_path = os.path.join(augmented_dir, filename)
+            with os.scandir(augmented_dir) as it:
+                for entry in it:
+                    if entry.is_file() and entry.name.startswith(pattern) and entry.name.endswith('.jpg'):
+                        images_html += (
+                            f'<img src="{os.path.join(settings.AUGMENT_URL, obj.staff.pin, entry.name)}" '
+                            f'width="80" height="80" style="margin: 5px;" />'
+                        )
 
-                file_url = os.path.join(
-                    settings.AUGMENT_URL, obj.staff.pin, "augmented_images", filename
-                )
+            if not images_html:
+                return "No Augmented Images"
 
-                if os.path.exists(file_path):
-                    images_html += f'<img src="{file_url}" width="80" height="80" style="margin: 5px;" />'
-            return format_html(images_html)
+            cache.set(cache_key, images_html, timeout=3600)  
+        
+        return format_html(images_html)
 
-        return "No Augmented Images"
 
     augmented_images.short_description = "Аугментированные фото"
 
@@ -550,26 +591,27 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        return (
-            qs.exclude(area_name_in__isnull=True)
-            .exclude(area_name_out__isnull=True)
-            .exclude(area_name_in="Unknown")
-            .exclude(area_name_out="Unknown")
+        qs = qs.select_related('staff__department').only(
+            'staff__department__name', 'staff__pin', 'staff__surname',
+            'staff__name', 'date_at', 'first_in', 'last_out', 
+            'absence_reason', 'area_name_in', 'area_name_out'
+        )
+
+        return qs.exclude(
+            Q(area_name_in__isnull=True) | Q(area_name_out__isnull=True) |
+            Q(area_name_in="Unknown") | Q(area_name_out="Unknown")
         )
 
     def area_name_in(self, obj):
-        return (
-            obj.area_name_in
-            if obj.area_name_in and obj.area_name_in != "Unknown"
-            else "N/A"
-        )
+        return obj.area_name_in if obj.area_name_in and obj.area_name_in != "Unknown" else "N/A"
 
     def area_name_out(self, obj):
-        return (
-            obj.area_name_out
-            if obj.area_name_out and obj.area_name_out != "Unknown"
-            else "N/A"
-        )
+        return obj.area_name_out if obj.area_name_out and obj.area_name_out != "Unknown" else "N/A"
+
+    def changelist_view(self, request, extra_context=None):
+        response = super().changelist_view(request, extra_context=extra_context)
+        response['Cache-Control'] = 'max-age=60, public'
+        return response
 
 
 # === Посещаемость занятий ===
@@ -670,6 +712,7 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
+        qs = qs.select_related('staff')
         photo_expired = request.GET.get("photo_expired")
         if photo_expired == "yes":
             thirty_days_ago = timezone.now().date() - timezone.timedelta(days=31)
@@ -689,19 +732,42 @@ class LessonAttendanceAdmin(ModelAdmin):
     has_photo.short_description = "Фотография"
 
     def closest_location(self, obj):
-        locations = ClassLocation.objects.all()
-        for location in locations:
-            if utils.is_within_radius(
-                location.latitude,
-                location.longitude,
-                obj.latitude,
-                obj.longitude,
-                radius=200,
-            ):
-                return format_html(
-                    "{}<br><small>{}</small>", location.name, location.address
-                )
-        return "N/A"
+        if obj.latitude is None or obj.longitude is None:
+            return "N/A"
+
+        radius = 200  # в метрах
+        obj_lat, obj_lon = obj.latitude, obj.longitude
+        class Radians(Func):
+            function = 'RADIANS'
+            template = '%(function)s(%(expressions)s)'
+
+        class Cos(Func):
+            function = 'COS'
+            template = '%(function)s(%(expressions)s)'
+
+        K = 111320  
+
+        delta_lat = (F('latitude') - obj_lat)
+        delta_lon = (F('longitude') - obj_lon)
+
+        delta_lat_m = delta_lat * K
+        delta_lon_m = delta_lon * K * Cos(Radians(Value(obj_lat)))
+
+        distance_expr = Sqrt(
+            Power(delta_lat_m, 2) + Power(delta_lon_m, 2)
+        )
+
+        locations = ClassLocation.objects.annotate(
+            distance=distance_expr
+        ).filter(distance__lte=radius).order_by('distance')
+
+        if locations.exists():
+            location = locations.first()
+            return format_html(
+                "{}<br><small>{}</small>", location.name, location.address
+            )
+        else:
+            return "N/A"
 
     closest_location.short_description = "Ближайшая локация"
 

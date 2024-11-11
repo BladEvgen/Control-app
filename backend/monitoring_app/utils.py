@@ -510,18 +510,31 @@ class HierarchicalDepartmentFilter(SimpleListFilter):
     parameter_name = "staff_department"
 
     def lookups(self, request, model_admin):
-        departments = models.ChildDepartment.objects.all()
+        departments = models.ChildDepartment.objects.all().select_related("parent")
         return [(dept.id, dept.name) for dept in departments]
 
     def queryset(self, request, queryset):
         if self.value():
-            department = models.ChildDepartment.objects.get(pk=self.value())
-            child_departments = department.get_all_child_departments()
-            child_department_ids = [dept.id for dept in child_departments] + [
-                department.id
-            ]
-            return queryset.filter(staff__department__in=child_department_ids)
+            try:
+                department = models.ChildDepartment.objects.get(pk=self.value())
+            except models.ChildDepartment.DoesNotExist:
+                return queryset  
+
+            descendant_ids = self.get_all_descendant_ids(department)
+            return queryset.filter(staff__department__in=descendant_ids)
         return queryset
+
+    def get_all_descendant_ids(self, department):
+        descendant_ids = set([department.id])
+        queue = [department.id]
+
+        while queue:
+            current_id = queue.pop(0)
+            children = models.ChildDepartment.objects.filter(parent_id=current_id).values_list("id", flat=True)
+            queue.extend(children)
+            descendant_ids.update(children)
+
+        return descendant_ids
 
 
 class APIKeyUtility:
