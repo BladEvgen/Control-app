@@ -61,7 +61,6 @@ const MapPage: React.FC = () => {
     [key: string]: string;
   }>({});
   const [dateAt, setDateAt] = useState<string>(getFormattedDateAt());
-  const [responseDate, setResponseDate] = useState<string>(dateAt);
 
   const fetchLocations = async (selectedDate: string) => {
     setLoading(true);
