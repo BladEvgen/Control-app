@@ -71,6 +71,12 @@
                 Загрузить <i class="fas fa-upload ml-2"></i>
             </button>
         </div>
+        <div class="flex justify-center">
+            <a href="{% url 'download_examples_zip' %}"
+                class="bg-green-500 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg focus:outline-none focus:shadow-outline transition ease-in-out duration-150 transform hover:scale-105 inline-flex items-center">
+                Скачать примеры <i class="fas fa-download ml-2"></i>
+            </a>
+        </div>
     </form>
 
     {% if messages %}
