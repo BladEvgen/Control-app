@@ -1132,3 +1132,29 @@ def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     distance = R * c
     return distance <= radius
+
+
+def extract_coordinates(geo_data):
+    """
+    Extracts latitude and longitude from a geo data string formatted as 'longitude%2Clatitude'.
+
+    This function searches the input string `geo_data` for a latitude-longitude pair in the 
+    format `longitude%2Clatitude` (e.g., "76.929225%2C43.254926"). The latitude and longitude 
+    values are extracted, converted to floats, and returned in the order (latitude, longitude).
+
+    Args:
+        geo_data (str): A string containing latitude and longitude data in the 
+            format 'longitude%2Clatitude'.
+
+    Returns:
+        tuple: A tuple (latitude, longitude) if the coordinates are successfully extracted, 
+        or (None, None) if the input string is invalid or does not contain recognizable coordinates.
+    
+    Example:
+        >>> extract_coordinates("76.929225%2C43.254926")
+        (43.254926, 76.929225)
+    """
+    match = re.search(r"(\d{2}\.\d+)%2C(\d{2}\.\d+)", geo_data)
+    if match:
+        return match.group(2), match.group(1)
+    return (None, None)

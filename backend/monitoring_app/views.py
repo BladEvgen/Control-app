@@ -5,6 +5,7 @@ import base64
 import logging
 import zipfile
 import datetime
+from pathlib import Path
 from collections import defaultdict
 from tempfile import NamedTemporaryFile
 from concurrent.futures import ThreadPoolExecutor
@@ -16,7 +17,6 @@ from rest_framework import status
 from openpyxl import load_workbook
 from django.contrib import messages
 from django.core.cache import caches
-from django.http import HttpResponse
 from celery.result import AsyncResult
 from django.db.models import Count, Q
 from django.views.generic import View
@@ -26,6 +26,7 @@ from drf_yasg.utils import swagger_auto_schema
 from django.db import IntegrityError, transaction
 from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import authenticate, login, logout
+from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import (
@@ -2411,6 +2412,8 @@ def staff_detail_by_department_id(request, department_id):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             data={"error": str(e)},
         )
+
+
 @swagger_auto_schema(
     method="post",
     operation_summary="Зарегистрировать нового пользователя (доступно только для администратора)",
@@ -3216,10 +3219,28 @@ class UploadFileView(View):
     @transaction.atomic
     def process_class_locations(self, request, rows):
         """
-        Обрабатывает данные Excel для заполнения модели ClassLocation с использованием bulk_create и bulk_update.
+        Processes a list of Excel file rows to populate the ClassLocation model using bulk_create and bulk_update.
+
+        This method processes rows containing class location data, extracting details such as
+        name, address, latitude, and longitude. It then either creates new ClassLocation records
+        or updates existing ones based on matching name and address. Records with missing or invalid
+        data are skipped, and errors are logged.
 
         Args:
-            rows (list): Список строк из Excel файла.
+            request (HttpRequest): The request object.
+            rows (list): A list of Excel rows, where each row contains data in the format
+                [name, address, geo].
+
+        Raises:
+            ValueError: If the 'geo' column value is missing or invalid.
+
+        Returns:
+            None: Populates the ClassLocation model and sends success or error messages
+            to the request user regarding records that were created, updated, or skipped due to errors.
+
+        Logs:
+            Logs details of processed rows, including created, updated, and skipped rows. If errors
+            occur, they are logged and the user is notified.
         """
         to_create = []
         to_update = []
@@ -3227,12 +3248,26 @@ class UploadFileView(View):
             (loc.name, loc.address): loc for loc in models.ClassLocation.objects.all()
         }
 
-        for row in rows:
+        error_count = 0
+        error_details = []
+        MAX_ERROR_DETAILS = 10
+
+        for index, row in enumerate(rows):
             try:
                 name = str(row[0].value).strip()
                 address = str(row[1].value).strip()
-                latitude = float(row[2].value)
-                longitude = float(row[3].value)
+                geo_data = str(row[2].value)
+
+                if not geo_data or geo_data.lower() == "none":
+                    raise ValueError("Отсутствует значение в столбце 'geo'.")
+
+                latitude, longitude = utils.extract_coordinates(geo_data)
+
+                if not all([name, address, latitude, longitude]):
+                    raise ValueError("Отсутствуют необходимые данные.")
+
+                latitude = float(latitude)
+                longitude = float(longitude)
 
                 if (name, address) in existing_locations:
                     location = existing_locations[(name, address)]
@@ -3249,23 +3284,47 @@ class UploadFileView(View):
                         )
                     )
             except Exception as e:
-                logger.error(f"Error processing row for ClassLocation: {e}")
+                logger.error(f"Error processing row {index} for ClassLocation: {e}")
+                error_count += 1
+                if len(error_details) < MAX_ERROR_DETAILS:
+                    error_details.append(f"Строка {index + 2}: {e}")
                 continue
 
         if to_create:
-            models.ClassLocation.objects.bulk_create(to_create)
-            logger.info(f"Создано новых записей: {len(to_create)}")
+            try:
+                models.ClassLocation.objects.bulk_create(to_create)
+                logger.info(f"Создано новых записей: {len(to_create)}")
+            except Exception as e:
+                logger.error(f"Error during bulk_create: {e}")
+                messages.error(
+                    request, "Не удалось создать новые записи ClassLocation."
+                )
 
         if to_update:
-            models.ClassLocation.objects.bulk_update(
-                to_update, ["latitude", "longitude"]
-            )
-            logger.info(f"Обновлено существующих записей: {len(to_update)}")
+            try:
+                models.ClassLocation.objects.bulk_update(
+                    to_update, ["latitude", "longitude"]
+                )
+                logger.info(f"Обновлено существующих записей: {len(to_update)}")
+            except Exception as e:
+                logger.error(f"Error during bulk_update: {e}")
+                messages.error(
+                    request, "Не удалось обновить существующие записи ClassLocation."
+                )
 
-        messages.success(
-            request,
-            f"Успешно добавлено {len(to_create)} новых записей и обновлено {len(to_update)} записей.",
-        )
+        success_message = f"Успешно добавлено {len(to_create)} новых записей и обновлено {len(to_update)} записей."
+        if error_count > 0:
+            success_message += f" Пропущено {error_count} записей из-за ошибок."
+        messages.success(request, success_message)
+
+        if error_details:
+            error_message = (
+                "Некоторые записи были пропущены из-за ошибок:\n"
+                + "\n".join(error_details)
+            )
+            if error_count > MAX_ERROR_DETAILS:
+                error_message += f"\n...и ещё {error_count - MAX_ERROR_DETAILS} ошибок."
+            messages.warning(request, error_message)
 
     def delete_staff(self, request, rows, parent_department_id):
         """
@@ -3728,6 +3787,38 @@ def password_reset_confirm_view(request, token):
             return redirect("password_reset_confirm", token=token)
 
     return render(request, "password_reset_confirm.html", {"token": token})
+
+
+def download_examples_zip(request):
+    """
+    Serve the 'examples.zip' file from the media directory to the user for download.
+
+    This view checks for the existence of 'examples.zip' in the MEDIA_ROOT directory
+    and serves it as a downloadable file if found. Logs an error and raises a 404 
+    error if the file is missing.
+
+    Args:
+        request (HttpRequest): The HTTP request object.
+
+    Returns:
+        FileResponse: A response object containing the file for download.
+    
+    Raises:
+        Http404: If the file does not exist in the specified directory.
+    """
+    file_path = Path(settings.MEDIA_ROOT) / "examples.zip"
+    
+    if not file_path.exists():
+        logger.error(f"File not found: {file_path}")
+        raise Http404("Requested file does not exist.")
+    
+    try:
+        response = FileResponse(file_path.open("rb"), content_type="application/zip")
+        response["Content-Disposition"] = 'attachment; filename="examples.zip"'
+        return response
+    except Exception as e:
+        logger.error(f"Error serving file {file_path}: {e}")
+        raise Http404("An error occurred while serving the file.")
 
 
 @api_view(["POST"])

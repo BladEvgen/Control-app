@@ -71,6 +71,7 @@ urlpatterns = [
     ),
     path('verify-face/', views.verify_face, name='verify-face'),
     path("recognize-faces/", views.recognize_faces, name="recognize-faces"),
+    path("download/examples/", views.download_examples_zip, name="download_examples_zip"),
 ]
 
 urlpatterns += doc_urls
