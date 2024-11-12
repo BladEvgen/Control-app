@@ -2,7 +2,6 @@ import os
 import logging
 
 import cv2
-import numpy as np
 import nvidia.dali.fn as fn
 from django.conf import settings
 from nvidia.dali.pipeline import pipeline_def
@@ -33,6 +32,10 @@ static_augmentations_list = {
     "posterize": lambda images: augmentations.posterize(
         images, magnitude_bin=signed_bin(1), num_magnitude_bins=10
     ),
+
+    "rotate": lambda images: fn.rotate(images, angle=signed_bin(10)),
+    "flip": lambda images: fn.flip(images, horizontal=1),
+
 }
 
 
@@ -55,76 +58,9 @@ def expand_face_bbox(
     return x_min_expanded, y_min_expanded, x_max_expanded, y_max_expanded
 
 
-def get_face_aware_augmentations(
-    width, height, pad_top, pad_bottom, pad_left, pad_right
-):
-    max_rotate_degree = 15
-
-    padded_width = width + pad_left + pad_right
-    padded_height = height + pad_top + pad_bottom
-
-    max_shift_x = int(min(pad_left, pad_right) * 0.5)
-    max_shift_y = int(min(pad_top, pad_bottom) * 0.5)
-
-    shift_left_value = -int(
-        max_shift_x * 1.5
-    )  # Отрицательное значение для сдвига влево
-    shift_down_value = int(
-        max_shift_y * 0.10
-    )  # Меньшее положительное значение для сдвига вниз
-
-    logger.info(
-        f"Shift values: shift_left={shift_left_value}, shift_down={shift_down_value}"
-    )
-
-    def rotate_and_crop(images, angle):
-        rotated = fn.rotate(images, angle=angle, fill_value=0, keep_size=False)
-        crop_x = pad_left
-        crop_y = pad_top
-        crop_pos_x = crop_x / padded_width
-        crop_pos_y = crop_y / padded_height
-        cropped = fn.crop(
-            rotated, crop=(width, height), crop_pos_x=crop_pos_x, crop_pos_y=crop_pos_y
-        )
-        return cropped
-
-    def shift_and_crop(images, shift_x, shift_y):
-        matrix = np.array([[1, 0, shift_x], [0, 1, shift_y]], dtype=np.float32)
-        shifted = fn.warp_affine(
-            images, matrix=matrix, size=(padded_width, padded_height)
-        )
-
-        crop_x = pad_left - shift_x
-        crop_y = pad_top - shift_y
-
-        crop_x = max(0, min(crop_x, padded_width - width))
-        crop_y = max(0, min(crop_y, padded_height - height))
-
-        crop_pos_x = crop_x / padded_width
-        crop_pos_y = crop_y / padded_height
-
-        cropped = fn.crop(
-            shifted, crop=(width, height), crop_pos_x=crop_pos_x, crop_pos_y=crop_pos_y
-        )
-        return cropped
-
-    augmentations_dict = {
-        "turn_left": lambda images: rotate_and_crop(images, angle=-max_rotate_degree),
-        "turn_right": lambda images: rotate_and_crop(images, angle=max_rotate_degree),
-        "shift_left": lambda images: shift_and_crop(
-            images, shift_x=shift_left_value, shift_y=0
-        ),
-        "shift_down": lambda images: shift_and_crop(
-            images, shift_x=int(shift_left_value / 2), shift_y=shift_down_value
-        ),
-    }
-
-    return augmentations_dict
-
-
 @pipeline_def
 def dali_augmentation_pipeline(
-    image_data, width, height, pad_top, pad_bottom, pad_left, pad_right
+    image_data,
 ):
     images = fn.external_source(
         source=image_data, batch=True, device="gpu", layout="HWC"
@@ -135,25 +71,7 @@ def dali_augmentation_pipeline(
         logger.info(f"Applying static augmentation: {aug_name}")
         static_aug_images.append(aug_fn(images))
 
-    images_padded = fn.pad(
-        images,
-        fill_value=0,
-        axes=(0, 1),
-        shape=(height + pad_top + pad_bottom, width + pad_left + pad_right),
-        align=8,
-    )
-
-    augmentations_dict = get_face_aware_augmentations(
-        width, height, pad_top, pad_bottom, pad_left, pad_right
-    )
-    face_aware_aug_images = []
-    for aug_name, aug_fn in augmentations_dict.items():
-        logger.info(f"Applying face-aware augmentation: {aug_name}")
-        face_aware_aug_images.append(aug_fn(images_padded))
-
-    aug_images = static_aug_images + face_aware_aug_images
-
-    return tuple(aug_images)
+    return tuple(static_aug_images)
 
 
 def run_dali_augmentation_for_all_staff():
@@ -178,7 +96,6 @@ def run_dali_augmentation_for_all_staff():
                 )
                 continue
             test_image_rgb = cv2.cvtColor(test_image, cv2.COLOR_BGR2RGB)
-            height, width = test_image.shape[:2]
             logger.info(
                 f"Loaded image with shape {test_image.shape} from {avatar_path} for staff member {staff_member}"
             )
@@ -199,24 +116,12 @@ def run_dali_augmentation_for_all_staff():
             )
             logger.info(f"Expanded face coordinates: {expanded_face_coords}")
 
-            face_width = expanded_face_coords[2] - expanded_face_coords[0]
-            face_height = expanded_face_coords[3] - expanded_face_coords[1]
-            pad_top = int(face_height * 0.5)
-            pad_bottom = int(face_height * 0.5)
-            pad_left = int(face_width * 0.5)
-            pad_right = int(face_width * 0.5)
 
             def image_data():
                 yield [test_image_rgb]
 
             pipe = dali_augmentation_pipeline(
                 image_data,
-                width,
-                height,
-                pad_top,
-                pad_bottom,
-                pad_left,
-                pad_right,
                 batch_size=1,
                 num_threads=1,
                 device_id=0,
