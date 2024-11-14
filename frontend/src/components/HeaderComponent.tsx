@@ -18,6 +18,8 @@ import {
   FaMoon,
   FaSun,
 } from "react-icons/fa";
+import { ImCamera } from "react-icons/im";
+
 import { FaMapLocationDot } from "react-icons/fa6";
 import { MdDashboard } from "react-icons/md";
 
@@ -123,6 +125,12 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
           <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-gray-300 rounded">
             <FaMapLocationDot className="mr-2 text-yellow-500" />
             Map
+          </button>
+        </Link>
+        <Link to="/photo">
+          <button className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left border-gray-300 rounded">
+            <ImCamera className="mr-2 text-gray-400" />
+            Photos
           </button>
         </Link>
         <a href={`${apiUrl}/upload`}>

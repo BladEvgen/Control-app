@@ -11,6 +11,7 @@ import StaffDetail from "./pages/StaffDetail.tsx";
 import { addPrefix } from "./RouterUtils.tsx";
 import Dashboard from "./pages/Dashboard.tsx";
 import MapPage from "./pages/MapDashboard.tsx";
+import PhotoDashboard from "./pages/PhotoDashboard.tsx";
 interface LayoutProps {
   children: ReactNode;
 }
@@ -100,6 +101,14 @@ const router = createBrowserRouter([
     element: (
       <Layout>
         <MapPage />
+      </Layout>
+    ),
+  },
+  {
+    path: addPrefix("/photo"),
+    element: (
+      <Layout>
+        <PhotoDashboard />
       </Layout>
     ),
   },

@@ -124,3 +124,12 @@ export interface LocationData {
   lng: number;
   employees: number;
 }
+
+export interface PhotoData {
+  staffPin: string;
+  staffFullName: string;
+  department: string;
+  photoUrl: string;
+  attendanceTime: string;
+  tutorInfo: string;
+}
