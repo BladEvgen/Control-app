@@ -2,7 +2,7 @@ import os
 import socket
 from pathlib import Path
 from celery.schedules import crontab
-from datetime import datetime, timedelta
+from datetime import timedelta, datetime
 
 from dotenv import load_dotenv
 
@@ -59,6 +59,11 @@ LOCAL_IP = get_local_ip()
 
 ALLOWED_HOSTS = ["*"] if DEBUG else ["control.krmu.edu.kz", "dot.medkrmu.kz", LOCAL_IP]
 
+CSRF_TRUSTED_ORIGINS = ["*"] if DEBUG else  [
+    "https://control.krmu.edu.kz",
+    "https://dot.medkrmu.kz",
+]
+
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50 МБ
 FILE_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50 МБ
@@ -68,6 +73,9 @@ DATA_UPLOAD_MAX_NUMBER_FIELDS = 100000
 # Application definition
 INSTALLED_APPS = [
     "grappelli",
+    # Sockets
+    "daphne",
+    "channels",
     # Default
     "django.contrib.admin",
     "django.contrib.auth",
@@ -85,8 +93,27 @@ INSTALLED_APPS = [
     "django_admin_geomap",
 ]
 
+
+if DEBUG:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+            'CONFIG': {},  #
+        },
+    }
+else:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {
+                'hosts': [('127.0.0.1', 6379)],  
+            },
+        },
+    }
+
+
 #! On Release set False
-CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_ALL_ORIGINS = True if DEBUG else False
 
 CORS_ALLOWED_ORIGINS = [
     f"http://{LOCAL_IP}:8000",
@@ -129,6 +156,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "django_settings.wsgi.application"
+ASGI_APPLICATION = 'django_settings.asgi.application'
 
 if DEBUG:
     CACHES = {
@@ -202,7 +230,10 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "static/media"
 
 ATTENDANCE_URL = "/attendance_media/"
-ATTENDANCE_ROOT = "/mnt/disk/control_image/"
+if DEBUG: 
+    ATTENDANCE_ROOT = Path(MEDIA_ROOT/"control_image/")
+else:
+    ATTENDANCE_ROOT = "/mnt/disk/control_image/"
 
 AUGMENT_URL = "/augment_media/"
 if DEBUG:
