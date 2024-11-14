@@ -135,9 +135,11 @@ const MapPage: React.FC = () => {
       }
 
       setAssignedColors(tempAssignedColors);
-      setVisiblePopup(
-        `${fetchedLocations[0].name}-${fetchedLocations[0].address}-0`
-      );
+      if (fetchedLocations.length > 0) {
+        setVisiblePopup(
+          `${fetchedLocations[0].name}-${fetchedLocations[0].address}-0`
+        );
+      }
       new BaseAction(BaseAction.SET_DATA, fetchedLocations);
     } catch (error) {
       setError("Не удалось загрузить данные.");
@@ -181,10 +183,17 @@ const MapPage: React.FC = () => {
     iconAnchor: [17, 35],
     popupAnchor: [0, -40],
   });
+  const mapContainerRef = useRef<HTMLDivElement>(null);
 
   const handleFullscreenToggle = () => {
     if (!isFullscreen) {
       document.documentElement.requestFullscreen?.();
+      setTimeout(() => {
+        mapContainerRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      }, 300);
     } else {
       document.exitFullscreen?.();
     }
@@ -206,18 +215,18 @@ const MapPage: React.FC = () => {
   return (
     <div className={`relative h-screen w-screen`}>
       <div className="flex flex-col items-center justify-center mb-4">
-        <div className="text-white text-center">Дата данных:</div>
+        <label className="text-white text-center mb-2">Дата данных:</label>
         <input
           type="date"
           value={dateAt}
           onChange={handleDateChange}
-          className="mt-2 p-2 border rounded shadow-lg text-gray-700"
+          className="p-2 border rounded shadow-lg text-gray-700"
         />
       </div>
 
       <button
         onClick={handleFullscreenToggle}
-        className="absolute top-4 right-4 z-10 bg-white text-gray-700 p-2 rounded-full shadow-lg hover:bg-gray-100 transition-all duration-200"
+        className="absolute top-4 right-4 z-10 bg-white text-gray-700 p-2 sm:p-3 md:p-4 rounded-full shadow-lg hover:bg-gray-100 transition-all duration-200"
         aria-label={
           isFullscreen
             ? "Выйти из полноэкранного режима"
@@ -225,13 +234,14 @@ const MapPage: React.FC = () => {
         }
       >
         {isFullscreen ? (
-          <FaCompress className="w-5 h-5" />
+          <FaCompress className="w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7" />
         ) : (
-          <FaExpand className="w-5 h-5" />
+          <FaExpand className="w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7" />
         )}
       </button>
 
       <div
+        ref={mapContainerRef}
         className="max-w-[90%] max-h-[90%] mx-auto my-4 border-2 rounded-lg shadow-lg"
         style={{ padding: "2%", height: isFullscreen ? "95vh" : "80vh" }}
       >
