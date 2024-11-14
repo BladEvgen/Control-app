@@ -564,9 +564,9 @@ class LessonAttendance(models.Model, GeoItem):
     @property
     def image_url(self):
         if self.staff_image_path:
-            if self.staff_image_path.startswith(settings.ATTENDANCE_ROOT):
+            if self.staff_image_path.startswith(str(settings.ATTENDANCE_ROOT)):
                 relative_path = self.staff_image_path.replace(
-                    settings.ATTENDANCE_ROOT, ""
+                    str(settings.ATTENDANCE_ROOT), ""
                 )
                 return f"{settings.ATTENDANCE_URL}{relative_path}"
             return f"{settings.MEDIA_URL}{self.staff_image_path.split('media/')[-1]}"
@@ -595,7 +595,7 @@ class LessonAttendance(models.Model, GeoItem):
 
     @property
     def tutor_info(self):
-        return f"{self.tutor} (ID: {self.tutor_id})"
+        return f"{self.tutor} (TutorID: {self.tutor_id})"
 
     def __str__(self):
         return f"{self.subject_name} ({self.staff}) [{self.date_at}]"
