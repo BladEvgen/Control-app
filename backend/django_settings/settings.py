@@ -1,32 +1,33 @@
 import os
 import socket
 from pathlib import Path
+from dotenv import load_dotenv
 from celery.schedules import crontab
 from datetime import timedelta, datetime
 
-from dotenv import load_dotenv
+# Host names and DEBUG setting
+HOST_NAMES = ["RogStrix", "MacBook-Pro.local", "MacbookPro"]
+DEBUG = socket.gethostname() in HOST_NAMES
 
-host_names = ["RogStrix", "MacBook-Pro.local", "MacbookPro"]
-DEBUG = True if socket.gethostname() in host_names else False
-
+# Base directories
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
+
+# Custom settings
 DAYS = 1
 FACE_RECOGNITION_THRESHOLD = 0.8
 
+# Load environment variables
+load_dotenv(BASE_DIR / ".env")
 
-DOTENV_PATH = BASE_DIR / ".env"
-if DOTENV_PATH.exists():
-    load_dotenv(DOTENV_PATH)
-
-
+# Secret keys and API configurations
 SECRET_KEY = os.getenv("SECRET_KEY")
 SECRET_API = os.getenv("SECRET_API")
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
 MAIN_IP = os.getenv("MAIN_IP")
-API_KEY = os.getenv("API_KEY")
 
+# Email configurations
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND")
 EMAIL_HOST = os.getenv("EMAIL_HOST")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT"))
@@ -36,54 +37,74 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL")
 
-
+# Authentication URLs
 LOGIN_URL = "/login_view/"
 LOGOUT_URL = "/logout/"
 
 
+# Function to get the local IP address
 def get_local_ip():
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("10.255.255.255", 1))
             ip_address = s.getsockname()[0]
-    except socket.error as e:
-        print(f"Socket error occurred: {e}")
-        ip_address = "127.0.0.1"
     except Exception as e:
-        print(f"Unexpected error occurred: {e}")
+        print(f"Error getting local IP: {e}")
         ip_address = "127.0.0.1"
     return ip_address
 
 
 LOCAL_IP = get_local_ip()
 
-ALLOWED_HOSTS = ["*"] if DEBUG else ["control.krmu.edu.kz", "dot.medkrmu.kz", LOCAL_IP]
 
-CSRF_TRUSTED_ORIGINS = ["*"] if DEBUG else  [
-    "https://control.krmu.edu.kz",
-    "https://dot.medkrmu.kz",
-]
+# Function to get the external IP address
+def get_external_ip():
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            external_ip = s.getsockname()[0]
+    except Exception as e:
+        print(f"Error getting external IP: {e}")
+        external_ip = "127.0.0.1"
+    return external_ip
 
 
-DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50 МБ
-FILE_UPLOAD_MAX_MEMORY_SIZE = 52428800  # 50 МБ
+EXTERNAL_IP = get_external_ip()
 
+# Allowed hosts and CSRF trusted origins
+ALLOWED_HOSTS = ["*", LOCAL_IP, EXTERNAL_IP] if DEBUG else ["control.krmu.edu.kz", "dot.medkrmu.kz"]
+
+CSRF_TRUSTED_ORIGINS = (
+    [
+        f"http://{EXTERNAL_IP}:8000",
+        f"http://{EXTERNAL_IP}:5173",
+        f"http://{EXTERNAL_IP}:3000",
+    ]
+    if DEBUG
+    else [
+        "https://control.krmu.edu.kz",
+        "https://dot.medkrmu.kz",
+    ]
+)
+
+ALLOWED_IPS = [LOCAL_IP, EXTERNAL_IP]
+
+# Data upload settings
+DATA_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  # 50 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  # 50 MB
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 100000
 
 # Application definition
 INSTALLED_APPS = [
     "grappelli",
-    # Sockets
     "daphne",
     "channels",
-    # Default
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    # Installed apps
     "drf_yasg",
     "monitoring_app",
     "rest_framework",
@@ -93,38 +114,36 @@ INSTALLED_APPS = [
     "django_admin_geomap",
 ]
 
+# Channel layers configuration
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": (
+            "channels.layers.InMemoryChannelLayer"
+            if DEBUG
+            else "channels_redis.core.RedisChannelLayer"
+        ),
+        "CONFIG": {} if DEBUG else {"hosts": [("127.0.0.1", 6379)]},
+    },
+}
 
-if DEBUG:
-    CHANNEL_LAYERS = {
-        'default': {
-            'BACKEND': 'channels.layers.InMemoryChannelLayer',
-            'CONFIG': {},  #
-        },
-    }
-else:
-    CHANNEL_LAYERS = {
-        'default': {
-            'BACKEND': 'channels_redis.core.RedisChannelLayer',
-            'CONFIG': {
-                'hosts': [('127.0.0.1', 6379)],  
-            },
-        },
-    }
+# CORS configurations
+CORS_ALLOW_ALL_ORIGINS = DEBUG
 
+CORS_ALLOWED_ORIGINS = (
+    [
+        f"http://{EXTERNAL_IP}:8000",
+        f"http://{EXTERNAL_IP}:3000",
+        f"http://{EXTERNAL_IP}:5173",
+    ]
+    if DEBUG
+    else [
+        "https://dot.medkrmu.kz",
+        "https://control.krmu.edu.kz",
+    ]
+)
 
-#! On Release set False
-CORS_ALLOW_ALL_ORIGINS = True if DEBUG else False
-
-CORS_ALLOWED_ORIGINS = [
-    f"http://{LOCAL_IP}:8000",
-    f"http://{LOCAL_IP}:3000",
-    f"http://{LOCAL_IP}:5173",
-    "https://dot.medkrmu.kz",
-    "https://control.krmu.edu.kz",
-]
-
+# Middleware configurations
 MIDDLEWARE = [
-    "monitoring_app.middleware.CustomCorsMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -137,7 +156,7 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "django_settings.urls"
 
-
+# Template configurations
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
@@ -156,8 +175,9 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "django_settings.wsgi.application"
-ASGI_APPLICATION = 'django_settings.asgi.application'
+ASGI_APPLICATION = "django_settings.asgi.application"
 
+# Cache configurations
 if DEBUG:
     CACHES = {
         "default": {
@@ -168,31 +188,23 @@ else:
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.redis.RedisCache",
-            "LOCATION": f"""redis://{os.getenv("REDIS_HOST")}:{os.getenv("REDIS_PORT")}""",
+            "LOCATION": "redis://127.0.0.1:6379",
         }
     }
 
-
-if DEBUG:
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
-        }
+# Database configurations
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3" if DEBUG else "django.db.backends.mysql",
+        "NAME": BASE_DIR / "db.sqlite3" if DEBUG else os.getenv("db_name"),
+        "USER": "" if DEBUG else os.getenv("db_user"),
+        "PASSWORD": "" if DEBUG else os.getenv("db_password"),
+        "HOST": "" if DEBUG else os.getenv("db_host"),
+        "PORT": "" if DEBUG else os.getenv("db_port"),
     }
-else:
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.mysql",
-            "NAME": os.getenv("db_name"),
-            "USER": os.getenv("db_user"),
-            "PASSWORD": os.getenv("db_password"),
-            "HOST": os.getenv("db_host"),
-            "PORT": os.getenv("db_port"),
-        }
-    }
+}
 
-
+# Password validators
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
@@ -208,100 +220,80 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-
+# Internationalization
 LANGUAGE_CODE = "ru"
-
 TIME_ZONE = "Asia/Almaty"
-
 USE_I18N = True
-
 USE_TZ = True
 
-
+# Static files (CSS, JavaScript, Images)
 STATIC_URL = "assets/" if DEBUG else "/static/"
-STATIC_ROOT = Path(BASE_DIR, "staticroot")
+STATIC_ROOT = BASE_DIR / "staticroot"
 
-# массив с папками откуда джанго "собирает" статику
 STATICFILES_DIRS = [
-    Path(BASE_DIR / "static"),
-    Path(FRONTEND_DIR / "dist/assets"),
+    BASE_DIR / "static",
+    FRONTEND_DIR / "dist/assets",
 ]
+
+# Media files
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "static/media"
 
+# Attendance and augment paths
 ATTENDANCE_URL = "/attendance_media/"
-if DEBUG: 
-    ATTENDANCE_ROOT = Path(MEDIA_ROOT/"control_image/")
-else:
-    ATTENDANCE_ROOT = "/mnt/disk/control_image/"
+ATTENDANCE_ROOT = MEDIA_ROOT / "control_image" if DEBUG else "/mnt/disk/control_image/"
 
 AUGMENT_URL = "/augment_media/"
-if DEBUG:
-    AUGMENT_ROOT = Path(MEDIA_ROOT / "user_images" / "{staff_pin}" / "augmented_images")
-else:
-    AUGMENT_ROOT = "/mnt/disk/augment_images/augmented_images/{staff_pin}"
-
+AUGMENT_ROOT = (
+    MEDIA_ROOT / "user_images" / "{staff_pin}" / "augmented_images"
+    if DEBUG
+    else "/mnt/disk/augment_images/augmented_images/{staff_pin}"
+)
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# * JWT LOGIC GOES HERE
+# REST framework configurations
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
-        # 'rest_framework.permissions.IsAdmin',
         "rest_framework.permissions.IsAuthenticated",
         "rest_framework.permissions.AllowAny",
     ),
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        # 'rest_framework.authentication.BasicAuthentication',
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
 }
 
+# JWT configurations
 SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": True,
     "ALGORITHM": "HS256",
     "SIGNING_KEY": SECRET_KEY,
-    "VERIFYING_KEY": None,
-    "AUDIENCE": None,
-    "ISSUER": None,
-    "JWK_URL": None,
-    "LEEWAY": 0,
     "AUTH_HEADER_TYPES": ("Bearer",),  # {headers: {Authorization: `Bearer ${access}`}}
     "AUTH_HEADER_NAME": "HTTP_AUTHORIZATION",
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "user_id",
-    "USER_AUTHENTICATION_RULE": "rest_framework_simplejwt.authentication."
-    + "default_user_authentication_rule",
     "AUTH_TOKEN_CLASSES": ("rest_framework_simplejwt.tokens.AccessToken",),
+    "USER_AUTHENTICATION_RULE": "rest_framework_simplejwt.authentication.default_user_authentication_rule",
     "TOKEN_TYPE_CLAIM": "token_type",
     "TOKEN_USER_CLASS": "rest_framework_simplejwt.models.TokenUser",
-    "JTI_CLAIM": "jti",
     "SLIDING_TOKEN_REFRESH_EXP_CLAIM": "refresh_exp",
+    "JTI_CLAIM": "jti",
 }
 
-if DEBUG:
-    SIMPLE_JWT.update(
-        {
-            "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
-            "REFRESH_TOKEN_LIFETIME": timedelta(minutes=30),
-            "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10),
-            "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(minutes=30),
-        }
-    )
-else:
-    SIMPLE_JWT.update(
-        {
-            "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
-            "REFRESH_TOKEN_LIFETIME": timedelta(hours=1),
-            "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10),
-            "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(hours=1),
-        }
-    )
+# Token lifetimes based on DEBUG
+SIMPLE_JWT.update(
+    {
+        "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
+        "REFRESH_TOKEN_LIFETIME": (timedelta(minutes=30) if DEBUG else timedelta(hours=1)),
+        "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10),
+        "SLIDING_TOKEN_REFRESH_LIFETIME": (timedelta(minutes=30) if DEBUG else timedelta(hours=1)),
+    }
+)
 
-# DRF-YASG configuration
+# Swagger settings
 SWAGGER_SETTINGS = {
     "LOGIN_URL": "login_view",
     "LOGOUT_URL": "logout",
@@ -316,65 +308,90 @@ SWAGGER_SETTINGS = {
     "DEFAULT_AUTO_SCHEMA_CLASS": "drf_yasg.inspectors.SwaggerAutoSchema",
 }
 
-# Optional settings for ReDoc
+# ReDoc settings
 REDOC_SETTINGS = {
     "LAZY_RENDERING": True,
 }
 
+# Celery configurations
 CELERY_BROKER_URL = "redis://localhost:6379/0"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 
-CELERY_BEAT_SCHEDULE = {
-    "get-attendance-every-day-5am": {
-        "task": "monitoring_app.tasks.get_all_attendance_task",
-        "schedule": crontab(hour=5, minute=0),
-    },
-    "update-lesson-attendance-last-out-every-10-minutes": {
-        "task": "monitoring_app.tasks.update_lesson_attendance_last_out",
-        "schedule": crontab(minute="*/5"),
-    },
-    "augment-images-every-day": {
-        "task": "monitoring_app.tasks.augment_user_images",
-        "schedule": crontab(day_of_month="*/3", hour=1, minute=0),
-    },
-}
+CELERY_BEAT_SCHEDULE = (
+    {}
+    if DEBUG
+    else {
+        "get-attendance-every-day-5am": {
+            "task": "monitoring_app.tasks.get_all_attendance_task",
+            "schedule": crontab(hour=5, minute=0),
+        },
+        "update-lesson-attendance-last-out-every-10-minutes": {
+            "task": "monitoring_app.tasks.update_lesson_attendance_last_out",
+            "schedule": crontab(minute="*/5"),
+        },
+        "augment-images-every-day": {
+            "task": "monitoring_app.tasks.augment_user_images",
+            "schedule": crontab(day_of_month="*/3", hour=1, minute=0),
+        },
+    }
+)
 
-LOG_DIR = os.path.join(BASE_DIR, "logs")
-if not os.path.exists(LOG_DIR):
-    os.makedirs(LOG_DIR)
+# Logging configurations
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+
+# Custom function to generate log filenames
+def get_log_filename(log_name):
+    return LOG_DIR / f'{log_name}_{datetime.now().strftime("%Y-%m-%d_%H")}.log'
+
+
+# Function to remove old logs
+def clean_old_logs(log_directory, days_to_keep=7):
+    now = datetime.now()
+    for filename in os.listdir(log_directory):
+        if filename.endswith(".log"):
+            file_path = log_directory / filename
+            file_modified_time = datetime.fromtimestamp(file_path.stat().st_mtime)
+            if (now - file_modified_time).days > days_to_keep:
+                file_path.unlink()
+
+
+# Clean old logs
+clean_old_logs(LOG_DIR, days_to_keep=7)
 
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        "verbose": {
-            "format": "{levelname} {asctime} {module} {message}",
+        "standard": {
+            "format": "{levelname} {asctime} {name} {module} {message}",
             "style": "{",
-            "datefmt": "%Y-%m-%d %H:%M",
+            "datefmt": "%Y-%m-%d_%H:%M:%S",
         },
     },
     "handlers": {
         "file": {
             "level": "INFO" if DEBUG else "WARNING",
-            "class": "logging.FileHandler",
-            "filename": os.path.join(
-                LOG_DIR, f'log-{datetime.now().strftime("%Y-%m-%d_%H")}.log'
-            ),
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": get_log_filename("log"),
+            "maxBytes": 10 * 1024 * 1024,  # 10 MB
+            "backupCount": 24,  # Keep logs for 24 hours
             "encoding": "utf-8",
-            "formatter": "verbose",
+            "formatter": "standard",
         },
     },
     "loggers": {
         "": {
             "handlers": ["file"],
             "level": "INFO" if DEBUG else "WARNING",
-            "propagate": False,
+            "propagate": True,
         },
         "django": {
             "handlers": ["file"],
             "level": "INFO" if DEBUG else "WARNING",
-            "propagate": False,
+            "propagate": True,
         },
     },
 }
