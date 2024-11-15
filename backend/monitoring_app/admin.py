@@ -12,7 +12,6 @@ from django.contrib.admin import SimpleListFilter
 from django.core.exceptions import ValidationError
 from django.db.models.functions import Power, Sqrt
 
-from monitoring_app import utils
 from monitoring_app.models import (
     Staff,
     APIKey,
@@ -104,7 +103,6 @@ class DepartmentHierarchyFilter(SimpleListFilter):
             choices.extend(self.get_department_choices(hierarchy, dept.id, level + 1))
 
         return choices
-
 
 
 # === Модели авторизации ===
@@ -222,7 +220,6 @@ class UserProfileAdmin(admin.ModelAdmin):
         qs = super().get_queryset(request)
         qs = qs.select_related('user')
         return qs
-
 
 
 # === Категории файлов ===
@@ -438,6 +435,8 @@ class StaffAdmin(admin.ModelAdmin):
 
 @admin.register(StaffFaceMask)
 class StaffFaceMaskAdmin(admin.ModelAdmin):
+    from monitoring_app import utils
+
     list_display = (
         "staff",
         "staff_department",
@@ -477,7 +476,7 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
     def augmented_images(self, obj):
         cache_key = f"augmented_images_{obj.staff.pin}"
         images_html = cache.get(cache_key)
-        
+
         if images_html is None:
             augmented_dir = str(settings.AUGMENT_ROOT).format(staff_pin=obj.staff.pin)
             if not os.path.exists(augmented_dir):
@@ -497,9 +496,8 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
                 return "No Augmented Images"
 
             cache.set(cache_key, images_html, timeout=3600)  
-        
-        return format_html(images_html)
 
+        return format_html(images_html)
 
     augmented_images.short_description = "Аугментированные фото"
 
@@ -543,6 +541,8 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
 
 @admin.register(StaffAttendance)
 class StaffAttendanceAdmin(admin.ModelAdmin):
+    from monitoring_app import utils
+
     list_display = (
         "staff",
         "staff_department",

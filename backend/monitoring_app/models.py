@@ -14,8 +14,6 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.validators import FileExtensionValidator
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 
-from monitoring_app import utils
-
 
 class PasswordResetTokenManager(models.Manager):
     def mark_as_used(self, token):
@@ -105,6 +103,7 @@ class PasswordResetRequestLog(models.Model):
 
 
 class APIKey(models.Model):
+
     key_name = models.CharField(
         max_length=100, null=False, blank=False, verbose_name="Название ключа"
     )
@@ -123,6 +122,8 @@ class APIKey(models.Model):
         return f"Ключ: {self.key_name}  Статус активности: {status}"
 
     def save(self, *args, **kwargs):
+        from monitoring_app import utils
+
         if not self.key:
             encrypted_key, secret_key = utils.APIKeyUtility.generate_api_key(
                 self.key_name, self.created_by
@@ -378,6 +379,7 @@ class StaffFaceMask(models.Model):
 
 
 class AbsentReason(models.Model):
+
     ABSENT_REASON_CHOICES = [
         ("business_trip", "Командировка"),
         ("sick_leave", "Болезнь"),
@@ -407,6 +409,8 @@ class AbsentReason(models.Model):
     )
 
     def save(self, *args, **kwargs):
+        from monitoring_app import utils
+
         if self.reason == "business_trip":
             self.approved = True
         elif self.reason == "sick_leave" and self.document:
