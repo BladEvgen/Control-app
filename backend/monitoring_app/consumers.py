@@ -84,7 +84,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             photos = []
             from asgiref.sync import sync_to_async
 
-            async_attendances_qs = sync_to_async(list)(attendances_qs)
+            async_attendances_qs = await sync_to_async(list)(attendances_qs)
 
             for att in async_attendances_qs:
                 staff_full_name = f"{att['staff__surname']} {att['staff__name']}"
