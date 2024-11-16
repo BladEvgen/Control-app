@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 import cv2
 import pytz
 import torch
-import requests
 import torch.amp
 import numpy as np
 import pandas as pd
@@ -518,7 +517,7 @@ class HierarchicalDepartmentFilter(SimpleListFilter):
             try:
                 department = models.ChildDepartment.objects.get(pk=self.value())
             except models.ChildDepartment.DoesNotExist:
-                return queryset  
+                return queryset
 
             descendant_ids = self.get_all_descendant_ids(department)
             return queryset.filter(staff__department__in=descendant_ids)
@@ -530,7 +529,9 @@ class HierarchicalDepartmentFilter(SimpleListFilter):
 
         while queue:
             current_id = queue.pop(0)
-            children = models.ChildDepartment.objects.filter(parent_id=current_id).values_list("id", flat=True)
+            children = models.ChildDepartment.objects.filter(
+                parent_id=current_id
+            ).values_list("id", flat=True)
             queue.extend(children)
             descendant_ids.update(children)
 
@@ -585,6 +586,8 @@ class APIKeyUtility:
 
 
 def get_attendance_data(pin: str):
+    import requests
+
     """
     Получает данные о посещаемости сотрудника за предыдущий день.
 
@@ -731,6 +734,8 @@ def password_check(password: str) -> bool:
 
 
 def fetch_data(url: str) -> Dict[str, Any]:
+    import requests
+
     try:
         response = requests.get(url, timeout=20)
         response.raise_for_status()
@@ -1138,18 +1143,18 @@ def extract_coordinates(geo_data):
     """
     Extracts latitude and longitude from a geo data string formatted as 'longitude%2Clatitude'.
 
-    This function searches the input string `geo_data` for a latitude-longitude pair in the 
-    format `longitude%2Clatitude` (e.g., "76.929225%2C43.254926"). The latitude and longitude 
+    This function searches the input string `geo_data` for a latitude-longitude pair in the
+    format `longitude%2Clatitude` (e.g., "76.929225%2C43.254926"). The latitude and longitude
     values are extracted, converted to floats, and returned in the order (latitude, longitude).
 
     Args:
-        geo_data (str): A string containing latitude and longitude data in the 
+        geo_data (str): A string containing latitude and longitude data in the
             format 'longitude%2Clatitude'.
 
     Returns:
-        tuple: A tuple (latitude, longitude) if the coordinates are successfully extracted, 
+        tuple: A tuple (latitude, longitude) if the coordinates are successfully extracted,
         or (None, None) if the input string is invalid or does not contain recognizable coordinates.
-    
+
     Example:
         >>> extract_coordinates("76.929225%2C43.254926")
         (43.254926, 76.929225)

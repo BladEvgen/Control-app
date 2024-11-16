@@ -6,11 +6,13 @@ from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
 
-from monitoring_app import models, utils
+from monitoring_app import models
 
 
 @shared_task
 def get_all_attendance_task():
+    from monitoring_app import utils
+
     """
     Задача Celery для выполнения функции get_all_attendance.
     """
