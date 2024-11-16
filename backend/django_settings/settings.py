@@ -16,6 +16,8 @@ FRONTEND_DIR = BASE_DIR.parent / "frontend"
 # Custom settings
 DAYS = 1
 FACE_RECOGNITION_THRESHOLD = 0.8
+RATE_PERIOD = 600
+RATE_LIMIT = 40
 
 # Load environment variables
 load_dotenv(BASE_DIR / ".env")
@@ -72,7 +74,9 @@ def get_external_ip():
 EXTERNAL_IP = get_external_ip()
 
 # Allowed hosts and CSRF trusted origins
-ALLOWED_HOSTS = ["*", LOCAL_IP, EXTERNAL_IP] if DEBUG else ["control.krmu.edu.kz", "dot.medkrmu.kz"]
+ALLOWED_HOSTS = ["*"] + (
+    [LOCAL_IP, EXTERNAL_IP] if DEBUG else ["control.krmu.edu.kz", "dot.medkrmu.edu.kz"]
+)
 
 CSRF_TRUSTED_ORIGINS = (
     [
@@ -141,6 +145,21 @@ CORS_ALLOWED_ORIGINS = (
         "https://control.krmu.edu.kz",
     ]
 )
+# Settings for Custom Middleware
+SECURITY_MIDDLEWARE_EXEMPT_PATHS = [
+    '/app/',
+    '/app/login',
+    '/app/logout',
+    '/admin/',
+    '/swagger/',
+    '/redoc/',
+]
+
+if DEBUG:
+    SECURITY_MIDDLEWARE_EXEMPT_PATHS += [
+        '/api/docs/',
+        '/api/schema/',
+    ]
 
 # Middleware configurations
 MIDDLEWARE = [
@@ -368,7 +387,7 @@ LOGGING = {
         "standard": {
             "format": "{levelname} {asctime} {name} {module} {message}",
             "style": "{",
-            "datefmt": "%Y-%m-%d_%H:%M:%S",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
         },
     },
     "handlers": {
