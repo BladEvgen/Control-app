@@ -187,7 +187,7 @@ const PhotoDashboard: React.FC = () => {
     <div className="flex flex-col justify-center items-center h-screen text-gray-700">
       <div className="loader w-20 h-20 border-4 border-gray-300 border-t-4 border-t-blue-500 rounded-full animate-spin"></div>
       <motion.p
-        className="mt-6 text-xl font-medium text-gray-800 dark:text-gray-200"
+        className="mt-6 text-xl font-medium text-gray-200"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.5 }}
