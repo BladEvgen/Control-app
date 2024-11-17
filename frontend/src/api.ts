@@ -32,6 +32,8 @@ const log = {
     );
   },
 };
+export { log };
+
 
 export const setCookie = (
   name: string,
