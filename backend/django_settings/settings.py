@@ -100,9 +100,9 @@ DATA_UPLOAD_MAX_NUMBER_FIELDS = 100000
 
 # Application definition
 INSTALLED_APPS = [
-    "grappelli",
     "daphne",
     "channels",
+    "grappelli",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -147,18 +147,18 @@ CORS_ALLOWED_ORIGINS = (
 )
 # Settings for Custom Middleware
 SECURITY_MIDDLEWARE_EXEMPT_PATHS = [
-    '/app/',
-    '/app/login',
-    '/app/logout',
-    '/admin/',
-    '/swagger/',
-    '/redoc/',
+    "/app/",
+    "/app/login",
+    "/app/logout",
+    "/admin/",
+    "/swagger/",
+    "/redoc/",
 ]
 
 if DEBUG:
     SECURITY_MIDDLEWARE_EXEMPT_PATHS += [
-        '/api/docs/',
-        '/api/schema/',
+        "/api/docs/",
+        "/api/schema/",
     ]
 
 # Middleware configurations
@@ -306,9 +306,13 @@ SIMPLE_JWT = {
 SIMPLE_JWT.update(
     {
         "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
-        "REFRESH_TOKEN_LIFETIME": (timedelta(minutes=30) if DEBUG else timedelta(hours=1)),
+        "REFRESH_TOKEN_LIFETIME": (
+            timedelta(minutes=30) if DEBUG else timedelta(hours=1)
+        ),
         "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10),
-        "SLIDING_TOKEN_REFRESH_LIFETIME": (timedelta(minutes=30) if DEBUG else timedelta(hours=1)),
+        "SLIDING_TOKEN_REFRESH_LIFETIME": (
+            timedelta(minutes=30) if DEBUG else timedelta(hours=1)
+        ),
     }
 )
 
