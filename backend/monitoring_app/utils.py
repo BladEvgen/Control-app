@@ -28,8 +28,10 @@ from django.core.mail import send_mail
 from torch.utils.data import DataLoader
 from insightface.app import FaceAnalysis
 from django.utils.html import format_html
+from django.db.models import F, Func, Value
 from rest_framework.response import Response
 from django.contrib.admin import SimpleListFilter
+from django.db.models.functions import Power, Sqrt
 from sklearn.model_selection import train_test_split
 from rest_framework.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
@@ -1021,6 +1023,14 @@ def transliterate(name):
     return "".join(translit)
 
 
+class Radians(Func):
+    function = "RADIANS"
+
+
+class Cos(Func):
+    function = "COS"
+
+
 def generate_map_data(
     locations, date_at, search_staff_attendance=True, filter_empty=False
 ):
@@ -1067,22 +1077,48 @@ def generate_map_data(
         lesson_data = models.LessonAttendance.objects.filter(date_at=date_at).values(
             "staff_id", "latitude", "longitude"
         )
-        lesson_attendance_by_location = {}
 
+        staff_to_location = {}
         for lesson in lesson_data:
             staff_id = lesson["staff_id"]
             lesson_lat = lesson["latitude"]
             lesson_lng = lesson["longitude"]
 
-            for loc in locations:
-                if is_within_radius(
-                    loc.latitude, loc.longitude, lesson_lat, lesson_lng
-                ):
-                    if loc.address not in lesson_attendance_by_location:
-                        lesson_attendance_by_location[loc.address] = set()
-                    if staff_id not in lesson_attendance_by_location[loc.address]:
-                        lesson_attendance_by_location[loc.address].add(staff_id)
-                    break
+            radius = 200
+            K = 111320
+
+            class_locations = (
+                models.ClassLocation.objects.annotate(
+                    delta_lat=F("latitude") - Value(lesson_lat),
+                    delta_lon=F("longitude") - Value(lesson_lng),
+                    delta_lat_m=(F("latitude") - Value(lesson_lat)) * K,
+                    delta_lon_m=(F("longitude") - Value(lesson_lng))
+                    * K
+                    * Cos(Radians(Value(lesson_lat))),
+                    distance=Sqrt(
+                        Power((F("latitude") - Value(lesson_lat)) * K, 2)
+                        + Power(
+                            (F("longitude") - Value(lesson_lng))
+                            * K
+                            * Cos(Radians(Value(lesson_lat))),
+                            2,
+                        )
+                    ),
+                )
+                .filter(distance__lte=radius)
+                .order_by("distance")
+            )
+
+            if class_locations.exists():
+                closest_location = class_locations.first()
+                staff_to_location[staff_id] = closest_location
+
+        lesson_attendance_by_location = {}
+        for staff_id, location in staff_to_location.items():
+            if location.address not in lesson_attendance_by_location:
+                lesson_attendance_by_location[location.address] = set()
+            lesson_attendance_by_location[location.address].add(staff_id)
+
     else:
         staff_by_address = {}
         lesson_attendance_by_location = {}
