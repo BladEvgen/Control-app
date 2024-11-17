@@ -1,9 +1,8 @@
-from datetime import datetime
-from channels.generic.websocket import AsyncJsonWebsocketConsumer
-from django.utils import timezone
-from monitoring_app.models import LessonAttendance
-from asgiref.sync import sync_to_async
 import logging
+from datetime import datetime
+from django.utils import timezone
+from asgiref.sync import sync_to_async
+from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +65,8 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
 
     @sync_to_async
     def get_photos_for_date(self, date):
-        attendance_records = LessonAttendance.objects.filter(
+        from monitoring_app import models
+        attendance_records = models.LessonAttendance.objects.filter(
             date_at=date
         ).select_related("staff__department")
         photos = []
@@ -95,8 +95,9 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
 
     @sync_to_async
     def get_photo_data(self, attendance_id):
+        from monitoring_app import models
         try:
-            record = LessonAttendance.objects.select_related("staff__department").get(
+            record = models.LessonAttendance.objects.select_related("staff__department").get(
                 id=attendance_id
             )
             return {
@@ -111,6 +112,6 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                 "attendanceTime": timezone.localtime(record.first_in).isoformat(),
                 "tutorInfo": record.tutor_info,
             }
-        except LessonAttendance.DoesNotExist:
-            logger.error(f"LessonAttendance with id {attendance_id} does not exist")
+        except models.LessonAttendance.DoesNotExist:
+            logger.error(f"models.LessonAttendance with id {attendance_id} does not exist")
             return None
