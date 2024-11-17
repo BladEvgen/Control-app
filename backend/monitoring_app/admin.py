@@ -85,7 +85,9 @@ class DepartmentHierarchyFilter(SimpleListFilter):
         descendants = set(queue)
         while queue:
             current = queue.pop(0)
-            children = ChildDepartment.objects.filter(parent_id=current).values_list("id", flat=True)
+            children = ChildDepartment.objects.filter(parent_id=current).values_list(
+                "id", flat=True
+            )
             queue.extend(children)
             descendants.update(children)
         return descendants
@@ -106,6 +108,7 @@ class DepartmentHierarchyFilter(SimpleListFilter):
 
 
 # === Модели авторизации ===
+
 
 @admin.register(PasswordResetToken)
 class PasswordResetTokenAdmin(admin.ModelAdmin):
@@ -216,9 +219,10 @@ class UserProfileAdmin(admin.ModelAdmin):
             },
         ),
     )
+
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = qs.select_related('user')
+        qs = qs.select_related("user")
         return qs
 
 
@@ -378,7 +382,7 @@ class StaffAdmin(admin.ModelAdmin):
                 """,
                 obj.avatar.url,
             )
-            cache.set(cache_key, html, timeout=86400)  
+            cache.set(cache_key, html, timeout=86400)
             return html
 
         no_photo_html = format_html(
@@ -390,7 +394,6 @@ class StaffAdmin(admin.ModelAdmin):
         )
         cache.set(cache_key, no_photo_html, timeout=86400)
         return no_photo_html
-
 
     avatar_thumbnail.short_description = "Фото"
 
@@ -408,7 +411,7 @@ class StaffAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = qs.select_related('department').prefetch_related('positions')
+        qs = qs.select_related("department").prefetch_related("positions")
         return qs
 
     display_positions.short_description = "Должности"
@@ -486,7 +489,11 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
             images_html = ""
             with os.scandir(augmented_dir) as it:
                 for entry in it:
-                    if entry.is_file() and entry.name.startswith(pattern) and entry.name.endswith('.jpg'):
+                    if (
+                        entry.is_file()
+                        and entry.name.startswith(pattern)
+                        and entry.name.endswith(".jpg")
+                    ):
                         images_html += (
                             f'<img src="{os.path.join(settings.AUGMENT_URL, obj.staff.pin, entry.name)}" '
                             f'width="80" height="80" style="margin: 5px;" />'
@@ -495,7 +502,7 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
             if not images_html:
                 return "No Augmented Images"
 
-            cache.set(cache_key, images_html, timeout=3600)  
+            cache.set(cache_key, images_html, timeout=3600)
 
         return format_html(images_html)
 
@@ -591,26 +598,43 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = qs.select_related('staff__department').only(
-            'staff__department__name', 'staff__pin', 'staff__surname',
-            'staff__name', 'date_at', 'first_in', 'last_out', 
-            'absence_reason', 'area_name_in', 'area_name_out'
+        qs = qs.select_related("staff__department").only(
+            "staff__department__name",
+            "staff__pin",
+            "staff__surname",
+            "staff__name",
+            "date_at",
+            "first_in",
+            "last_out",
+            "absence_reason",
+            "area_name_in",
+            "area_name_out",
         )
 
         return qs.exclude(
-            Q(area_name_in__isnull=True) | Q(area_name_out__isnull=True) |
-            Q(area_name_in="Unknown") | Q(area_name_out="Unknown")
+            Q(area_name_in__isnull=True)
+            | Q(area_name_out__isnull=True)
+            | Q(area_name_in="Unknown")
+            | Q(area_name_out="Unknown")
         )
 
     def area_name_in(self, obj):
-        return obj.area_name_in if obj.area_name_in and obj.area_name_in != "Unknown" else "N/A"
+        return (
+            obj.area_name_in
+            if obj.area_name_in and obj.area_name_in != "Unknown"
+            else "N/A"
+        )
 
     def area_name_out(self, obj):
-        return obj.area_name_out if obj.area_name_out and obj.area_name_out != "Unknown" else "N/A"
+        return (
+            obj.area_name_out
+            if obj.area_name_out and obj.area_name_out != "Unknown"
+            else "N/A"
+        )
 
     def changelist_view(self, request, extra_context=None):
         response = super().changelist_view(request, extra_context=extra_context)
-        response['Cache-Control'] = 'max-age=60, public'
+        response["Cache-Control"] = "max-age=60, public"
         return response
 
 
@@ -712,7 +736,7 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = qs.select_related('staff')
+        qs = qs.select_related("staff")
         photo_expired = request.GET.get("photo_expired")
         if photo_expired == "yes":
             thirty_days_ago = timezone.now().date() - timezone.timedelta(days=31)
@@ -737,29 +761,30 @@ class LessonAttendanceAdmin(ModelAdmin):
 
         radius = 200  # в метрах
         obj_lat, obj_lon = obj.latitude, obj.longitude
+
         class Radians(Func):
-            function = 'RADIANS'
-            template = '%(function)s(%(expressions)s)'
+            function = "RADIANS"
+            template = "%(function)s(%(expressions)s)"
 
         class Cos(Func):
-            function = 'COS'
-            template = '%(function)s(%(expressions)s)'
+            function = "COS"
+            template = "%(function)s(%(expressions)s)"
 
-        K = 111320  
+        K = 111320
 
-        delta_lat = (F('latitude') - obj_lat)
-        delta_lon = (F('longitude') - obj_lon)
+        delta_lat = F("latitude") - obj_lat
+        delta_lon = F("longitude") - obj_lon
 
         delta_lat_m = delta_lat * K
         delta_lon_m = delta_lon * K * Cos(Radians(Value(obj_lat)))
 
-        distance_expr = Sqrt(
-            Power(delta_lat_m, 2) + Power(delta_lon_m, 2)
-        )
+        distance_expr = Sqrt(Power(delta_lat_m, 2) + Power(delta_lon_m, 2))
 
-        locations = ClassLocation.objects.annotate(
-            distance=distance_expr
-        ).filter(distance__lte=radius).order_by('distance')
+        locations = (
+            ClassLocation.objects.annotate(distance=distance_expr)
+            .filter(distance__lte=radius)
+            .order_by("distance")
+        )
 
         if locations.exists():
             location = locations.first()

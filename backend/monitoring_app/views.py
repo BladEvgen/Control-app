@@ -3794,7 +3794,7 @@ def download_examples_zip(request):
     Serve the 'examples.zip' file from the media directory to the user for download.
 
     This view checks for the existence of 'examples.zip' in the MEDIA_ROOT directory
-    and serves it as a downloadable file if found. Logs an error and raises a 404 
+    and serves it as a downloadable file if found. Logs an error and raises a 404
     error if the file is missing.
 
     Args:
@@ -3802,16 +3802,16 @@ def download_examples_zip(request):
 
     Returns:
         FileResponse: A response object containing the file for download.
-    
+
     Raises:
         Http404: If the file does not exist in the specified directory.
     """
     file_path = Path(settings.MEDIA_ROOT) / "examples.zip"
-    
+
     if not file_path.exists():
         logger.error(f"File not found: {file_path}")
         raise Http404("Requested file does not exist.")
-    
+
     try:
         response = FileResponse(file_path.open("rb"), content_type="application/zip")
         response["Content-Disposition"] = 'attachment; filename="examples.zip"'

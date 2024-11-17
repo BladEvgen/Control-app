@@ -32,10 +32,8 @@ static_augmentations_list = {
     "posterize": lambda images: augmentations.posterize(
         images, magnitude_bin=signed_bin(1), num_magnitude_bins=10
     ),
-
     "rotate": lambda images: fn.rotate(images, angle=signed_bin(10)),
     "flip": lambda images: fn.flip(images, horizontal=1),
-
 }
 
 
@@ -115,7 +113,6 @@ def run_dali_augmentation_for_all_staff():
                 expand_ratio_bottom=0.2,
             )
             logger.info(f"Expanded face coordinates: {expanded_face_coords}")
-
 
             def image_data():
                 yield [test_image_rgb]

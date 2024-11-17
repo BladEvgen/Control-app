@@ -20,7 +20,11 @@ urlpatterns = [
         name="staff-attendance-stats",
     ),
     path("api/locations", views.map_location, name="locations"),
-    path("api/lesson_attendance/", views.create_lesson_attendance, name="create_lesson_attendance"),
+    path(
+        "api/lesson_attendance/",
+        views.create_lesson_attendance,
+        name="create_lesson_attendance",
+    ),
     path(
         "api/lesson_attendance/<int:id>/",
         views.update_lesson_attendance,
@@ -69,9 +73,11 @@ urlpatterns = [
         views.password_reset_confirm_view,
         name="password_reset_confirm",
     ),
-    path('verify-face/', views.verify_face, name='verify-face'),
+    path("verify-face/", views.verify_face, name="verify-face"),
     path("recognize-faces/", views.recognize_faces, name="recognize-faces"),
-    path("download/examples/", views.download_examples_zip, name="download_examples_zip"),
+    path(
+        "download/examples/", views.download_examples_zip, name="download_examples_zip"
+    ),
 ]
 
 urlpatterns += doc_urls
