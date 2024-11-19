@@ -12,15 +12,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 from drf_yasg import openapi
 from django.conf import settings
+from django.db import connection
 from django.utils import timezone
 from rest_framework import status
 from openpyxl import load_workbook
 from django.contrib import messages
 from django.core.cache import caches
 from celery.result import AsyncResult
-from django.db.models import Count, Q
 from django.views.generic import View
+from django.db.models import Count, Q
 from django.contrib.auth.models import User
+
 from django.core.files.base import ContentFile
 from drf_yasg.utils import swagger_auto_schema
 from django.db import IntegrityError, transaction
@@ -40,17 +42,6 @@ from rest_framework.response import Response
 from monitoring_app import models, permissions, serializers, tasks, utils
 
 logger = logging.getLogger(__name__)
-
-AREA_ADDRESS_MAPPING = {
-    "Абылайхана турникет": "КРМУ Абылай хана",
-    "вход в 8 этаж": "КРМУ Абылай хана",
-    "вход Абылайхана": "КРМУ Абылай хана",
-    "военные 3 этаж": "КРМУ Абылай хана",
-    "лифтовые с 1 по 7": "КРМУ Абылай хана",
-    "выход ЦОС": "КРМУ Абылай хана",
-    "Торекулва турникет": "КРМУ Торекулова",
-    "карасай батыра турникет": "КРМУ Карасай Батыра",
-}
 
 
 class StaffAttendancePagination(PageNumberPagination):
@@ -2272,40 +2263,66 @@ def staff_detail_by_department_id(request, department_id):
             )
 
         def get_all_child_department_ids(department_id):
-            child_ids = models.ChildDepartment.objects.filter(
-                Q(parent_id=department_id) | Q(parent__parent_id=department_id)
-            ).values_list("id", flat=True)
-            return list(child_ids)
+            """
+            Uses a recursive CTE to get all child departments via an SQL query.
 
-        department_ids = [department_id] + get_all_child_department_ids(department_id)
-        logger.debug(f"Department IDs for attendance query: {department_ids}")
+            Args:
+                department_id (str): ID of the parent department.
+
+            Returns:
+                list: List of IDs of all child departments, including the given ID.
+            """
+            query = """
+            WITH RECURSIVE childdepartment_cte AS (
+                SELECT id, parent_id
+                FROM monitoring_app_childdepartment
+                WHERE id = %s
+                UNION ALL
+                SELECT cd.id, cd.parent_id
+                FROM monitoring_app_childdepartment cd
+                JOIN childdepartment_cte cte ON cd.parent_id = cte.id
+            )
+            SELECT id FROM childdepartment_cte;
+            """
+            with connection.cursor() as cursor:
+                cursor.execute(query, [department_id])
+                result = cursor.fetchall()
+            return [row[0] for row in result]
+
+        department_ids = get_all_child_department_ids(department_id)
+        logger.info(f"Departments for ID {department_id}: {department_ids}")
 
         cache_key = (
             f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
         )
         logger.info(f"Generated cache key: {cache_key}")
 
+        def daterange(start_date, end_date):
+            for n in range(int((end_date - start_date).days) + 1):
+                yield start_date + datetime.timedelta(n)
+
         def query():
             logger.info("Querying staff attendance data")
 
+            staff_objects = models.Staff.objects.filter(
+                department_id__in=department_ids
+            ).select_related("department")
+
+            staff_dict = {staff.id: staff for staff in staff_objects}
+            staff_ids = list(staff_dict.keys())
+
             staff_attendance_qs = (
                 models.StaffAttendance.objects.filter(
-                    staff__department_id__in=department_ids,
-                    date_at__range=(
-                        start_date + datetime.timedelta(days=1),
-                        end_date + datetime.timedelta(days=1),
-                    ),
+                    staff_id__in=staff_ids,
+                    date_at__range=(start_date, end_date),
                 )
                 .select_related("staff__department")
                 .values("staff_id", "date_at", "first_in", "last_out", "area_name_in")
             )
-            logger.debug(
-                f"StaffAttendance records fetched: {staff_attendance_qs.count()}"
-            )
 
             lesson_attendance_qs = (
                 models.LessonAttendance.objects.filter(
-                    staff__department_id__in=department_ids,
+                    staff_id__in=staff_ids,
                     date_at__range=(start_date, end_date),
                 )
                 .select_related("staff__department")
@@ -2318,13 +2335,10 @@ def staff_detail_by_department_id(request, department_id):
                     "longitude",
                 )
             )
-            logger.debug(
-                f"LessonAttendance records fetched: {lesson_attendance_qs.count()}"
-            )
 
             absent_reasons_qs = (
                 models.AbsentReason.objects.filter(
-                    staff__department_id__in=department_ids,
+                    staff_id__in=staff_ids,
                     start_date__lte=end_date,
                     end_date__gte=start_date,
                 )
@@ -2335,9 +2349,9 @@ def staff_detail_by_department_id(request, department_id):
 
             remote_works_qs = (
                 models.RemoteWork.objects.filter(
-                    Q(staff__department_id__in=department_ids)
+                    Q(staff_id__in=staff_ids)
                     & (
-                        Q(start_date__lte=end_date) & Q(end_date__gte=start_date)
+                        Q(start_date__lte=end_date, end_date__gte=start_date)
                         | Q(permanent_remote=True)
                     )
                 )
@@ -2348,26 +2362,38 @@ def staff_detail_by_department_id(request, department_id):
 
             class_locations = list(models.ClassLocation.objects.all())
 
-            staff_attendance_map = defaultdict(list)
+            location_searcher = utils.LocationSearcher(
+                [
+                    {
+                        "latitude": loc.latitude,
+                        "longitude": loc.longitude,
+                        "name": loc.name,
+                    }
+                    for loc in class_locations
+                ]
+            )
+
+            staff_attendance_map = defaultdict(lambda: defaultdict(list))
             for sa in staff_attendance_qs:
                 date_key = (sa["date_at"] - datetime.timedelta(days=1)).strftime(
                     "%Y-%m-%d"
                 )
-                staff_attendance_map[(sa["staff_id"], date_key)].append(sa)
+                staff_attendance_map[sa["staff_id"]][date_key].append(sa)
 
-            lesson_attendance_map = defaultdict(list)
+            lesson_attendance_map = defaultdict(lambda: defaultdict(list))
             for la in lesson_attendance_qs:
                 date_key = la["date_at"].strftime("%Y-%m-%d")
-                lesson_attendance_map[(la["staff_id"], date_key)].append(la)
+                lesson_attendance_map[la["staff_id"]][date_key].append(la)
 
-            absence_map = defaultdict(list)
+            absence_map = defaultdict(lambda: defaultdict(list))
             for ar in absent_reasons_qs:
                 ar_start = max(ar["start_date"], start_date)
                 ar_end = min(ar["end_date"], end_date)
                 for single_date in daterange(ar_start, ar_end):
-                    absence_map[(ar["staff_id"], single_date)].append(ar["reason"])
+                    date_key = single_date.strftime("%Y-%m-%d")
+                    absence_map[ar["staff_id"]][date_key].append(ar["reason"])
 
-            remote_work_map = defaultdict(bool)
+            remote_work_map = defaultdict(lambda: defaultdict(bool))
             for rw in remote_works_qs:
                 if rw["permanent_remote"]:
                     rw_start = start_date
@@ -2376,43 +2402,17 @@ def staff_detail_by_department_id(request, department_id):
                     rw_start = max(rw["start_date"], start_date)
                     rw_end = min(rw["end_date"], end_date)
                 for single_date in daterange(rw_start, rw_end):
-                    remote_work_map[(rw["staff_id"], single_date)] = True
-
-            staff_ids = set(
-                [sa["staff_id"] for sa in staff_attendance_qs]
-                + [la["staff_id"] for la in lesson_attendance_qs]
-                + [ar["staff_id"] for ar in absent_reasons_qs]
-                + [rw["staff_id"] for rw in remote_works_qs]
-            )
-            staff_objects = models.Staff.objects.filter(
-                id__in=staff_ids
-            ).select_related("department")
-            staff_dict = {staff.id: staff for staff in staff_objects}
+                    date_key = single_date.strftime("%Y-%m-%d")
+                    remote_work_map[rw["staff_id"]][date_key] = True
 
             results = []
+
             for single_date in daterange(start_date, end_date):
                 date_key = single_date.strftime("%Y-%m-%d")
-                date_obj = single_date
-
-                staff_ids_on_date = set()
-                for key in staff_attendance_map.keys():
-                    if key[1] == date_key:
-                        staff_ids_on_date.add(key[0])
-                for key in lesson_attendance_map.keys():
-                    if key[1] == date_key:
-                        staff_ids_on_date.add(key[0])
-
-                if not staff_ids_on_date:
-                    continue
 
                 department_attendance_map = defaultdict(list)
 
-                for staff_id in staff_ids_on_date:
-                    staff = staff_dict.get(staff_id)
-                    if not staff:
-                        logger.warning(f"Staff with ID {staff_id} does not exist")
-                        continue
-
+                for staff_id, staff in staff_dict.items():
                     staff_fio = f"{staff.surname} {staff.name}"
                     department_name = (
                         staff.department.name
@@ -2420,8 +2420,12 @@ def staff_detail_by_department_id(request, department_id):
                         else "Unknown Department"
                     )
 
-                    sa_records = staff_attendance_map.get((staff_id, date_key), [])
-                    la_records = lesson_attendance_map.get((staff_id, date_key), [])
+                    sa_records = staff_attendance_map.get(staff_id, {}).get(
+                        date_key, []
+                    )
+                    la_records = lesson_attendance_map.get(staff_id, {}).get(
+                        date_key, []
+                    )
 
                     first_in = None
                     last_out = None
@@ -2440,7 +2444,7 @@ def staff_detail_by_department_id(request, department_id):
                             )
                             if not last_out or sa_last_out > last_out:
                                 last_out = sa_last_out
-                        area_name = AREA_ADDRESS_MAPPING.get(
+                        area_name = utils.AREA_ADDRESS_MAPPING.get(
                             sa["area_name_in"], "Unknown Area"
                         )
                         if area_name != "Unknown Area":
@@ -2459,28 +2463,18 @@ def staff_detail_by_department_id(request, department_id):
                             )
                             if not last_out or la_last_out > last_out:
                                 last_out = la_last_out
-                        closest_location_name = "Unknown Area"
-                        for loc in class_locations:
-                            if utils.is_within_radius(
-                                la["latitude"],
-                                la["longitude"],
-                                loc.latitude,
-                                loc.longitude,
-                                radius=200,
-                            ):
-                                closest_location_name = loc.name
-                                break
+
+                        closest_location_name = location_searcher.find_nearest(
+                            la["latitude"], la["longitude"], radius=200
+                        )
                         if closest_location_name != "Unknown Area":
                             area_names.append(closest_location_name)
 
                     area_name = area_names[0] if area_names else "Unknown Area"
 
-                    remote_work = remote_work_map.get((staff_id, date_obj), False)
-                    if not remote_work:
-                        reasons = absence_map.get((staff_id, date_obj), [])
-                        absence_reason = ", ".join(reasons) if reasons else None
-                    else:
-                        absence_reason = None
+                    remote_work = remote_work_map.get(staff_id, {}).get(date_key, False)
+                    reasons = absence_map.get(staff_id, {}).get(date_key, [])
+                    absence_reason = ", ".join(reasons) if reasons else None
 
                     attendance_entry = {
                         "staff_fio": staff_fio,
@@ -2493,11 +2487,9 @@ def staff_detail_by_department_id(request, department_id):
 
                     department_attendance_map[department_name].append(attendance_entry)
 
-                date_result = {}
                 for dept, attendance in department_attendance_map.items():
-                    date_result[date_key] = {
-                        "department": dept,
-                        "attendance": attendance,
+                    date_result = {
+                        date_key: {"department": dept, "attendance": attendance}
                     }
                     results.append(date_result)
 
@@ -2515,11 +2507,6 @@ def staff_detail_by_department_id(request, department_id):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             data={"error": str(e)},
         )
-
-
-def daterange(start_date, end_date):
-    for n in range(int((end_date - start_date).days) + 1):
-        yield start_date + datetime.timedelta(n)
 
 
 @swagger_auto_schema(
