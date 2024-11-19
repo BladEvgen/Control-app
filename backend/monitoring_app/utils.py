@@ -625,7 +625,7 @@ def get_attendance_data(pin: str):
         response_json = response.json()
         return response_json.get("data", [])
     except Exception as e:
-        print(f"Error, Pin: {pin}, Error: {e}")
+        logger.error(f"Error, Pin: {pin}, Error: {e}")
         return []
 
 
@@ -743,72 +743,100 @@ def fetch_data(url: str) -> Dict[str, Any]:
         response.raise_for_status()
         return response.json()
     except requests.RequestException as e:
-        print(f"Error fetching data: {e}")
+        logger.error(f"Error fetching data: {e}")
         return {}
 
 
 def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]]]:
-    rows: List[List[Optional[str]]] = []
-    timezone_pattern = re.compile(r"\+\d{2}:\d{2}")
+    """
+    Parses raw attendance data and returns structured rows for the DataFrame.
+
+    Args:
+        data: Raw attendance data from the API or source.
+
+    Returns:
+        A list of rows with structured attendance data.
+    """
+    rows = []
     holidays_cache = cache.get("holidays_cache")
 
     if not holidays_cache:
         holidays_cache = {
             holiday.date: holiday for holiday in models.PublicHoliday.objects.all()
         }
-        cache.set("holidays_cache", holidays_cache, timeout=1 * 12 * 60)
+        cache.set("holidays_cache", holidays_cache, timeout=12 * 60 * 60)
 
     def parse_datetime_with_timezone(dt_str: Optional[str]) -> Optional[str]:
         if not dt_str:
             return None
-        match = timezone_pattern.search(dt_str)
-        if match:
-            timezone = match.group(0)
-            dt_format = f"%Y-%m-%dT%H:%M:%S{timezone}"
-            return datetime.datetime.strptime(dt_str, dt_format).strftime("%H:%M:%S")
-        return None
+        try:
+            dt = datetime.datetime.fromisoformat(dt_str)
+            return dt.strftime("%H:%M:%S")
+        except ValueError:
+            return None
 
     for record in data:
         for date, details in record.items():
             try:
-                date_obj = datetime.datetime.strptime(date, "%Y-%m-%d")
+                date_obj = datetime.datetime.strptime(date, "%Y-%m-%d").date()
                 date_str = date_obj.strftime("%d.%m.%Y")
-            except ValueError as e:
-                print(f"Error parsing date: {e}")
+            except ValueError:
                 continue
 
             public_holiday = holidays_cache.get(date_obj)
             is_holiday = public_holiday and not public_holiday.is_working_day
+            is_weekend = date_obj.weekday() >= 5
 
             department = details.get("department", "").replace("_", " ").capitalize()
             for attendance in details.get("attendance", []):
-                try:
-                    staff_fio = attendance.get("staff_fio", "")
-                    first_in = parse_datetime_with_timezone(attendance.get("first_in"))
-                    last_out = parse_datetime_with_timezone(attendance.get("last_out"))
+                staff_fio = attendance.get("staff_fio", "")
+                first_in = parse_datetime_with_timezone(attendance.get("first_in"))
+                last_out = parse_datetime_with_timezone(attendance.get("last_out"))
+                remote_work = attendance.get("remote_work", False)
+                absence_reason = attendance.get("absence_reason", None)
+                area_name = attendance.get("area_name", "Unknown Area")
 
-                    if date_obj.weekday() >= 5 or is_holiday:
-                        if first_in and last_out:
-                            attendance_info = f"{first_in} - {last_out}"
-                        else:
-                            attendance_info = "Выходной"
+                if is_weekend or is_holiday:
+                    if first_in and last_out:
+                        attendance_info = f"{first_in} - {last_out}\r\n({area_name})"
+                        meta = "holiday_with_attendance"
                     else:
-                        attendance_info = (
-                            f"{first_in} - {last_out}"
-                            if first_in and last_out
-                            else "Отсутствие"
-                        )
+                        attendance_info = "Выходной"
+                        meta = "holiday"
+                else:
+                    if first_in and last_out and absence_reason:
+                        attendance_info = f"{first_in} - {last_out}\r\n({area_name})"
+                        meta = "workday_with_reason"
+                    elif first_in and last_out:
+                        attendance_info = f"{first_in} - {last_out}\r\n({area_name})"
+                        meta = "workday"
+                    elif absence_reason:
+                        attendance_info = absence_reason
+                        meta = "absence_reason"
+                    elif remote_work:
+                        attendance_info = "Удаленная работа"
+                        meta = "remote_work"
+                    else:
+                        attendance_info = "Отсутствие"
+                        meta = "absence"
 
-                    rows.append([staff_fio, department, date_str, attendance_info])
-                except KeyError as e:
-                    print(f"Missing expected key: {e}")
-                except Exception as e:
-                    print(f"Error processing record: {e}")
+                rows.append([staff_fio, department, date_str, attendance_info, meta])
     return rows
 
 
 def create_dataframe(rows: List[List[Optional[str]]]) -> pd.DataFrame:
-    df = pd.DataFrame(rows, columns=["ФИО", "Отдел", "Дата", "Посещаемость"])
+    """
+    Converts structured rows into a pivoted DataFrame.
+
+    Args:
+        rows: List of structured rows containing attendance data.
+
+    Returns:
+        A pivoted pandas DataFrame for further processing.
+    """
+    display_rows = [row[:-1] for row in rows]
+
+    df = pd.DataFrame(display_rows, columns=["ФИО", "Отдел", "Дата", "Посещаемость"])
     df_pivot = df.pivot_table(
         index=["ФИО", "Отдел"],
         columns="Дата",
@@ -827,20 +855,46 @@ def create_dataframe(rows: List[List[Optional[str]]]) -> pd.DataFrame:
     return df_pivot_sorted
 
 
-def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
+def save_to_excel(
+    df_pivot_sorted: pd.DataFrame, rows: List[List[Optional[str]]]
+) -> Workbook:
+    """
+    Форматирует данные посещаемости в Excel-таблицу.
+
+    Args:
+        df_pivot_sorted: Поворотный DataFrame с данными посещаемости.
+        rows: Оригинальные строки с метаданными для форматирования.
+
+    Returns:
+        Объект Workbook из openpyxl.
+    """
     wb = Workbook()
     ws = wb.active
 
-    data_font = Font(name="Roboto", size=11)
-    data_alignment = Alignment(horizontal="center", vertical="center")
+    data_font = Font(name="Roboto", size=12)
+    header_font = Font(name="Roboto", size=15, bold=True)
+    data_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    header_alignment = Alignment(
+        horizontal="center", vertical="center", wrap_text=False
+    )
 
     absence_fill = PatternFill(
         start_color="ab0a0a", end_color="ab0a0a", fill_type="solid"
     )
-    absence_font = Font(color="FFFFFF")
+    remote_work_fill = PatternFill(
+        start_color="ADD8E6", end_color="ADD8E6", fill_type="solid"
+    )
+    reason_fill = PatternFill(
+        start_color="FFA500", end_color="FFA500", fill_type="solid"
+    )
+    holiday_fill = PatternFill(
+        start_color="D3F9D8", end_color="D3F9D8", fill_type="solid"
+    )
 
     df_flat = df_pivot_sorted.reset_index()
     df_flat_sorted = df_flat.sort_values(by=["Отдел", "ФИО"])
+
+    meta_dict = {(row[0], row[2]): row[-1] for row in rows}
 
     max_col_widths = [0] * len(df_flat_sorted.columns)
     max_row_heights = [0] * (len(df_flat_sorted) + 1)
@@ -850,31 +904,39 @@ def save_to_excel(df_pivot_sorted: pd.DataFrame) -> Workbook:
     ):
         for c_idx, value in enumerate(r, 1):
             cell = ws.cell(row=r_idx, column=c_idx, value=value)
-            cell.font = data_font
-            cell.alignment = data_alignment
-            if value == "Отсутствие":
-                cell.fill = absence_fill
-                cell.font = absence_font
 
-            value_length = len(str(value))
+            if r_idx == 1:
+                cell.font = header_font
+                cell.alignment = header_alignment
+            else:
+                cell.font = data_font
+                cell.alignment = data_alignment
 
-            if value_length > max_col_widths[c_idx - 1]:
-                max_col_widths[c_idx - 1] = value_length
+                if c_idx > 2:
+                    staff_fio = r[0]
+                    date = df_flat_sorted.columns[c_idx - 1]
+                    meta = meta_dict.get((staff_fio, date), None)
+                    if meta == "holiday_with_attendance":
+                        cell.fill = holiday_fill
+                    elif meta == "absence_reason":
+                        cell.fill = reason_fill
+                    elif meta == "remote_work":
+                        cell.fill = remote_work_fill
+                    elif meta == "absence":
+                        cell.fill = absence_fill
+                        cell.font = Font(color="FFFFFF")
 
-            if value_length > max_row_heights[r_idx - 1]:
-                max_row_heights[r_idx - 1] = value_length
+            value_length = len(str(value)) if value else 0
+            max_col_widths[c_idx - 1] = max(max_col_widths[c_idx - 1], value_length + 2)
+            max_row_heights[r_idx - 1] = max(max_row_heights[r_idx - 1], value_length)
 
-    header_font = Font(name="Roboto", size=14, bold=True)
-    for cell in ws[1]:
-        cell.font = header_font
-
-    for idx, col_width in enumerate(max_col_widths, 1):
-        ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = (
-            col_width + 2
+    for idx, col_width in enumerate(max_col_widths, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = max(
+            col_width, 15
         )
 
-    for idx, row_height in enumerate(max_row_heights, 1):
-        ws.row_dimensions[idx].height = row_height * 3
+    for idx, row_height in enumerate(max_row_heights, start=1):
+        ws.row_dimensions[idx].height = max(row_height * 2, 25)
 
     return wb
 
