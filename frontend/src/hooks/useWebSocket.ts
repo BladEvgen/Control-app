@@ -30,6 +30,28 @@ const useWebSocket = ({
   const pingIntervalRef = useRef<number | null>(null);
   const pongTimeoutRefLocal = useRef<number | null>(null);
   const attemptRef = useRef<number>(0);
+  const urlRef = useRef<string>(url);
+
+  const onOpenRef = useRef<() => void>();
+  const onCloseRef = useRef<(event: CloseEvent) => void>();
+  const onErrorRef = useRef<(event: Event) => void>();
+  const onMessageRef = useRef<(event: MessageEvent) => void>();
+
+  useEffect(() => {
+    onOpenRef.current = onOpen;
+  }, [onOpen]);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
+
+  useEffect(() => {
+    onMessageRef.current = onMessage;
+  }, [onMessage]);
 
   const handlePong = useCallback(() => {
     log.info("Получен pong от сервера");
@@ -53,12 +75,12 @@ const useWebSocket = ({
   }, [pongTimeout]);
 
   const connect = useCallback(() => {
-    log.info("Пытаемся подключиться к WebSocket:", url);
-    wsRef.current = new WebSocket(url);
+    log.info("Пытаемся подключиться к WebSocket:", urlRef.current);
+    wsRef.current = new WebSocket(urlRef.current);
 
     wsRef.current.onopen = () => {
       log.info("WebSocket соединение установлено");
-      onOpen && onOpen();
+      onOpenRef.current?.();
 
       pingIntervalRef.current = window.setInterval(sendPing, pingInterval);
 
@@ -79,16 +101,16 @@ const useWebSocket = ({
         if (data.type === "pong") {
           handlePong();
         } else {
-          onMessage(event);
+          onMessageRef.current?.(event);
         }
       } catch (error) {
         log.error("Ошибка при обработке сообщения WebSocket:", error);
       }
     };
 
-    wsRef.current.onclose = (event) => {
+    wsRef.current.onclose = (event: CloseEvent) => {
       log.warn("WebSocket соединение закрыто:", event);
-      onClose && onClose(event);
+      onCloseRef.current?.(event);
 
       if (pingIntervalRef.current) {
         clearInterval(pingIntervalRef.current);
@@ -117,22 +139,10 @@ const useWebSocket = ({
 
     wsRef.current.onerror = (error) => {
       log.error("Ошибка WebSocket:", error);
-      onError && onError(error);
+      onErrorRef.current?.(error);
       wsRef.current?.close();
     };
-  }, [
-    url,
-    onOpen,
-    onClose,
-    onError,
-    onMessage,
-    shouldReconnect,
-    reconnectInterval,
-    sendPing,
-    handlePong,
-    pingInterval,
-    pongTimeout,
-  ]);
+  }, [handlePong, pingInterval, reconnectInterval, sendPing, shouldReconnect]);
 
   useEffect(() => {
     isMountedRef.current = true;
