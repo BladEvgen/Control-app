@@ -18,6 +18,7 @@ import torch.nn as nn
 from openpyxl import Workbook
 from django.urls import reverse
 from django.conf import settings
+from scipy.spatial import KDTree
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
@@ -46,6 +47,17 @@ DAYS = settings.DAYS
 logger = logging.getLogger("django")
 
 arcface_model = None
+
+AREA_ADDRESS_MAPPING = {
+    "Абылайхана турникет": "КРМУ Абылай хана",
+    "вход в 8 этаж": "КРМУ Абылай хана",
+    "вход Абылайхана": "КРМУ Абылай хана",
+    "военные 3 этаж": "КРМУ Абылай хана",
+    "лифтовые с 1 по 7": "КРМУ Абылай хана",
+    "выход ЦОС": "КРМУ Абылай хана",
+    "Торекулва турникет": "КРМУ Торекулова",
+    "карасай батыра турникет": "КРМУ Карасай Батыра",
+}
 
 
 class FaceRecognitionResNet(nn.Module):
@@ -1221,6 +1233,39 @@ def generate_map_data(
         result_list.insert(0, main_location)
 
     return result_list
+
+
+class LocationSearcher:
+    def __init__(self, locations):
+        """
+        Инициализация с использованием списка локаций.
+
+        Args:
+            locations (list): Список словарей с ключами `latitude`, `longitude`, `name`.
+        """
+        self.locations = locations
+        self.kd_tree = KDTree(
+            [(loc["latitude"], loc["longitude"]) for loc in locations]
+        )
+        self.names = [loc["name"] for loc in locations]
+
+    def find_nearest(self, lat, lon, radius=200):
+        """
+        Находит ближайшую локацию в заданном радиусе.
+
+        Args:
+            lat (float): Широта искомой точки.
+            lon (float): Долгота искомой точки.
+            radius (float): Радиус поиска в метрах.
+
+        Returns:
+            str: Название ближайшей локации или "Unknown Area".
+        """
+        meters_to_degrees = radius / 111000
+        indices = self.kd_tree.query_ball_point([lat, lon], meters_to_degrees)
+        if indices:
+            return self.names[indices[0]]
+        return "Unknown Area"
 
 
 def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
