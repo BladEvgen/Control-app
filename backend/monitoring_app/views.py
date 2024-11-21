@@ -12,15 +12,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 from drf_yasg import openapi
 from django.conf import settings
+from django.db import connection
 from django.utils import timezone
 from rest_framework import status
 from openpyxl import load_workbook
 from django.contrib import messages
 from django.core.cache import caches
 from celery.result import AsyncResult
-from django.db.models import Count, Q
 from django.views.generic import View
+from django.db.models import Count, Q
 from django.contrib.auth.models import User
+
 from django.core.files.base import ContentFile
 from drf_yasg.utils import swagger_auto_schema
 from django.db import IntegrityError, transaction
@@ -2073,6 +2075,20 @@ def update_lesson_attendance(request, id):
                                                     description="Время последнего выхода сотрудника",
                                                     nullable=True,
                                                 ),
+                                                "area_name": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    description="Название зоны посещения",
+                                                    nullable=True,
+                                                ),
+                                                "remote_work": openapi.Schema(
+                                                    type=openapi.TYPE_BOOLEAN,
+                                                    description="Удаленная работа",
+                                                ),
+                                                "absence_reason": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    description="Причина отсутствия",
+                                                    nullable=True,
+                                                ),
                                             },
                                         ),
                                     ),
@@ -2175,12 +2191,18 @@ def staff_detail_by_department_id(request, department_id):
                         {
                             "staff_fio": "Иванов Иван",
                             "first_in": "2024-10-29T08:00:00+05:00",
-                            "last_out": "2024-10-29T17:00:00+05:00"
+                            "last_out": "2024-10-29T17:00:00+05:00",
+                            "area_name": "Улица примерочная 1",
+                            "remote_work": false,
+                            "absence_reason": null
                         },
                         {
                             "staff_fio": "Петров Петр",
                             "first_in": "2024-10-29T09:15:00+05:00",
-                            "last_out": "2024-10-29T16:45:00+05:00"
+                            "last_out": "2024-10-29T16:45:00+05:00",
+                            "area_name": "Проспект примеров 7",
+                            "remote_work": true,
+                            "absence_reason": "business_trip"
                         }
                     ]
                 }
@@ -2210,9 +2232,18 @@ def staff_detail_by_department_id(request, department_id):
                 data={"error": "Не указаны параметры начала или конца периода"},
             )
 
-        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
-        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
-        logger.debug(f"Parsed date range: start_date={start_date}, end_date={end_date}")
+        try:
+            start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
+            end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
+            logger.info(
+                f"Parsed date range: start_date={start_date}, end_date={end_date}"
+            )
+        except ValueError as ve:
+            logger.warning(f"Invalid date format {ve}")
+            return Response(
+                status=status.HTTP_400_BAD_REQUEST,
+                data={"error": "Неверный формат даты. Используйте YYYY-MM-DD."},
+            )
 
         if start_date > end_date:
             logger.warning("Start date is greater than end date")
@@ -2232,171 +2263,235 @@ def staff_detail_by_department_id(request, department_id):
             )
 
         def get_all_child_department_ids(department_id):
-            child_ids = models.ChildDepartment.objects.filter(
-                Q(parent_id=department_id) | Q(parent__parent_id=department_id)
-            ).values_list("id", flat=True)
-            return list(child_ids)
+            """
+            Uses a recursive CTE to get all child departments via an SQL query.
 
-        department_ids = [department_id] + get_all_child_department_ids(department_id)
-        logger.debug(f"Department IDs for attendance query: {department_ids}")
+            Args:
+                department_id (str): ID of the parent department.
+
+            Returns:
+                list: List of IDs of all child departments, including the given ID.
+            """
+            query = """
+            WITH RECURSIVE childdepartment_cte AS (
+                SELECT id, parent_id
+                FROM monitoring_app_childdepartment
+                WHERE id = %s
+                UNION ALL
+                SELECT cd.id, cd.parent_id
+                FROM monitoring_app_childdepartment cd
+                JOIN childdepartment_cte cte ON cd.parent_id = cte.id
+            )
+            SELECT id FROM childdepartment_cte;
+            """
+            with connection.cursor() as cursor:
+                cursor.execute(query, [department_id])
+                result = cursor.fetchall()
+            return [row[0] for row in result]
+
+        department_ids = get_all_child_department_ids(department_id)
+        logger.info(f"Departments for ID {department_id}: {department_ids}")
 
         cache_key = (
             f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
         )
-        logger.debug(f"Generated cache key: {cache_key}")
+        logger.info(f"Generated cache key: {cache_key}")
+
+        def daterange(start_date, end_date):
+            for n in range(int((end_date - start_date).days) + 1):
+                yield start_date + datetime.timedelta(n)
 
         def query():
             logger.info("Querying staff attendance data")
 
-            staff_attendance = (
+            staff_objects = models.Staff.objects.filter(
+                department_id__in=department_ids
+            ).select_related("department")
+
+            staff_dict = {staff.id: staff for staff in staff_objects}
+            staff_ids = list(staff_dict.keys())
+
+            staff_attendance_qs = (
                 models.StaffAttendance.objects.filter(
-                    staff__department_id__in=department_ids,
+                    staff_id__in=staff_ids,
                     date_at__range=(start_date, end_date),
                 )
-                .select_related("staff")
-                .order_by("date_at", "staff__surname", "staff__name")
+                .select_related("staff__department")
+                .values("staff_id", "date_at", "first_in", "last_out", "area_name_in")
             )
 
-            lesson_attendance = (
+            lesson_attendance_qs = (
                 models.LessonAttendance.objects.filter(
-                    staff__department_id__in=department_ids,
+                    staff_id__in=staff_ids,
                     date_at__range=(start_date, end_date),
                 )
-                .select_related("staff")
-                .order_by("date_at", "staff__surname", "staff__name")
+                .select_related("staff__department")
+                .values(
+                    "staff_id",
+                    "date_at",
+                    "first_in",
+                    "last_out",
+                    "latitude",
+                    "longitude",
+                )
             )
 
-            date_attendance_map = defaultdict(lambda: defaultdict(dict))
+            absent_reasons_qs = (
+                models.AbsentReason.objects.filter(
+                    staff_id__in=staff_ids,
+                    start_date__lte=end_date,
+                    end_date__gte=start_date,
+                )
+                .select_related("staff")
+                .values("staff_id", "reason", "start_date", "end_date")
+            )
+            logger.info(f"AbsentReason records fetched: {absent_reasons_qs.count()}")
 
-            for record in staff_attendance:
-                date_key = (record.date_at - datetime.timedelta(days=1)).strftime(
+            remote_works_qs = (
+                models.RemoteWork.objects.filter(
+                    Q(staff_id__in=staff_ids)
+                    & (
+                        Q(start_date__lte=end_date, end_date__gte=start_date)
+                        | Q(permanent_remote=True)
+                    )
+                )
+                .select_related("staff")
+                .values("staff_id", "permanent_remote", "start_date", "end_date")
+            )
+            logger.debug(f"RemoteWork records fetched: {remote_works_qs.count()}")
+
+            class_locations = list(models.ClassLocation.objects.all())
+
+            location_searcher = utils.LocationSearcher(
+                [
+                    {
+                        "latitude": loc.latitude,
+                        "longitude": loc.longitude,
+                        "name": loc.name,
+                    }
+                    for loc in class_locations
+                ]
+            )
+
+            staff_attendance_map = defaultdict(lambda: defaultdict(list))
+            for sa in staff_attendance_qs:
+                date_key = (sa["date_at"] - datetime.timedelta(days=1)).strftime(
                     "%Y-%m-%d"
                 )
-                staff_fio = f"{record.staff.surname} {record.staff.name}"
-                department_name = (
-                    record.staff.department.name
-                    if record.staff.department
-                    else "Unknown Department"
-                )
+                staff_attendance_map[sa["staff_id"]][date_key].append(sa)
 
-                logger.debug(
-                    f"Processing record for {staff_fio} on {date_key} in {department_name}"
-                )
+            lesson_attendance_map = defaultdict(lambda: defaultdict(list))
+            for la in lesson_attendance_qs:
+                date_key = la["date_at"].strftime("%Y-%m-%d")
+                lesson_attendance_map[la["staff_id"]][date_key].append(la)
 
-                first_in, last_out = record.first_in, record.last_out
-                if first_in is None or last_out is None:
-                    logger.debug(
-                        f"Missing time data for {staff_fio} on {date_key}: first_in={first_in}, last_out={last_out}"
-                    )
+            absence_map = defaultdict(lambda: defaultdict(list))
+            for ar in absent_reasons_qs:
+                ar_start = max(ar["start_date"], start_date)
+                ar_end = min(ar["end_date"], end_date)
+                for single_date in daterange(ar_start, ar_end):
+                    date_key = single_date.strftime("%Y-%m-%d")
+                    absence_map[ar["staff_id"]][date_key].append(ar["reason"])
 
-                try:
-                    if staff_fio in date_attendance_map[date_key][department_name]:
-                        existing_record = date_attendance_map[date_key][
-                            department_name
-                        ][staff_fio]
-                        existing_record["first_in"] = (
-                            min(
-                                existing_record["first_in"],
-                                first_in.astimezone(timezone.get_default_timezone()),
-                            )
-                            if existing_record["first_in"] and first_in
-                            else first_in
-                        )
-                        existing_record["last_out"] = (
-                            max(
-                                existing_record["last_out"],
-                                last_out.astimezone(timezone.get_default_timezone()),
-                            )
-                            if existing_record["last_out"] and last_out
-                            else last_out
-                        )
-                    else:
-                        date_attendance_map[date_key][department_name][staff_fio] = {
-                            "staff_fio": staff_fio,
-                            "first_in": (
-                                first_in.astimezone(timezone.get_default_timezone())
-                                if first_in
-                                else None
-                            ),
-                            "last_out": (
-                                last_out.astimezone(timezone.get_default_timezone())
-                                if last_out
-                                else None
-                            ),
-                        }
-                except AttributeError as e:
-                    logger.error(
-                        f"Error processing time for {staff_fio} on {date_key}: {e}"
-                    )
+            remote_work_map = defaultdict(lambda: defaultdict(bool))
+            for rw in remote_works_qs:
+                if rw["permanent_remote"]:
+                    rw_start = start_date
+                    rw_end = end_date
+                else:
+                    rw_start = max(rw["start_date"], start_date)
+                    rw_end = min(rw["end_date"], end_date)
+                for single_date in daterange(rw_start, rw_end):
+                    date_key = single_date.strftime("%Y-%m-%d")
+                    remote_work_map[rw["staff_id"]][date_key] = True
 
-            # Аналогичные логи для lesson_attendance
-            for record in lesson_attendance:
-                date_key = record.date_at.strftime("%Y-%m-%d")
-                staff_fio = f"{record.staff.surname} {record.staff.name}"
-                department_name = (
-                    record.staff.department.name
-                    if record.staff.department
-                    else "Unknown Department"
-                )
-
-                logger.debug(
-                    f"Processing lesson record for {staff_fio} on {date_key} in {department_name}"
-                )
-
-                first_in, last_out = record.first_in, record.last_out
-                if first_in is None or last_out is None:
-                    logger.debug(
-                        f"Missing lesson time data for {staff_fio} on {date_key}: first_in={first_in}, last_out={last_out}"
-                    )
-
-                try:
-                    if staff_fio in date_attendance_map[date_key][department_name]:
-                        existing_record = date_attendance_map[date_key][
-                            department_name
-                        ][staff_fio]
-                        existing_record["first_in"] = (
-                            min(
-                                existing_record["first_in"],
-                                first_in.astimezone(timezone.get_default_timezone()),
-                            )
-                            if existing_record["first_in"]
-                            else first_in
-                        )
-                        existing_record["last_out"] = (
-                            max(
-                                existing_record["last_out"],
-                                last_out.astimezone(timezone.get_default_timezone()),
-                            )
-                            if existing_record["last_out"]
-                            else last_out
-                        )
-                    else:
-                        date_attendance_map[date_key][department_name][staff_fio] = {
-                            "staff_fio": staff_fio,
-                            "first_in": (
-                                first_in.astimezone(timezone.get_default_timezone())
-                                if first_in
-                                else None
-                            ),
-                            "last_out": (
-                                last_out.astimezone(timezone.get_default_timezone())
-                                if last_out
-                                else None
-                            ),
-                        }
-                except AttributeError as e:
-                    logger.error(
-                        f"Error processing lesson time for {staff_fio} on {date_key}: {e}"
-                    )
-
-            logger.info("Attendance data successfully processed")
             results = []
-            for date, departments in date_attendance_map.items():
-                for dept, staff_data in departments.items():
-                    attendance = list(staff_data.values())
-                    results.append(
-                        {date: {"department": dept, "attendance": attendance}}
+
+            for single_date in daterange(start_date, end_date):
+                date_key = single_date.strftime("%Y-%m-%d")
+
+                department_attendance_map = defaultdict(list)
+
+                for staff_id, staff in staff_dict.items():
+                    staff_fio = f"{staff.surname} {staff.name}"
+                    department_name = (
+                        staff.department.name
+                        if staff.department
+                        else "Unknown Department"
                     )
+
+                    sa_records = staff_attendance_map.get(staff_id, {}).get(
+                        date_key, []
+                    )
+                    la_records = lesson_attendance_map.get(staff_id, {}).get(
+                        date_key, []
+                    )
+
+                    first_in = None
+                    last_out = None
+                    area_names = []
+
+                    for sa in sa_records:
+                        if sa["first_in"]:
+                            sa_first_in = sa["first_in"].astimezone(
+                                timezone.get_default_timezone()
+                            )
+                            if not first_in or sa_first_in < first_in:
+                                first_in = sa_first_in
+                        if sa["last_out"]:
+                            sa_last_out = sa["last_out"].astimezone(
+                                timezone.get_default_timezone()
+                            )
+                            if not last_out or sa_last_out > last_out:
+                                last_out = sa_last_out
+                        area_name = utils.AREA_ADDRESS_MAPPING.get(
+                            sa["area_name_in"], "Unknown Area"
+                        )
+                        if area_name != "Unknown Area":
+                            area_names.append(area_name)
+
+                    for la in la_records:
+                        if la["first_in"]:
+                            la_first_in = la["first_in"].astimezone(
+                                timezone.get_default_timezone()
+                            )
+                            if not first_in or la_first_in < first_in:
+                                first_in = la_first_in
+                        if la["last_out"]:
+                            la_last_out = la["last_out"].astimezone(
+                                timezone.get_default_timezone()
+                            )
+                            if not last_out or la_last_out > last_out:
+                                last_out = la_last_out
+
+                        closest_location_name = location_searcher.find_nearest(
+                            la["latitude"], la["longitude"], radius=200
+                        )
+                        if closest_location_name != "Unknown Area":
+                            area_names.append(closest_location_name)
+
+                    area_name = area_names[0] if area_names else "Unknown Area"
+
+                    remote_work = remote_work_map.get(staff_id, {}).get(date_key, False)
+                    reasons = absence_map.get(staff_id, {}).get(date_key, [])
+                    absence_reason = ", ".join(reasons) if reasons else None
+
+                    attendance_entry = {
+                        "staff_fio": staff_fio,
+                        "first_in": first_in.isoformat() if first_in else None,
+                        "last_out": last_out.isoformat() if last_out else None,
+                        "area_name": area_name,
+                        "remote_work": remote_work,
+                        "absence_reason": absence_reason,
+                    }
+
+                    department_attendance_map[department_name].append(attendance_entry)
+
+                for dept, attendance in department_attendance_map.items():
+                    date_result = {
+                        date_key: {"department": dept, "attendance": attendance}
+                    }
+                    results.append(date_result)
 
             paginator = StaffAttendancePagination()
             result_page = paginator.paginate_queryset(results, request)
@@ -3059,7 +3154,7 @@ def sent_excel(request, department_id):
             f"Creating Excel file for department ID {department_id} with {len(rows)} rows"
         )
         df_pivot_sorted = utils.create_dataframe(rows)
-        wb = utils.save_to_excel(df_pivot_sorted)
+        wb = utils.save_to_excel(df_pivot_sorted, rows)  # Добавлено 'rows'
 
         response = HttpResponse(
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

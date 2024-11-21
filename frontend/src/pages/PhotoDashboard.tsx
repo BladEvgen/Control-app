@@ -1,9 +1,15 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import { PhotoData } from "../schemas/IData";
 import { apiUrl } from "../../apiConfig";
 import { FaSadTear } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
-import { log } from "../api.ts";
+import { log } from "../api";
 import useWebSocket from "../hooks/useWebSocket";
 
 const PhotoDashboard: React.FC = () => {
@@ -99,16 +105,32 @@ const PhotoDashboard: React.FC = () => {
     }
   }, []);
 
-  useWebSocket({
-    url: `${apiUrl.replace(
+  const handleOpen = useCallback(() => {
+    log.info("WebSocket connection established via hook");
+  }, []);
+
+  const handleClose = useCallback((event: CloseEvent) => {
+    log.warn("WebSocket connection closed via hook:", event);
+  }, []);
+
+  const handleError = useCallback((error: Event) => {
+    log.error("WebSocket error via hook:", error);
+  }, []);
+
+  const wsUrl = useMemo(() => {
+    const protocol = apiUrl.startsWith("https") ? "wss://" : "ws://";
+    return `${protocol}${apiUrl.replace(
       /^https?:\/\//,
-      apiUrl.startsWith("https") ? "wss://" : "ws://"
-    )}/ws/photos/?date=${date}`,
+      ""
+    )}/ws/photos/?date=${date}`;
+  }, [apiUrl, date]);
+
+  useWebSocket({
+    url: wsUrl,
     onMessage: handleWebSocketMessage,
-    onOpen: () => log.info("WebSocket connection established via hook"),
-    onClose: (event) =>
-      log.warn("WebSocket connection closed via hook:", event),
-    onError: (error) => log.error("WebSocket error via hook:", error),
+    onOpen: handleOpen,
+    onClose: handleClose,
+    onError: handleError,
     shouldReconnect: true,
     reconnectInterval: 5000,
     pingInterval: 30000,
@@ -127,6 +149,7 @@ const PhotoDashboard: React.FC = () => {
   useEffect(() => {
     log.info("Photos state updated:", photos);
   }, [photos]);
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (selectedPhoto) {
@@ -241,7 +264,7 @@ const PhotoDashboard: React.FC = () => {
                 src={`${apiUrl}${photo.photoUrl}`}
                 alt={photo.staffFullName}
                 className="w-full h-full object-cover transform transition-transform duration-300 group-hover:scale-110"
-                loading="eager"
+                loading="lazy"
               />
               <motion.div
                 className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity duration-300"
