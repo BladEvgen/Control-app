@@ -269,6 +269,8 @@ AUGMENT_ROOT = (
     else "/mnt/disk/augment_images/augmented_images/{staff_pin}"
 )
 
+GENERAL_MODELS_ROOT = BASE_DIR / "models" if DEBUG else "/mnt/disk/model_ml"
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # REST framework configurations
