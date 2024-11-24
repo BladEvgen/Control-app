@@ -12,23 +12,22 @@ from concurrent.futures import ThreadPoolExecutor
 
 from drf_yasg import openapi
 from django.conf import settings
-from django.db import connection
 from django.utils import timezone
 from rest_framework import status
 from openpyxl import load_workbook
 from django.contrib import messages
 from django.core.cache import caches
 from celery.result import AsyncResult
-from django.views.generic import View
 from django.db.models import Count, Q
+from django.views.generic import View
 from django.contrib.auth.models import User
-
 from django.core.files.base import ContentFile
 from drf_yasg.utils import swagger_auto_schema
-from django.db import IntegrityError, transaction
+from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import authenticate, login, logout
 from django.http import FileResponse, Http404, HttpResponse
+from django.db import IntegrityError, connection, transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import (
@@ -39,7 +38,7 @@ from rest_framework.permissions import (
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from monitoring_app import models, permissions, serializers, tasks, utils
+from monitoring_app import ml, models, permissions, serializers, tasks, utils
 
 logger = logging.getLogger(__name__)
 
@@ -3917,71 +3916,140 @@ def download_examples_zip(request):
 
 
 @api_view(["POST"])
+@permission_classes([AllowAny])
 def verify_face(request):
+    import numpy as np
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    logger = logging.getLogger("django")
+    logger.info("Received request to verify face.")
+
     staff_pin = request.data.get("pin")
     staff_image = request.FILES.get("image")
 
     if not staff_pin or not staff_image:
-        logger.error("Необходимо указать pin и изображение")
+        logger.warning("PIN or image is missing in the request.")
         return Response(
-            {"error": "Необходимо указать pin и изображение"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"error": "PIN and image are required."}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if staff_image.size == 0:
+        logger.warning("Uploaded image is empty.")
+        return Response(
+            {"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST
         )
 
     try:
         staff = models.Staff.objects.get(pin=staff_pin)
-        logger.info(f"Сотрудник найден: {staff_pin}")
+        logger.info(f"Staff with PIN {staff_pin} found.")
     except models.Staff.DoesNotExist:
-        logger.error(f"Сотрудник с PIN {staff_pin} не найден")
+        logger.error(f"Staff with PIN {staff_pin} does not exist.")
+        return Response({"error": "Staff not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        face_mask = staff.face_mask
+        logger.info(f"Face mask for staff with PIN {staff_pin} found.")
+    except models.StaffFaceMask.DoesNotExist:
+        logger.error(f"Face mask for staff with PIN {staff_pin} does not exist.")
         return Response(
-            {"error": "Сотрудник не найден"}, status=status.HTTP_404_NOT_FOUND
+            {"error": "Face mask for this staff member are not found."},
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if not hasattr(staff, "face_mask"):
-        logger.error(f"Маска для сотрудника {staff_pin} не найдена")
+    if not face_mask.mask_encoding:
+        logger.error(f"Face embeddings for staff with PIN {staff_pin} are empty.")
         return Response(
-            {"error": "Маска для данного сотрудника не найдена"},
+            {"error": "Face embeddings for this staff member are empty."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     try:
-        verified, distance = utils.compare_face_with_nn(staff, staff_image)
+        new_image = ml.load_image_from_memory(staff_image)
+        new_embedding = ml.create_face_encoding(new_image)
+        if new_embedding is None:
+            logger.warning("No face detected in the uploaded image.")
+            return Response(
+                {"error": "No face detected in the image."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        logger.info("Face detected, calculating similarity.")
+        new_embedding = np.array(new_embedding).reshape(1, -1)
+        stored_embeddings = np.array(face_mask.mask_encoding)
+
+        if stored_embeddings.ndim == 1:
+            stored_embeddings = stored_embeddings.reshape(1, -1)
+
+        similarities = cosine_similarity(new_embedding, stored_embeddings)[0]
+        max_similarity = np.max(similarities)
+
+        threshold = settings.FACE_RECOGNITION_THRESHOLD
+        verified = max_similarity >= threshold
+
+        logger.info(
+            f"Verification completed for PIN {staff_pin}. Score: {max_similarity}, Verified: {verified}"
+        )
         return Response(
-            {"verified": verified, "distance": distance}, status=status.HTTP_200_OK
+            {"verified": verified, "score": float(max_similarity)},
+            status=status.HTTP_200_OK,
         )
 
     except Exception as e:
-        logger.error(f"Ошибка при сравнении лиц для PIN {staff_pin}: {str(e)}")
+        logger.error(f"Error during face verification for PIN {staff_pin}: {str(e)}")
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(["POST"])
+@permission_classes([AllowAny])
 def recognize_faces(request):
+    logger = logging.getLogger("django")
+    logger.info("Received request to recognize faces.")
+
     staff_image = request.FILES.get("image")
 
     if not staff_image:
-        logger.warning("Изображение не предоставлено")
+        logger.warning("No image provided in the request.")
         return Response(
-            {"error": "Необходимо предоставить изображение"},
+            {"error": "Image is required."}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if not staff_image.name.lower().endswith((".png", ".jpg", ".jpeg")):
+        logger.warning("Invalid image format provided.")
+        return Response(
+            {"error": "Invalid image format. Only PNG, JPG, and JPEG are allowed."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    if staff_image.size == 0:
+        logger.warning("Uploaded image is empty.")
+        return Response(
+            {"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST
+        )
+
     try:
-        recognized_staff, unknown_faces = utils.recognize_faces_in_image(staff_image)
+        recognized_staff, unknown_faces = ml.recognize_faces_in_image(staff_image)
 
         if not recognized_staff and not unknown_faces:
+            logger.info("No staff members or unknown faces recognized.")
             return Response(
-                {"error": "Сотрудники не найдены"}, status=status.HTTP_404_NOT_FOUND
+                {"error": "No staff members recognized."},
+                status=status.HTTP_404_NOT_FOUND,
             )
 
+        logger.info(
+            f"Recognition completed. Recognized staff: {len(recognized_staff)}, Unknown faces: {len(unknown_faces)}."
+        )
         return Response(
             {"recognized_staff": recognized_staff, "unknown_faces": unknown_faces},
             status=status.HTTP_200_OK,
         )
 
+    except ValidationError as ve:
+        logger.warning(f"Validation error during face recognition: {str(ve)}")
+        return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
-        logger.error(f"Ошибка при распознавании лиц: {str(e)}")
+        logger.error(f"Unexpected error during face recognition: {str(e)}")
         return Response(
-            {"error": f"Ошибка при распознавании лиц: {str(e)}"},
+            {"error": f"Face recognition error: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
