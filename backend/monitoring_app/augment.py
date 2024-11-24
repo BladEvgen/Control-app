@@ -8,7 +8,7 @@ from nvidia.dali.pipeline import pipeline_def
 from nvidia.dali.auto_aug import augmentations
 from nvidia.dali.auto_aug.core import signed_bin
 
-from monitoring_app import models, utils
+from monitoring_app import models, ml
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -29,10 +29,6 @@ static_augmentations_list = {
     "sharpness": lambda images: augmentations.sharpness(
         images, magnitude_bin=signed_bin(7), num_magnitude_bins=40
     ),
-    "posterize": lambda images: augmentations.posterize(
-        images, magnitude_bin=signed_bin(1), num_magnitude_bins=10
-    ),
-    "rotate": lambda images: fn.rotate(images, angle=signed_bin(10)),
     "flip": lambda images: fn.flip(images, horizontal=1),
 }
 
@@ -132,7 +128,7 @@ def run_dali_augmentation_for_all_staff():
             output = pipe.run()
             for i, aug_output in enumerate(output):
                 processed_images = aug_output.as_cpu().as_array()
-                logger.info(
+                logger.debug(
                     f"Processing augmented image {i + 1} for staff member {staff_member}"
                 )
                 aug_image = processed_images[0]
@@ -141,7 +137,7 @@ def run_dali_augmentation_for_all_staff():
                     f"{staff_member.pin}_augmented_{i + 1}{original_extension}",
                 )
                 cv2.imwrite(augmented_path, cv2.cvtColor(aug_image, cv2.COLOR_RGB2BGR))
-                logger.info(
+                logger.debug(
                     f"Augmented image saved to: {augmented_path} for staff member {staff_member}"
                 )
     except Exception as e:
@@ -151,8 +147,8 @@ def run_dali_augmentation_for_all_staff():
 
 def get_face_bbox(image):
     try:
-        utils.load_arcface_model()
-        faces = utils.arcface_model.get(image)
+        ml.load_arcface_model()
+        faces = ml.arcface_model.get(image)
         if faces:
             face = faces[0]
             bbox = face.bbox.astype(int)
