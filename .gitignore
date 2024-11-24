@@ -309,3 +309,5 @@ backend/old_data-12-09-24.json
 backend/monitoring_app/test_face.py
 *.backup
 backend/static/media/examples.zip
+*.npy
+*.pt
