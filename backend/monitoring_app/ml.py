@@ -6,6 +6,7 @@ import traceback
 import numpy as np
 import torch.nn as nn
 from threading import Lock
+from collections import Counter
 from django.conf import settings
 from insightface.app import FaceAnalysis
 from sklearn.neighbors import NearestNeighbors
@@ -514,12 +515,10 @@ def train_face_recognition_model(staff, epochs=20, batch_size=256, learning_rate
 
     device = get_device()
 
-    # Check for avatar
     if not staff.avatar or not os.path.exists(staff.avatar.path):
         logger.error(f"Avatar отсутствует для {staff.pin}")
         raise ValueError(f"Avatar отсутствует для {staff.pin}")
 
-    # Load embeddings
     embeddings_path = os.path.join(
         os.path.dirname(staff.avatar.path), f"{staff.pin}_embeddings.npy"
     )
@@ -746,10 +745,31 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
         all_embeddings.extend(embeddings)
         all_labels.extend(labels)
 
+    all_embeddings = np.array(all_embeddings)
+    all_labels = np.array(all_labels)
+
+    label_counts = Counter(all_labels)
+    logger.info(f"Label counts before filtering: {label_counts}")
+
+    valid_labels = [label for label, count in label_counts.items() if count >= 2]
+    logger.info(f"Valid labels (>=2 samples): {valid_labels}")
+
+    if not valid_labels:
+        logger.error("No classes with at least two samples available for training.")
+        raise ValueError("Insufficient data: No classes with at least two samples.")
+
+    mask = np.isin(all_labels, valid_labels)
+    all_embeddings = all_embeddings[mask]
+    all_labels = all_labels[mask]
+
+    excluded_labels = set(range(num_staff)) - set(valid_labels)
+    if excluded_labels:
+        logger.warning(f"Excluded classes with insufficient samples: {excluded_labels}")
+
     num_classes = len(staff_pin_to_label)
     logger.info(f"Number of classes after filtering: {num_classes}")
 
-    if not all_embeddings:
+    if not all_embeddings.any():
         logger.error("Insufficient data to train the general model after filtering.")
         raise ValueError(
             "Insufficient data to train the general model after filtering."
@@ -780,13 +800,17 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
     class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
-    inputs_train, inputs_val, labels_train, labels_val = train_test_split(
-        all_embeddings.cpu().numpy(),
-        all_labels.cpu().numpy(),
-        test_size=0.2,
-        random_state=42,
-        stratify=all_labels.cpu().numpy(),
-    )
+    try:
+        inputs_train, inputs_val, labels_train, labels_val = train_test_split(
+            all_embeddings.cpu().numpy(),
+            all_labels.cpu().numpy(),
+            test_size=0.2,
+            random_state=42,
+            stratify=all_labels.cpu().numpy(),
+        )
+    except ValueError as e:
+        logger.error(f"Error during train_test_split: {e}")
+        raise
 
     inputs_train = torch.tensor(inputs_train, dtype=torch.float32).to(device)
     inputs_val = torch.tensor(inputs_val, dtype=torch.float32).to(device)
@@ -883,7 +907,6 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
         if val_f1 > best_f1:
             best_f1 = val_f1
             trigger_times = 0
-            # Save the best model
             best_model_path = os.path.join(
                 settings.GENERAL_MODELS_ROOT, "best_general_face_recognition_model.pt"
             )
