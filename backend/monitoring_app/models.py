@@ -312,7 +312,7 @@ class Staff(models.Model):
         verbose_name="Фото Пользователя",
         validators=[FileExtensionValidator(allowed_extensions=["jpg", "jpeg", "png"])],
     )
-    needs_training = models.BooleanField(default=True)
+    needs_training = models.BooleanField(default=True, verbose_name="Тренировка модели")
 
     def __str__(self):
         return f"{self.surname} {self.name}"
