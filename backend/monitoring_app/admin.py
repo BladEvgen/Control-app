@@ -759,7 +759,7 @@ class LessonAttendanceAdmin(ModelAdmin):
         if obj.latitude is None or obj.longitude is None:
             return "N/A"
 
-        radius = 200  # в метрах
+        radius = 300  # в метрах
         obj_lat, obj_lon = obj.latitude, obj.longitude
 
         class Radians(Func):

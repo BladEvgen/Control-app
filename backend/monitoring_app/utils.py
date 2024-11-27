@@ -47,6 +47,7 @@ AREA_ADDRESS_MAPPING = {
     "карасай батыра турникет": "КРМУ Карасай Батыра",
 }
 
+
 def get_client_ip(request):
     """Get the client IP address from the request, considering proxy setups."""
     x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
@@ -712,7 +713,7 @@ def generate_map_data(
             lesson_lat = lesson["latitude"]
             lesson_lng = lesson["longitude"]
 
-            radius = 200
+            radius = 300
             K = 111320
 
             class_locations = (
