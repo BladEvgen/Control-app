@@ -646,7 +646,6 @@ def department_summary(request, parent_department_id):
     try:
 
         def calculate_staff_count(department):
-            logger.debug(f"Calculating staff count for department ID {department.id}")
             child_departments = models.ChildDepartment.objects.filter(parent=department)
             staff_count = (
                 child_departments.aggregate(total_staff=Count("staff"))["total_staff"]
@@ -656,9 +655,6 @@ def department_summary(request, parent_department_id):
             for child_dept in child_departments:
                 staff_count += calculate_staff_count(child_dept)
 
-            logger.debug(
-                f"Total staff count for department ID {department.id} is {staff_count}"
-            )
             return staff_count
 
         parent_department = get_object_or_404(
@@ -3160,9 +3156,9 @@ def sent_excel(request, department_id):
         response = HttpResponse(
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        response["Content-Disposition"] = (
-            f"attachment; filename=Посещаемость_{department_id}.xlsx"
-        )
+        response[
+            "Content-Disposition"
+        ] = f"attachment; filename=Посещаемость_{department_id}.xlsx"
 
         with NamedTemporaryFile(delete=False) as tmp:
             wb.save(tmp.name)
@@ -3518,11 +3514,12 @@ class UploadFileView(View):
                     continue
 
                 if parent_department_name:
-                    parent_department, parent_created = (
-                        models.ParentDepartment.objects.get_or_create(
-                            id=parent_department_id,
-                            defaults={"name": parent_department_name},
-                        )
+                    (
+                        parent_department,
+                        parent_created,
+                    ) = models.ParentDepartment.objects.get_or_create(
+                        id=parent_department_id,
+                        defaults={"name": parent_department_name},
                     )
                     if parent_created:
                         created_parent_departments.append(parent_department_name)
@@ -3530,25 +3527,27 @@ class UploadFileView(View):
                             f"Created new parent department: {parent_department_name}"
                         )
 
-                    parent_department_as_child, child_created = (
-                        models.ChildDepartment.objects.get_or_create(
-                            id=parent_department.id,
-                            defaults={"name": parent_department.name, "parent": None},
-                        )
+                    (
+                        parent_department_as_child,
+                        child_created,
+                    ) = models.ChildDepartment.objects.get_or_create(
+                        id=parent_department.id,
+                        defaults={"name": parent_department.name, "parent": None},
                     )
                 else:
                     parent_department_as_child = models.ChildDepartment.objects.get(
                         id="1"
                     )
 
-                child_department, child_created = (
-                    models.ChildDepartment.objects.get_or_create(
-                        id=child_department_id,
-                        defaults={
-                            "name": child_department_name,
-                            "parent": parent_department_as_child,
-                        },
-                    )
+                (
+                    child_department,
+                    child_created,
+                ) = models.ChildDepartment.objects.get_or_create(
+                    id=child_department_id,
+                    defaults={
+                        "name": child_department_name,
+                        "parent": parent_department_as_child,
+                    },
                 )
                 if child_created:
                     created_child_departments.append(child_department_name)

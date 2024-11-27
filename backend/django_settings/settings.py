@@ -193,7 +193,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = "django_settings.wsgi.application"
+# WSGI_APPLICATION = "django_settings.wsgi.application"
 ASGI_APPLICATION = "django_settings.asgi.application"
 
 # Cache configurations
