@@ -5,7 +5,6 @@ import datetime
 from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
-
 from monitoring_app import models
 
 
@@ -22,52 +21,57 @@ def get_all_attendance_task():
 logger = logging.getLogger(__name__)
 
 
+logger = logging.getLogger(__name__)
+
 @shared_task
 def update_lesson_attendance_last_out():
     """
-    Периодическая задача Celery для обновления поля last_out в LessonAttendance.
+    Periodic Celery task to update the `last_out` field in the `LessonAttendance` model.
 
-    Условия выполнения:
-    - last_out не установлен (last_out is null).
-    - Прошло более 3 часов с момента first_in.
-
-    Процесс:
-    1. Определяет все записи, которые соответствуют условиям.
-    2. Для каждой записи рассчитывает значение last_out:
-       - Устанавливает last_out как first_in + 3 часа.
-       - Если first_in + 3 часа выходит за пределы текущего дня, устанавливает last_out
-         на максимально допустимое время в пределах дня (23:59:59).
-    3. Изменяет записи в БД.
-
-    Логирует информацию, предупреждения и ошибки для отслеживания процесса.
+    This task performs the following operations:
+    1. Retrieves all `LessonAttendance` records where `last_out` is not set (`isnull=True`).
+    2. For each record:
+        a. Calculates `target_time` as `first_in + 3 hours`.
+        b. Determines the end of the day (`23:59:59`) for the date of `first_in`.
+        c. If `target_time` is within the same day and has already passed, sets `last_out` to `target_time`.
+        d. If `target_time` exceeds the current day, sets `last_out` to `23:59:59` of the same day.
+    3. Performs a bulk update of all modified records.
+    4. Logs the outcome of the operation.
     """
     try:
-        three_hours_ago = timezone.now() - datetime.timedelta(hours=3)
-
-        lessons = models.LessonAttendance.objects.filter(
-            last_out__isnull=True, first_in__lte=three_hours_ago
-        )
-
+        now = timezone.now()
+        three_hours = datetime.timedelta(hours=3)
+        lessons = models.LessonAttendance.objects.filter(last_out__isnull=True)
         if not lessons.exists():
-            logger.warning("Нет записей для обновления Lesson Attendance last_out.")
+            logger.info("No LessonAttendance records found for updating `last_out`.")
             return
-
         updated_lessons = []
         for lesson in lessons:
             first_in = lesson.first_in
-            end_of_day = first_in.replace(hour=23, minute=59, second=59, microsecond=0)
-
-            lesson.last_out = min(first_in + datetime.timedelta(hours=3), end_of_day)
-            updated_lessons.append(lesson)
-
-        models.LessonAttendance.objects.bulk_update(updated_lessons, ["last_out"])
-
-        logger.warning(
-            f"Обновлено {len(updated_lessons)} записей: last_out установлен успешно."
-        )
-
+            if not timezone.is_aware(first_in):
+                first_in = timezone.make_aware(first_in, timezone.get_current_timezone())
+            target_time = first_in + three_hours
+            end_of_day_naive = datetime.datetime.combine(
+                first_in.date(),
+                datetime.time(23, 59, 59, 999999)
+            )
+            end_of_day = timezone.make_aware(end_of_day_naive, first_in.tzinfo)
+            if target_time > end_of_day:
+                if end_of_day <= now:
+                    lesson.last_out = end_of_day
+                    updated_lessons.append(lesson)
+            else:
+                if target_time <= now:
+                    lesson.last_out = target_time
+                    updated_lessons.append(lesson)
+        if updated_lessons:
+            models.LessonAttendance.objects.bulk_update(updated_lessons, ['last_out'])
+            logger.info(f"Successfully updated `last_out` for {len(updated_lessons)} records.")
+        else:
+            logger.info("No LessonAttendance records required updating `last_out` at this time.")
     except Exception as e:
-        logger.error(f"Ошибка при выполнении update_lesson_attendance_last_out: {e}")
+        logger.error(f"Error executing `update_lesson_attendance_last_out`: {e}")
+
 
 
 @shared_task
