@@ -25,11 +25,11 @@ from django.contrib.auth.models import User
 
 from django.core.files.base import ContentFile
 from drf_yasg.utils import swagger_auto_schema
+from django.db import IntegrityError, transaction
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import authenticate, login, logout
 from django.http import FileResponse, Http404, HttpResponse
-from django.db import IntegrityError, connection, transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import (
@@ -475,27 +475,31 @@ class StaffAttendanceStatsView(APIView):
 def map_location(request):
     """
     Возвращает данные о локациях и количестве сотрудников и студентов на основе турникетов и занятий за указанную дату.
-
+    
     Args:
         request (HttpRequest): HTTP-запрос с параметром `date_at` для фильтрации данных и параметром `employees` для включения данных о сотрудниках.
-
+    
     Returns:
         JsonResponse: JSON-ответ с данными о локациях, если запрос успешен, либо сообщение об ошибке.
-
-    Raises:
-        Exception: Для обработки любых непредвиденных исключений.
     """
     try:
         date_at_str = request.GET.get("date_at", None)
         employees_required = request.GET.get("employees", "false").lower() == "true"
 
-        date_at = (
-            timezone.datetime.strptime(date_at_str, "%Y-%m-%d").date()
-            if date_at_str
-            else timezone.now().date()
-        )
-        logger.info(f"Using date: {date_at}")
+        if date_at_str:
+            try:
+                date_at = datetime.datetime.strptime(date_at_str, "%Y-%m-%d").date()
+            except ValueError:
+                logger.warning(f"Incorrect date format: {date_at_str}")
+                return Response(
+                    {"error": "Incorrect Date format, please use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            date_at = datetime.datetime.now().date()
 
+        logger.info(f"Using date: {date_at}")
+        
         locations = models.ClassLocation.objects.only(
             "address", "name", "latitude", "longitude"
         )

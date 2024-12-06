@@ -9,21 +9,21 @@ from functools import wraps
 from openpyxl import Workbook
 from django.urls import reverse
 from django.conf import settings
-from scipy.spatial import KDTree
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from django.core.cache import cache
 from django.http import HttpRequest
+from sklearn.neighbors import KDTree
 from cryptography.fernet import Fernet
 from django.core.mail import send_mail
+from django.db.models import Func, Count
 from django.utils.html import format_html
-from django.db.models import F, Func, Value
 from typing import Any, Dict, List, Optional
 from rest_framework.response import Response
+from collections import defaultdict, Counter
 from concurrent.futures import ThreadPoolExecutor
 from django.contrib.admin import SimpleListFilter
-from django.db.models.functions import Power, Sqrt
 from django.utils.translation import gettext_lazy as _
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -37,16 +37,15 @@ logger = logging.getLogger("django")
 arcface_model = None
 
 AREA_ADDRESS_MAPPING = {
-    "Абылайхана турникет": "КРМУ Абылай хана",
-    "вход в 8 этаж": "КРМУ Абылай хана",
-    "вход Абылайхана": "КРМУ Абылай хана",
-    "военные 3 этаж": "КРМУ Абылай хана",
-    "лифтовые с 1 по 7": "КРМУ Абылай хана",
-    "выход ЦОС": "КРМУ Абылай хана",
-    "Торекулва турникет": "КРМУ Торекулова",
-    "карасай батыра турникет": "КРМУ Карасай Батыра",
+    "Абылайхана турникет": "Проспект Абылай хана, 51/53",
+    "вход в 8 этаж": "Проспект Абылай хана, 51/53",
+    "вход Абылайхана": "Проспект Абылай хана, 51/53",
+    "военные 3 этаж": "Проспект Абылай хана, 51/53",
+    "лифтовые с 1 по 7": "Проспект Абылай хана, 51/53",
+    "выход ЦОС": "Проспект Абылай хана, 51/53",
+    "Торекулва турникет": "Улица Торекулова, 71",
+    "карасай батыра турникет": "Улица Карасай батыра, 75",
 }
-
 
 def get_client_ip(request):
     """Get the client IP address from the request, considering proxy setups."""
@@ -659,133 +658,153 @@ class Radians(Func):
 class Cos(Func):
     function = "COS"
 
+def clean_address(address):
+    """
+    Очищает адрес, удаляя префиксы ('Улица', 'Проспект', и т.д.), 
+    скрытые символы и нормализует пробелы.
+    
+    Args:
+        address (str): Исходный адрес.
+    
+    Returns:
+        str: Очищенный и нормализованный адрес.
+    """
+    if address:
+        address = address.replace('\u200b', '')
+        address = re.sub(r'^(улица|проспект|переулок|бульвар|территория|микрорайон)\s+', '', address, flags=re.IGNORECASE)
+        address = re.sub(r'\s+', ' ', address).strip().lower()
+        return address
+    return address
 
-def generate_map_data(
-    locations, date_at, search_staff_attendance=True, filter_empty=False
-):
+def generate_map_data(locations, date_at, search_staff_attendance=True, filter_empty=False):
     """
     Генерирует данные по локациям, включая посещения сотрудников и занятия.
-
+    
     Args:
         locations (QuerySet): Локации из модели ClassLocation.
         date_at (date): Дата для фильтрации данных.
         search_staff_attendance (bool): Если True, включает данные из StaffAttendance и LessonAttendance.
         filter_empty (bool): Если True, исключает локации с нулевым количеством посещений.
-
+    
     Returns:
         list: Список словарей с данными по локациям, готовых для отображения на карте.
     """
-    area_address_mapping = {
-        "Абылайхана турникет": "Проспект Абылай хана, 51/53",
-        "вход в 8 этаж": "Проспект Абылай хана, 51/53",
-        "военные 3 этаж": "Проспект Абылай хана, 51/53",
-        "лифтовые с 1 по 7": "Проспект Абылай хана, 51/53",
-        "выход ЦОС": "Проспект Абылай хана, 51/53",
-        "Торекулва турникет": "Улица Торекулова, 71",
-        "карасай батыра турникет": "Улица Карасай батыра, 75",
-    }
+    staff_by_address = defaultdict(int)
+    lesson_attendance_by_address = defaultdict(int)
 
     if search_staff_attendance:
-        staff_data = models.StaffAttendance.objects.filter(
-            date_at=date_at + datetime.timedelta(days=1), first_in__isnull=False
-        ).values("staff_id", "area_name_in")
+        try:
+            logger.warning(f"Начинаем обработку StaffAttendance для даты: {date_at}")
 
-        staff_by_address = {}
-        unique_staff_ids = set()
+            staff_attendances = models.StaffAttendance.objects.filter(
+                date_at=date_at, first_in__isnull=False
+            ).values('area_name_in').annotate(count=Count('id'))
 
-        for record in staff_data:
-            staff_id = record["staff_id"]
-            area_name = record["area_name_in"]
-            address = area_address_mapping.get(area_name)
+            for attendance in staff_attendances:
+                area_name_in = attendance.get('area_name_in')
+                if not area_name_in:
+                    logger.warning(f"Найдена запись StaffAttendance без area_name_in для даты {date_at}")
+                    continue
+                address = AREA_ADDRESS_MAPPING.get(area_name_in)
+                if address:
+                    cleaned_address = clean_address(address)
+                    staff_by_address[cleaned_address] += attendance.get('count', 0)
+                else:
+                    logger.warning(f"Название зоны '{area_name_in}' не найдено в AREA_ADDRESS_MAPPING")
 
-            if address:
-                if staff_id not in unique_staff_ids:
-                    staff_by_address[address] = staff_by_address.get(address, 0) + 1
-                    unique_staff_ids.add(staff_id)
+            logger.warning(f"Обработано StaffAttendance: {dict(staff_by_address)}")
 
-        lesson_data = models.LessonAttendance.objects.filter(date_at=date_at).values(
-            "staff_id", "latitude", "longitude"
-        )
+            staff_with_attendance_qs = models.StaffAttendance.objects.filter(
+                date_at=date_at, first_in__isnull=False
+            ).values_list('staff_id', flat=True)
+            staff_with_attendance = list(staff_with_attendance_qs) 
+            staff_count = len(staff_with_attendance)
+            logger.warning(f"Количество сотрудников с посещением: {staff_count}")
 
-        staff_to_location = {}
-        for lesson in lesson_data:
-            staff_id = lesson["staff_id"]
-            lesson_lat = lesson["latitude"]
-            lesson_lng = lesson["longitude"]
+            logger.warning(f"Начинаем обработку LessonAttendance для даты: {date_at}")
 
-            radius = 300
-            K = 111320
+            lesson_attendances_qs = models.LessonAttendance.objects.filter(
+                date_at=date_at
+            ).exclude(staff_id__in=staff_with_attendance)
 
-            class_locations = (
-                models.ClassLocation.objects.annotate(
-                    delta_lat=F("latitude") - Value(lesson_lat),
-                    delta_lon=F("longitude") - Value(lesson_lng),
-                    delta_lat_m=(F("latitude") - Value(lesson_lat)) * K,
-                    delta_lon_m=(F("longitude") - Value(lesson_lng))
-                    * K
-                    * Cos(Radians(Value(lesson_lat))),
-                    distance=Sqrt(
-                        Power((F("latitude") - Value(lesson_lat)) * K, 2)
-                        + Power(
-                            (F("longitude") - Value(lesson_lng))
-                            * K
-                            * Cos(Radians(Value(lesson_lat))),
-                            2,
-                        )
-                    ),
-                )
-                .filter(distance__lte=radius)
-                .order_by("distance")
-            )
+            lesson_count = lesson_attendances_qs.count()
+            logger.warning(f"Количество LessonAttendance для обработки: {lesson_count}")
 
-            if class_locations.exists():
-                closest_location = class_locations.first()
-                staff_to_location[staff_id] = closest_location
+            if lesson_count > 0:
+                lesson_coords = list(lesson_attendances_qs.values_list('latitude', 'longitude'))
 
-        lesson_attendance_by_location = {}
-        for staff_id, location in staff_to_location.items():
-            if location.address not in lesson_attendance_by_location:
-                lesson_attendance_by_location[location.address] = set()
-            lesson_attendance_by_location[location.address].add(staff_id)
+                class_locations = list(models.ClassLocation.objects.all())
+                if not class_locations:
+                    logger.warning("Нет записей ClassLocation.")
+                    return [] 
 
-    else:
-        staff_by_address = {}
-        lesson_attendance_by_location = {}
+                class_coords = [(loc.latitude, loc.longitude) for loc in class_locations]
+                class_addresses = [clean_address(loc.address) for loc in class_locations]
+
+                kd_tree = KDTree(class_coords, metric='euclidean')
+                logger.warning("KDTree успешно построен.")
+
+                distances, indices = kd_tree.query(lesson_coords, k=1)
+                logger.warning("KDTree запрос завершен.")
+
+                nearest_addresses = [class_addresses[index[0]] for index in indices]
+
+                address_counts = Counter(nearest_addresses)
+                lesson_attendance_by_address = defaultdict(int, address_counts)
+
+                logger.warning(f"Обработано LessonAttendance: {dict(lesson_attendance_by_address)}")
+            else:
+                logger.warning("Нет записей LessonAttendance для обработки.")
+        except Exception as e:
+            logger.error(f"Ошибка при обработке данных посещений: {str(e)}", exc_info=True)
+            raise
+
+    try:
+        aggregated_data = defaultdict(int)
+        for address, count in staff_by_address.items():
+            aggregated_data[address] += count
+        for address, count in lesson_attendance_by_address.items():
+            aggregated_data[address] += count
+        logger.warning(f"Агрегированные данные: {dict(aggregated_data)}")
+    except Exception as e:
+        logger.error(f"Ошибка при агрегации данных: {str(e)}", exc_info=True)
+        raise
 
     result_list = []
-    for loc in locations:
-        location_data = {
-            "name": loc.name,
-            "address": loc.address,
-            "lat": loc.latitude,
-            "lng": loc.longitude,
-        }
-        if search_staff_attendance:
-            employees_count = staff_by_address.get(loc.address, 0) + len(
-                lesson_attendance_by_location.get(loc.address, set())
-            )
-            if employees_count > 0:
-                location_data["employees"] = employees_count
-                if filter_empty and employees_count <= 1:
+    try:
+        for loc in locations:
+            cleaned_loc_address = clean_address(loc.address)
+            location_data = {
+                "name": loc.name,
+                "address": cleaned_loc_address,
+                "lat": loc.latitude,
+                "lng": loc.longitude,
+            }
+            if search_staff_attendance:
+                employees_count = aggregated_data.get(cleaned_loc_address, 0)
+                if employees_count > 0:
+                    location_data["employees"] = employees_count
+                    if filter_empty and employees_count <= 1:
+                        continue
+                else:
                     continue
-            else:
-                continue
-        else:
-            location_data.pop("employees", None)
+            result_list.append(location_data)
+        logger.warning(f"Сформирован список результатов с {len(result_list)} локациями.")
+    except Exception as e:
+        logger.error(f"Ошибка при формировании списка результатов: {str(e)}", exc_info=True)
+        raise
 
-        result_list.append(location_data)
-
-    main_location = next(
-        (
-            item
-            for item in result_list
-            if item["address"] == "Проспект Абылай хана, 51/53"
-        ),
-        None,
-    )
-    if main_location:
-        result_list.remove(main_location)
-        result_list.insert(0, main_location)
+    try:
+        main_location = next(
+            (item for item in result_list if clean_address(item["address"]) == clean_address("Проспект Абылай хана, 51/53")),
+            None,
+        )
+        if main_location:
+            result_list.remove(main_location)
+            result_list.insert(0, main_location)
+            logger.warning("Основная локация перемещена в начало списка.")
+    except Exception as e:
+        logger.error(f"Ошибка при перемещении основной локации: {str(e)}", exc_info=True)
 
     return result_list
 
