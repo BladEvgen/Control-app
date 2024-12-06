@@ -3113,8 +3113,8 @@ def sent_excel(request, department_id):
         f"Parsed dates for department ID {department_id}: start_date={start_date}, end_date={end_date}"
     )
 
-    end_date += datetime.timedelta(days=1)
-    start_date += datetime.timedelta(days=1)
+    end_date += datetime.timedelta(days=0)
+    start_date += datetime.timedelta(days=0)
 
     main_ip = request.build_absolute_uri("/")[:-1]
     rows = []

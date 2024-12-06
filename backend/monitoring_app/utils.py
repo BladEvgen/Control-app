@@ -4,6 +4,7 @@ import math
 import pytz
 import logging
 import datetime
+import numpy as np
 import pandas as pd
 from functools import wraps
 from openpyxl import Workbook
@@ -676,13 +677,14 @@ def clean_address(address):
         return address
     return address
 
+
 def generate_map_data(locations, date_at, search_staff_attendance=True, filter_empty=False):
     """
     Генерирует данные по локациям, включая посещения сотрудников и занятия.
     
     Args:
         locations (QuerySet): Локации из модели ClassLocation.
-        date_at (date): Дата для фильтрации данных.
+        date_at (date): Дата для фильтрации данных (дата события).
         search_staff_attendance (bool): Если True, включает данные из StaffAttendance и LessonAttendance.
         filter_empty (bool): Если True, исключает локации с нулевым количеством посещений.
     
@@ -694,41 +696,50 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
 
     if search_staff_attendance:
         try:
-            logger.warning(f"Начинаем обработку StaffAttendance для даты: {date_at}")
+            data_insert_date = date_at + datetime.timedelta(days=1)
+            logger.info(f"Начинаем обработку StaffAttendance для даты вставки: {data_insert_date} (дата события: {date_at})")
 
             staff_attendances = models.StaffAttendance.objects.filter(
-                date_at=date_at, first_in__isnull=False
+                date_at=data_insert_date, first_in__isnull=False
             ).values('area_name_in').annotate(count=Count('id'))
 
-            for attendance in staff_attendances:
-                area_name_in = attendance.get('area_name_in')
-                if not area_name_in:
-                    logger.warning(f"Найдена запись StaffAttendance без area_name_in для даты {date_at}")
-                    continue
-                address = AREA_ADDRESS_MAPPING.get(area_name_in)
-                if address:
-                    cleaned_address = clean_address(address)
-                    staff_by_address[cleaned_address] += attendance.get('count', 0)
-                else:
-                    logger.warning(f"Название зоны '{area_name_in}' не найдено в AREA_ADDRESS_MAPPING")
+            if not staff_attendances:
+                logger.warning(f"Нет записей StaffAttendance для даты вставки {data_insert_date}")
+            else:
+                for attendance in staff_attendances:
+                    area_name_in = attendance.get('area_name_in')
+                    if not area_name_in:
+                        logger.warning(f"Найдена запись StaffAttendance без area_name_in для даты вставки {data_insert_date}")
+                        continue
+                    address = AREA_ADDRESS_MAPPING.get(area_name_in)
+                    if address:
+                        comparison_address = clean_address(address)
+                        matched_location = next((loc for loc in locations if clean_address(loc.address) == comparison_address), None)
+                        if matched_location:
+                            original_address = matched_location.address.strip()
+                            staff_by_address[original_address] += attendance.get('count', 0)
+                        else:
+                            logger.warning(f"Оригинальный адрес для '{area_name_in}' не найден в ClassLocation")
+                    else:
+                        logger.warning(f"Название зоны '{area_name_in}' не найдено в AREA_ADDRESS_MAPPING")
 
-            logger.warning(f"Обработано StaffAttendance: {dict(staff_by_address)}")
+                logger.info(f"Обработано StaffAttendance: {dict(staff_by_address)}")
 
             staff_with_attendance_qs = models.StaffAttendance.objects.filter(
-                date_at=date_at, first_in__isnull=False
+                date_at=data_insert_date, first_in__isnull=False
             ).values_list('staff_id', flat=True)
             staff_with_attendance = list(staff_with_attendance_qs) 
             staff_count = len(staff_with_attendance)
-            logger.warning(f"Количество сотрудников с посещением: {staff_count}")
+            logger.info(f"Количество сотрудников с посещением: {staff_count}")
 
-            logger.warning(f"Начинаем обработку LessonAttendance для даты: {date_at}")
+            logger.info(f"Начинаем обработку LessonAttendance для даты: {date_at}")
 
             lesson_attendances_qs = models.LessonAttendance.objects.filter(
                 date_at=date_at
             ).exclude(staff_id__in=staff_with_attendance)
 
             lesson_count = lesson_attendances_qs.count()
-            logger.warning(f"Количество LessonAttendance для обработки: {lesson_count}")
+            logger.info(f"Количество LessonAttendance для обработки: {lesson_count}")
 
             if lesson_count > 0:
                 lesson_coords = list(lesson_attendances_qs.values_list('latitude', 'longitude'))
@@ -739,22 +750,31 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
                     return [] 
 
                 class_coords = [(loc.latitude, loc.longitude) for loc in class_locations]
-                class_addresses = [clean_address(loc.address) for loc in class_locations]
+                class_addresses = [loc.address.strip() for loc in class_locations]
 
                 kd_tree = KDTree(class_coords, metric='euclidean')
-                logger.warning("KDTree успешно построен.")
+                logger.info("KDTree успешно построен.")
 
                 distances, indices = kd_tree.query(lesson_coords, k=1)
-                logger.warning("KDTree запрос завершен.")
+                logger.info("KDTree запрос завершен.")
 
-                nearest_addresses = [class_addresses[index[0]] for index in indices]
+                if hasattr(indices, 'ndim') and indices.ndim > 1:
+                    indices = indices.flatten()
+                else:
+                    indices = indices
+
+                try:
+                    nearest_addresses = [class_addresses[int(idx)] for idx in indices]
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Ошибка при преобразовании индексов KDTree: {e}", exc_info=True)
+                    raise
 
                 address_counts = Counter(nearest_addresses)
                 lesson_attendance_by_address = defaultdict(int, address_counts)
 
-                logger.warning(f"Обработано LessonAttendance: {dict(lesson_attendance_by_address)}")
+                logger.info(f"Обработано LessonAttendance: {dict(lesson_attendance_by_address)}")
             else:
-                logger.warning("Нет записей LessonAttendance для обработки.")
+                logger.info("Нет записей LessonAttendance для обработки.")
         except Exception as e:
             logger.error(f"Ошибка при обработке данных посещений: {str(e)}", exc_info=True)
             raise
@@ -765,7 +785,7 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
             aggregated_data[address] += count
         for address, count in lesson_attendance_by_address.items():
             aggregated_data[address] += count
-        logger.warning(f"Агрегированные данные: {dict(aggregated_data)}")
+        logger.info(f"Агрегированные данные: {dict(aggregated_data)}")
     except Exception as e:
         logger.error(f"Ошибка при агрегации данных: {str(e)}", exc_info=True)
         raise
@@ -773,15 +793,15 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
     result_list = []
     try:
         for loc in locations:
-            cleaned_loc_address = clean_address(loc.address)
+            original_address = loc.address.strip()
             location_data = {
                 "name": loc.name,
-                "address": cleaned_loc_address,
+                "address": original_address,
                 "lat": loc.latitude,
                 "lng": loc.longitude,
             }
             if search_staff_attendance:
-                employees_count = aggregated_data.get(cleaned_loc_address, 0)
+                employees_count = aggregated_data.get(original_address, 0)
                 if employees_count > 0:
                     location_data["employees"] = employees_count
                     if filter_empty and employees_count <= 1:
@@ -789,22 +809,25 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
                 else:
                     continue
             result_list.append(location_data)
-        logger.warning(f"Сформирован список результатов с {len(result_list)} локациями.")
+        logger.info(f"Сформирован список результатов с {len(result_list)} локациями.")
     except Exception as e:
         logger.error(f"Ошибка при формировании списка результатов: {str(e)}", exc_info=True)
         raise
 
     try:
         main_location = next(
-            (item for item in result_list if clean_address(item["address"]) == clean_address("Проспект Абылай хана, 51/53")),
+            (item for item in result_list if item["address"] == "Абылай хана, 51/53"),
             None,
         )
         if main_location:
             result_list.remove(main_location)
             result_list.insert(0, main_location)
-            logger.warning("Основная локация перемещена в начало списка.")
+            logger.info("Основная локация перемещена в начало списка.")
+        else:
+            result_list.sort(key=lambda x: x["name"])
+            logger.info("Основная локация не найдена. Список отсортирован по имени.")
     except Exception as e:
-        logger.error(f"Ошибка при перемещении основной локации: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка при сортировке списка результатов: {str(e)}", exc_info=True)
 
     return result_list
 
@@ -819,7 +842,8 @@ class LocationSearcher:
         """
         self.locations = locations
         self.kd_tree = KDTree(
-            [(loc["latitude"], loc["longitude"]) for loc in locations]
+            np.array([(loc["latitude"], loc["longitude"]) for loc in locations]),
+            metric='euclidean' 
         )
         self.names = [loc["name"] for loc in locations]
 
@@ -836,8 +860,8 @@ class LocationSearcher:
             str: Название ближайшей локации или "Unknown Area".
         """
         meters_to_degrees = radius / 111000
-        indices = self.kd_tree.query_ball_point([lat, lon], meters_to_degrees)
-        if indices:
+        indices = self.kd_tree.query_radius([[lat, lon]], r=meters_to_degrees)[0]
+        if len(indices) > 0:
             return self.names[indices[0]]
         return "Unknown Area"
 
