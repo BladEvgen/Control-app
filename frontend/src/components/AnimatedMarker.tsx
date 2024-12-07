@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from "react";
 import { Marker, Circle, Popup } from "react-leaflet";
 import L from "leaflet";
 import { FaMapMarkerAlt, FaUsers } from "react-icons/fa";
+import { motion } from "framer-motion";
 
 interface AnimatedMarkerProps {
   position: [number, number];
@@ -9,12 +10,28 @@ interface AnimatedMarkerProps {
   address: string;
   employees: number;
   isVisible: boolean;
-  icon: L.Icon;
+  icon: L.Icon | null;
   onClick: () => void;
   popupVisible: boolean;
   radius: number;
   color: string;
+  zoomLevel: number;
 }
+
+const getIconPoints = (
+  pointExpression?: L.PointExpression
+): [number, number] => {
+  if (!pointExpression) {
+    return [35, 40];
+  }
+  if (Array.isArray(pointExpression)) {
+    return [pointExpression[0], pointExpression[1]];
+  } else if (pointExpression instanceof L.Point) {
+    return [pointExpression.x, pointExpression.y];
+  } else {
+    return [35, 40];
+  }
+};
 
 const AnimatedMarker: React.FC<AnimatedMarkerProps> = ({
   position,
@@ -27,21 +44,54 @@ const AnimatedMarker: React.FC<AnimatedMarkerProps> = ({
   popupVisible,
   radius,
   color,
+  zoomLevel,
 }) => {
   const markerRef = useRef<L.Marker | null>(null);
 
+  const getScaleFactor = (zoom: number): number => {
+    const baseZoom = 13.5;
+    const scale = 1 + (zoom - baseZoom) * 0.1;
+    return Math.max(0.5, Math.min(scale, 2));
+  };
+
+  const scaleFactor = getScaleFactor(zoomLevel);
+
+  const iconSize = getIconPoints(icon?.options.iconSize);
+  const iconAnchor = getIconPoints(icon?.options.iconAnchor);
+  const popupAnchor = getIconPoints(icon?.options.popupAnchor);
+
+  const scaledIconSize: [number, number] = [
+    iconSize[0] * scaleFactor,
+    iconSize[1] * scaleFactor,
+  ];
+  const scaledIconAnchor: [number, number] = [
+    iconAnchor[0] * scaleFactor,
+    iconAnchor[1] * scaleFactor,
+  ];
+  const scaledPopupAnchor: [number, number] = [
+    popupAnchor[0] * scaleFactor,
+    popupAnchor[1] * scaleFactor,
+  ];
+
+  const scaledCustomIcon = icon
+    ? L.icon({
+        ...icon.options,
+        iconSize: scaledIconSize,
+        iconAnchor: scaledIconAnchor,
+        popupAnchor: scaledPopupAnchor,
+      })
+    : null;
+
   useEffect(() => {
-    if (markerRef.current && isVisible) {
-      const markerElement = markerRef.current.getElement();
-      if (markerElement) {
-        markerElement.style.opacity = "0";
-        setTimeout(() => {
-          markerElement.style.opacity = "1";
-          markerElement.classList.add("animate-drop");
-        }, 500);
+    const marker = markerRef.current;
+    if (marker) {
+      if (popupVisible) {
+        marker.openPopup();
+      } else {
+        marker.closePopup();
       }
     }
-  }, [isVisible]);
+  }, [popupVisible]);
 
   return (
     <>
@@ -50,24 +100,19 @@ const AnimatedMarker: React.FC<AnimatedMarkerProps> = ({
           <Marker
             ref={markerRef}
             position={position}
-            icon={icon}
+            icon={scaledCustomIcon || undefined}
             eventHandlers={{
               click: onClick,
             }}
-          />
-          <Circle
-            center={position}
-            radius={radius}
-            pathOptions={{
-              color: color,
-              fillColor: color,
-              fillOpacity: 0.3,
-            }}
-            className="animate-expand"
-          />
-          {popupVisible && (
-            <Popup position={position} autoPan={false} closeButton={false}>
-              <div className="p-4 rounded-xl shadow-xl bg-white text-gray-800 w-70 max-w-full mx-auto">
+          >
+            <Popup autoPan={false} closeButton={false}>
+              <motion.div
+                className="p-4 rounded-xl shadow-xl bg-white text-gray-800 w-72 max-w-full mx-auto"
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 10 }}
+                transition={{ duration: 0.3 }}
+              >
                 <h2 className="text-xl font-bold text-gray-900 mb-1 leading-tight">
                   {name}
                 </h2>
@@ -84,9 +129,20 @@ const AnimatedMarker: React.FC<AnimatedMarkerProps> = ({
                     <span className="font-semibold">{employees}</span>
                   </p>
                 </div>
-              </div>
+              </motion.div>
             </Popup>
-          )}
+          </Marker>
+
+          <Circle
+            center={position}
+            radius={radius}
+            pathOptions={{
+              color: color,
+              fillColor: color,
+              fillOpacity: 0.3,
+            }}
+            className="animated-circle"
+          />
         </>
       )}
     </>
