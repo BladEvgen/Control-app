@@ -311,3 +311,4 @@ backend/monitoring_app/test_face.py
 backend/static/media/examples.zip
 *.npy
 *.pt
+/driver
