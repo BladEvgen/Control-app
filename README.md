@@ -27,7 +27,7 @@ DRF-React-Control-personal is a system designed for managing employee attendance
 - `backend/django_settings/`: Project settings and configurations
 - `backend/monitoring_app/`: Core application handling logic, models, views, and middleware
 - `urls.py`: Backend API routes
-- `wsgi.py`: Entry point for WSGI-compatible web servers
+- `asgi.py`: Entry point for ASGI-compatible web servers
 
 ### Frontend
 
@@ -46,6 +46,30 @@ DRF-React-Control-personal is a system designed for managing employee attendance
 - **PostgreSQL/MySQL**
 - **Cuda 12**
 
+### Setup
+You may download the setup script using the following command:
+```bash
+wget https://github.com/BladEvgen/DRF-React-Control-personal/blob/main/backend/scripts/setup.sh
+```
+
+#### CUDA Installation
+To install CUDA, follow the steps provided on the NVIDIA website:
+
+Visit the CUDA Downloads Page.
+```bash
+https://developer.nvidia.com/cuda-downloads?target_os=Linux
+```
+
+Select your target operating system and follow the instructions to download the appropriate installer.
+Additionally, you must read the detailed installation instructions provided by NVIDIA to ensure a successful installation:
+
+CUDA Installation Guide for Linux:
+```bash
+https://docs.nvidia.com/cuda/cuda-installation-guide-linux/#meta-packages
+```
+Make sure to follow all the steps carefully to avoid any issues during the installation process. 
+####
+###
 
 ### Backend Setup
 
