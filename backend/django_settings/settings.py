@@ -28,6 +28,8 @@ SECRET_API = os.getenv("SECRET_API")
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
 MAIN_IP = os.getenv("MAIN_IP")
+DB = os.getenv('DB', 'sqlite3').lower()
+
 
 # Email configurations
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND")
@@ -210,18 +212,41 @@ else:
             "LOCATION": "redis://127.0.0.1:6379",
         }
     }
-
 # Database configurations
+
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3" if DEBUG else "django.db.backends.mysql",
-        "NAME": BASE_DIR / "db.sqlite3" if DEBUG else os.getenv("db_name"),
-        "USER": "" if DEBUG else os.getenv("db_user"),
-        "PASSWORD": "" if DEBUG else os.getenv("db_password"),
-        "HOST": "" if DEBUG else os.getenv("db_host"),
-        "PORT": "" if DEBUG else os.getenv("db_port"),
-    }
+    "default": {}
 }
+
+if DEBUG:
+    # If debug using SQLite3
+    DATABASES["default"] = {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    }
+else:
+    # If production using MySQL or PostgreSQL
+    if DB == 'mysql':
+        DATABASES["default"] = {
+            "ENGINE": "django.db.backends.mysql",
+            "NAME": os.getenv("DB_NAME"),
+            "USER": os.getenv("DB_USER"),
+            "PASSWORD": os.getenv("DB_PASSWORD"),
+            "HOST": os.getenv("DB_HOST"),
+            "PORT": os.getenv("DB_PORT"),
+        }
+    elif DB == 'postgres':
+        DATABASES["default"] = {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.getenv("DB_NAME"),
+            "USER": os.getenv("DB_USER"),
+            "PASSWORD": os.getenv("DB_PASSWORD"),
+            "HOST": os.getenv("DB_HOST"),
+            "PORT": os.getenv("DB_PORT"),
+        }
+    else:
+        raise ValueError(f"Неподдерживаемый тип базы данных: {DB}")
+        
 
 # Password validators
 AUTH_PASSWORD_VALIDATORS = [
