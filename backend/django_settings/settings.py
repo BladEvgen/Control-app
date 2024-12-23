@@ -28,7 +28,7 @@ SECRET_API = os.getenv("SECRET_API")
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
 MAIN_IP = os.getenv("MAIN_IP")
-DB = os.getenv('DB', 'sqlite3').lower()
+DB_TYPE = os.getenv("DB_TYPE", "sqlite3").lower()
 
 
 # Email configurations
@@ -118,6 +118,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "django_extensions",
     "django_admin_geomap",
+    "rest_framework.authtoken",
 ]
 
 # Channel layers configuration
@@ -214,9 +215,8 @@ else:
     }
 # Database configurations
 
-DATABASES = {
-    "default": {}
-}
+DATABASES = {"default": {}}
+
 
 if DEBUG:
     # If debug using SQLite3
@@ -226,27 +226,26 @@ if DEBUG:
     }
 else:
     # If production using MySQL or PostgreSQL
-    if DB == 'mysql':
+    if DB_TYPE == "mysql":
         DATABASES["default"] = {
             "ENGINE": "django.db.backends.mysql",
             "NAME": os.getenv("DB_NAME"),
             "USER": os.getenv("DB_USER"),
             "PASSWORD": os.getenv("DB_PASSWORD"),
             "HOST": os.getenv("DB_HOST"),
-            "PORT": os.getenv("DB_PORT"),
+            "PORT": os.getenv("DB_PORT", "3306"),
         }
-    elif DB == 'postgres':
+    elif DB_TYPE == "postgresql":
         DATABASES["default"] = {
             "ENGINE": "django.db.backends.postgresql",
             "NAME": os.getenv("DB_NAME"),
             "USER": os.getenv("DB_USER"),
             "PASSWORD": os.getenv("DB_PASSWORD"),
             "HOST": os.getenv("DB_HOST"),
-            "PORT": os.getenv("DB_PORT"),
+            "PORT": os.getenv("DB_PORT", "5432"),
         }
     else:
-        raise ValueError(f"Неподдерживаемый тип базы данных: {DB}")
-        
+        raise ValueError(f"Unsupported database type: {DB_TYPE}")
 
 # Password validators
 AUTH_PASSWORD_VALIDATORS = [
