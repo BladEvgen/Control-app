@@ -1,22 +1,41 @@
-<div style="position: fixed; bottom: 0; width: 100%;">
-    <footer class="py-4 bg-footer-light text-text-dark dark:bg-background-dark dark:text-text-light mt-auto">
-        <div class="container mx-auto">
-            <div class="flex justify-center border-b border-text-dark dark:border-text-light pb-3 mb-3">
-                <div class="mr-6">
-                    <a href="/"
-                        class="text-text-dark hover:text-primary dark:text-text-light dark:hover:text-primary-light">Home</a>
-                </div>
-                <div class="mr-6">
-                    <a href="/"
-                        class="text-text-dark hover:text-primary dark:text-text-light dark:hover:text-primary-light">FAQs</a>
-                </div>
-                <div>
-                    <a href="/"
-                        class="text-text-dark hover:text-primary dark:text-text-light dark:hover:text-primary-light">About
-                        Us</a>
-                </div>
-            </div>
-            <p class="text-center text-text-dark dark:text-text-light">© {{ current_year }} Company, Inc</p>
-        </div>
-    </footer>
-</div>
+<footer class="text-text-dark py-6">
+  <div class="container mx-auto px-4">
+    <!-- Навигационные ссылки -->
+    <div class="flex flex-col md:flex-row justify-center items-center border-b border-text-dark pb-4 mb-4">
+      <div class="mr-0 md:mr-6 mb-2 md:mb-0">
+        <a href="{% url 'reac_app' %}" class="text-text-dark hover:text-primary flex items-center">
+          <i class="fas fa-home mr-2"></i> Home
+        </a>
+      </div>
+      <div class="mr-0 md:mr-6 mb-2 md:mb-0">
+        <a href="https://new.krmu.edu.kz" class="text-text-dark hover:text-primary flex items-center">
+          <i class="fas fa-question-circle mr-2"></i> KRMU
+        </a>
+      </div>
+      <div>
+        <a href="https://new.krmu.edu.kz/%D0%9E_%D0%BD%D0%B0%D1%81/%D0%9E%D0%B1_%D1%83%D0%BD%D0%B8%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%82%D0%B5%D1%82%D0%B5/" class="text-text-dark hover:text-primary flex items-center">
+          <i class="fas fa-info-circle mr-2"></i> About Us
+        </a>
+      </div>
+    </div>
+    <!-- Социальные иконки -->
+    <div class="flex justify-center space-x-6 mb-4">
+      <a href="https://www.facebook.com/KazakhRussianMedicalUniversity/" target="_blank" class="text-text-dark hover:text-primary">
+        <i class="fab fa-facebook-f fa-lg"></i>
+      </a>
+      <a href="https://t.me/KRMU_dekanat_bot" target="_blank" class="text-text-dark hover:text-primary">
+        <i class="fab fa-telegram fa-lg"></i>
+      </a>
+      <a href="https://www.instagram.com/medkrmu/" target="_blank" class="text-text-dark hover:text-primary">
+        <i class="fab fa-instagram fa-lg"></i>
+      </a>
+      <a href="https://www.youtube.com/channel/UCzYZvFS8rkcvahXegpxtVAQ" target="_blank" class="text-text-dark hover:text-primary">
+        <i class="fab fa-youtube fa-lg"></i>
+      </a>
+    </div>
+    <!-- Копирайт -->
+    <p class="text-center text-sm">
+      © {{ current_year }}. Все права защищены.
+    </p>
+  </div>
+</footer>
