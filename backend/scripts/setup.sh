@@ -98,7 +98,7 @@ ask_for_user() {
 
     while true; do
         echo -en "${BLUE}Enter the system username [${suggested_user}]: ${NC}"
-        read -e CHOSEN_USER
+        read CHOSEN_USER
         CHOSEN_USER=${CHOSEN_USER:-$suggested_user}
         if id "$CHOSEN_USER" &>/dev/null; then
             log_info "User '$CHOSEN_USER' already exists. Will use it."
@@ -106,7 +106,7 @@ ask_for_user() {
         else
             log_warn "User '$CHOSEN_USER' does not exist."
             echo -en "${YELLOW}Create user '$CHOSEN_USER'? (y/n): ${NC}"
-            read -e ans
+            read ans
             if [[ "$ans" =~ ^[Yy]$ ]]; then
                 create_system_user_nonfatal "$CHOSEN_USER"
                 break
@@ -123,7 +123,7 @@ ask_for_user() {
 
 ask_for_app_dir() {
     echo -en "${BLUE}Enter your app directory [${DEFAULT_APP_DIR}]: ${NC}"
-    read -e app_dir_input
+    read app_dir_input
     if [ -n "$app_dir_input" ]; then
         DEFAULT_APP_DIR="$app_dir_input"
     fi
@@ -150,14 +150,21 @@ cleanup_app_dir() {
 #----------------------------- INSTALL PACKAGES -------------------------------
 
 install_packages() {
+    log_info "Adding deadsnakes PPA for newer Python versions (non-fatal)."
+    execute_command_nonfatal "apt-get update -y"
+    execute_command_nonfatal "apt-get install -y software-properties-common"
+    execute_command_nonfatal "add-apt-repository -y ppa:deadsnakes/ppa"
+
     log_info "Installing basic system packages (non-fatal)."
     execute_command_nonfatal "apt-get update -y"
     execute_command_nonfatal "apt-get upgrade -y"
     execute_command_nonfatal "apt-get install -y \
         nginx certbot python3-certbot-nginx \
         wget curl git build-essential \
+        pkg-config libmysqlclient-dev libpq-dev \
         libssl-dev libffi-dev zlib1g-dev \
         postgresql postgresql-contrib \
+        liblinbox-dev libgivaro-dev fflas-ffpack \
         redis-server ufw \
         python3.11 python3.11-venv python3.11-dev \
         htop ca-certificates"
@@ -223,6 +230,7 @@ setup_python_venv_and_requirements() {
         log_info "Installing Python dependencies from requirements_lin.txt (non-fatal)."
         log_info "Proccess may take a while, please be patient."
         log_info "If any errors occur, check the log file for details, after full setup you may try to install manually, from requirements"
+        execute_command_nonfatal "source $VENV_DIR/bin/activate && pip install pip install tensorflow==2.17.1"
         execute_command_nonfatal "source $VENV_DIR/bin/activate && pip install -r ${DEFAULT_APP_DIR}/backend/requirements_lin.txt"
     else
         log_warn "No requirements_lin.txt found in backend/. Skipping pip install."
@@ -270,11 +278,11 @@ setup_postgresql() {
     execute_command_nonfatal "systemctl enable postgresql.service"
 
     echo -en "${BLUE}Enter PostgreSQL database name [${DB_NAME}]: ${NC}"
-    read -e entered_db_name
+    read entered_db_name
     [ -n "$entered_db_name" ] && DB_NAME="$entered_db_name"
 
     echo -en "${BLUE}Enter PostgreSQL user name [${DB_USER}]: ${NC}"
-    read -e entered_db_user
+    read entered_db_user
     [ -n "$entered_db_user" ] && DB_USER="$entered_db_user"
 
     # Проверяем существование БД
@@ -283,7 +291,7 @@ setup_postgresql() {
     if [ "$db_exists" = "1" ]; then
         log_warn "Database '$DB_NAME' already exists."
         echo -en "${YELLOW}Do you want to DROP it? (y/n): ${NC}"
-        read -e dropdb_ans
+        read dropdb_ans
         if [[ "$dropdb_ans" =~ ^[Yy]$ ]]; then
             execute_command_nonfatal "sudo -u postgres psql -c \"DROP DATABASE \\\"$DB_NAME\\\"\""
         else
@@ -297,7 +305,7 @@ setup_postgresql() {
     if [ "$user_exists" = "1" ]; then
         log_warn "PostgreSQL user '$DB_USER' already exists."
         echo -en "${YELLOW}Change this user's password? (y/n): ${NC}"
-        read -e change_pw_ans
+        read change_pw_ans
         if [[ "$change_pw_ans" =~ ^[Yy]$ ]]; then
             echo -en "${BLUE}Enter new password for user '$DB_USER': ${NC}"
             read -s DB_PASSWORD
@@ -318,7 +326,7 @@ setup_postgresql() {
         log_info "Database '$DB_NAME' is present (or was not dropped)."
     else
         echo -en "${BLUE}Create DB '$DB_NAME'? (y/n): ${NC}"
-        read -e create_db_ans
+        read create_db_ans
         if [[ "$create_db_ans" =~ ^[Yy]$ ]]; then
             execute_command_nonfatal "sudo -u postgres psql -c \"CREATE DATABASE \\\"$DB_NAME\\\"\""
         else
@@ -509,7 +517,7 @@ EOF
 setup_ssl() {
     log_info "Obtaining SSL cert from Let's Encrypt (non-fatal)."
     echo -en "${BLUE}Enter your email for Let's Encrypt [admin@example.com]: ${NC}"
-    read -e EMAIL
+    read EMAIL
     EMAIL=${EMAIL:-"admin@example.com"}
 
     execute_command_nonfatal "certbot --nginx -d ${DEFAULT_DOMAIN} --non-interactive --agree-tos -m ${EMAIL} --redirect"
@@ -630,7 +638,7 @@ main() {
 
     # 2) Ask for domain
     echo -en "${BLUE}Enter your domain name [${DEFAULT_DOMAIN}]: ${NC}"
-    read -e domain_input
+    read domain_input
     [ -n "$domain_input" ] && DEFAULT_DOMAIN="$domain_input"
     log_info "Will use domain: $DEFAULT_DOMAIN"
 
