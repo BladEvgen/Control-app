@@ -416,7 +416,7 @@ const MapDashboard: React.FC = () => {
           animate="visible"
           exit="hidden"
         >
-          <label className="text-gray-800 text-center mb-2">Дата данных:</label>
+          <label className="text-white text-center mb-2">Дата данных:</label>
           <motion.input
             type="date"
             value={dateAt}

@@ -222,7 +222,7 @@ const PhotoDashboard: React.FC = () => {
 
   const renderNoPhotos = () => (
     <motion.div
-      className="flex flex-col justify-center items-center h-screen text-gray-500"
+      className="flex flex-col justify-center items-center h-screen text-white"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
