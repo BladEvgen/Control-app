@@ -18,6 +18,7 @@ DAYS = 1
 FACE_RECOGNITION_THRESHOLD = 0.76
 RATE_PERIOD = 600
 RATE_LIMIT = 40
+NO_ALBUMENTATIONS_UPDATE: int = os.getenv("NO_ALBUMENTATIONS_UPDATE", 1)
 
 # Load environment variables
 load_dotenv(BASE_DIR / ".env")
