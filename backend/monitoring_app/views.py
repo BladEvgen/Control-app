@@ -2088,6 +2088,7 @@ def update_lesson_attendance(request, id):
                                                 "absence_reason": openapi.Schema(
                                                     type=openapi.TYPE_STRING,
                                                     description="Причина отсутствия",
+                                                    enum=["Командировка", "Болезнь", "Другая причина"],
                                                     nullable=True,
                                                 ),
                                             },
@@ -2301,6 +2302,8 @@ def staff_detail_by_department_id(request, department_id):
         def daterange(start_date, end_date):
             for n in range(int((end_date - start_date).days) + 1):
                 yield start_date + datetime.timedelta(n)
+        
+        REASON_DISPLAY = dict(models.AbsentReason.ABSENT_REASON_CHOICES)
 
         def query():
             logger.info("Querying staff attendance data")
@@ -2392,7 +2395,8 @@ def staff_detail_by_department_id(request, department_id):
                 ar_end = min(ar["end_date"], end_date)
                 for single_date in daterange(ar_start, ar_end):
                     date_key = single_date.strftime("%Y-%m-%d")
-                    absence_map[ar["staff_id"]][date_key].append(ar["reason"])
+                    display_reason = REASON_DISPLAY.get(ar["reason"], ar["reason"])
+                    absence_map[ar["staff_id"]][date_key].append(display_reason)
 
             remote_work_map = defaultdict(lambda: defaultdict(bool))
             for rw in remote_works_qs:
@@ -3249,6 +3253,9 @@ class UploadFileView(View):
                     elif category_slug == "departments":
                         logger.info("Processing departments data from Excel")
                         self.process_departments(request, rows)
+                    elif category_slug == "public_holidays":
+                        logger.info("Processing public holidays data from Excel")
+                        self.process_public_holidays(request, rows)
                     elif category_slug == "load_geo":
                         rows = rows[1:]
                         logger.info("Processing ClassLocation data from Excel")
@@ -3673,6 +3680,94 @@ class UploadFileView(View):
         except Exception as e:
             logger.error(f"Error processing staff data: {str(e)}")
             messages.error(request, f"Ошибка при обработке сотрудников: {str(e)}")
+ 
+    @transaction.atomic
+    def process_public_holidays(self, request, rows):
+        """
+        Обрабатывает данные для категории "public_holidays" из Excel файла.
+
+        Args:
+            request (HttpRequest): Объект запроса.
+            rows (list): Список строк из файла Excel.
+
+        Raises:
+            Exception: Если произошла ошибка при обработке строки.
+        """
+        logger.info("Processing public holidays data")
+
+        created_holidays = 0
+        updated_holidays = 0
+        errors = []
+        MAX_ERROR_DETAILS = 10
+
+        WORKING_DAY_MAPPING = {
+            'да': True,
+            'нет': False,
+            'yes': True,
+            'no': False,
+            'true': True,
+            'false': False,
+            'рабочий': True,
+            'не рабочий': False,
+        }
+
+        for index, row in enumerate(rows):
+            try:
+                date_cell = row[0].value
+                name_cell = row[1].value
+                is_working_day_cell = row[2].value
+
+                if not date_cell or not name_cell:
+                    raise ValueError("Отсутствуют обязательные поля 'Дата праздника' или 'Название праздника'.")
+
+                if isinstance(date_cell, datetime.datetime) or isinstance(date_cell, datetime.date):
+                    date = date_cell.date() if isinstance(date_cell, datetime.datetime) else date_cell
+                else:
+                    try:
+                        date = datetime.datetime.strptime(str(date_cell), "%d.%m.%Y").date()
+                    except ValueError:
+                        # Попытка другого формата, например, "YYYY-MM-DD"
+                        try:
+                            date = datetime.datetime.strptime(str(date_cell), "%Y-%m-%d").date()
+                        except ValueError:
+                            raise ValueError("Неверный формат даты. Ожидается DD.MM.YYYY или YYYY-MM-DD.")
+
+                if isinstance(is_working_day_cell, bool):
+                    is_working_day = is_working_day_cell
+                else:
+                    is_working_day_str = str(is_working_day_cell).strip().lower()
+                    is_working_day = WORKING_DAY_MAPPING.get(is_working_day_str)
+                    if is_working_day is None:
+                        raise ValueError("Неверное значение в поле 'Рабочий день'. Ожидается 'Да' или 'Нет'.")
+
+                holiday, created = models.PublicHoliday.objects.update_or_create(
+                    date=date,
+                    defaults={
+                        'name': name_cell.strip(),
+                        'is_working_day': is_working_day,
+                    }
+                )
+
+                if created:
+                    created_holidays += 1
+                else:
+                    updated_holidays += 1
+
+            except Exception as e:
+                logger.error(f"Error processing row {index + 2} for PublicHoliday: {e}")
+                errors.append(f"Строка {index + 2}: {e}")
+                if len(errors) >= MAX_ERROR_DETAILS:
+                    break
+                continue
+
+        success_message = f"Успешно создано {created_holidays} праздников и обновлено {updated_holidays} праздников."
+        messages.success(request, success_message)
+
+        if errors:
+            error_message = "Некоторые записи не были обработаны из-за ошибок:\n" + "\n".join(errors)
+            if len(errors) > MAX_ERROR_DETAILS:
+                error_message += f"\n...и ещё {len(errors) - MAX_ERROR_DETAILS} ошибок."
+            messages.warning(request, error_message)
 
     def handle_zip(self, request, file_path):
         """
