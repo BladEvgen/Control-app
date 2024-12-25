@@ -12,6 +12,7 @@ import {
   FaCheckCircle,
   FaTimesCircle,
 } from "react-icons/fa";
+import { motion } from "framer-motion";
 
 class BaseAction<T> {
   static SET_LOADING = "SET_LOADING";
@@ -265,10 +266,19 @@ const ChildDepartmentPage = () => {
                 {isDownloading ? "Загрузка" : "Скачать"}
               </button>
               {showWaitMessage && (
-                <div className="mt-2 md:mt-6 md:ml-4 p-3 bg-red-100 text-red-600 text-sm rounded-lg shadow-md animate-pulse dark:bg-red-900 dark:text-red-200">
+                <motion.div
+                  animate={{ opacity: [1, 0.1, 1] }}
+                  transition={{
+                    duration: 2,
+                    repeat: Infinity,
+                    repeatType: "loop",
+                    ease: "easeInOut",
+                  }}
+                  className="mt-2 md:mt-6 md:ml-4 p-3 bg-red-100 text-red-600 text-sm rounded-lg shadow-md dark:bg-red-900 dark:text-red-200"
+                >
                   Загрузка может занять некоторое время, пожалуйста,
                   подождите...
-                </div>
+                </motion.div>
               )}
             </div>
           </div>
