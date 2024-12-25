@@ -9,9 +9,10 @@ class Command(BaseCommand):
         categories = [
             {"name": "Отделы", "slug": "departments"},
             {"name": "Сотрудники", "slug": "staff"},
-            {"name": "Удаление сотрудников", "slug": "delete_staff"},
-            {"name": "Фото", "slug": "photo"},
+            {"name": "Добавления праздничных дат", "slug": "public_holidays"},
             {"name": "Загрузка Клин. Баз", "slug": "load_geo"},
+            {"name": "Фото", "slug": "photo"},
+            {"name": "Удаление сотрудников", "slug": "delete_staff"},
         ]
 
         for category_data in categories:
