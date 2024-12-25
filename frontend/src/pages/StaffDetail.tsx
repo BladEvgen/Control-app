@@ -5,12 +5,18 @@ import { useParams } from "react-router-dom";
 import { useNavigate } from "../RouterUtils";
 import { StaffData, AttendanceData } from "../schemas/IData";
 import { FaChevronLeft } from "react-icons/fa";
+import { BsFileEarmarkTextFill } from "react-icons/bs";
 import { FiInfo } from "react-icons/fi";
-import { formatDepartmentName } from "../utils/utils";
+import * as XLSX from "xlsx";
 import Notification from "../components/Notification";
 import DateForm from "./DateForm";
 import AttendanceTable from "./AttendanceTable";
-import { formatDateRu, declensionDays } from "../utils/utils";
+import {
+  formatDepartmentName,
+  formatDateRu,
+  declensionDays,
+} from "../utils/utils";
+import { motion } from "framer-motion";
 
 const CONTRACT_TYPE_CHOICES = [
   ["full_time", "Полная занятость"],
@@ -23,7 +29,18 @@ const getContractTypeLabel = (type: string): string => {
   return choice ? choice[1] : type;
 };
 
-const StaffDetail = () => {
+const autoFitColumns = (data: (string | number | null)[][]) => {
+  const colWidths: number[] = [];
+  data.forEach((row) => {
+    row.forEach((val, idx) => {
+      const stringValue = val ? val.toString() : "";
+      colWidths[idx] = Math.max(colWidths[idx] || 0, stringValue.length);
+    });
+  });
+  return colWidths.map((width) => ({ wch: width + 2 }));
+};
+
+const StaffDetail: React.FC = () => {
   const { pin } = useParams<{ pin: string }>();
   const [staffData, setStaffData] = useState<StaffData | null>(null);
   const [attendance, setAttendance] = useState<Record<string, AttendanceData>>(
@@ -105,28 +122,21 @@ const StaffDetail = () => {
 
   const generateLegendItems = (attendance: Record<string, AttendanceData>) => {
     const legend = new Set<string>();
-
     Object.values(attendance).forEach((data) => {
       if (data.is_weekend && !data.first_in && !data.last_out) {
         legend.add("Выходной день");
-      }
-      if (data.is_weekend && data.first_in && data.last_out) {
+      } else if (data.is_weekend && data.first_in && data.last_out) {
         legend.add("Работа в выходной");
       } else if (data.is_remote_work) {
-        legend.add("Дистанционная работа");
-      } else if (!data.is_weekend && !data.first_in && !data.last_out) {
+        legend.add("Удаленная работа");
+      } else if (!data.first_in && !data.last_out) {
         if (data.is_absent_approved) {
-          legend.add(
-            `Отсутствие (Одобрено ${data.absent_reason || "Без причины"})`
-          );
+          legend.add(`Одобрено: ${data.absent_reason || "Без причины"}`);
         } else {
-          legend.add(
-            `Отсутствие (Не одобрено: ${data.absent_reason || "Без причины"})`
-          );
+          legend.add(`Не одобрено: ${data.absent_reason || "Без причины"}`);
         }
       }
     });
-
     return Array.from(legend);
   };
 
@@ -139,7 +149,6 @@ const StaffDetail = () => {
     Object.keys(staffData.attendance).length < 32
   ) {
     const percent_for_period = staffData.percent_for_period;
-
     if (percent_for_period > 125) {
       if (percent_for_period >= 145) {
         bonusPercentage = 20;
@@ -151,22 +160,112 @@ const StaffDetail = () => {
     }
   }
 
-  const TooltipText: React.FC<{ text: string; daysCount: number }> = ({
-    text,
-    daysCount,
-  }) => {
-    const [startDate, endDate] = text.split(" - ");
-    return (
-      <span className="text-sm text-gray-500 dark:text-gray-400 italic ml-2">
-        <FiInfo className="inline-block align-middle mb-1 mr-1" />
-        Выбранный период: {formatDateRu(startDate)} - {formatDateRu(endDate)}{" "}
-        (найдено {daysCount} {declensionDays(daysCount)})
-      </span>
-    );
+  const handleDownloadExcel = () => {
+    if (!staffData) return;
+
+    const fio =
+      `${staffData.surname || ""} ${staffData.name || ""}`.trim() ||
+      "Сотрудник";
+    const dateRange = `${startDate}__${endDate}`;
+    const fileName = `${fio}_${dateRange}.xlsx`;
+
+    const reportData: (string | number | null)[][] = [
+      ["ФИО", fio],
+      ["Отдел", staffData.department || ""],
+      [
+        "Процент за период",
+        staffData.percent_for_period
+          ? `${staffData.percent_for_period}%`
+          : "0%",
+      ],
+      [],
+      ["Дата", "Посещаемость", "Процент дня"],
+    ];
+
+    const dates = Object.keys(staffData.attendance).sort((a, b) => {
+      const [dayA, monthA, yearA] = a.split("-").map(Number);
+      const [dayB, monthB, yearB] = b.split("-").map(Number);
+      const dateA = new Date(yearA, monthA - 1, dayA).getTime();
+      const dateB = new Date(yearB, monthB - 1, dayB).getTime();
+      return dateA - dateB;
+    });
+
+    dates.forEach((dateKey) => {
+      const record = staffData.attendance[dateKey];
+      const [day, month, year] = dateKey.split("-");
+      const formattedDate = `${day}.${month}.${year}`;
+
+      let attendanceInfo = "";
+      if (record.is_weekend && !record.first_in && !record.last_out) {
+        attendanceInfo = "Выходной";
+      } else if (record.is_weekend && record.first_in && record.last_out) {
+        const firstIn = new Date(record.first_in).toLocaleTimeString("ru-RU");
+        const lastOut = new Date(record.last_out).toLocaleTimeString("ru-RU");
+        attendanceInfo = `Работа в выходной (${firstIn} - ${lastOut})`;
+      } else if (record.is_remote_work) {
+        attendanceInfo = "Удаленная работа";
+      } else if (!record.first_in && !record.last_out) {
+        if (record.is_absent_approved) {
+          attendanceInfo = record.absent_reason || "Одобрено (Без причины)";
+        } else {
+          attendanceInfo = `Не одобрено: ${
+            record.absent_reason || "Без причины"
+          }`;
+        }
+      } else if (record.first_in && record.last_out) {
+        const firstIn = new Date(record.first_in).toLocaleTimeString("ru-RU");
+        const lastOut = new Date(record.last_out).toLocaleTimeString("ru-RU");
+        attendanceInfo = `${firstIn} - ${lastOut}`;
+      }
+
+      const dayPercent = record.percent_day
+        ? `${record.percent_day.toFixed(2)}%`
+        : "0%";
+
+      reportData.push([formattedDate, attendanceInfo, dayPercent]);
+    });
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(reportData);
+    ws["!cols"] = autoFitColumns(reportData);
+
+    const headerRow = 5;
+    ["A", "B", "C"].forEach((col) => {
+      const ref = col + headerRow;
+      if (ws[ref]) {
+        ws[ref].s = {
+          fill: { fgColor: { rgb: "FFD966" } },
+          font: { bold: true, color: { rgb: "000000" }, sz: 12 },
+          alignment: { horizontal: "center", vertical: "center" },
+        };
+      }
+    });
+
+    XLSX.utils.book_append_sheet(wb, ws, "Отчет");
+    XLSX.writeFile(wb, fileName);
+  };
+
+  const containerVariants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: {
+      opacity: 1,
+      y: 0,
+      transition: { duration: 0.6 },
+    },
+  };
+
+  const floatingButtonVariants = {
+    hover: { scale: 1.05 },
+    tap: { scale: 0.95 },
   };
 
   return (
-    <div className="container mx-auto p-6 sm:p-10 rounded-xl relative bg-white dark:bg-gray-900 dark:text-white">
+    <motion.div
+      className="container mx-auto p-6 sm:p-10 rounded-xl relative bg-white dark:bg-gray-900 dark:text-white"
+      variants={containerVariants}
+      initial="hidden"
+      animate="visible"
+    >
       {loading ? (
         <div className="flex flex-col items-center justify-center h-screen">
           <div className="loader"></div>
@@ -184,13 +283,76 @@ const StaffDetail = () => {
             />
           )}
           {staffData && (
-            <div>
-              <div className="relative mb-6">
+            <div className="relative">
+              {/* Плавающая кнопка "Назад" (мобильные) */}
+              <motion.button
+                variants={floatingButtonVariants}
+                whileHover="hover"
+                whileTap="tap"
+                className="fixed bottom-4 left-4 bg-green-500 text-white 
+                  rounded-full p-4 hover:bg-green-700 shadow-md z-50 
+                  focus:outline-none transition-transform sm:hidden"
+                onClick={navigateToChildDepartment}
+              >
+                <FaChevronLeft className="text-xl" />
+              </motion.button>
+
+              {/* Плавающая кнопка "Скачать Excel" (мобильные) */}
+              <motion.button
+                variants={floatingButtonVariants}
+                whileHover="hover"
+                whileTap="tap"
+                onClick={handleDownloadExcel}
+                disabled={!staffData}
+                className={`fixed bottom-4 right-4 
+                  rounded-full p-4 shadow-md z-50 focus:outline-none transition-transform
+                  sm:hidden ${
+                    staffData
+                      ? "bg-blue-500 hover:bg-blue-700 text-white"
+                      : "bg-gray-400 cursor-not-allowed text-white"
+                  }`}
+              >
+                <BsFileEarmarkTextFill className="text-xl" />
+              </motion.button>
+
+              {/* Шапка (для планшетов и десктопов) */}
+              <div className="hidden sm:flex justify-between items-center mb-4 flex-wrap">
+                <motion.button
+                  variants={floatingButtonVariants}
+                  whileHover="hover"
+                  whileTap="tap"
+                  className="bg-green-500 text-white rounded-full p-3 hover:bg-green-700 shadow-md z-10 focus:outline-none"
+                  onClick={navigateToChildDepartment}
+                >
+                  <FaChevronLeft className="text-xl" />
+                </motion.button>
+
+                <motion.button
+                  variants={floatingButtonVariants}
+                  whileHover="hover"
+                  whileTap="tap"
+                  onClick={handleDownloadExcel}
+                  disabled={!staffData}
+                  className={`mt-2 px-6 py-2 rounded-md text-white transition-colors ${
+                    staffData
+                      ? "bg-blue-500 hover:bg-blue-700"
+                      : "bg-gray-400 cursor-not-allowed"
+                  }`}
+                >
+                  Скачать Excel
+                </motion.button>
+              </div>
+
+              {/* Данные о сотруднике */}
+              <div className="mb-6 sm:mb-8">
                 <div className="flex flex-col items-center sm:flex-row sm:items-start sm:space-x-6">
-                  <img
+                  <motion.img
                     src={`${apiUrl}${staffData.avatar}`}
                     alt="Avatar"
                     className="w-24 h-24 sm:w-32 sm:h-32 rounded-full mb-4 sm:mb-0 shadow-md"
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.5 }}
                   />
                   <div className="text-center sm:text-left">
                     {staffData.surname && staffData.name && (
@@ -225,25 +387,30 @@ const StaffDetail = () => {
                     )}
                     {Object.keys(staffData.attendance).length > 0 && (
                       <p className="text-lg mb-2">
-                        <TooltipText
-                          text={`${startDate} - ${endDate}`}
-                          daysCount={Object.keys(staffData.attendance).length}
-                        />
+                        <span className="inline-flex items-center">
+                          <FiInfo className="mr-1 text-gray-400 dark:text-gray-500" />
+                          Выбранный период: {formatDateRu(startDate)} -{" "}
+                          {formatDateRu(endDate)} (найдено{" "}
+                          {Object.keys(staffData.attendance).length}{" "}
+                          {declensionDays(
+                            Object.keys(staffData.attendance).length
+                          )}
+                          )
+                        </span>
                       </p>
                     )}
                   </div>
-                  <button
-                    className="hidden lg:block absolute left-0 top-0 sm:left-8 sm:top-8 lg:-left-14 lg:-top-4 bg-green-500 text-white rounded-full p-2 sm:p-3 hover:bg-green-700 shadow-md z-10 focus:outline-none transition-transform transform hover:scale-105"
-                    onClick={navigateToChildDepartment}
-                  >
-                    <FaChevronLeft className="text-lg sm:text-xl" />
-                  </button>
                 </div>
                 {bonusPercentage > 0 && (
-                  <p className="text-lg text-green-600 dark:text-green-400 mt-4">
+                  <motion.p
+                    className="text-lg text-green-600 dark:text-green-400 mt-4"
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.4 }}
+                  >
                     Сотрудник может получить доплату в размере {bonusPercentage}
                     %
-                  </p>
+                  </motion.p>
                 )}
               </div>
 
@@ -254,12 +421,11 @@ const StaffDetail = () => {
               <div className="flex flex-wrap justify-center gap-4 text-sm text-gray-700 dark:text-gray-400 mt-4">
                 {legendItems.map((item, index) => {
                   let colorClass = "";
-
                   if (item === "Выходной день") {
                     colorClass = "bg-amber-400 dark:bg-amber-500";
                   } else if (item.includes("Работа в выходной")) {
                     colorClass = "bg-green-400 dark:bg-green-500";
-                  } else if (item.includes("Дистанционная работа")) {
+                  } else if (item.includes("Удаленная работа")) {
                     colorClass = "bg-sky-400 dark:bg-sky-500";
                   } else if (item.includes("Одобрено")) {
                     colorClass = "bg-violet-400 dark:bg-violet-500";
@@ -270,12 +436,18 @@ const StaffDetail = () => {
                   }
 
                   return (
-                    <div key={index} className="flex items-center space-x-2">
+                    <motion.div
+                      key={index}
+                      className="flex items-center space-x-2"
+                      initial={{ opacity: 0, x: 20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: index * 0.05, duration: 0.3 }}
+                    >
                       <div
                         className={`w-4 h-4 rounded-full ${colorClass}`}
                       ></div>
                       <span className="font-semibold">{item}</span>
-                    </div>
+                    </motion.div>
                   );
                 })}
               </div>
@@ -289,18 +461,11 @@ const StaffDetail = () => {
               />
 
               <AttendanceTable attendance={attendance} />
-
-              <button
-                className="fixed bottom-4 left-4 bg-green-500 text-white rounded-full px-4 py-4 hover:bg-green-700 shadow-md z-10 focus:outline-none sm:block md:block lg:hidden"
-                onClick={navigateToChildDepartment}
-              >
-                <FaChevronLeft className="text-xl" />
-              </button>
             </div>
           )}
         </>
       )}
-    </div>
+    </motion.div>
   );
 };
 
