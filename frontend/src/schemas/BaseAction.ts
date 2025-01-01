@@ -11,4 +11,8 @@ export class BaseAction<T> {
     this.type = type;
     this.payload = payload;
   }
+
+  static createAction<T>(type: string, payload?: T): BaseAction<T> {
+    return new BaseAction<T>(type, payload);
+  }
 }
