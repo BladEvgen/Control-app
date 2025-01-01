@@ -7,7 +7,6 @@ import { StaffData, AttendanceData } from "../schemas/IData";
 import { FaChevronLeft } from "react-icons/fa";
 import { BsFileEarmarkTextFill } from "react-icons/bs";
 import { FiInfo } from "react-icons/fi";
-import * as XLSX from "xlsx";
 import Notification from "../components/Notification";
 import DateForm from "./DateForm";
 import AttendanceTable from "./AttendanceTable";
@@ -17,8 +16,10 @@ import {
   declensionDays,
 } from "../utils/utils";
 import { motion } from "framer-motion";
+import { generateAndDownloadExcel } from "../utils/excelUtils";
+import LoaderComponent from "../components/LoaderComponent";
 
-const CONTRACT_TYPE_CHOICES = [
+const CONTRACT_TYPE_CHOICES: [string, string][] = [
   ["full_time", "Полная занятость"],
   ["part_time", "Частичная занятость"],
   ["gph", "ГПХ"],
@@ -27,17 +28,6 @@ const CONTRACT_TYPE_CHOICES = [
 const getContractTypeLabel = (type: string): string => {
   const choice = CONTRACT_TYPE_CHOICES.find(([key]) => key === type);
   return choice ? choice[1] : type;
-};
-
-const autoFitColumns = (data: (string | number | null)[][]) => {
-  const colWidths: number[] = [];
-  data.forEach((row) => {
-    row.forEach((val, idx) => {
-      const stringValue = val ? val.toString() : "";
-      colWidths[idx] = Math.max(colWidths[idx] || 0, stringValue.length);
-    });
-  });
-  return colWidths.map((width) => ({ wch: width + 2 }));
 };
 
 const StaffDetail: React.FC = () => {
@@ -141,7 +131,6 @@ const StaffDetail: React.FC = () => {
   };
 
   const legendItems = generateLegendItems(attendance);
-
   let bonusPercentage = 0;
   if (
     staffData &&
@@ -160,89 +149,16 @@ const StaffDetail: React.FC = () => {
     }
   }
 
-  const handleDownloadExcel = () => {
+  const handleDownloadExcel = async () => {
     if (!staffData) return;
-
-    const fio =
-      `${staffData.surname || ""} ${staffData.name || ""}`.trim() ||
-      "Сотрудник";
-    const dateRange = `${startDate}__${endDate}`;
-    const fileName = `${fio}_${dateRange}.xlsx`;
-
-    const reportData: (string | number | null)[][] = [
-      ["ФИО", fio],
-      ["Отдел", staffData.department || ""],
-      [
-        "Процент за период",
-        staffData.percent_for_period
-          ? `${staffData.percent_for_period}%`
-          : "0%",
-      ],
-      [],
-      ["Дата", "Посещаемость", "Процент дня"],
-    ];
-
-    const dates = Object.keys(staffData.attendance).sort((a, b) => {
-      const [dayA, monthA, yearA] = a.split("-").map(Number);
-      const [dayB, monthB, yearB] = b.split("-").map(Number);
-      const dateA = new Date(yearA, monthA - 1, dayA).getTime();
-      const dateB = new Date(yearB, monthB - 1, dayB).getTime();
-      return dateA - dateB;
-    });
-
-    dates.forEach((dateKey) => {
-      const record = staffData.attendance[dateKey];
-      const [day, month, year] = dateKey.split("-");
-      const formattedDate = `${day}.${month}.${year}`;
-
-      let attendanceInfo = "";
-      if (record.is_weekend && !record.first_in && !record.last_out) {
-        attendanceInfo = "Выходной";
-      } else if (record.is_weekend && record.first_in && record.last_out) {
-        const firstIn = new Date(record.first_in).toLocaleTimeString("ru-RU");
-        const lastOut = new Date(record.last_out).toLocaleTimeString("ru-RU");
-        attendanceInfo = `Работа в выходной (${firstIn} - ${lastOut})`;
-      } else if (record.is_remote_work) {
-        attendanceInfo = "Удаленная работа";
-      } else if (!record.first_in && !record.last_out) {
-        if (record.is_absent_approved) {
-          attendanceInfo = record.absent_reason || "Одобрено (Без причины)";
-        } else {
-          attendanceInfo = `Не одобрено: ${
-            record.absent_reason || "Без причины"
-          }`;
-        }
-      } else if (record.first_in && record.last_out) {
-        const firstIn = new Date(record.first_in).toLocaleTimeString("ru-RU");
-        const lastOut = new Date(record.last_out).toLocaleTimeString("ru-RU");
-        attendanceInfo = `${firstIn} - ${lastOut}`;
-      }
-
-      const dayPercent = record.percent_day
-        ? `${record.percent_day.toFixed(2)}%`
-        : "0%";
-
-      reportData.push([formattedDate, attendanceInfo, dayPercent]);
-    });
-
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(reportData);
-    ws["!cols"] = autoFitColumns(reportData);
-
-    const headerRow = 5;
-    ["A", "B", "C"].forEach((col) => {
-      const ref = col + headerRow;
-      if (ws[ref]) {
-        ws[ref].s = {
-          fill: { fgColor: { rgb: "FFD966" } },
-          font: { bold: true, color: { rgb: "000000" }, sz: 12 },
-          alignment: { horizontal: "center", vertical: "center" },
-        };
-      }
-    });
-
-    XLSX.utils.book_append_sheet(wb, ws, "Отчет");
-    XLSX.writeFile(wb, fileName);
+    try {
+      await generateAndDownloadExcel(staffData, startDate, endDate);
+    } catch (error) {
+      console.error("Ошибка при генерации Excel:", error);
+      setNotificationMessage("Не удалось создать Excel-файл.");
+      setNotificationType("error");
+      setShowNotification(true);
+    }
   };
 
   const containerVariants = {
@@ -267,12 +183,7 @@ const StaffDetail: React.FC = () => {
       animate="visible"
     >
       {loading ? (
-        <div className="flex flex-col items-center justify-center h-screen">
-          <div className="loader"></div>
-          <p className="mt-4 text-lg text-gray-300 dark:text-gray-400">
-            Данные загружаются, пожалуйста, подождите...
-          </p>
-        </div>
+        <LoaderComponent />
       ) : (
         <>
           {showNotification && (
@@ -417,7 +328,6 @@ const StaffDetail: React.FC = () => {
               <h2 className="text-2xl font-bold mt-8 mb-4 text-center">
                 Посещаемость
               </h2>
-
               <div className="flex flex-wrap justify-center gap-4 text-sm text-gray-700 dark:text-gray-400 mt-4">
                 {legendItems.map((item, index) => {
                   let colorClass = "";
@@ -451,7 +361,6 @@ const StaffDetail: React.FC = () => {
                   );
                 })}
               </div>
-
               <DateForm
                 startDate={startDate}
                 endDate={endDate}
