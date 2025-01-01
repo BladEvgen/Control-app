@@ -1,17 +1,22 @@
-import React, { useEffect, useState, ReactNode } from "react";
+import React, { useEffect, useState, ReactNode, lazy, Suspense } from "react";
 import { createBrowserRouter } from "react-router-dom";
 
-import MainPage from "./pages/MainPage.tsx";
+import LoaderComponent from "./components/LoaderComponent.tsx";
 import HeaderComponent from "./components/HeaderComponent.tsx";
 import FooterComponent from "./components/FooterComponent.tsx";
-import LoginPage from "./pages/LoginPage.tsx";
-import DepartmentPage from "./pages/DepartmentPage.tsx";
-import ChildDepartmentPage from "./pages/ChildDepartmentPage.tsx";
-import StaffDetail from "./pages/StaffDetail.tsx";
 import { addPrefix } from "./RouterUtils.tsx";
-import Dashboard from "./pages/Dashboard.tsx";
-import MapPage from "./pages/MapDashboard.tsx";
-import PhotoDashboard from "./pages/PhotoDashboard.tsx";
+
+const MainPage = lazy(() => import("./pages/MainPage.tsx"));
+const LoginPage = lazy(() => import("./pages/LoginPage.tsx"));
+const DepartmentPage = lazy(() => import("./pages/DepartmentPage.tsx"));
+const ChildDepartmentPage = lazy(
+  () => import("./pages/ChildDepartmentPage.tsx")
+);
+const StaffDetail = lazy(() => import("./pages/StaffDetail.tsx"));
+const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
+const MapPage = lazy(() => import("./pages/MapDashboard.tsx"));
+const PhotoDashboard = lazy(() => import("./pages/PhotoDashboard.tsx"));
+
 interface LayoutProps {
   children: ReactNode;
 }
@@ -52,7 +57,9 @@ const router = createBrowserRouter([
     path: addPrefix("/"),
     element: (
       <Layout>
-        <MainPage />
+        <Suspense fallback={<LoaderComponent />}>
+          <MainPage />
+        </Suspense>
       </Layout>
     ),
   },
@@ -60,7 +67,9 @@ const router = createBrowserRouter([
     path: addPrefix("/login"),
     element: (
       <Layout>
-        <LoginPage />
+        <Suspense fallback={<LoaderComponent />}>
+          <LoginPage />
+        </Suspense>
       </Layout>
     ),
   },
@@ -68,7 +77,9 @@ const router = createBrowserRouter([
     path: addPrefix("/department/:id"),
     element: (
       <Layout>
-        <DepartmentPage />{" "}
+        <Suspense fallback={<LoaderComponent />}>
+          <DepartmentPage />
+        </Suspense>
       </Layout>
     ),
   },
@@ -76,7 +87,9 @@ const router = createBrowserRouter([
     path: addPrefix("/childDepartment/:id"),
     element: (
       <Layout>
-        <ChildDepartmentPage /> {""}
+        <Suspense fallback={<LoaderComponent />}>
+          <ChildDepartmentPage />
+        </Suspense>
       </Layout>
     ),
   },
@@ -84,7 +97,9 @@ const router = createBrowserRouter([
     path: addPrefix("/staffDetail/:pin"),
     element: (
       <Layout>
-        <StaffDetail /> {""}
+        <Suspense fallback={<LoaderComponent />}>
+          <StaffDetail />
+        </Suspense>
       </Layout>
     ),
   },
@@ -92,7 +107,9 @@ const router = createBrowserRouter([
     path: addPrefix("/dashboard"),
     element: (
       <Layout>
-        <Dashboard />
+        <Suspense fallback={<LoaderComponent />}>
+          <Dashboard />
+        </Suspense>
       </Layout>
     ),
   },
@@ -100,7 +117,9 @@ const router = createBrowserRouter([
     path: addPrefix("/map"),
     element: (
       <Layout>
-        <MapPage />
+        <Suspense fallback={<LoaderComponent />}>
+          <MapPage />
+        </Suspense>
       </Layout>
     ),
   },
@@ -108,7 +127,9 @@ const router = createBrowserRouter([
     path: addPrefix("/photo"),
     element: (
       <Layout>
-        <PhotoDashboard />
+        <Suspense fallback={<LoaderComponent />}>
+          <PhotoDashboard />
+        </Suspense>
       </Layout>
     ),
   },
