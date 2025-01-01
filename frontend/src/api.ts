@@ -1,6 +1,7 @@
 import { addPrefix } from "./RouterUtils";
 import axios, { AxiosResponse } from "axios";
 import { apiUrl, isDebug } from "../apiConfig";
+import { BaseAction } from "./schemas/BaseAction";
 
 const log = {
   info: (...args: any[]) => {
@@ -33,7 +34,6 @@ const log = {
   },
 };
 export { log };
-
 
 export const setCookie = (
   name: string,
@@ -124,7 +124,12 @@ axiosInstance.interceptors.response.use(
         if (!refreshToken) {
           log.error("Отсутствует refresh_token.");
           handleLogout();
-          return Promise.reject(error);
+          return Promise.reject(
+            BaseAction.createAction(
+              BaseAction.SET_ERROR,
+              "Отсутствует refresh_token."
+            )
+          );
         }
 
         const refreshResponse = await axios.post(
@@ -157,6 +162,12 @@ axiosInstance.interceptors.response.use(
         ) {
           log.error("Не удалось обновить токен. Выполняем выход.");
           handleLogout();
+          return Promise.reject(
+            BaseAction.createAction(
+              BaseAction.SET_ERROR,
+              "Не удалось обновить токен."
+            )
+          );
         }
         return Promise.reject(refreshError);
       }
@@ -165,6 +176,12 @@ axiosInstance.interceptors.response.use(
     if (error.response?.status === 401) {
       log.error("401 ошибка. Выполняем выход.");
       handleLogout();
+      return Promise.reject(
+        BaseAction.createAction(
+          BaseAction.SET_ERROR,
+          "401 ошибка. Выполняем выход."
+        )
+      );
     }
 
     return Promise.reject(error);
