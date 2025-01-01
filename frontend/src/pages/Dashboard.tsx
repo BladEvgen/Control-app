@@ -6,6 +6,7 @@ import { apiUrl } from "../../apiConfig";
 import { Chart as ChartJS, registerables, TooltipItem } from "chart.js";
 import { AttendanceStats } from "../schemas/IData";
 import Notification from "../components/Notification";
+import LoaderComponent from "../components/LoaderComponent";
 ChartJS.register(...registerables);
 
 const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
@@ -239,11 +240,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
   );
 
   if (loading) {
-    return (
-      <div className="flex justify-center items-center h-screen">
-        <div className="loader"></div>
-      </div>
-    );
+    return <LoaderComponent />;
   }
 
   if (error) {

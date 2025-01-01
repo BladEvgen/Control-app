@@ -11,6 +11,7 @@ import { FaSadTear } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 import { log } from "../api";
 import useWebSocket from "../hooks/useWebSocket";
+import LoaderComponent from "../components/LoaderComponent";
 
 const PhotoDashboard: React.FC = () => {
   const [photos, setPhotos] = useState<PhotoData[]>([]);
@@ -208,7 +209,7 @@ const PhotoDashboard: React.FC = () => {
 
   const renderLoading = () => (
     <div className="flex flex-col justify-center items-center h-screen text-gray-700">
-      <div className="loader w-20 h-20 border-4 border-gray-300 border-t-4 border-t-blue-500 rounded-full animate-spin"></div>
+      <LoaderComponent />
       <motion.p
         className="mt-6 text-xl font-medium text-gray-200"
         initial={{ opacity: 0 }}

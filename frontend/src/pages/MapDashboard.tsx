@@ -10,6 +10,7 @@ import { BaseAction } from "../schemas/BaseAction";
 import { LocationData } from "../schemas/IData";
 import { FaExpand, FaCompress } from "react-icons/fa";
 import { motion, AnimatePresence, Variants } from "framer-motion";
+import LoaderComponent from "../components/LoaderComponent";
 
 const getFormattedDateAt = (): string => {
   const yesterday = new Date();
@@ -370,7 +371,7 @@ const MapDashboard: React.FC = () => {
         animate="visible"
         exit="exit"
       >
-        <div className="loader w-16 h-16 border-4 border-gray-300 border-t-4 border-t-blue-500 rounded-full animate-spin"></div>
+        <LoaderComponent />
         <motion.p
           className="mt-4 text-lg font-medium text-white"
           initial={{ opacity: 0 }}

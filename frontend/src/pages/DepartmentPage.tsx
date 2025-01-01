@@ -10,7 +10,7 @@ import { FaDownload, FaHome, FaTimesCircle } from "react-icons/fa";
 import DepartmentTable from "./DepartmentTable";
 import { BaseAction } from "../schemas/BaseAction";
 import { motion } from "framer-motion";
-
+import LoaderComponent from "../components/LoaderComponent";
 class DepartmentAction extends BaseAction<any> {
   static SET_LOADING = "SET_LOADING";
   static SET_DATA = "SET_DATA";
@@ -161,12 +161,7 @@ const DepartmentPage: React.FC = () => {
   return (
     <div className="container mx-auto px-4 py-8 dark:text-white">
       {isLoading ? (
-        <div className="flex flex-col items-center justify-center h-screen">
-          <div className="loader"></div>
-          <p className="mt-4 text-lg text-gray-300 dark:text-gray-400">
-            Данные загружаются, пожалуйста, подождите...
-          </p>
-        </div>
+        <LoaderComponent />
       ) : error ? (
         <div className="flex flex-col items-center justify-center h-screen">
           <FaTimesCircle className="text-red-500 text-5xl mb-4" />
