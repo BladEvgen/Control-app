@@ -162,7 +162,7 @@ const StaffDetail: React.FC = () => {
 
   return (
     <motion.div
-      className="min-h-screen py-8 px-4 sm:px-8 lg:px-12"
+      className="min-h-screen py-8 px-4 sm:px-8 lg:px-24"
       variants={containerVariants}
       initial="hidden"
       animate="visible"
@@ -200,7 +200,7 @@ const StaffDetail: React.FC = () => {
           </motion.button>
 
           {staffData && (
-            <div className="w-full max-w-7xl mx-auto bg-white dark:bg-gray-900 shadow-2xl rounded-xl overflow-hidden">
+            <div className="w-full max-w-7xl lg:max-w-screen-2xl mx-auto bg-white dark:bg-gray-900 shadow-2xl rounded-xl overflow-hidden">
               {/* Header */}
               <div className="flex flex-col sm:flex-row items-center justify-between p-8 border-b border-gray-200 dark:border-gray-700">
                 <div className="flex items-center space-x-6">
