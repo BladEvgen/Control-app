@@ -4,11 +4,11 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        "primary": "#1E3A8A",
+        primary: "#1E3A8A",
         "primary-dark": "#162D5B",
         "primary-mid": "#1C3375",
         "primary-light": "#3B5998",
-        "accent": "#805AD5",
+        accent: "#805AD5",
         "accent-dark": "#6B46C1",
         "accent-mid": "#734BBF",
         "accent-light": "#9D7FEA",
@@ -23,20 +23,18 @@ module.exports = {
       },
       keyframes: {
         drip: {
-          "0%": { height: "0%", backgroundColor: "#1E3A8A" },
-          "20%": { height: "20%", backgroundColor: "#1C3375" },
-          "40%": { height: "40%", backgroundColor: "#3B5998" },
-          "60%": { height: "60%", backgroundColor: "#162D5B" },
-          "80%": { height: "80%", backgroundColor: "#1C3375" },
-          "100%": { height: "100%", backgroundColor: "#1E3A8A" },
+          "0%": { height: "20%", backgroundColor: "#162D5B" }, // Цвет header (primary-dark)
+          "25%": { height: "40%", backgroundColor: "#1C3375" }, // первый промежуточный оттенок
+          "50%": { height: "60%", backgroundColor: "#3B5998" }, // primary-light
+          "75%": { height: "80%", backgroundColor: "#2F4B8C" }, // затемнённый оттенок для плавного перехода
+          "100%": { height: "100%", backgroundColor: "#F0F4F8" }, // Цвет footer (улучшенная версия footer-light)
         },
         dripDark: {
-          "0%": { height: "0%", backgroundColor: "#2D3748" },
-          "20%": { height: "20%", backgroundColor: "#1A202C" },
-          "40%": { height: "40%", backgroundColor: "#162D5B" },
-          "60%": { height: "60%", backgroundColor: "#1C3375" },
-          "80%": { height: "80%", backgroundColor: "#162D5B" },
-          "100%": { height: "100%", backgroundColor: "#2D3748" },
+          "0%": { height: "20%", backgroundColor: "#162D5B" }, // Цвет header (primary-dark)
+          "25%": { height: "40%", backgroundColor: "#1C3375" }, // первый промежуточный оттенок
+          "50%": { height: "60%", backgroundColor: "#2B3E8C" }, // смещение в сторону синевато-фиолетового оттенка
+          "75%": { height: "80%", backgroundColor: "#3A2B7F" }, // усиление фиолетового характера
+          "100%": { height: "100%", backgroundColor: "#ebe534" }, // насыщенный фиолетовый для футера
         },
         fadeIn: {
           "0%": { opacity: 0 },
