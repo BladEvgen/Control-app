@@ -29,6 +29,7 @@ from monitoring_app.models import (
     LessonAttendance,
     ParentDepartment,
     PasswordResetToken,
+    PerformanceBonusRule,
     PasswordResetRequestLog,
 )
 
@@ -972,3 +973,17 @@ class RemoteWorkAdmin(admin.ModelAdmin):
             super().save_model(request, obj, form, change)
         except ValidationError as e:
             form.add_error(None, e)
+
+
+@admin.register(PerformanceBonusRule)
+class PerformanceBonusRuleAdmin(admin.ModelAdmin):
+    list_display = (
+        'min_days',
+        'max_days',
+        'min_attendance_percent',
+        'max_attendance_percent',
+        'bonus_percentage',
+    )
+    list_filter = ('min_days', 'max_days', 'min_attendance_percent', 'max_attendance_percent')
+    search_fields = ('bonus_percentage', 'min_days', 'max_days')
+    ordering = ('min_days', 'max_days', 'min_attendance_percent')

@@ -751,3 +751,29 @@ class PublicHoliday(models.Model):
     class Meta:
         verbose_name = "Праздничный день"
         verbose_name_plural = "Праздничные дни"
+
+
+class PerformanceBonusRule(models.Model):
+    min_days = models.PositiveIntegerField(verbose_name="Минимальное количество рабочих дней")
+    max_days = models.PositiveIntegerField(verbose_name="Максимальное количество рабочих дней")
+    min_attendance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, verbose_name="Минимальный процент посещаемости"
+    )
+    max_attendance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, verbose_name="Максимальный процент посещаемости"
+    )
+    bonus_percentage = models.DecimalField(
+        max_digits=5, decimal_places=2, verbose_name="Бонус (в процентах)"
+    )
+
+    class Meta:
+        verbose_name = "Правило бонуса"
+        verbose_name_plural = "Правила бонуса"
+        ordering = ['min_days']
+
+    def __str__(self):
+        return (
+            f"{self.min_days}-{self.max_days} дней, "
+            f"{self.min_attendance_percent}-{self.max_attendance_percent}% -> "
+            f"{self.bonus_percentage}%"
+        )

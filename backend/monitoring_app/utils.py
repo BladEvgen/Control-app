@@ -904,3 +904,30 @@ def extract_coordinates(geo_data):
     if match:
         return match.group(2), match.group(1)
     return (None, None)
+
+
+def get_bonus_percentage(num_days, percent_for_period):
+    """
+    Определяет бонус на основе количества рабочих дней и итогового процента посещаемости.
+
+    Если итоговый процент больше 100, по-прежнему осуществляется поиск правила.
+    Если подходящего правила не найдено, возвращается 0.
+
+    Аргументы:
+        num_days (int): Количество уникальных рабочих дней в периоде.
+        percent_for_period (float): Итоговый процент присутствия за период.
+
+    Возвращает:
+        float: Вычисленный бонус в процентах.
+    """
+    rule = models.PerformanceBonusRule.objects.filter(
+        min_days__lte=num_days,
+        max_days__gte=num_days,
+        min_attendance_percent__lte=percent_for_period,
+        max_attendance_percent__gte=percent_for_period,
+    ).first()
+    
+    if rule:
+        return float(rule.bonus_percentage)
+    
+    return 0.0

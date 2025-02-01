@@ -771,7 +771,6 @@ def child_department_detail(request, child_department_id):
     logger.info(
         f"Request received for child department detail with ID {child_department_id}"
     )
-
     try:
         child_department = models.ChildDepartment.objects.get(id=child_department_id)
         logger.info(
@@ -818,6 +817,7 @@ def child_department_detail(request, child_department_id):
     logger.info(
         f"Returning detailed data for child department ID {child_department_id}"
     )
+
     return Response(data, status=status.HTTP_200_OK)
 
 
@@ -1228,6 +1228,10 @@ def get_staff_detail(staff, start_date, end_date):
         percent_for_period = 0.0
         logger.debug("Нет рабочих дней для расчета процента за период.")
 
+    num_days = len(date_set)
+    bonus_percentage = utils.get_bonus_percentage(num_days, percent_for_period)
+    logger.info(f"Рассчитанный бонус: {bonus_percentage}% для {num_days} дней и {percent_for_period}% присутствия.")
+
     avatar_url = staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
     logger.debug(f"URL аватара: {avatar_url}")
 
@@ -1240,6 +1244,7 @@ def get_staff_detail(staff, start_date, end_date):
         "department_id": staff.department.id if staff.department else "N/A",
         "attendance": attendance_data,
         "percent_for_period": round(percent_for_period, 2),
+        "bonus_percentage": bonus_percentage,  
         "contract_type": salary_qs.contract_type if salary_qs else None,
         "salary": salary_qs.total_salary if salary_qs else None,
     }
