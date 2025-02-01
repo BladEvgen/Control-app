@@ -87,6 +87,7 @@ export interface StaffData {
   department_id: number;
   attendance: Record<string, AttendanceData>;
   percent_for_period: number;
+  bonus_percentage: number;
   contract_type: string | null;
   salary: number | null;
 }

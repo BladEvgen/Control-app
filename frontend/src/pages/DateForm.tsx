@@ -5,7 +5,7 @@ interface DateFormProps {
   endDate: string;
   handleStartDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleEndDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  error: string;
+  error?: string;
 }
 
 const DateForm: React.FC<DateFormProps> = ({
@@ -16,42 +16,40 @@ const DateForm: React.FC<DateFormProps> = ({
   error,
 }) => {
   return (
-    <div className="mb-4 flex flex-col sm:flex-row sm:space-x-4 justify-center sm:justify-between items-center sm:items-end">
-      <div className="mb-2 sm:mb-0 w-full sm:w-auto">
-        <label
-          htmlFor="startDate"
-          className="block text-sm font-medium text-gray-700 dark:text-gray-400 mb-1"
-        >
-          Дата начала:
-        </label>
-        <input
-          type="date"
-          id="startDate"
-          value={startDate}
-          onChange={handleStartDateChange}
-          className="rounded-lg border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto transition-colors duration-300 dark:bg-gray-800 dark:text-white dark:border-gray-600 text-center"
-          placeholder="Дата начала"
-        />
-      </div>
-      {startDate && (
-        <div className="mt-2 sm:mt-0 w-full sm:w-auto">
+    <div className="w-full">
+      <div className="grid grid-cols-2 gap-2">
+        <div>
           <label
-            htmlFor="endDate"
-            className="block text-sm font-medium text-gray-700 dark:text-gray-400 mb-1"
+            htmlFor="startDate"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
           >
-            Дата окончания:
+            Начальная дата
           </label>
           <input
+            id="startDate"
             type="date"
-            id="endDate"
-            value={endDate}
-            onChange={handleEndDateChange}
-            className="rounded-lg border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 w-full sm:w-auto transition-colors duration-300 dark:bg-gray-800 dark:text-white dark:border-gray-600 text-center"
-            placeholder="Дата окончания"
+            value={startDate}
+            onChange={handleStartDateChange}
+            className="mt-1 block w-full rounded-md border border-gray-200 shadow-sm focus:border-blue-500 focus:ring-blue-500 bg-white dark:bg-transparent dark:text-gray-100"
           />
         </div>
-      )}
-      {error && <p className="text-red-600 dark:text-red-400 mt-2">{error}</p>}
+        <div>
+          <label
+            htmlFor="endDate"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Конечная дата
+          </label>
+          <input
+            id="endDate"
+            type="date"
+            value={endDate}
+            onChange={handleEndDateChange}
+            className="mt-1 block w-full rounded-md border border-gray-200 shadow-sm focus:border-blue-500 focus:ring-blue-500 bg-white dark:bg-transparent dark:text-gray-100"
+          />
+        </div>
+      </div>
+      {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
     </div>
   );
 };
