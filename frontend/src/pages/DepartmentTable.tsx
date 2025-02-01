@@ -114,7 +114,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.3, delay: 0.1 }}
-        className="mb-4 ml-3 text-gray-700 dark:text-gray-300"
+        className="mb-4 ml-3 text-gray-200 dark:text-gray-300"
       >
         <strong>Количество сотрудников:</strong> {data.total_staff_count}
       </motion.p>
@@ -155,10 +155,10 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
           <thead className="bg-gray-50 dark:bg-gray-800">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400">
+              <th className="px-6 py-4 text-left text-sm font-semibold text-blue-700 dark:text-blue-300 uppercase tracking-wider">
                 Название отдела
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider dark:text-gray-400">
+              <th className="px-6 py-4 text-left text-sm font-semibold text-blue-700 dark:text-blue-300 uppercase tracking-wider">
                 Дата создания
               </th>
             </tr>

@@ -172,7 +172,7 @@ const ChildDepartmentPage = () => {
 
   return (
     <motion.div
-      className="mx-auto px-4 py-8 dark:text-white max-w-full md:max-w-[45vw]"
+      className="mx-auto px-4 py-8 dark:text-white max-w-full md:max-w-[75vw]"
       variants={containerVariants}
       initial="hidden"
       animate="visible"
