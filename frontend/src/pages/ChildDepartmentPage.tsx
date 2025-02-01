@@ -168,7 +168,7 @@ const ChildDepartmentPage = () => {
 
   return (
     <motion.div
-      className="mx-auto px-4 py-8 dark:text-white max-w-full md:max-w-[70vw]"
+      className="mx-auto px-4 py-8 dark:text-white max-w-full md:max-w-[45vw]"
       variants={containerVariants}
       initial="hidden"
       animate="visible"
@@ -486,7 +486,7 @@ const ChildDepartmentPage = () => {
           whileHover="hover"
           whileTap="tap"
           onClick={() => navigate("/")}
-          className="fixed bottom-4 right-4 bg-yellow-500 hover:bg-yellow-600 text-white rounded-full p-4 shadow-lg z-50 focus:outline-none transition-transform"
+          className="fixed bottom-4 right-4 bg-yellow-500 hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 text-white rounded-full p-4 shadow-lg z-50 focus:outline-none transition-transform"
         >
           <FaHome size={24} />
         </motion.button>
