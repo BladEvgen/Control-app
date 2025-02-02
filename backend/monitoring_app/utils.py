@@ -6,15 +6,14 @@ import logging
 import datetime
 import numpy as np
 import pandas as pd
+from functools import wraps
 from openpyxl import Workbook
 from django.urls import reverse
 from django.conf import settings
-from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from django.core.cache import cache
 from django.http import HttpRequest
-from functools import wraps, partial
 from sklearn.neighbors import KDTree
 from cryptography.fernet import Fernet
 from django.core.mail import send_mail
@@ -23,7 +22,6 @@ from django.utils.html import format_html
 from typing import Any, Dict, List, Optional
 from rest_framework.response import Response
 from collections import defaultdict, Counter
-from concurrent.futures import ThreadPoolExecutor
 from django.contrib.admin import SimpleListFilter
 from django.utils.translation import gettext_lazy as _
 from openpyxl.utils.dataframe import dataframe_to_rows
@@ -47,6 +45,7 @@ AREA_ADDRESS_MAPPING = {
     "Торекулва турникет": "Улица Торекулова, 71",
     "карасай батыра турникет": "Улица Карасай батыра, 75",
 }
+
 
 def get_client_ip(request):
     """Get the client IP address from the request, considering proxy setups."""
@@ -152,135 +151,6 @@ class APIKeyUtility:
         }
         encrypted_data = APIKeyUtility.encrypt_data(data, secret_key)
         return encrypted_data, secret_key
-
-
-def get_attendance_data(pin: str, days: int = None):
-    import requests
-
-    """
-    Получает данные о посещаемости сотрудника за предыдущий день.
-
-    Args:
-        pin (str): Идентификационный номер сотрудника (PIN-код).
-
-    Returns:
-        list: Список словарей, содержащих информацию о каждом проходе
-              сотрудника через систему контроля доступа за указанный день.
-              Если произошла ошибка, возвращает пустой список.
-    """
-    days_to_subtract = days if days is not None else settings.DAYS
-    prev_date = datetime.datetime.now() - datetime.timedelta(days=days_to_subtract)
-
-    eventTime_first = prev_date.strftime("%Y-%m-%d 00:00:00")
-    eventTime_last = prev_date.strftime("%Y-%m-%d 23:59:59")
-    access_token = settings.API_KEY
-
-    try:
-        params = {
-            "endDate": eventTime_last,
-            "pageNo": "1",
-            "pageSize": "1000",
-            "personPin": pin,
-            "startDate": eventTime_first,
-            "access_token": access_token,
-        }
-        response = requests.get(
-            settings.API_URL + "/api/transaction/listAttTransaction",
-            params=params,
-            timeout=10,
-        )
-        response.raise_for_status()
-        response_json = response.json()
-        return response_json.get("data", [])
-    except Exception as e:
-        logger.error(f"Error, Pin: {pin}, Error: {e}")
-        return []
-
-
-def get_all_attendance(days: int = None):
-    """
-    Получает данные о посещаемости всех сотрудников за текущий день
-    и сохраняет их в базе данных.
-    Args:
-    days (int, optional): Количество дней назад для получения данных.
-                            Если не указано, используется значение из настроек.
-                            
-    Выполняет запрос данных о посещаемости для каждого сотрудника
-    параллельно с помощью ThreadPoolExecutor. Затем для каждого
-    сотрудника извлекает первое и последнее время прохода
-    (если данные о посещаемости имеются) и сохраняет их
-    в модели StaffAttendance.
-
-    Returns:
-        None
-    """
-    pins = models.Staff.objects.values_list("pin", flat=True)
-    attendance_data = {}
-
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        fetch_func = partial(get_attendance_data, days=days)
-        for pin, data in zip(pins, executor.map(fetch_func, pins)):
-            attendance_data[pin] = data
-
-    days_to_subtract = days if days is not None else settings.DAYS
-    prev_date = timezone.now() - timezone.timedelta(days=days_to_subtract)
-    next_day = prev_date + timezone.timedelta(days=1)
-
-    updates = []
-
-    for pin, data in attendance_data.items():
-        staff = models.Staff.objects.get(pin=pin)
-        if data:
-            first_event = data[-1]
-            last_event = data[0] if len(data) > 1 else first_event
-
-            first_event_time = timezone.make_aware(
-                timezone.datetime.fromisoformat(first_event["eventTime"])
-            )
-            last_event_time = (
-                timezone.make_aware(
-                    timezone.datetime.fromisoformat(last_event["eventTime"])
-                )
-                if len(data) > 1
-                else first_event_time
-            )
-
-            first_area_name = first_event.get("areaName")
-            last_area_name = last_event.get("areaName")
-
-            area_name_in = first_area_name or "Unknown"
-            area_name_out = last_area_name or "Unknown"
-
-        else:
-            first_event_time = None
-            last_event_time = None
-            area_name_in = "Unknown"
-            area_name_out = "Unknown"
-
-        date_at = next_day.date()
-
-        attendance, created = models.StaffAttendance.objects.get_or_create(
-            staff=staff,
-            date_at=date_at,
-            defaults={
-                "first_in": first_event_time,
-                "last_out": last_event_time,
-                "area_name_in": area_name_in,
-                "area_name_out": area_name_out,
-            },
-        )
-        if not created:
-            attendance.first_in = first_event_time
-            attendance.last_out = last_event_time
-            attendance.area_name_in = area_name_in
-            attendance.area_name_out = area_name_out
-            updates.append(attendance)
-
-    with transaction.atomic():
-        if updates:
-            models.StaffAttendance.objects.bulk_update(
-                updates, ["first_in", "last_out", "area_name_in", "area_name_out"]
-            )
 
 
 def password_check(password: str) -> bool:
@@ -665,35 +535,43 @@ class Radians(Func):
 class Cos(Func):
     function = "COS"
 
+
 def clean_address(address):
     """
-    Очищает адрес, удаляя префиксы ('Улица', 'Проспект', и т.д.), 
+    Очищает адрес, удаляя префиксы ('Улица', 'Проспект', и т.д.),
     скрытые символы и нормализует пробелы.
-    
+
     Args:
         address (str): Исходный адрес.
-    
+
     Returns:
         str: Очищенный и нормализованный адрес.
     """
     if address:
-        address = address.replace('\u200b', '')
-        address = re.sub(r'^(улица|проспект|переулок|бульвар|территория|микрорайон)\s+', '', address, flags=re.IGNORECASE)
-        address = re.sub(r'\s+', ' ', address).strip().lower()
+        address = address.replace("\u200b", "")
+        address = re.sub(
+            r"^(улица|проспект|переулок|бульвар|территория|микрорайон)\s+",
+            "",
+            address,
+            flags=re.IGNORECASE,
+        )
+        address = re.sub(r"\s+", " ", address).strip().lower()
         return address
     return address
 
 
-def generate_map_data(locations, date_at, search_staff_attendance=True, filter_empty=False):
+def generate_map_data(
+    locations, date_at, search_staff_attendance=True, filter_empty=False
+):
     """
     Генерирует данные по локациям, включая посещения сотрудников и занятия.
-    
+
     Args:
         locations (QuerySet): Локации из модели ClassLocation.
         date_at (date): Дата для фильтрации данных (дата события).
         search_staff_attendance (bool): Если True, включает данные из StaffAttendance и LessonAttendance.
         filter_empty (bool): Если True, исключает локации с нулевым количеством посещений.
-    
+
     Returns:
         list: Список словарей с данными по локациям, готовых для отображения на карте.
     """
@@ -703,38 +581,61 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
     if search_staff_attendance:
         try:
             data_insert_date = date_at + datetime.timedelta(days=1)
-            logger.info(f"Начинаем обработку StaffAttendance для даты вставки: {data_insert_date} (дата события: {date_at})")
+            logger.info(
+                f"Начинаем обработку StaffAttendance для даты вставки: {data_insert_date} (дата события: {date_at})"
+            )
 
-            staff_attendances = models.StaffAttendance.objects.filter(
-                date_at=data_insert_date, first_in__isnull=False
-            ).values('area_name_in').annotate(count=Count('id'))
+            staff_attendances = (
+                models.StaffAttendance.objects.filter(
+                    date_at=data_insert_date, first_in__isnull=False
+                )
+                .values("area_name_in")
+                .annotate(count=Count("id"))
+            )
 
             if not staff_attendances:
-                logger.warning(f"Нет записей StaffAttendance для даты вставки {data_insert_date}")
+                logger.warning(
+                    f"Нет записей StaffAttendance для даты вставки {data_insert_date}"
+                )
             else:
                 for attendance in staff_attendances:
-                    area_name_in = attendance.get('area_name_in')
+                    area_name_in = attendance.get("area_name_in")
                     if not area_name_in:
-                        logger.warning(f"Найдена запись StaffAttendance без area_name_in для даты вставки {data_insert_date}")
+                        logger.warning(
+                            f"Найдена запись StaffAttendance без area_name_in для даты вставки {data_insert_date}"
+                        )
                         continue
                     address = AREA_ADDRESS_MAPPING.get(area_name_in)
                     if address:
                         comparison_address = clean_address(address)
-                        matched_location = next((loc for loc in locations if clean_address(loc.address) == comparison_address), None)
+                        matched_location = next(
+                            (
+                                loc
+                                for loc in locations
+                                if clean_address(loc.address) == comparison_address
+                            ),
+                            None,
+                        )
                         if matched_location:
                             original_address = matched_location.address.strip()
-                            staff_by_address[original_address] += attendance.get('count', 0)
+                            staff_by_address[original_address] += attendance.get(
+                                "count", 0
+                            )
                         else:
-                            logger.warning(f"Оригинальный адрес для '{area_name_in}' не найден в ClassLocation")
+                            logger.warning(
+                                f"Оригинальный адрес для '{area_name_in}' не найден в ClassLocation"
+                            )
                     else:
-                        logger.warning(f"Название зоны '{area_name_in}' не найдено в AREA_ADDRESS_MAPPING")
+                        logger.warning(
+                            f"Название зоны '{area_name_in}' не найдено в AREA_ADDRESS_MAPPING"
+                        )
 
                 logger.info(f"Обработано StaffAttendance: {dict(staff_by_address)}")
 
             staff_with_attendance_qs = models.StaffAttendance.objects.filter(
                 date_at=data_insert_date, first_in__isnull=False
-            ).values_list('staff_id', flat=True)
-            staff_with_attendance = list(staff_with_attendance_qs) 
+            ).values_list("staff_id", flat=True)
+            staff_with_attendance = list(staff_with_attendance_qs)
             staff_count = len(staff_with_attendance)
             logger.info(f"Количество сотрудников с посещением: {staff_count}")
 
@@ -748,23 +649,27 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
             logger.info(f"Количество LessonAttendance для обработки: {lesson_count}")
 
             if lesson_count > 0:
-                lesson_coords = list(lesson_attendances_qs.values_list('latitude', 'longitude'))
+                lesson_coords = list(
+                    lesson_attendances_qs.values_list("latitude", "longitude")
+                )
 
                 class_locations = list(models.ClassLocation.objects.all())
                 if not class_locations:
                     logger.warning("Нет записей ClassLocation.")
-                    return [] 
+                    return []
 
-                class_coords = [(loc.latitude, loc.longitude) for loc in class_locations]
+                class_coords = [
+                    (loc.latitude, loc.longitude) for loc in class_locations
+                ]
                 class_addresses = [loc.address.strip() for loc in class_locations]
 
-                kd_tree = KDTree(class_coords, metric='euclidean')
+                kd_tree = KDTree(class_coords, metric="euclidean")
                 logger.info("KDTree успешно построен.")
 
                 distances, indices = kd_tree.query(lesson_coords, k=1)
                 logger.info("KDTree запрос завершен.")
 
-                if hasattr(indices, 'ndim') and indices.ndim > 1:
+                if hasattr(indices, "ndim") and indices.ndim > 1:
                     indices = indices.flatten()
                 else:
                     indices = indices
@@ -772,17 +677,23 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
                 try:
                     nearest_addresses = [class_addresses[int(idx)] for idx in indices]
                 except (ValueError, TypeError) as e:
-                    logger.error(f"Ошибка при преобразовании индексов KDTree: {e}", exc_info=True)
+                    logger.error(
+                        f"Ошибка при преобразовании индексов KDTree: {e}", exc_info=True
+                    )
                     raise
 
                 address_counts = Counter(nearest_addresses)
                 lesson_attendance_by_address = defaultdict(int, address_counts)
 
-                logger.info(f"Обработано LessonAttendance: {dict(lesson_attendance_by_address)}")
+                logger.info(
+                    f"Обработано LessonAttendance: {dict(lesson_attendance_by_address)}"
+                )
             else:
                 logger.info("Нет записей LessonAttendance для обработки.")
         except Exception as e:
-            logger.error(f"Ошибка при обработке данных посещений: {str(e)}", exc_info=True)
+            logger.error(
+                f"Ошибка при обработке данных посещений: {str(e)}", exc_info=True
+            )
             raise
 
     try:
@@ -817,7 +728,9 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
             result_list.append(location_data)
         logger.info(f"Сформирован список результатов с {len(result_list)} локациями.")
     except Exception as e:
-        logger.error(f"Ошибка при формировании списка результатов: {str(e)}", exc_info=True)
+        logger.error(
+            f"Ошибка при формировании списка результатов: {str(e)}", exc_info=True
+        )
         raise
 
     try:
@@ -833,7 +746,9 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
             result_list.sort(key=lambda x: x["name"])
             logger.info("Основная локация не найдена. Список отсортирован по имени.")
     except Exception as e:
-        logger.error(f"Ошибка при сортировке списка результатов: {str(e)}", exc_info=True)
+        logger.error(
+            f"Ошибка при сортировке списка результатов: {str(e)}", exc_info=True
+        )
 
     return result_list
 
@@ -849,7 +764,7 @@ class LocationSearcher:
         self.locations = locations
         self.kd_tree = KDTree(
             np.array([(loc["latitude"], loc["longitude"]) for loc in locations]),
-            metric='euclidean' 
+            metric="euclidean",
         )
         self.names = [loc["name"] for loc in locations]
 
@@ -932,8 +847,8 @@ def get_bonus_percentage(num_days, percent_for_period):
         min_attendance_percent__lte=percent_for_period,
         max_attendance_percent__gte=percent_for_period,
     ).first()
-    
+
     if rule:
         return float(rule.bonus_percentage)
-    
+
     return 0.0

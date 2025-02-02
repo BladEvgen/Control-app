@@ -2,10 +2,12 @@ import os
 import json
 import time
 import base64
+import asyncio
 import logging
 import zipfile
 import datetime
 from pathlib import Path
+from functools import wraps
 from collections import defaultdict
 from tempfile import NamedTemporaryFile
 from concurrent.futures import ThreadPoolExecutor
@@ -39,10 +41,37 @@ from rest_framework.permissions import (
 )
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from asgiref.sync import sync_to_async, async_to_sync
 
-from monitoring_app import ml, models, permissions, serializers, tasks, utils
+from monitoring_app import (
+    ml,
+    tasks,
+    utils,
+    models,
+    permissions,
+    serializers,
+    attendance_fetcher,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def async_drf_view(methods):
+    """
+    Custom decorator to handle async views with DRF decorators.
+    Uses async_to_sync instead of asyncio.run() so that the async view can run
+    properly when the ASGI server already has an event loop.
+    """
+    def decorator(func):
+        @api_view(methods)
+        @wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            logger.info("Entering async_drf_view wrapper; converting async view to sync")
+            result = async_to_sync(func)(*args, **kwargs)
+            logger.info("Async view completed in async_drf_view wrapper")
+            return result
+        return sync_wrapper
+    return decorator
 
 
 class StaffAttendancePagination(PageNumberPagination):
@@ -475,10 +504,10 @@ class StaffAttendanceStatsView(APIView):
 def map_location(request):
     """
     Возвращает данные о локациях и количестве сотрудников и студентов на основе турникетов и занятий за указанную дату.
-    
+
     Args:
         request (HttpRequest): HTTP-запрос с параметром `date_at` для фильтрации данных и параметром `employees` для включения данных о сотрудниках.
-    
+
     Returns:
         JsonResponse: JSON-ответ с данными о локациях, если запрос успешен, либо сообщение об ошибке.
     """
@@ -499,7 +528,7 @@ def map_location(request):
             date_at = datetime.datetime.now().date()
 
         logger.info(f"Using date: {date_at}")
-        
+
         locations = models.ClassLocation.objects.only(
             "address", "name", "latitude", "longitude"
         )
@@ -906,7 +935,7 @@ def child_department_detail(request, child_department_id):
                     "bonus_percentage": openapi.Schema(
                         type=openapi.TYPE_NUMBER,
                         description="Процент бонуса сотрудника",
-                    )
+                    ),
                 },
             ),
         ),
@@ -1234,7 +1263,9 @@ def get_staff_detail(staff, start_date, end_date):
 
     num_days = len(date_set)
     bonus_percentage = utils.get_bonus_percentage(num_days, percent_for_period)
-    logger.info(f"Рассчитанный бонус: {bonus_percentage}% для {num_days} дней и {percent_for_period}% присутствия.")
+    logger.info(
+        f"Рассчитанный бонус: {bonus_percentage}% для {num_days} дней и {percent_for_period}% присутствия."
+    )
 
     avatar_url = staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
     logger.debug(f"URL аватара: {avatar_url}")
@@ -1248,7 +1279,7 @@ def get_staff_detail(staff, start_date, end_date):
         "department_id": staff.department.id if staff.department else "N/A",
         "attendance": attendance_data,
         "percent_for_period": round(percent_for_period, 2),
-        "bonus_percentage": bonus_percentage,  
+        "bonus_percentage": bonus_percentage,
         "contract_type": salary_qs.contract_type if salary_qs else None,
         "salary": salary_qs.total_salary if salary_qs else None,
     }
@@ -2097,7 +2128,11 @@ def update_lesson_attendance(request, id):
                                                 "absence_reason": openapi.Schema(
                                                     type=openapi.TYPE_STRING,
                                                     description="Причина отсутствия",
-                                                    enum=["Командировка", "Болезнь", "Другая причина"],
+                                                    enum=[
+                                                        "Командировка",
+                                                        "Болезнь",
+                                                        "Другая причина",
+                                                    ],
                                                     nullable=True,
                                                 ),
                                             },
@@ -2311,7 +2346,7 @@ def staff_detail_by_department_id(request, department_id):
         def daterange(start_date, end_date):
             for n in range(int((end_date - start_date).days) + 1):
                 yield start_date + datetime.timedelta(n)
-        
+
         REASON_DISPLAY = dict(models.AbsentReason.ABSENT_REASON_CHOICES)
 
         def query():
@@ -2961,22 +2996,11 @@ def login_view(request):
         500: "Internal Server Error: В случае ошибки сервера.",
     },
 )
-@api_view(http_method_names=["GET"])
+@async_drf_view(['GET'])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
-def fetch_data_view(request):
+async def fetch_data_view(request):
     """
-    Запрос на получение данных о посещаемости. Требует передачи заголовка X-API-KEY для аутентификации.
-    Может принимать опциональный параметр 'days' для указания количества дней.
-    
-    Args:
-    запрос: объект запроса.
-
-    Returns:
-    Ответ: статус сообщения.
-
-    Raises:
-    Http403: Если доступ запрещен или отсутствует API ключ.
-    Http500: В случае ошибки сервера.
+    Асинхронный обработчик запросов на получение данных о посещаемости.
     """
     function_name = "fetch_data_view"
     start_time = time.perf_counter()
@@ -2988,22 +3012,23 @@ def fetch_data_view(request):
             logger.warning(f"{function_name}: API key not provided in request headers")
             return Response(
                 status=status.HTTP_403_FORBIDDEN,
-                data={"error": "Доступ запрещен. Не указан API ключ."},
+                data={"error": "Доступ запрещен. Не указан API ключ."}
             )
 
+        get_api_key = sync_to_async(lambda: models.APIKey.objects.get(key=api_key))
         try:
-            key_obj = models.APIKey.objects.get(key=api_key)
+            key_obj = await get_api_key()
             if not key_obj.is_active:
                 logger.warning(f"{function_name}: API key {api_key} is inactive")
                 return Response(
                     status=status.HTTP_403_FORBIDDEN,
-                    data={"error": "Доступ запрещен. Недействительный API ключ."},
+                    data={"error": "Доступ запрещен. Недействительный API ключ."}
                 )
         except models.APIKey.DoesNotExist:
             logger.warning(f"{function_name}: API key {api_key} does not exist")
             return Response(
                 status=status.HTTP_403_FORBIDDEN,
-                data={"error": "Доступ запрещен. Недействительный API ключ."},
+                data={"error": "Доступ запрещен. Недействительный API ключ."}
             )
 
         days = request.query_params.get('days')
@@ -3011,27 +3036,37 @@ def fetch_data_view(request):
             try:
                 days = int(days)
             except ValueError:
-                return Response(status=status.HTTP_400_BAD_REQUEST, data={"error": "Неверное значение параметра 'days'"})
+                return Response(
+                    status=status.HTTP_400_BAD_REQUEST,
+                    data={"error": "Неверное значение параметра 'days'"}
+                )
         
-        utils.get_all_attendance(days=days)
+        fetcher = attendance_fetcher.AsyncAttendanceFetcher()
+        await fetcher.get_all_attendance(days=days)
+        
         logger.info(f"{function_name}: Attendance data fetched successfully")
-        return Response(status=status.HTTP_200_OK, data={"message": "Done"})
+        return Response(
+            status=status.HTTP_200_OK,
+            data={"message": "Done"}
+        )
 
     except Exception as e:
         logger.error(
-            f"{function_name}: Error occurred while fetching attendance data: {str(e)}"
+            f"{function_name}: Error occurred while fetching attendance data: {str(e)}",
+            exc_info=True
         )
         return Response(
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            data={"error": str(e)},
+            data={"error": str(e)}
         )
     finally:
         end_time = time.perf_counter()
         duration_seconds = end_time - start_time
         duration_human_readable = utils.format_duration(duration_seconds)
         logger.info(
-            f"{function_name} completed in {duration_human_readable} (({duration_seconds:.2f} seconds))"
+            f"{function_name} completed in {duration_human_readable} ({duration_seconds:.2f} seconds)"
         )
+
 
 
 @swagger_auto_schema(
@@ -3181,9 +3216,9 @@ def sent_excel(request, department_id):
         response = HttpResponse(
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        response[
-            "Content-Disposition"
-        ] = f"attachment; filename=Посещаемость_{department_id}.xlsx"
+        response["Content-Disposition"] = (
+            f"attachment; filename=Посещаемость_{department_id}.xlsx"
+        )
 
         with NamedTemporaryFile(delete=False) as tmp:
             wb.save(tmp.name)
@@ -3697,7 +3732,7 @@ class UploadFileView(View):
         except Exception as e:
             logger.error(f"Error processing staff data: {str(e)}")
             messages.error(request, f"Ошибка при обработке сотрудников: {str(e)}")
- 
+
     @transaction.atomic
     def process_public_holidays(self, request, rows):
         """
@@ -3718,14 +3753,14 @@ class UploadFileView(View):
         MAX_ERROR_DETAILS = 10
 
         WORKING_DAY_MAPPING = {
-            'да': True,
-            'нет': False,
-            'yes': True,
-            'no': False,
-            'true': True,
-            'false': False,
-            'рабочий': True,
-            'не рабочий': False,
+            "да": True,
+            "нет": False,
+            "yes": True,
+            "no": False,
+            "true": True,
+            "false": False,
+            "рабочий": True,
+            "не рабочий": False,
         }
 
         for index, row in enumerate(rows):
@@ -3735,19 +3770,33 @@ class UploadFileView(View):
                 is_working_day_cell = row[2].value
 
                 if not date_cell or not name_cell:
-                    raise ValueError("Отсутствуют обязательные поля 'Дата праздника' или 'Название праздника'.")
+                    raise ValueError(
+                        "Отсутствуют обязательные поля 'Дата праздника' или 'Название праздника'."
+                    )
 
-                if isinstance(date_cell, datetime.datetime) or isinstance(date_cell, datetime.date):
-                    date = date_cell.date() if isinstance(date_cell, datetime.datetime) else date_cell
+                if isinstance(date_cell, datetime.datetime) or isinstance(
+                    date_cell, datetime.date
+                ):
+                    date = (
+                        date_cell.date()
+                        if isinstance(date_cell, datetime.datetime)
+                        else date_cell
+                    )
                 else:
                     try:
-                        date = datetime.datetime.strptime(str(date_cell), "%d.%m.%Y").date()
+                        date = datetime.datetime.strptime(
+                            str(date_cell), "%d.%m.%Y"
+                        ).date()
                     except ValueError:
                         # Попытка другого формата, например, "YYYY-MM-DD"
                         try:
-                            date = datetime.datetime.strptime(str(date_cell), "%Y-%m-%d").date()
+                            date = datetime.datetime.strptime(
+                                str(date_cell), "%Y-%m-%d"
+                            ).date()
                         except ValueError:
-                            raise ValueError("Неверный формат даты. Ожидается DD.MM.YYYY или YYYY-MM-DD.")
+                            raise ValueError(
+                                "Неверный формат даты. Ожидается DD.MM.YYYY или YYYY-MM-DD."
+                            )
 
                 if isinstance(is_working_day_cell, bool):
                     is_working_day = is_working_day_cell
@@ -3755,14 +3804,16 @@ class UploadFileView(View):
                     is_working_day_str = str(is_working_day_cell).strip().lower()
                     is_working_day = WORKING_DAY_MAPPING.get(is_working_day_str)
                     if is_working_day is None:
-                        raise ValueError("Неверное значение в поле 'Рабочий день'. Ожидается 'Да' или 'Нет'.")
+                        raise ValueError(
+                            "Неверное значение в поле 'Рабочий день'. Ожидается 'Да' или 'Нет'."
+                        )
 
                 holiday, created = models.PublicHoliday.objects.update_or_create(
                     date=date,
                     defaults={
-                        'name': name_cell.strip(),
-                        'is_working_day': is_working_day,
-                    }
+                        "name": name_cell.strip(),
+                        "is_working_day": is_working_day,
+                    },
                 )
 
                 if created:
@@ -3781,7 +3832,10 @@ class UploadFileView(View):
         messages.success(request, success_message)
 
         if errors:
-            error_message = "Некоторые записи не были обработаны из-за ошибок:\n" + "\n".join(errors)
+            error_message = (
+                "Некоторые записи не были обработаны из-за ошибок:\n"
+                + "\n".join(errors)
+            )
             if len(errors) > MAX_ERROR_DETAILS:
                 error_message += f"\n...и ещё {len(errors) - MAX_ERROR_DETAILS} ошибок."
             messages.warning(request, error_message)

@@ -5,23 +5,18 @@ import datetime
 from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
-from monitoring_app import models
+from monitoring_app import models,attendance_fetcher
+logger = logging.getLogger(__name__)
 
 
 @shared_task
-def get_all_attendance_task():
-    from monitoring_app import utils
-
+async def get_all_attendance_task():
     """
-    Задача Celery для выполнения функции get_all_attendance.
+    Асинхронная задача Celery для выполнения функции get_all_attendance.
     """
-    utils.get_all_attendance()
+    fetcher = attendance_fetcher.AsyncAttendanceFetcher()
+    await fetcher.get_all_attendance()
 
-
-logger = logging.getLogger(__name__)
-
-
-logger = logging.getLogger(__name__)
 
 @shared_task
 def update_lesson_attendance_last_out():
