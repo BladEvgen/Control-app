@@ -3,7 +3,6 @@ import aiohttp
 import backoff
 import logging
 from datetime import datetime
-from cachetools import TTLCache
 from django.conf import settings
 from django.utils import timezone
 from django.db import transaction
@@ -11,8 +10,6 @@ from monitoring_app import models
 from django.core.cache import cache
 from typing import Dict, List, Optional
 from channels.db import database_sync_to_async
-
-DAYS = settings.DAYS
 
 logger = logging.getLogger("django")
 
@@ -22,7 +19,6 @@ class AsyncAttendanceFetcher:
         self.chunk_size = chunk_size
         self.max_concurrent_requests = max_concurrent_requests
         self.session = None
-        self.failed_requests_cache = TTLCache(maxsize=1000, ttl=300)
         logger.info(
             "AsyncAttendanceFetcher initialized with chunk_size=%s and max_concurrent_requests=%s",
             self.chunk_size,
@@ -52,7 +48,6 @@ class AsyncAttendanceFetcher:
         self, pin: str, start_date: datetime, end_date: datetime
     ) -> List[Dict]:
         cache_key = f"attendance:{pin}:{start_date.date()}:{end_date.date()}"
-
         cached_data = cache.get(cache_key)
         if cached_data is not None:
             logger.info(
@@ -63,10 +58,6 @@ class AsyncAttendanceFetcher:
             )
             return cached_data
 
-        if self.failed_requests_cache.get(cache_key):
-            logger.warning("Previous failed request cached for PIN %s", pin)
-            return []
-
         params = {
             "endDate": end_date.strftime("%Y-%m-%d %H:%M:%S"),
             "pageNo": "1",
@@ -75,7 +66,7 @@ class AsyncAttendanceFetcher:
             "startDate": start_date.strftime("%Y-%m-%d %H:%M:%S"),
             "access_token": settings.API_KEY,
         }
-        logger.info("Fetching attendance for PIN %s ", pin)
+        logger.info("Fetching attendance for PIN %s", pin)
 
         try:
             async with self.session.get(
@@ -83,26 +74,42 @@ class AsyncAttendanceFetcher:
                 params=params,
                 ssl=True,
             ) as response:
-                logger.info("Received response for PIN %s with status %s", pin, response.status)
+                logger.info(
+                    "Received response for PIN %s with status %s", pin, response.status
+                )
                 response.raise_for_status()
                 data = await response.json()
                 result = data.get("data", [])
-                cache.set(cache_key, result, 3600)
-                logger.info("Fetched attendance for PIN %s. Caching result for 3600 seconds.", pin)
+                cache.set(cache_key, result, 600)
+                logger.info(
+                    "Fetched attendance for PIN %s. Caching result for 10 minutes.", pin
+                )
                 return result
         except Exception as e:
-            logger.error("Error fetching attendance for PIN %s: %s", pin, str(e), exc_info=True)
-            self.failed_requests_cache[cache_key] = True
+            logger.error(
+                "Error fetching attendance for PIN %s: %s", pin, str(e), exc_info=True
+            )
             return []
 
     async def get_all_attendance(self, days: Optional[int] = None) -> None:
+        """
+        Получает данные о посещаемости всех сотрудников за выбранный день.
+        Логика:
+         - Вычисляется дата, за которую собираются данные: prev_date = timezone.now() - days_to_subtract
+         - Границы дня: start_date (начало дня, 00:00:00) и end_date (конец дня, 23:59:59)
+         - Для сохранения в базе используется дата следующего дня: next_day = prev_date + 1 день
+        """
         days_to_subtract = days if days is not None else settings.DAYS
-        start_date = timezone.now() - timezone.timedelta(days=days_to_subtract)
-        end_date = start_date + timezone.timedelta(days=1)
+        prev_date = timezone.now() - timezone.timedelta(days=days_to_subtract)
+        start_date = prev_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = prev_date.replace(hour=23, minute=59, second=59, microsecond=0)
+        next_day = prev_date + timezone.timedelta(days=1)
+
         logger.info(
-            "Starting get_all_attendance for date range: %s to %s",
-            start_date.date(),
-            end_date.date(),
+            "Starting get_all_attendance for date range: %s to %s, saving records for date %s",
+            start_date.strftime("%Y-%m-%d %H:%M:%S"),
+            end_date.strftime("%Y-%m-%d %H:%M:%S"),
+            next_day.date(),
         )
 
         pins = await database_sync_to_async(list)(
@@ -110,11 +117,11 @@ class AsyncAttendanceFetcher:
         )
         logger.info("Found %d active staff pins", len(pins))
 
-        attendance_data = {}
         async with self as fetcher:
             sem = asyncio.Semaphore(self.max_concurrent_requests)
             logger.info(
-                "Using semaphore with max_concurrent_requests=%s", self.max_concurrent_requests
+                "Using semaphore with max_concurrent_requests=%s",
+                self.max_concurrent_requests,
             )
 
             async def process_pin(pin):
@@ -124,7 +131,9 @@ class AsyncAttendanceFetcher:
                     if not data:
                         logger.warning("No attendance data returned for PIN %s", pin)
                     else:
-                        logger.info("Retrieved %d attendance records for PIN %s", len(data), pin)
+                        logger.info(
+                            "Retrieved %d attendance records for PIN %s", len(data), pin
+                        )
                     return pin, data
 
             tasks = [process_pin(pin) for pin in pins]
@@ -132,27 +141,27 @@ class AsyncAttendanceFetcher:
             attendance_data = dict(results)
             logger.info("Completed fetching attendance data for all pins")
 
-        await database_sync_to_async(update_attendance_records)(attendance_data, end_date)
+        await database_sync_to_async(update_attendance_records)(attendance_data, next_day)
 
 
-def update_attendance_records(attendance_data: Dict, end_date: datetime) -> None:
+def update_attendance_records(attendance_data: Dict, next_day: datetime) -> None:
     """
-    Synchronous helper function that performs the database updates within
-    an atomic transaction.
+    Синхронная функция для обновления базы данных в атомарной транзакции.
+    В качестве ключа для записи используется next_day.date(), как в оригинальной версии.
     """
     updates = []
     creates = []
 
     logger.info("Beginning atomic transaction for database updates")
     with transaction.atomic():
-        existing_qs = models.StaffAttendance.objects.filter(date_at=end_date.date())
+        existing_qs = models.StaffAttendance.objects.filter(date_at=next_day.date())
         existing_records = {
             (att.staff_id, att.date_at): att for att in existing_qs
         }
         logger.info(
             "Found %d existing attendance records for date %s",
             len(existing_records),
-            end_date.date(),
+            next_day.date(),
         )
 
         staff_queryset = models.Staff.objects.filter(pin__in=attendance_data.keys())
@@ -189,9 +198,10 @@ def update_attendance_records(attendance_data: Dict, end_date: datetime) -> None
                 )
                 first_event_time = None
                 last_event_time = None
-                area_name_in = area_name_out = "Unknown"
+                area_name_in = "Unknown"
+                area_name_out = "Unknown"
 
-            key = (staff.id, end_date.date())
+            key = (staff.id, next_day.date())
             if key in existing_records:
                 att_obj = existing_records[key]
                 att_obj.first_in = first_event_time
@@ -202,12 +212,12 @@ def update_attendance_records(attendance_data: Dict, end_date: datetime) -> None
                 logger.info(
                     "Scheduled update for attendance record of staff id %s on %s",
                     staff.id,
-                    end_date.date(),
+                    next_day.date(),
                 )
             else:
                 new_att = models.StaffAttendance(
                     staff=staff,
-                    date_at=end_date.date(),
+                    date_at=next_day.date(),
                     first_in=first_event_time,
                     last_out=last_event_time,
                     area_name_in=area_name_in,
@@ -217,7 +227,7 @@ def update_attendance_records(attendance_data: Dict, end_date: datetime) -> None
                 logger.info(
                     "Scheduled creation for attendance record of staff id %s on %s",
                     staff.id,
-                    end_date.date(),
+                    next_day.date(),
                 )
 
         if creates:
