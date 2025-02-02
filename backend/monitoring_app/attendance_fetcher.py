@@ -13,9 +13,17 @@ from channels.db import database_sync_to_async
 
 logger = logging.getLogger("django")
 
-
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "sec-ch-ua": '"Google Chrome";v="113", "Chromium";v="113", "Not-A.Brand";v="24"',
+    "sec-ch-ua-platform": '"Windows"',
+}
 class AsyncAttendanceFetcher:
-    def __init__(self, chunk_size: int = 50, max_concurrent_requests: int = 10):
+    def __init__(self, chunk_size: int = 50, max_concurrent_requests: int = 6):
         self.chunk_size = chunk_size
         self.max_concurrent_requests = max_concurrent_requests
         self.session = None
@@ -72,6 +80,7 @@ class AsyncAttendanceFetcher:
             async with self.session.get(
                 settings.API_URL + "/api/transaction/listAttTransaction",
                 params=params,
+                headers=BROWSER_HEADERS,
                 ssl=True,
             ) as response:
                 logger.info(
