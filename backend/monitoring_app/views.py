@@ -903,6 +903,10 @@ def child_department_detail(request, child_department_id):
                         type=openapi.TYPE_STRING,
                         description="Тип контракта сотрудника",
                     ),
+                    "bonus_percentage": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        description="Процент бонуса сотрудника",
+                    )
                 },
             ),
         ),
@@ -2962,7 +2966,8 @@ def login_view(request):
 def fetch_data_view(request):
     """
     Запрос на получение данных о посещаемости. Требует передачи заголовка X-API-KEY для аутентификации.
-
+    Может принимать опциональный параметр 'days' для указания количества дней.
+    
     Args:
     запрос: объект запроса.
 
@@ -3001,7 +3006,14 @@ def fetch_data_view(request):
                 data={"error": "Доступ запрещен. Недействительный API ключ."},
             )
 
-        utils.get_all_attendance()
+        days = request.query_params.get('days')
+        if days is not None:
+            try:
+                days = int(days)
+            except ValueError:
+                return Response(status=status.HTTP_400_BAD_REQUEST, data={"error": "Неверное значение параметра 'days'"})
+        
+        utils.get_all_attendance(days=days)
         logger.info(f"{function_name}: Attendance data fetched successfully")
         return Response(status=status.HTTP_200_OK, data={"message": "Done"})
 

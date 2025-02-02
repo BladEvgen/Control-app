@@ -6,7 +6,6 @@ import logging
 import datetime
 import numpy as np
 import pandas as pd
-from functools import wraps
 from openpyxl import Workbook
 from django.urls import reverse
 from django.conf import settings
@@ -15,6 +14,7 @@ from django.utils import timezone
 from rest_framework import status
 from django.core.cache import cache
 from django.http import HttpRequest
+from functools import wraps, partial
 from sklearn.neighbors import KDTree
 from cryptography.fernet import Fernet
 from django.core.mail import send_mail
@@ -154,7 +154,7 @@ class APIKeyUtility:
         return encrypted_data, secret_key
 
 
-def get_attendance_data(pin: str):
+def get_attendance_data(pin: str, days: int = None):
     import requests
 
     """
@@ -168,7 +168,8 @@ def get_attendance_data(pin: str):
               сотрудника через систему контроля доступа за указанный день.
               Если произошла ошибка, возвращает пустой список.
     """
-    prev_date = datetime.datetime.now() - datetime.timedelta(days=DAYS)
+    days_to_subtract = days if days is not None else settings.DAYS
+    prev_date = datetime.datetime.now() - datetime.timedelta(days=days_to_subtract)
 
     eventTime_first = prev_date.strftime("%Y-%m-%d 00:00:00")
     eventTime_last = prev_date.strftime("%Y-%m-%d 23:59:59")
@@ -196,11 +197,14 @@ def get_attendance_data(pin: str):
         return []
 
 
-def get_all_attendance():
+def get_all_attendance(days: int = None):
     """
     Получает данные о посещаемости всех сотрудников за текущий день
     и сохраняет их в базе данных.
-
+    Args:
+    days (int, optional): Количество дней назад для получения данных.
+                            Если не указано, используется значение из настроек.
+                            
     Выполняет запрос данных о посещаемости для каждого сотрудника
     параллельно с помощью ThreadPoolExecutor. Затем для каждого
     сотрудника извлекает первое и последнее время прохода
@@ -214,10 +218,12 @@ def get_all_attendance():
     attendance_data = {}
 
     with ThreadPoolExecutor(max_workers=6) as executor:
-        for pin, data in zip(pins, executor.map(get_attendance_data, pins)):
+        fetch_func = partial(get_attendance_data, days=days)
+        for pin, data in zip(pins, executor.map(fetch_func, pins)):
             attendance_data[pin] = data
 
-    prev_date = timezone.now() - timezone.timedelta(days=DAYS)
+    days_to_subtract = days if days is not None else settings.DAYS
+    prev_date = timezone.now() - timezone.timedelta(days=days_to_subtract)
     next_day = prev_date + timezone.timedelta(days=1)
 
     updates = []
