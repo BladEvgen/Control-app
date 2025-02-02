@@ -430,6 +430,7 @@ LOGGING = {
             "backupCount": 24,  # Keep logs for 24 hours
             "encoding": "utf-8",
             "formatter": "standard",
+            "delay": True,
         },
     },
     "loggers": {

@@ -15,6 +15,9 @@ app.conf.update(
     worker_max_memory_per_child=2048000,  # Ограничение памяти для воркера (2 GB)
 )
 
+app.conf.task_serializer = 'json'
+app.conf.accept_content = ['json']
+app.conf.result_serializer = 'json'
 app.config_from_object('django.conf:settings', namespace='CELERY')
 app.conf.task_default_queue = 'control_app_queue'
 app.autodiscover_tasks()
