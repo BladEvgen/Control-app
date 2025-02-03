@@ -7,7 +7,6 @@ from django.conf import settings
 from django.utils import timezone
 from django.db import transaction
 from monitoring_app import models
-from django.core.cache import cache
 from typing import Dict, List, Optional
 from channels.db import database_sync_to_async
 
@@ -22,6 +21,7 @@ BROWSER_HEADERS = {
     "sec-ch-ua": '"Google Chrome";v="113", "Chromium";v="113", "Not-A.Brand";v="24"',
     "sec-ch-ua-platform": '"Windows"',
 }
+
 class AsyncAttendanceFetcher:
     def __init__(self, chunk_size: int = 50, max_concurrent_requests: int = 6):
         self.chunk_size = chunk_size
@@ -55,17 +55,6 @@ class AsyncAttendanceFetcher:
     async def fetch_attendance(
         self, pin: str, start_date: datetime, end_date: datetime
     ) -> List[Dict]:
-        cache_key = f"attendance:{pin}:{start_date.date()}:{end_date.date()}"
-        cached_data = cache.get(cache_key)
-        if cached_data is not None:
-            logger.info(
-                "Cache hit for PIN %s on %s to %s",
-                pin,
-                start_date.date(),
-                end_date.date(),
-            )
-            return cached_data
-
         params = {
             "endDate": end_date.strftime("%Y-%m-%d %H:%M:%S"),
             "pageNo": "1",
@@ -89,9 +78,8 @@ class AsyncAttendanceFetcher:
                 response.raise_for_status()
                 data = await response.json()
                 result = data.get("data", [])
-                cache.set(cache_key, result, 600)
                 logger.info(
-                    "Fetched attendance for PIN %s. Caching result for 10 minutes.", pin
+                    "Fetched attendance for PIN %s", pin
                 )
                 return result
         except Exception as e:
@@ -138,7 +126,7 @@ class AsyncAttendanceFetcher:
                     logger.info("Processing PIN: %s", pin)
                     data = await fetcher.fetch_attendance(pin, start_date, end_date)
                     if not data:
-                        logger.warning("No attendance data returned for PIN %s", pin)
+                        logger.error("No attendance data returned for PIN %s", pin)
                     else:
                         logger.info(
                             "Retrieved %d attendance records for PIN %s", len(data), pin
