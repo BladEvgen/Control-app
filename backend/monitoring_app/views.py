@@ -257,7 +257,7 @@ class StaffAttendanceStatsView(APIView):
                 {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-    def get_last_working_day(self, date):
+    def get_last_working_day(self, date: datetime.date) -> datetime.date:
         """
         Определение последнего рабочего дня, с учетом выходных и государственных праздников.
 
@@ -276,36 +276,13 @@ class StaffAttendanceStatsView(APIView):
         )
         holiday_dates = {holiday.date: holiday.is_working_day for holiday in holidays}
 
-        if date.weekday() == 5:
-            logger.debug(f"Today is Saturday ({date}), checking Friday.")
-            date -= datetime.timedelta(days=1)
-        elif date.weekday() == 6:
-            logger.debug(f"Today is Sunday ({date}), checking Friday.")
-            date -= datetime.timedelta(days=2)
-        elif date.weekday() == 0:
-            logger.debug(f"Today is Monday ({date}), checking Friday.")
-            date -= datetime.timedelta(days=3)
-
-        if date in holiday_dates and not holiday_dates[date]:
-            logger.debug(
-                f"Friday {date} is a holiday or non-working day, searching for previous working day."
-            )
-            while date in holiday_dates and not holiday_dates[date]:
-                logger.debug(
-                    f"{date} is a holiday or non-working day, moving to previous day."
-                )
-                date -= datetime.timedelta(days=1)
-
-        while date.weekday() >= 5 or (
-            date in holiday_dates and not holiday_dates[date]
-        ):
-            logger.debug(
-                f"{date} is a weekend or non-working day, moving to previous day."
-            )
+        while date.weekday() >= 5 or (date in holiday_dates and not holiday_dates[date]):
+            logger.debug(f"{date} is not a working day, moving to previous day.")
             date -= datetime.timedelta(days=1)
 
         logger.debug(f"Last working day determined: {date}")
         return date
+
 
     def query_data(
         self,
