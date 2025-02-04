@@ -5,32 +5,31 @@ import base64
 import logging
 import zipfile
 import datetime
+from io import BytesIO
 from pathlib import Path
-from functools import wraps
 from collections import defaultdict
-from tempfile import NamedTemporaryFile
 from concurrent.futures import ThreadPoolExecutor
 
 from drf_yasg import openapi
+from django.urls import reverse
 from django.conf import settings
-from django.db import connection
 from django.utils import timezone
 from rest_framework import status
 from openpyxl import load_workbook
 from django.contrib import messages
 from django.core.cache import caches
 from celery.result import AsyncResult
-from django.views.generic import View
 from django.db.models import Count, Q
+from django.views.generic import View
+from asgiref.sync import sync_to_async
 from django.contrib.auth.models import User
-
 from django.core.files.base import ContentFile
 from drf_yasg.utils import swagger_auto_schema
-from django.db import IntegrityError, transaction
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import authenticate, login, logout
 from django.http import FileResponse, Http404, HttpResponse
+from django.db import IntegrityError, connection, transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import (
@@ -40,37 +39,19 @@ from rest_framework.permissions import (
 )
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from asgiref.sync import sync_to_async, async_to_sync
 
 from monitoring_app import (
     ml,
     tasks,
     utils,
     models,
+    async_logic,
     permissions,
     serializers,
     attendance_fetcher,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def async_drf_view(methods):
-    """
-    Custom decorator to handle async views with DRF decorators.
-    Uses async_to_sync instead of asyncio.run() so that the async view can run
-    properly when the ASGI server already has an event loop.
-    """
-    def decorator(func):
-        @api_view(methods)
-        @wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            logger.info("Entering async_drf_view wrapper; converting async view to sync")
-            result = async_to_sync(func)(*args, **kwargs)
-            logger.info("Async view completed in async_drf_view wrapper")
-            return result
-        return sync_wrapper
-    return decorator
 
 
 class StaffAttendancePagination(PageNumberPagination):
@@ -2995,7 +2976,7 @@ def login_view(request):
         500: "Internal Server Error: В случае ошибки сервера.",
     },
 )
-@async_drf_view(['GET'])
+@async_logic.async_drf_view(["GET"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 async def fetch_data_view(request):
     """
@@ -3011,7 +2992,7 @@ async def fetch_data_view(request):
             logger.warning(f"{function_name}: API key not provided in request headers")
             return Response(
                 status=status.HTTP_403_FORBIDDEN,
-                data={"error": "Доступ запрещен. Не указан API ключ."}
+                data={"error": "Доступ запрещен. Не указан API ключ."},
             )
 
         get_api_key = sync_to_async(lambda: models.APIKey.objects.get(key=api_key))
@@ -3021,42 +3002,38 @@ async def fetch_data_view(request):
                 logger.warning(f"{function_name}: API key {api_key} is inactive")
                 return Response(
                     status=status.HTTP_403_FORBIDDEN,
-                    data={"error": "Доступ запрещен. Недействительный API ключ."}
+                    data={"error": "Доступ запрещен. Недействительный API ключ."},
                 )
         except models.APIKey.DoesNotExist:
             logger.warning(f"{function_name}: API key {api_key} does not exist")
             return Response(
                 status=status.HTTP_403_FORBIDDEN,
-                data={"error": "Доступ запрещен. Недействительный API ключ."}
+                data={"error": "Доступ запрещен. Недействительный API ключ."},
             )
 
-        days = request.query_params.get('days')
+        days = request.query_params.get("days")
         if days is not None:
             try:
                 days = int(days)
             except ValueError:
                 return Response(
                     status=status.HTTP_400_BAD_REQUEST,
-                    data={"error": "Неверное значение параметра 'days'"}
+                    data={"error": "Неверное значение параметра 'days'"},
                 )
-        
+
         fetcher = attendance_fetcher.AsyncAttendanceFetcher()
         await fetcher.get_all_attendance(days=days)
-        
+
         logger.info(f"{function_name}: Attendance data fetched successfully")
-        return Response(
-            status=status.HTTP_200_OK,
-            data={"message": "Done"}
-        )
+        return Response(status=status.HTTP_200_OK, data={"message": "Done"})
 
     except Exception as e:
         logger.error(
             f"{function_name}: Error occurred while fetching attendance data: {str(e)}",
-            exc_info=True
+            exc_info=True,
         )
         return Response(
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            data={"error": str(e)}
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR, data={"error": str(e)}
         )
     finally:
         end_time = time.perf_counter()
@@ -3065,7 +3042,6 @@ async def fetch_data_view(request):
         logger.info(
             f"{function_name} completed in {duration_human_readable} ({duration_seconds:.2f} seconds)"
         )
-
 
 
 @swagger_auto_schema(
@@ -3121,42 +3097,34 @@ def sent_excel(request, department_id):
     """
     Получение данных о посещаемости в формате Excel.
 
-    Получение данных о посещаемости с внешнего сервера на основе предоставленного ID отдела,
-    начальной и конечной дат. Создание и возврат Excel файла, содержащего данные о посещаемости.
-
-    Аргументы:
-        request (HttpRequest): Объект HTTP запроса.
-        department_id (int): ID отдела, для которого запрашиваются данные о посещаемости.
+    Получение данных о посещаемости с внешнего сервера на основе ID отдела,
+    начальной и конечной дат. Создание и возврат Excel файла с данными о посещаемости.
 
     Параметры запроса:
-        - startDate (str): Начальная дата для данных о посещаемости в формате YYYY-MM-DD.
-        - endDate (str): Конечная дата для данных о посещаемости в формате YYYY-MM-DD.
+        - startDate (str): Начальная дата в формате YYYY-MM-DD.
+        - endDate (str): Конечная дата в формате YYYY-MM-DD.
 
     Возвращает:
-        HttpResponse: HTTP ответ с созданным Excel файлом или сообщением об ошибке.
-
-    Исключения:
-        ValueError: Если начальная или конечная дата отсутствует в параметрах запроса.
-        ConnectionError: Если возникла проблема с получением данных с внешнего сервера.
+        HttpResponse: Ответ с созданным Excel файлом или сообщение об ошибке.
     """
     logger.info(
         f"Request received to generate Excel file for department ID {department_id}"
     )
 
-    end_date = request.query_params.get("endDate", None)
-    start_date = request.query_params.get("startDate", None)
-
-    if not all([end_date, start_date]):
+    end_date_str = request.query_params.get("endDate")
+    start_date_str = request.query_params.get("startDate")
+    if not all([end_date_str, start_date_str]):
         logger.warning(
-            f"Missing startDate or endDate in request parameters for department ID {department_id}"
+            f"Missing startDate or endDate in request for department ID {department_id}"
         )
         return Response(
             {"error": "Missing startDate or endDate"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
     try:
-        end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
-        start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
+        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
     except ValueError as e:
         logger.error(f"Invalid date format for department ID {department_id}: {e}")
         return Response(
@@ -3168,74 +3136,76 @@ def sent_excel(request, department_id):
         f"Parsed dates for department ID {department_id}: start_date={start_date}, end_date={end_date}"
     )
 
-    end_date += datetime.timedelta(days=0)
-    start_date += datetime.timedelta(days=0)
+    cache_key = f"excel_department_stats_{department_id}_{start_date}_{end_date}"
 
-    main_ip = request.build_absolute_uri("/")[:-1]
-    rows = []
-    page = 1
+    def generate_excel_file():
+        """Fetches all pages, processes the data, creates the Excel file, and returns its binary content."""
+        rows = []
+        page = 1
 
-    while True:
-        cache_key = f"{main_ip}_api_department_stats_{department_id}_{start_date}_{end_date}_page_{page}"
-        url = f"{main_ip}/api/department/stats/{department_id}/?end_date={end_date}&start_date={start_date}&page={page}"
-
-        logger.debug(f"Fetching data for department ID {department_id} from URL: {url}")
-
-        data = get_cache(
-            cache_key, query=lambda: utils.fetch_data(url), timeout=1 * 60 * 60
+        base_url = request.build_absolute_uri(
+            reverse("department-stats", args=[department_id])
         )
-
-        if "results" not in data or not data["results"]:
-            logger.info(
-                f"No more results found for department ID {department_id}, stopping data fetch."
-            )
-            break
-
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            future = executor.submit(utils.parse_attendance_data, data["results"])
-            rows += future.result()
+        while True:
+            url = f"{base_url}?end_date={end_date}&start_date={start_date}&page={page}"
             logger.debug(
-                f"Processed page {page} for department ID {department_id}, rows collected: {len(rows)}"
+                f"Fetching page {page} for department ID {department_id} from URL: {url}"
             )
 
-        if not data.get("next"):
-            logger.info(
-                f"All pages processed for department ID {department_id}, total rows collected: {len(rows)}"
-            )
-            break
-        page += 1
+            data = utils.fetch_data(url)
+            if "results" not in data or not data["results"]:
+                logger.info(
+                    f"No more results found for department ID {department_id} on page {page}"
+                )
+                break
 
-    if rows:
+            rows.extend(utils.parse_attendance_data(data["results"]))
+            logger.debug(
+                f"Processed page {page} for department ID {department_id}, total rows so far: {len(rows)}"
+            )
+
+            if not data.get("next"):
+                logger.info(
+                    f"All pages processed for department ID {department_id}, total rows: {len(rows)}"
+                )
+                break
+
+            page += 1
+
+        if not rows:
+            logger.error(f"No data rows found for department ID {department_id}")
+            return None
+
         logger.info(
             f"Creating Excel file for department ID {department_id} with {len(rows)} rows"
         )
         df_pivot_sorted = utils.create_dataframe(rows)
-        wb = utils.save_to_excel(df_pivot_sorted, rows)  # Добавлено 'rows'
+        wb = utils.save_to_excel(df_pivot_sorted, rows)
 
-        response = HttpResponse(
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        response["Content-Disposition"] = (
-            f"attachment; filename=Посещаемость_{department_id}.xlsx"
-        )
+        bio = BytesIO()
+        wb.save(bio)
+        bio.seek(0)
+        file_data = bio.getvalue()
+        return file_data
 
-        with NamedTemporaryFile(delete=False) as tmp:
-            wb.save(tmp.name)
-            tmp.seek(0)
-            response.write(tmp.read())
-
-        logger.info(
-            f"Excel file created successfully for department ID {department_id}"
-        )
-        return response
-    else:
-        logger.error(
-            f"Failed to generate Excel file for department ID {department_id}, no data rows found"
-        )
+    file_content = get_cache(cache_key, query=generate_excel_file, timeout=3600)
+    if not file_content:
         return Response(
             {"error": "Failed to generate Excel file"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+
+    response = HttpResponse(
+        file_content,
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = (
+        f"attachment; filename=Посещаемость_{department_id}.xlsx"
+    )
+    logger.info(
+        f"Excel file successfully created and cached for department ID {department_id}"
+    )
+    return response
 
 
 class UploadFileView(View):
