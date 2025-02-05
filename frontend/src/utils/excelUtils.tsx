@@ -104,13 +104,13 @@ export const generateAndDownloadExcel = async (
     right: { style: "thin" },
   };
 
-const colorMap: Record<string, string> = {
-  "Выходной день": "F59E0B",
-  "Работа в выходной": "34D399",
-  "Удаленная работа": "38BDF8",
-  "Одобрено": "A78BFA",
-  "Не одобрено": "FB7185",
-};
+  const colorMap: Record<string, string> = {
+    "Выходной день": "F59E0B",
+    "Работа в выходной": "34D399",
+    "Удаленная работа": "38BDF8",
+    "Одобрено": "A78BFA",
+    "Не одобрено": "FB7185",
+  };
   const legendItems = generateLegendItems(staffData.attendance);
 
   legendItems.forEach((item) => {
@@ -195,15 +195,15 @@ const colorMap: Record<string, string> = {
     const formattedDate = `${day}.${month}.${year}`;
 
     let attendanceInfo = "";
-    if (record.is_weekend && !record.first_in && !record.last_out) {
-      attendanceInfo = "Выходной";
-    } else if (record.is_weekend && record.first_in && record.last_out) {
+    if (record.first_in && record.last_out) {
       const firstIn = new Date(record.first_in).toLocaleTimeString("ru-RU");
       const lastOut = new Date(record.last_out).toLocaleTimeString("ru-RU");
-      attendanceInfo = `Работа в выходной (${firstIn} - ${lastOut})`;
+      attendanceInfo = `${firstIn} - ${lastOut}`;
+    } else if (record.is_weekend) {
+      attendanceInfo = "Выходной";
     } else if (record.is_remote_work) {
       attendanceInfo = "Удаленная работа";
-    } else if (!record.first_in && !record.last_out) {
+    } else {
       if (record.is_absent_approved) {
         attendanceInfo = record.absent_reason || "Одобрено (Без причины)";
       } else {
@@ -211,10 +211,6 @@ const colorMap: Record<string, string> = {
           record.absent_reason || "Без причины"
         }`;
       }
-    } else if (record.first_in && record.last_out) {
-      const firstIn = new Date(record.first_in).toLocaleTimeString("ru-RU");
-      const lastOut = new Date(record.last_out).toLocaleTimeString("ru-RU");
-      attendanceInfo = `${firstIn} - ${lastOut}`;
     }
 
     const dayPercent = record.percent_day
@@ -226,7 +222,6 @@ const colorMap: Record<string, string> = {
 
     row.eachCell((cell, colNumber) => {
       let fillColor = "";
-
       if (colNumber === 2) {
         fillColor = getAttendanceColor(record);
       }
@@ -263,18 +258,18 @@ const colorMap: Record<string, string> = {
 };
 
 const getAttendanceColor = (record: AttendanceData): string => {
-  if (record.is_weekend && !record.first_in && !record.last_out) {
-    return "F59E0B";
-  } else if (record.is_weekend && record.first_in && record.last_out) {
-    return "34D399";
+  if (record.is_weekend) {
+    if (record.first_in && record.last_out) {
+      return "34D399";
+    } else {
+      return "F59E0B";
+    }
   } else if (record.is_remote_work) {
     return "38BDF8";
+  } else if (record.is_absent_approved) {
+    return "A78BFA";
   } else if (!record.first_in && !record.last_out) {
-    if (record.is_absent_approved) {
-      return "A78BFA";
-    } else {
-      return "FB7185";
-    }
+    return "FB7185";
   }
   return "";
 };
@@ -284,18 +279,18 @@ const generateLegendItems = (
 ): string[] => {
   const legend = new Set<string>();
   Object.values(attendance).forEach((data) => {
-    if (data.is_weekend && !data.first_in && !data.last_out) {
-      legend.add("Выходной день");
-    } else if (data.is_weekend && data.first_in && data.last_out) {
-      legend.add("Работа в выходной");
+    if (data.is_weekend) {
+      if (data.first_in && data.last_out) {
+        legend.add("Работа в выходной");
+      } else {
+        legend.add("Выходной день");
+      }
     } else if (data.is_remote_work) {
       legend.add("Удаленная работа");
+    } else if (data.is_absent_approved) {
+      legend.add(`Одобрено: ${data.absent_reason || "Без причины"}`);
     } else if (!data.first_in && !data.last_out) {
-      if (data.is_absent_approved) {
-        legend.add(`Одобрено: ${data.absent_reason || "Без причины"}`);
-      } else {
-        legend.add(`Не одобрено: ${data.absent_reason || "Без причины"}`);
-      }
+      legend.add(`Не одобрено: ${data.absent_reason || "Без причины"}`);
     }
   });
   return Array.from(legend);
