@@ -243,8 +243,6 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
     );
   }
 
-  const formattedDate = formatDate(stats.data_for_date);
-
   const containerVariants = {
     hidden: { opacity: 0, y: 20 },
     visible: {
