@@ -4,8 +4,8 @@ import { apiUrl } from "../../apiConfig";
 import { useParams } from "react-router-dom";
 import { useNavigate } from "../RouterUtils";
 import { StaffData, AttendanceData } from "../schemas/IData";
-import { FaChevronLeft } from "react-icons/fa";
-import { BsFileEarmarkTextFill } from "react-icons/bs";
+import { FaChevronLeft, FaArchive } from "react-icons/fa";
+import { BsFileEarmarkTextFill, BsPlusLg } from "react-icons/bs";
 import { FiInfo } from "react-icons/fi";
 import Notification from "../components/Notification";
 import DateForm from "./DateForm";
@@ -18,6 +18,7 @@ import {
 import { motion } from "framer-motion";
 import { generateAndDownloadExcel } from "../utils/excelUtils";
 import LoaderComponent from "../components/LoaderComponent";
+import NewAbsenceModal from "../components/NewAbsenceModal";
 
 const shouldShowBonus = (staffData: StaffData | null): boolean => {
   if (!staffData) return false;
@@ -46,6 +47,7 @@ const StaffDetail: React.FC = () => {
   const [attendance, setAttendance] = useState<Record<string, AttendanceData>>(
     {}
   );
+
   const [startDate, setStartDate] = useState<string>(
     new Date(new Date().setDate(new Date().getDate() - 7))
       .toISOString()
@@ -62,6 +64,7 @@ const StaffDetail: React.FC = () => {
   const [showNotification, setShowNotification] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isFirstLoad, setIsFirstLoad] = useState(true);
+  const [showAbsenceModal, setShowAbsenceModal] = useState(false);
   const navigate = useNavigate();
 
   const fetchAttendanceData = useCallback(async () => {
@@ -122,21 +125,45 @@ const StaffDetail: React.FC = () => {
 
   const generateLegendItems = (attendance: Record<string, AttendanceData>) => {
     const legend = new Set<string>();
+    const defaultText = "Отсутствует (Не одобрено)";
+
     Object.values(attendance).forEach((data) => {
-      if (data.is_weekend && !data.first_in && !data.last_out) {
-        legend.add("Выходной день");
-      } else if (data.is_weekend && data.first_in && data.last_out) {
-        legend.add("Работа в выходной");
-      } else if (data.is_remote_work) {
+      // 1. Если день отмечен как удалённая работа:
+      if (data.is_remote_work) {
         legend.add("Удаленная работа");
-      } else if (!data.first_in && !data.last_out) {
-        if (data.is_absent_approved) {
-          legend.add(`Одобрено: ${data.absent_reason || "Без причины"}`);
+      }
+      // 2. Если указана причина отсутствия (независимо от наличия времени):
+      else if (data.absent_reason && data.absent_reason.trim() !== "") {
+        legend.add(
+          data.is_absent_approved
+            ? `Одобрено: ${data.absent_reason}`
+            : `Не одобрено: ${data.absent_reason}`
+        );
+      }
+      // 3. Если день является выходным:
+      else if (data.is_weekend) {
+        if (
+          data.first_in &&
+          data.first_in.trim() !== "" &&
+          data.last_out &&
+          data.last_out.trim() !== ""
+        ) {
+          legend.add("Работа в выходной");
         } else {
-          legend.add(`Не одобрено: ${data.absent_reason || "Без причины"}`);
+          legend.add("Выходной день");
         }
       }
+      // 4. Если у рабочего дня отсутствуют данные по приходу или уходу – выводим значение по умолчанию:
+      else if (
+        !data.first_in ||
+        data.first_in.trim() === "" ||
+        !data.last_out ||
+        data.last_out.trim() === ""
+      ) {
+        legend.add(defaultText);
+      }
     });
+
     return Array.from(legend);
   };
 
@@ -152,6 +179,37 @@ const StaffDetail: React.FC = () => {
       setNotificationType("error");
       setShowNotification(true);
     }
+  };
+
+  const handleDownloadZip = async () => {
+    if (!staffData) return;
+    try {
+      const res = await axiosInstance.get(`${apiUrl}/api/absent_staff/`, {
+        params: {
+          start_date: startDate,
+          end_date: endDate,
+          staff_pin: pin,
+          download: "true",
+        },
+        responseType: "blob",
+      });
+      const blob = new Blob([res.data], { type: "application/zip" });
+      const link = document.createElement("a");
+      link.href = window.URL.createObjectURL(blob);
+      link.download = `documents_${startDate}_${endDate}.zip`;
+      link.click();
+    } catch (error) {
+      console.error("Ошибка при скачивании ZIP:", error);
+      setNotificationMessage("Не удалось скачать архив отсутствий.");
+      setNotificationType("error");
+      setShowNotification(true);
+    }
+  };
+
+  const hasAbsenceWithReason = () => {
+    return Object.values(attendance).some(
+      (record) => record.absent_reason && record.absent_reason.trim() !== ""
+    );
   };
 
   const containerVariants = {
@@ -189,24 +247,59 @@ const StaffDetail: React.FC = () => {
           )}
 
           {/* Плавающие кнопки для мобильных */}
-          <motion.button
-            variants={buttonVariants}
-            whileHover="hover"
-            whileTap="tap"
-            className="fixed bottom-4 left-4 bg-green-500 hover:bg-green-600 text-white rounded-full p-4 shadow-lg z-50 focus:outline-none transition-transform sm:hidden"
-            onClick={navigateToChildDepartment}
-          >
-            <FaChevronLeft size={24} />
-          </motion.button>
-          <motion.button
-            variants={buttonVariants}
-            whileHover="hover"
-            whileTap="tap"
-            onClick={handleDownloadExcel}
-            className="fixed bottom-4 right-4 bg-blue-500 hover:bg-blue-600 text-white rounded-full p-4 shadow-lg z-50 focus:outline-none transition-transform sm:hidden"
-          >
-            <BsFileEarmarkTextFill size={24} />
-          </motion.button>
+          <div className="sm:hidden fixed bottom-4 left-4 right-4 flex justify-between z-50">
+            {/* Кнопка назад */}
+            <motion.button
+              variants={buttonVariants}
+              whileHover="hover"
+              whileTap="tap"
+              onClick={navigateToChildDepartment}
+              className="bg-green-500 hover:bg-green-600 text-white rounded-full p-4 shadow-lg focus:outline-none transition-transform"
+            >
+              <FaChevronLeft size={24} />
+            </motion.button>
+            {/* Кнопка добавить отсутствие – расположена по центру */}
+            <motion.button
+              variants={buttonVariants}
+              whileHover="hover"
+              whileTap="tap"
+              onClick={() => setShowAbsenceModal(true)}
+              className="bg-gradient-to-r from-blue-900 to-blue-600 text-white rounded-full p-4 shadow-lg focus:outline-none transition-transform"
+            >
+              <BsPlusLg size={24} />
+            </motion.button>
+            {/* Кнопка скачать Excel – всегда видна */}
+            <motion.button
+              variants={buttonVariants}
+              whileHover="hover"
+              whileTap="tap"
+              onClick={handleDownloadExcel}
+              className="bg-green-600 hover:bg-green-700 text-white rounded-full p-4 shadow-lg focus:outline-none transition-transform"
+            >
+              <BsFileEarmarkTextFill size={24} />
+            </motion.button>
+          </div>
+          {/* Для мобильных: кнопка скачать ZIP  */}
+          {hasAbsenceWithReason() && (
+            <motion.button
+              variants={buttonVariants}
+              whileHover="hover"
+              whileTap="tap"
+              onClick={handleDownloadZip}
+              className="sm:hidden fixed bottom-20 right-4 bg-orange-600 hover:bg-orange-700 text-white rounded-full p-4 shadow-lg z-50 focus:outline-none transition-transform"
+            >
+              <FaArchive size={24} />
+            </motion.button>
+          )}
+
+          {/* Модальное окно для создания записи отсутствия */}
+          {showAbsenceModal && pin && (
+            <NewAbsenceModal
+              staffPin={pin}
+              onClose={() => setShowAbsenceModal(false)}
+              onSuccess={() => fetchAttendanceData()}
+            />
+          )}
 
           {staffData && (
             <div className="w-full max-w-7xl lg:max-w-screen-2xl mx-auto bg-white dark:bg-gray-900 shadow-2xl rounded-xl overflow-hidden">
@@ -240,16 +333,43 @@ const StaffDetail: React.FC = () => {
                     )}
                   </div>
                 </div>
-                <motion.button
-                  variants={buttonVariants}
-                  whileHover="hover"
-                  whileTap="tap"
-                  onClick={handleDownloadExcel}
-                  className="hidden sm:flex items-center bg-blue-500 hover:bg-blue-600 text-white px-8 py-3 rounded-lg shadow transition-colors focus:outline-none"
-                >
-                  <BsFileEarmarkTextFill className="mr-3" size={24} />
-                  Скачать Excel
-                </motion.button>
+                <div className="flex items-center space-x-4">
+                  {/* Кнопка скачать Excel (десктоп) */}
+                  <motion.button
+                    variants={buttonVariants}
+                    whileHover="hover"
+                    whileTap="tap"
+                    onClick={handleDownloadExcel}
+                    className="hidden sm:flex items-center bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg shadow transition-colors focus:outline-none"
+                  >
+                    <BsFileEarmarkTextFill className="mr-3" size={24} />
+                    Скачать Excel
+                  </motion.button>
+                  {/* Кнопка скачать ZIP (десктоп) */}
+                  {hasAbsenceWithReason() && (
+                    <motion.button
+                      variants={buttonVariants}
+                      whileHover="hover"
+                      whileTap="tap"
+                      onClick={handleDownloadZip}
+                      className="hidden sm:flex items-center bg-orange-600 hover:bg-orange-700 text-white px-6 py-3 rounded-lg shadow transition-colors focus:outline-none"
+                    >
+                      <FaArchive className="mr-3" size={24} />
+                      Скачать ZIP
+                    </motion.button>
+                  )}
+                  {/* Кнопка добавить отсутствие (десктоп) */}
+                  <motion.button
+                    variants={buttonVariants}
+                    whileHover="hover"
+                    whileTap="tap"
+                    onClick={() => setShowAbsenceModal(true)}
+                    className="hidden sm:flex items-center bg-gradient-to-r from-blue-900 to-blue-600 text-white px-6 py-3 rounded-lg shadow transition-colors focus:outline-none"
+                  >
+                    <BsPlusLg className="mr-3" size={24} />
+                    Добавить отсутствие
+                  </motion.button>
+                </div>
               </div>
 
               {/* Информация о сотруднике */}
@@ -280,7 +400,7 @@ const StaffDetail: React.FC = () => {
                   </motion.div>
                 )}
               </div>
-              {/* Остальной JSX */}
+              {/* Остальная информация */}
               <div className="px-8 pb-8 border-t border-gray-200 dark:border-gray-700">
                 <div className="flex flex-col lg:flex-row items-center justify-between mb-6 gap-6">
                   <div className="w-full max-w-md">
@@ -316,6 +436,8 @@ const StaffDetail: React.FC = () => {
                       colorClass = "bg-violet-400 dark:bg-violet-500";
                     } else if (item.includes("Не одобрено")) {
                       colorClass = "bg-rose-400 dark:bg-rose-500";
+                    } else if (item === "Нет данных") {
+                      colorClass = "bg-red-400 dark:bg-red-500";
                     } else {
                       colorClass = "bg-gray-400 dark:bg-gray-500";
                     }
