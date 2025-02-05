@@ -11,6 +11,7 @@ import { LocationData } from "../schemas/IData";
 import { FaExpand, FaCompress } from "react-icons/fa";
 import { motion, AnimatePresence, Variants } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
+import EditableDateField from "../components/EditableDateField";
 
 const getFormattedDateAt = (): string => {
   const yesterday = new Date();
@@ -417,17 +418,13 @@ const MapDashboard: React.FC = () => {
           animate="visible"
           exit="hidden"
         >
-          <label className="text-white text-center mb-2">Дата данных:</label>
-          <motion.input
-            type="date"
+          <EditableDateField
+            label="Дата данных:"
             value={dateAt}
             onChange={handleDateChange}
-            className="p-2 border rounded shadow-lg text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-48 sm:w-56 md:w-64"
-            whileFocus={{
-              scale: 1.05,
-              boxShadow: "0 0 8px rgba(0, 123, 255, 0.6)",
-            }}
-            transition={{ type: "spring", stiffness: 300 }}
+            labelClassName="mb-2 text-white text-lg" // увеличенный размер текста для метки
+            inputClassName="w-full max-w-sm p-3 border border-gray-300 rounded-lg shadow-lg text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-base"
+            displayClassName="w-full max-w-sm cursor-pointer text-center hover:underline transition-all duration-200 text-white text-base"
           />
         </motion.div>
 

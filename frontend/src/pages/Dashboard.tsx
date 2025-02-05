@@ -9,6 +9,7 @@ import Notification from "../components/Notification";
 import LoaderComponent from "../components/LoaderComponent";
 import { motion } from "framer-motion";
 import useWindowSize from "../hooks/useWindowSize";
+import EditableDateField from "../components/EditableDateField";
 
 ChartJS.register(...registerables);
 
@@ -269,23 +270,13 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
       </h1>
       <h2 className="text-xl md:text-2xl mb-6 text-center text-gray-400">
         Посещаемость сотрудников на{" "}
-        {editingDate ? (
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            onBlur={() => setEditingDate(false)}
-            className="bg-transparent border-b border-gray-400 text-center focus:outline-none transition-all duration-200 text-gray-200"
-            autoFocus
-          />
-        ) : (
-          <span
-            onClick={() => setEditingDate(true)}
-            className="cursor-pointer hover:underline transition-all duration-200"
-          >
-            {formattedDate}
-          </span>
-        )}
+        <EditableDateField
+          value={selectedDate}
+          onChange={(e) => setSelectedDate(e.target.value)}
+          containerClassName="inline-block"
+          inputClassName="bg-transparent border-b border-gray-400 text-center focus:outline-none transition-all duration-200 text-gray-200"
+          displayClassName="cursor-pointer hover:underline transition-all duration-200"
+        />
       </h2>
       {stats.total_staff_count === 0 ? (
         <p className="text-center text-gray-400">Нет данных для отображения</p>
