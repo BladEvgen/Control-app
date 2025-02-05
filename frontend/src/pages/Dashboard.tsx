@@ -21,7 +21,6 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
   })();
 
   const [selectedDate, setSelectedDate] = useState<string>(initialDate);
-  const [editingDate, setEditingDate] = useState<boolean>(false);
 
   const [stats, setStats] = useState<AttendanceStats | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
