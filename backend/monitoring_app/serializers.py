@@ -34,8 +34,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
         Преобразует данные профиля пользователя в единый формат JSON,
         помещая `is_banned` и `last_login_ip` внутрь объекта `user`.
         """
-        data = super().to_representation(instance)
-
         result = {
             "user": {
                 "username": instance.user.username,
