@@ -1,27 +1,7 @@
-1. Формы:
-1.1    Для уважительных причин (прямо на нужном сотруднике), тамже и скачать ее можно (Post запрос на создание и Get на скачивание в одной прям)
 
 
-2. вытащить эту логику из react 
-          let bonusPercentage = 0;
-            if (
-                staffData &&
-                Object.keys(staffData.attendance).length > 28 &&
-                Object.keys(staffData.attendance).length < 32
-            ) {
-                const percent_for_period = staffData.percent_for_period;
-                if (percent_for_period > 125) {
-                if (percent_for_period >= 145) {
-                    bonusPercentage = 20;
-                } else if (percent_for_period >= 135) {
-                    bonusPercentage = 15;
-                } else {
-                    bonusPercentage = 10;
-                }
-                }
-            }
 
-    Модель в которой меняют процент и bonus процент, и проверка будет идти на backend вернется как array в котором будет bool и int процента который может быть 
+
 
 COMPLETED:
 1.загрузка шаблонов отдела с автосозданием родительского и ребенка (КЛАССОВОЕ view).
@@ -72,3 +52,28 @@ COMPLETED:
 26. Пофиксить выгрузку, чтобы ставился не ключ а значение 
 27. Формы:
     27.2    Для загрузки праздников (excel, в upload) +++
+28. вытащить эту логику из react 
+          let bonusPercentage = 0;
+            if (
+                staffData &&
+                Object.keys(staffData.attendance).length > 28 &&
+                Object.keys(staffData.attendance).length < 32
+            ) {
+                const percent_for_period = staffData.percent_for_period;
+                if (percent_for_period > 125) {
+                if (percent_for_period >= 145) {
+                    bonusPercentage = 20;
+                } else if (percent_for_period >= 135) {
+                    bonusPercentage = 15;
+                } else {
+                    bonusPercentage = 10;
+                }
+                }
+            }
+
+    Модель в которой меняют процент и bonus процент, и проверка будет идти на backend вернется как array в котором будет bool и int процента который может быть 
+29. форма для ввода даты в attendance (React) + Mobile новый дизайн
+30. выгрузка индивидуальаня поправить если удаленная работа или болезнь но был на работе выставить в клетку именно время (если таково есть) React
+
+31. Формы:
+31.1    Для уважительных причин (прямо на нужном сотруднике), тамже и скачать ее можно (Post запрос на создание и Get на скачивание в одной прям)
