@@ -19,6 +19,16 @@ import { motion } from "framer-motion";
 import { generateAndDownloadExcel } from "../utils/excelUtils";
 import LoaderComponent from "../components/LoaderComponent";
 
+const shouldShowBonus = (staffData: StaffData | null): boolean => {
+  if (!staffData) return false;
+  if (staffData.bonus_percentage <= 0) return false;
+  const excludedContractTypes = ["gph", "part_time"];
+  return !!(
+    staffData.contract_type &&
+    !excludedContractTypes.includes(staffData.contract_type)
+  );
+};
+
 const CONTRACT_TYPE_CHOICES: [string, string][] = [
   ["full_time", "Полная занятость"],
   ["part_time", "Частичная занятость"],
@@ -131,7 +141,6 @@ const StaffDetail: React.FC = () => {
   };
 
   const legendItems = generateLegendItems(attendance);
-  const bonusPercentage = staffData?.bonus_percentage ?? 0;
 
   const handleDownloadExcel = async () => {
     if (!staffData) return;
@@ -258,7 +267,7 @@ const StaffDetail: React.FC = () => {
                     {staffData.percent_for_period}%
                   </p>
                 </div>
-                {bonusPercentage > 0 && (
+                {shouldShowBonus(staffData) && (
                   <motion.div
                     variants={bonusVariants}
                     initial="hidden"
@@ -266,13 +275,12 @@ const StaffDetail: React.FC = () => {
                     className="flex items-center justify-center bg-green-100 dark:bg-green-900 rounded-lg p-6"
                   >
                     <p className="text-lg font-medium text-green-700 dark:text-green-300">
-                      Бонус: {bonusPercentage}%
+                      Бонус: {staffData.bonus_percentage}%
                     </p>
                   </motion.div>
                 )}
               </div>
-
-              {/* Дата и статистика */}
+              {/* Остальной JSX */}
               <div className="px-8 pb-8 border-t border-gray-200 dark:border-gray-700">
                 <div className="flex flex-col lg:flex-row items-center justify-between mb-6 gap-6">
                   <div className="w-full max-w-md">
@@ -295,8 +303,6 @@ const StaffDetail: React.FC = () => {
                     </span>
                   </div>
                 </div>
-
-                {/* Легенда */}
                 <div className="flex flex-wrap gap-2 mb-6">
                   {legendItems.map((item, index) => {
                     let colorClass = "";
@@ -327,8 +333,6 @@ const StaffDetail: React.FC = () => {
                     );
                   })}
                 </div>
-
-                {/* Таблица посещаемости */}
                 <AttendanceTable attendance={attendance} />
               </div>
             </div>
