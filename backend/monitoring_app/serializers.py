@@ -214,3 +214,78 @@ class StaffAttendanceByDateSerializer(serializers.Serializer):
                 ],
             }
         }
+
+class AbsentReasonSerializer(serializers.ModelSerializer):
+    staff = serializers.SlugRelatedField(
+        queryset=models.Staff.objects.all(),
+        slug_field='pin'
+    )
+    reason = serializers.ChoiceField(choices=models.AbsentReason.ABSENT_REASON_CHOICES)
+
+    class Meta:
+        model = models.AbsentReason
+        fields = [
+            'id',
+            'staff',
+            'reason',
+            'start_date',
+            'end_date',
+            'approved',
+            'document',
+        ]
+
+    def __init__(self, *args, **kwargs):
+        """
+            Override __init__ to change the behavior of the `reason` field.
+
+            If the passed value is not in the allowed options,
+
+            the value "other" is returned instead of an error.
+        """
+        super().__init__(*args, **kwargs)
+        original_to_internal_value = self.fields['reason'].to_internal_value
+
+        def custom_to_internal_value(data):
+            try:
+                return original_to_internal_value(data)
+            except serializers.ValidationError:
+                return "other"
+
+        self.fields['reason'].to_internal_value = custom_to_internal_value
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        reason_display = instance.get_reason_display()
+        if not reason_display:
+            reason_display = "Другая причина"
+        rep['reason'] = reason_display
+
+        minimal = self.context.get('minimal_staff', False)
+        if minimal:
+            rep.pop('staff', None)
+        else:
+            staff = instance.staff
+            rep['staff'] = {
+                "pin": staff.pin,
+                "fio": f"{staff.surname} {staff.name}"
+            }
+        return rep
+
+    def create(self, validated_data):
+        approved = validated_data.pop('approved', None)
+        instance = models.AbsentReason(**validated_data)
+        instance.save()
+        if approved is not None:
+            instance.approved = approved
+            instance.save(update_fields=['approved'])
+        return instance
+
+    def update(self, instance, validated_data):
+        approved = validated_data.pop('approved', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if approved is not None:
+            instance.approved = approved
+            instance.save(update_fields=['approved'])
+        return instance

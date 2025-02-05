@@ -78,10 +78,11 @@ urlpatterns = [
     path(
         "download/examples/", views.download_examples_zip, name="download_examples_zip"
     ),
+    path("api/absent_staff/", views.AbsentReasonView.as_view(), name="absent_staff"),
 ]
 
 urlpatterns += doc_urls
 
 urlpatterns += [
-    re_path(r"^app/.*$", views.react_app, name="reac_app"),
+    re_path(r"^app/.*$", views.react_app, name="react_app"),
 ]

@@ -154,7 +154,7 @@ class StaffAttendanceStatsView(APIView):
         Ответ кэшируется на 1 час, а информация о государственных праздниках кэшируется на 1 минуту.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticatedOrAPIKey]
 
     @swagger_auto_schema(
         operation_summary="Получить список людей об их присутствии",
@@ -4170,3 +4170,220 @@ def recognize_faces(request):
             {"error": f"Face recognition error: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+
+
+class AbsentReasonView(APIView):
+    permission_classes = [permissions.IsAuthenticatedOrAPIKey]
+
+    def get_date_interval(self, request):
+        """
+        Извлекает интервал дат из параметров запроса или подставляет интервал за последнюю неделю.
+
+        Параметры запроса:
+          - start_date (str, опционально): Дата начала в формате "YYYY-MM-DD".
+          - end_date (str, опционально): Дата окончания в формате "YYYY-MM-DD".
+
+        Возвращает:
+          tuple(datetime.date, datetime.date): Кортеж (query_start, query_end).
+
+        Генерирует:
+          ValueError: Если передан неверный формат даты.
+        """
+        today = datetime.datetime.today().date()
+        default_start = today - datetime.timedelta(days=7)
+        start_date_str = request.query_params.get('start_date')
+        end_date_str = request.query_params.get('end_date')
+
+        if start_date_str:
+            try:
+                query_start = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
+            except ValueError as e:
+                logger.error(f"Неверный формат start_date: {start_date_str}")
+                raise ValueError("Неверный формат start_date. Ожидается YYYY-MM-DD.") from e
+        else:
+            query_start = default_start
+
+        if end_date_str:
+            try:
+                query_end = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
+            except ValueError as e:
+                logger.error(f"Неверный формат end_date: {end_date_str}")
+                raise ValueError("Неверный формат end_date. Ожидается YYYY-MM-DD.") from e
+        else:
+            query_end = today
+
+        return query_start, query_end
+
+    @swagger_auto_schema(
+        operation_summary="Получение записей отсутствия",
+        operation_description=(
+            "Метод возвращает записи отсутствия с возможностью фильтрации по интервалу дат и сотруднику.\n\n"
+            "Параметры запроса:\n"
+            " - **start_date** (опционально): Дата начала (формат YYYY-MM-DD).\n"
+            " - **end_date** (опционально): Дата окончания (формат YYYY-MM-DD).\n"
+            " - **staffs_all** (опционально): Если true, возвращаются записи для всех сотрудников, сгруппированные по сотрудникам.\n"
+            " - **staff_pin** (обязательно, если staffs_all не true): PIN сотрудника для фильтрации записей.\n"
+            " - **download** (опционально): Если true, возвращается ZIP-архив документов.\n"
+            "\nПри параметре **download=true** архив формируется с файлами, имена которых имеют формат:\n"
+            "   `staff.pin_fio_absenceID.ext` (например: `001_Ivanov_Ivan_7.pdf`)."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                'start_date', openapi.IN_QUERY, description="Дата начала (YYYY-MM-DD)", type=openapi.TYPE_STRING
+            ),
+            openapi.Parameter(
+                'end_date', openapi.IN_QUERY, description="Дата окончания (YYYY-MM-DD)", type=openapi.TYPE_STRING
+            ),
+            openapi.Parameter(
+                'staffs_all', openapi.IN_QUERY,
+                description="Если true, возвращаются записи для всех сотрудников, сгруппированные по сотрудникам",
+                type=openapi.TYPE_STRING
+            ),
+            openapi.Parameter(
+                'staff_pin', openapi.IN_QUERY,
+                description="PIN сотрудника (обязательный, если staffs_all не true)",
+                type=openapi.TYPE_STRING
+            ),
+            openapi.Parameter(
+                'download', openapi.IN_QUERY,
+                description="Если true, возвращается ZIP-архив документов",
+                type=openapi.TYPE_STRING
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description=(
+                    "При успешном выполнении возвращается:\n"
+                    " - Если download=true, ZIP-архив документов.\n"
+                    " - Если staffs_all=true, сгруппированные данные по сотрудникам.\n"
+                    " - Иначе – список записей отсутствия для указанного сотрудника."
+                )
+            ),
+            400: openapi.Response(description="Ошибка в параметрах запроса")
+        }
+    )
+    def get(self, request, *args, **kwargs):
+        """
+        **GET** запрос для получения записей отсутствия.
+
+        **Параметры запроса:**
+          - **start_date** (опционально): Дата начала (формат YYYY-MM-DD).
+          - **end_date** (опционально): Дата окончания (формат YYYY-MM-DD).
+          - **staffs_all** (опционально): Если true, возвращаются записи для всех сотрудников.
+          - **staff_pin** (обязательно, если staffs_all не true): PIN сотрудника.
+          - **download** (опционально): Если true, возвращается ZIP-архив документов.
+
+        **Ответ:**
+          - **HTTP 200 OK**: JSON с записями отсутствия или сгруппированными данными по сотрудникам, либо ZIP-архив.
+          - **HTTP 400 BAD REQUEST**: При отсутствии обязательных параметров или неверном формате даты.
+        """
+        staffs_all = request.query_params.get('staffs_all', '').lower() == 'true'
+        staff_pin = request.query_params.get('staff_pin')
+
+        if not staffs_all and not staff_pin:
+            logger.warning("Не передан обязательный параметр 'staff_pin'.")
+            return Response(
+                {"error": "Параметр 'staff_pin' обязателен."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            query_start, query_end = self.get_date_interval(request)
+        except ValueError as e:
+            logger.error(f"Ошибка при разборе интервала дат: {str(e)}")
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        absences = models.AbsentReason.objects.filter(
+            end_date__gte=query_start,
+            start_date__lte=query_end,
+        )
+
+        if not staffs_all:
+            absences = absences.filter(staff__pin=staff_pin)
+
+        download = request.query_params.get('download', '').lower() == 'true'
+        if download:
+            in_memory = BytesIO()
+            with zipfile.ZipFile(in_memory, "w", zipfile.ZIP_DEFLATED) as zf:
+                for absence in absences:
+                    if absence.document:
+                        file_path = absence.document.path
+                        if os.path.exists(file_path):
+                            _, ext = os.path.splitext(file_path)
+                            ext = ext.lower()
+                            staff = absence.staff
+                            fio = f"{staff.surname}_{staff.name}"
+                            new_filename = f"{staff.pin}_{fio}_{absence.id}{ext}"
+                            zf.write(file_path, arcname=new_filename)
+            in_memory.seek(0)
+            logger.info(f"Возвращается ZIP-архив документов за период {query_start} - {query_end}.")
+            response = HttpResponse(in_memory, content_type="application/zip")
+            response['Content-Disposition'] = f'attachment; filename="documents_{query_start}_{query_end}.zip"'
+            return response
+
+        if not staffs_all:
+            serializer_context = {'minimal_staff': True}
+            serializer = serializers.AbsentReasonSerializer(absences, many=True, context=serializer_context)
+            logger.info(f"Возвращается список записей отсутствия для staff_pin: {staff_pin}. Количество записей: {len(absences)}.")
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        grouped = {}
+        for absence in absences:
+            staff = absence.staff
+            key = staff.pin
+            if key not in grouped:
+                grouped[key] = {
+                    "staff": {
+                        "pin": staff.pin,
+                        "fio": f"{staff.surname} {staff.name}"
+                    },
+                    "absences": []
+                }
+            absence_data = serializers.AbsentReasonSerializer(absence, context={'minimal_staff': True}).data
+            grouped[key]["absences"].append(absence_data)
+        result = list(grouped.values())
+        logger.info(f"Возвращается сгруппированный список записей отсутствия для всех сотрудников. Количество групп: {len(result)}.")
+        return Response(result, status=status.HTTP_200_OK)
+
+    @swagger_auto_schema(
+        operation_summary="Создание записи отсутствия",
+        operation_description=(
+            "Метод создает новую запись отсутствия.\n\n"
+            "Тело запроса должно содержать следующие поля:\n"
+            " - **staff** (строка): PIN сотрудника.\n"
+            " - **reason** (строка): Код причины отсутствия (например, `sick_leave`).\n"
+            "   Если передано некорректное значение, по умолчанию устанавливается `other` (отображается как \"Другая причина\").\n"
+            " - **start_date** (строка): Дата начала (формат YYYY-MM-DD).\n"
+            " - **end_date** (строка): Дата окончания (формат YYYY-MM-DD).\n"
+            " - **approved** (bool): Статус утверждения.\n"
+            " - **document** (файл, опционально): Прикрепленный документ. Разрешенные форматы: pdf, jpg, jpeg, png."
+        ),
+        request_body=serializers.AbsentReasonSerializer,
+        responses={
+            201: openapi.Response(description="Запись отсутствия успешно создана."),
+            400: openapi.Response(description="Неверные входные данные")
+        }
+    )
+    def post(self, request, *args, **kwargs):
+        """
+        **POST** запрос для создания новой записи отсутствия.
+
+        **Тело запроса (multipart/form-data или JSON):**
+          - **staff** (строка): PIN сотрудника.
+          - **reason** (строка): Код причины отсутствия (например, `sick_leave` или `other`).
+          - **start_date** (строка): Дата начала (формат YYYY-MM-DD).
+          - **end_date** (строка): Дата окончания (формат YYYY-MM-DD).
+          - **approved** (bool): Статус утверждения.
+          - **document** (файл, опционально): Прикрепленный документ. Допустимые расширения: pdf, jpg, jpeg, png.
+
+        **Ответ:**
+          - **HTTP 201 CREATED**: Сообщение об успешном создании записи.
+          - **HTTP 400 BAD REQUEST**: Если входные данные неверны.
+        """
+        serializer = serializers.AbsentReasonSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            logger.info("Запись отсутствия успешно создана.")
+            return Response({"message": "Запись отсутствия успешно создана."}, status=status.HTTP_201_CREATED)
+        logger.error(f"Ошибка при создании записи отсутствия: {serializer.errors}")
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
