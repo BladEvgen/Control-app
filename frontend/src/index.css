@@ -227,3 +227,19 @@ select {
             0 0 40px rgba(255, 255, 255, 0.5);
     }
 }
+@keyframes fadeIn {
+    0% {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* Анимация, которая проигрывается один раз */
+.animate-once {
+    animation: fadeIn 0.5s ease-out forwards;
+}
