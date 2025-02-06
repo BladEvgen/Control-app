@@ -114,6 +114,10 @@ axiosInstance.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
+    if (originalRequest.skipAuthInterceptor) {
+      return Promise.reject(error);
+    }
+
     if (
       (error.response?.status === 401 || error.response?.status === 403) &&
       !originalRequest._retry
@@ -134,9 +138,7 @@ axiosInstance.interceptors.response.use(
 
         const refreshResponse = await axios.post(
           `${apiUrl}/api/token/refresh/`,
-          {
-            refresh: refreshToken,
-          }
+          { refresh: refreshToken }
         );
 
         const newAccessToken = refreshResponse.data.access;
@@ -145,7 +147,7 @@ axiosInstance.interceptors.response.use(
         setCookie("access_token", newAccessToken, {
           secure: !isDebug,
           sameSite: isDebug ? "Lax" : "Strict",
-          maxAge: 3600,
+          maxAge: 600,
         });
         setCookie("refresh_token", newRefreshToken, {
           secure: !isDebug,
@@ -187,6 +189,7 @@ axiosInstance.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+;
 
 const handleLogout = () => {
   log.info("Выполняем выход. Удаление токенов...");
