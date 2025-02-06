@@ -735,9 +735,17 @@ def generate_map_data(
 
     try:
         main_location = next(
-            (item for item in result_list if item["address"] == "Абылай хана, 51/53"),
+            (
+                item
+                for item in result_list
+                if re.search(
+                    r"абылай\s*хана",
+                    re.sub(r"[\"\'.,]", "", item["address"].lower()).strip(),
+                )
+            ),
             None,
         )
+
         if main_location:
             result_list.remove(main_location)
             result_list.insert(0, main_location)
