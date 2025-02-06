@@ -5,11 +5,12 @@ import { Link } from "../RouterUtils";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { formatDepartmentName } from "../utils/utils";
-import { FaDownload, FaHome, FaTimesCircle } from "react-icons/fa";
+import { FaDownload, FaHome } from "react-icons/fa";
 import DepartmentTable from "./DepartmentTable";
 import { BaseAction } from "../schemas/BaseAction";
 import { motion } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
+import Notification from "../components/Notification";
 
 class DepartmentAction extends BaseAction<any> {
   static SET_LOADING = "SET_LOADING";
@@ -160,7 +161,6 @@ const DepartmentPage: React.FC = () => {
 
   return (
     <>
-      {/* Обёртка для анимации появления страницы */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
@@ -171,16 +171,12 @@ const DepartmentPage: React.FC = () => {
         {isLoading ? (
           <LoaderComponent />
         ) : error ? (
-          <div className="flex flex-col items-center justify-center h-screen">
-            <FaTimesCircle className="text-red-500 text-5xl mb-4" />
-            <p className="text-xl text-red-600 dark:text-red-400">{error}</p>
-            <Link
-              to="/"
-              className="mt-6 px-4 py-2 bg-yellow-500 text-white text-lg rounded-lg shadow-md hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
-            >
-              Вернуться на главную
-            </Link>
-          </div>
+          <Notification
+            message={error}
+            type="error"
+            link="/"
+            linkText="Вернуться на главную"
+          />
         ) : (
           <>
             <h1 className="text-3xl font-bold text-center md:text-left text-white mb-8">
@@ -188,7 +184,6 @@ const DepartmentPage: React.FC = () => {
             </h1>
 
             <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6">
-              {/* Кнопка "На главную" для десктопа */}
               {shouldRenderLink(location.pathname) && (
                 <div className="hidden md:block">
                   <Link
@@ -305,7 +300,6 @@ const DepartmentPage: React.FC = () => {
         )}
       </motion.div>
 
-      {/* Плавающая кнопка "На главную" для мобильных устройств */}
       {!isLoading && !error && shouldRenderLink(location.pathname) && (
         <motion.div
           initial={{ opacity: 0, y: 50 }}
