@@ -6,7 +6,7 @@ import React, {
   useMemo,
 } from "react";
 import { Link, useNavigate } from "../RouterUtils";
-import axiosInstance, { getCookie, setCookie, removeCookie } from "../api";
+import axiosInstance, { setCookie } from "../api";
 import { apiUrl } from "../../apiConfig";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -20,6 +20,7 @@ import {
 import { ImCamera } from "react-icons/im";
 import { FaMapLocationDot } from "react-icons/fa6";
 import { MdDashboard } from "react-icons/md";
+import { getUsername, isAuthenticated, logoutUser } from "../utils/authHelpers";
 
 type DesktopNavbarProps = {
   toggleTheme: () => void;
@@ -31,12 +32,8 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
   currentTheme,
 }) => {
   const navigate = useNavigate();
-  const [username, setUsername] = useState<string>(
-    () => getCookie("username") || ""
-  );
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
-    () => !!getCookie("access_token")
-  );
+  const [username, setUsername] = useState<string>(() => getUsername());
+  const [isAuth, setIsAuth] = useState<boolean>(() => isAuthenticated());
   const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
   const [isStatsDropdownOpen, setIsStatsDropdownOpen] =
     useState<boolean>(false);
@@ -50,23 +47,20 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
   const profileButtonRef = useRef<HTMLButtonElement>(null);
 
   const checkAuthentication = useCallback(async () => {
-    const accessToken = getCookie("access_token");
-    const refreshToken = getCookie("refresh_token");
-
-    if (accessToken && refreshToken) {
+    if (isAuthenticated()) {
       if (!username) {
         try {
           const userDetails = await axiosInstance.get("/user/detail/");
           const fetchedUsername = userDetails.data.user.username;
           setUsername(fetchedUsername);
           setCookie("username", fetchedUsername, { path: "/" });
-          setIsAuthenticated(true);
+          setIsAuth(true);
         } catch (error) {
           console.error("Ошибка при получении данных пользователя:", error);
           handleLogout();
         }
       } else {
-        setIsAuthenticated(true);
+        setIsAuth(true);
       }
     } else {
       handleLogout();
@@ -74,12 +68,10 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
   }, [username]);
 
   const handleLogout = useCallback(() => {
-    removeCookie("access_token");
-    removeCookie("refresh_token");
-    removeCookie("username");
-    setIsAuthenticated(false);
-    setUsername("");
-    navigate("/login");
+    logoutUser(navigate, () => {
+      setIsAuth(false);
+      setUsername("");
+    });
   }, [navigate]);
 
   useEffect(() => {
@@ -144,7 +136,6 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.2 }}
           >
-            {/* Блок подменю для Dashboards */}
             <div
               className="relative"
               onMouseEnter={handleStatsMouseEnter}
@@ -312,7 +303,7 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
         <FaUserClock className="ml-2 text-xl sm:text-2xl md:text-3xl" />
       </Link>
       <div className="flex items-center space-x-6">
-        {isAuthenticated ? AuthenticatedMenu : UnauthenticatedMenu}
+        {isAuth ? AuthenticatedMenu : UnauthenticatedMenu}
       </div>
     </nav>
   );
