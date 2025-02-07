@@ -12,7 +12,7 @@ const DepartmentPage = lazy(() => import("./pages/DepartmentPage.tsx"));
 const ChildDepartmentPage = lazy(
   () => import("./pages/ChildDepartmentPage.tsx")
 );
-const StaffDetail = lazy(() => import("./pages/StaffDetail.tsx"));
+const StaffDetail = lazy(() => import("./pages/StaffDetail/StaffDetail.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
 const MapPage = lazy(() => import("./pages/MapDashboard.tsx"));
 const PhotoDashboard = lazy(() => import("./pages/PhotoDashboard.tsx"));
