@@ -147,12 +147,12 @@ axiosInstance.interceptors.response.use(
         setCookie("access_token", newAccessToken, {
           secure: !isDebug,
           sameSite: isDebug ? "Lax" : "Strict",
-          maxAge: 600,
+          maxAge: 1800,
         });
         setCookie("refresh_token", newRefreshToken, {
           secure: !isDebug,
           sameSite: isDebug ? "Lax" : "Strict",
-          maxAge: 3600,
+          maxAge: 7200,
         });
 
         originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
