@@ -332,13 +332,13 @@ SIMPLE_JWT = {
 # Token lifetimes based on DEBUG
 SIMPLE_JWT.update(
     {
-        "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10),
+        "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10) if DEBUG else timedelta(minutes=30),
         "REFRESH_TOKEN_LIFETIME": (
-            timedelta(minutes=30) if DEBUG else timedelta(hours=1)
+            timedelta(minutes=30) if DEBUG else timedelta(hours=2)
         ),
-        "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10),
+        "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10) if DEBUG else timedelta(minutes=30),
         "SLIDING_TOKEN_REFRESH_LIFETIME": (
-            timedelta(minutes=30) if DEBUG else timedelta(hours=1)
+            timedelta(minutes=30) if DEBUG else timedelta(hours=2)
         ),
     }
 )
