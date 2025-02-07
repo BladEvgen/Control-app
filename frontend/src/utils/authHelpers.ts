@@ -1,4 +1,3 @@
-import { isDebug } from "../../apiConfig";
 import { getCookie, removeCookie } from "../api";
 
 export const isAuthenticated = (): boolean => {
@@ -9,22 +8,24 @@ export const getUsername = (): string => {
   return getCookie("username") || "";
 };
 
+/**
+ * Выполняет выход пользователя:
+ *  - удаляет cookie,
+ *  - выполняет дополнительную callback-функцию (для обновления UI),
+ *  - перенаправляет на страницу логина.
+ *
+ * @param navigate Функция для навигации 
+ * @param extraCallback Опциональная callback-функция для дополнительных действий (например, сброс состояния)
+ */
 export const logoutUser = (
   navigate: (path: string) => void,
   extraCallback?: () => void
 ): void => {
-  const cookieOptions = {
-    secure: !isDebug,
-    sameSite: isDebug ? "Lax" : "Strict",
-  };
-
-  ["access_token", "refresh_token", "username"].forEach((cookieName) => {
-    removeCookie(cookieName, cookieOptions);
-  });
-
+  removeCookie("access_token");
+  removeCookie("refresh_token");
+  removeCookie("username");
   if (extraCallback) {
     extraCallback();
   }
-
   navigate("/login");
 };
