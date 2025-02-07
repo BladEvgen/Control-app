@@ -1,10 +1,11 @@
 import { useState, useCallback } from "react";
-import axiosInstance, { setCookie } from "../api";
+import axiosInstance, { setCookie, tokenManager } from "../api";
 import { useNavigate } from "../RouterUtils";
 import { FaEye, FaEyeSlash, FaSignInAlt } from "react-icons/fa";
 import { FaBug } from "react-icons/fa6";
 import { apiUrl } from "../../apiConfig";
 import { motion, AnimatePresence } from "framer-motion";
+import { AxiosError } from "axios";
 
 const errorVariants = {
   hidden: { opacity: 0, y: -10 },
@@ -20,45 +21,89 @@ const pulseVariants = {
   },
 };
 
+interface LoginResponse {
+  access: string;
+  refresh: string;
+}
+
+interface LoginError {
+  detail?: string;
+  non_field_errors?: string[];
+}
+
 const LoginPage = () => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [failedAttempts, setFailedAttempts] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
 
   const navigate = useNavigate();
 
+  const getErrorMessage = (error: AxiosError<LoginError>) => {
+    if (error.response?.status === 401) {
+      return "Неверный логин или пароль";
+    }
+    if (error.response?.data?.detail) {
+      return error.response.data.detail;
+    }
+    if (error.response?.data?.non_field_errors?.[0]) {
+      return error.response.data.non_field_errors[0];
+    }
+    return "Ошибка входа. Попробуйте позже.";
+  };
+
   const handleSubmit = useCallback(async () => {
+    if (!username.trim() || !password) {
+      setLoginError("Пожалуйста, заполните все поля");
+      return;
+    }
+
     const formattedUsername = username.trim().toLowerCase();
+    setIsLoading(true);
 
     try {
-      const res = await axiosInstance.post(
+      const res = await axiosInstance.post<LoginResponse>(
         "/token/",
         { username: formattedUsername, password },
-        { skipAuthInterceptor: true }
+        {
+          skipAuthInterceptor: true,
+          signal: AbortSignal.timeout(10000),
+        }
       );
 
-      setCookie("access_token", res.data.access, { path: "/" });
-      setCookie("refresh_token", res.data.refresh, { path: "/" });
-      setCookie("username", formattedUsername, { path: "/" });
+      tokenManager.setTokens(res.data.access, res.data.refresh);
+      setCookie("username", formattedUsername, {
+        secure: true,
+        sameSite: "Strict",
+        path: "/",
+      });
+
       setFailedAttempts(0);
       navigate("/");
-      window.location.reload();
-    } catch (error: any) {
+    } catch (error) {
       console.error("Login error:", error);
-      setLoginError(
-        "Ошибка входа. Проверьте введённые данные или попробуйте позже."
-      );
+      const errorMessage =
+        error instanceof AxiosError
+          ? getErrorMessage(error)
+          : "Произошла неизвестная ошибка";
+
+      setLoginError(errorMessage);
       setFailedAttempts((prev) => prev + 1);
-      setTimeout(() => {
+
+      const timeoutId = setTimeout(() => {
         setLoginError("");
       }, 5000);
+
+      return () => clearTimeout(timeoutId);
+    } finally {
+      setIsLoading(false);
     }
   }, [username, password, navigate]);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
+    if (e.key === "Enter" && !isLoading) {
       handleSubmit();
     }
   };
@@ -104,11 +149,20 @@ const LoginPage = () => {
             </div>
           </div>
           <button
-            className="w-full mt-8 px-4 py-3 flex items-center justify-center gap-2 text-lg font-semibold text-white bg-blue-500 rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all duration-300 transform hover:scale-105"
+            className={`w-full mt-8 px-4 py-3 flex items-center justify-center gap-2 
+          text-lg font-semibold text-white bg-blue-500 rounded-md 
+          ${
+            isLoading
+              ? "opacity-50 cursor-not-allowed"
+              : "hover:bg-blue-600 hover:scale-105"
+          } 
+          focus:outline-none focus:ring-2 focus:ring-blue-400 
+          transition-all duration-300 transform`}
             onClick={handleSubmit}
+            disabled={isLoading}
           >
             <FaSignInAlt size={20} />
-            <span>Войти</span>
+            <span>{isLoading ? "Вход..." : "Войти"}</span>
           </button>
           <AnimatePresence>
             {loginError && (

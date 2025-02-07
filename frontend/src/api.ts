@@ -90,6 +90,50 @@ export const getCookie = (name: string): string | null => {
   return null;
 };
 
+const tokenManager = {
+  isRefreshing: false,
+  refreshSubscribers: [] as ((token: string) => void)[],
+
+  subscribeTokenRefresh(callback: (token: string) => void) {
+    this.refreshSubscribers.push(callback);
+  },
+
+  onTokenRefreshed(token: string) {
+    this.refreshSubscribers.forEach((callback) => callback(token));
+    this.refreshSubscribers = [];
+  },
+
+  async refreshTokenPair() {
+    const refreshToken = getCookie("refresh_token");
+    if (!refreshToken) {
+      throw new Error("No refresh token available");
+    }
+
+    const response = await axios.post(
+      `${apiUrl}/api/token/refresh/`,
+      { refresh: refreshToken },
+      { skipAuthInterceptor: true }
+    );
+
+    const { access, refresh } = response.data;
+    this.setTokens(access, refresh);
+    return access;
+  },
+
+  setTokens(accessToken: string, refreshToken: string) {
+    setCookie("access_token", accessToken, {
+      secure: !isDebug,
+      sameSite: isDebug ? "Lax" : "Strict",
+      maxAge: 600,
+    });
+    setCookie("refresh_token", refreshToken, {
+      secure: !isDebug,
+      sameSite: isDebug ? "Lax" : "Strict",
+      maxAge: 3600,
+    });
+  },
+};
+
 const axiosInstance = axios.create({
   baseURL: `${apiUrl}/api`,
   timeout: 10000,
@@ -114,99 +158,58 @@ axiosInstance.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
-    if (originalRequest.skipAuthInterceptor) {
+    if (originalRequest?.skipAuthInterceptor) {
       return Promise.reject(error);
     }
 
-    if (
-      (error.response?.status === 401 || error.response?.status === 403) &&
-      !originalRequest._retry
-    ) {
+    if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
-      try {
-        const refreshToken = getCookie("refresh_token");
-        if (!refreshToken) {
-          log.error("Отсутствует refresh_token.");
+
+      if (!tokenManager.isRefreshing) {
+        tokenManager.isRefreshing = true;
+        try {
+          const newAccessToken = await tokenManager.refreshTokenPair();
+          tokenManager.onTokenRefreshed(newAccessToken);
+          originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
+          return axiosInstance(originalRequest);
+        } catch (refreshError) {
           handleLogout();
           return Promise.reject(
             BaseAction.createAction(
               BaseAction.SET_ERROR,
-              "Отсутствует refresh_token."
+              "Failed to refresh token"
             )
           );
+        } finally {
+          tokenManager.isRefreshing = false;
         }
-
-        const refreshResponse = await axios.post(
-          `${apiUrl}/api/token/refresh/`,
-          { refresh: refreshToken }
-        );
-
-        const newAccessToken = refreshResponse.data.access;
-        const newRefreshToken = refreshResponse.data.refresh;
-
-        setCookie("access_token", newAccessToken, {
-          secure: !isDebug,
-          sameSite: isDebug ? "Lax" : "Strict",
-          maxAge: 600,
+      } else {
+        return new Promise((resolve) => {
+          tokenManager.subscribeTokenRefresh((token) => {
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+            resolve(axiosInstance(originalRequest));
+          });
         });
-        setCookie("refresh_token", newRefreshToken, {
-          secure: !isDebug,
-          sameSite: isDebug ? "Lax" : "Strict",
-          maxAge: 3600,
-        });
-
-        originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
-        return axiosInstance(originalRequest);
-      } catch (refreshError: any) {
-        if (
-          refreshError.response?.status === 401 ||
-          refreshError.response?.status === 403
-        ) {
-          log.error("Не удалось обновить токен. Выполняем выход.");
-          handleLogout();
-          return Promise.reject(
-            BaseAction.createAction(
-              BaseAction.SET_ERROR,
-              "Не удалось обновить токен."
-            )
-          );
-        }
-        return Promise.reject(refreshError);
       }
-    }
-
-    if (error.response?.status === 401) {
-      log.error("401 ошибка. Выполняем выход.");
-      handleLogout();
-      return Promise.reject(
-        BaseAction.createAction(
-          BaseAction.SET_ERROR,
-          "401 ошибка. Выполняем выход."
-        )
-      );
     }
 
     return Promise.reject(error);
   }
 );
-;
 
-const handleLogout = () => {
-  log.info("Выполняем выход. Удаление токенов...");
-  removeCookie("access_token", {
+export const handleLogout = () => {
+  log.info("Performing logout. Removing tokens...");
+  const cookieOptions = {
     secure: !isDebug,
     sameSite: isDebug ? "Lax" : "Strict",
-  });
-  removeCookie("refresh_token", {
-    secure: !isDebug,
-    sameSite: isDebug ? "Lax" : "Strict",
-  });
-  removeCookie("username", {
-    secure: !isDebug,
-    sameSite: isDebug ? "Lax" : "Strict",
+  };
+
+  ["access_token", "refresh_token", "username"].forEach((cookieName) => {
+    removeCookie(cookieName, cookieOptions);
   });
 
   window.location.href = addPrefix("/login");
 };
 
 export default axiosInstance;
+export { tokenManager };
