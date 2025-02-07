@@ -11,6 +11,7 @@ export default defineConfig({
           "chart-vendor": ["chart.js", "react-chartjs-2"],
           "axios-vendor": ["axios"],
           "react-router-vendor": ["react-router-dom"],
+          "exceljs-vendor": ["exceljs"],
         },
       },
     },
