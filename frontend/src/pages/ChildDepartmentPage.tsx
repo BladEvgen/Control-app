@@ -14,6 +14,7 @@ import {
 } from "react-icons/fa";
 import { motion } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
+import FloatingButton from "../components/FloatingButton";
 
 class BaseAction<T> {
   static SET_LOADING = "SET_LOADING";
@@ -202,14 +203,14 @@ const ChildDepartmentPage = () => {
             <div className="flex space-x-4">
               <Link
                 to="/"
-                className="flex items-center px-4 py-2 bg-yellow-500 dark:bg-yellow-700 text-white text-lg rounded-lg shadow-md hover:bg-yellow-600 transition-colors duration-300 ease-in-out"
+                className="flex items-center px-4 py-2 bg-yellow-500 dark:bg-yellow-700 text-white text-lg rounded-lg shadow-md hover:bg-yellow-600 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
               >
                 <FaHome className="mr-2" />
                 <span className="font-semibold">На главную</span>
               </Link>
               <button
                 onClick={navigateToChildDepartment}
-                className="flex items-center px-4 py-2 bg-blue-500 text-white text-lg rounded-lg shadow-md hover:bg-blue-600 transition-colors duration-300 ease-in-out"
+                className="flex items-center px-4 py-2 bg-blue-500 dark:bg-blue-700 text-white text-lg rounded-lg shadow-md hover:bg-blue-600 dark:hover:bg-blue-800 transition-colors duration-300 ease-in-out"
               >
                 <FaArrowLeft className="mr-2" />
                 <span>Вернуться назад</span>
@@ -219,7 +220,7 @@ const ChildDepartmentPage = () => {
             <button
               onClick={handleDownload}
               disabled={isDownloadDisabled || isDownloading}
-              className="flex items-center px-4 py-2 mt-2 bg-green-500 hover:bg-green-600 text-white text-lg rounded-lg shadow-md transition-colors duration-300 ease-in-out md:hidden"
+              className="flex items-center px-4 py-2 mt-2 bg-green-600 hover:bg-green-800 text-white text-lg rounded-lg shadow-md transition-colors duration-300 ease-in-out md:hidden"
             >
               {isDownloading ? (
                 <svg
@@ -476,24 +477,20 @@ const ChildDepartmentPage = () => {
 
       {/* Плавающие кнопки для смартфонов (видны только на экранах ниже md) */}
       <div className="block md:hidden">
-        <motion.button
-          variants={buttonVariants}
-          whileHover="hover"
-          whileTap="tap"
-          className="fixed bottom-4 left-4 bg-blue-600 hover:bg-blue-700 text-white rounded-full p-4 shadow-lg z-50 focus:outline-none transition-transform"
+        <FloatingButton
+          icon={<FaArrowLeft size={24} />}
           onClick={navigateToChildDepartment}
-        >
-          <FaArrowLeft size={24} />
-        </motion.button>
-        <motion.button
-          variants={buttonVariants}
-          whileHover="hover"
-          whileTap="tap"
-          onClick={() => navigate("/")}
-          className="fixed bottom-4 right-4 bg-yellow-500 hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 text-white rounded-full p-4 shadow-lg z-50 focus:outline-none transition-transform"
-        >
-          <FaHome size={24} />
-        </motion.button>
+          position="left"
+          bgColor="bg-blue-500"
+          hoverBgColor="hover:bg-blue-600 dark:bg-blue-700 dark:hover:bg-blue-800"
+        />
+        <FloatingButton
+          icon={<FaHome size={24} />}
+          to="/"
+          position="right"
+          bgColor="bg-yellow-500"
+          hoverBgColor="hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800"
+        />
       </div>
     </motion.div>
   );

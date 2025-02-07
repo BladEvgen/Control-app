@@ -11,7 +11,7 @@ import { BaseAction } from "../schemas/BaseAction";
 import { motion } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
 import Notification from "../components/Notification";
-
+import { FloatingButton } from "../components/FloatingButton";
 class DepartmentAction extends BaseAction<any> {
   static SET_LOADING = "SET_LOADING";
   static SET_DATA = "SET_DATA";
@@ -308,12 +308,13 @@ const DepartmentPage: React.FC = () => {
           whileHover={{ scale: 1.1 }}
           className="fixed bottom-4 right-4 z-50 block md:hidden"
         >
-          <Link
+          <FloatingButton
+            icon={<FaHome size={24} />}
             to="/"
-            className="flex items-center justify-center px-4 py-3 bg-yellow-500 text-white text-lg rounded-full shadow-lg hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
-          >
-            <FaHome size={26} />
-          </Link>
+            position="right"
+            bgColor="bg-yellow-500"
+            hoverBgColor="hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800"
+          />
         </motion.div>
       )}
     </>
