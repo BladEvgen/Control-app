@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { Link } from "../RouterUtils";
+import { Link, useNavigate } from "../RouterUtils";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   FaBars,
@@ -14,6 +14,7 @@ import { FaMapLocationDot } from "react-icons/fa6";
 import { ImCamera } from "react-icons/im";
 import { MdDashboard } from "react-icons/md";
 import { apiUrl } from "../../apiConfig";
+import { getUsername, isAuthenticated, logoutUser } from "../utils/authHelpers";
 
 type MobileNavbarProps = {
   toggleTheme: () => void;
@@ -26,6 +27,10 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+
+  const auth = isAuthenticated();
+  const username = getUsername();
 
   const toggleMenu = useCallback(() => {
     setIsMenuOpen((prev) => !prev);
@@ -101,13 +106,15 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
             exit="exit"
             transition={{ duration: 0.3, ease: "easeInOut" }}
             drag="y"
-            dragConstraints={{ top: 0, bottom: 0 }}
+            dragConstraints={{ top: 0, bottom: 300 }}
+            dragElastic={{ top: 0, bottom: 0.2 }}
             onDragEnd={(_event, info) => {
               if (info.offset.y > 100) {
                 setIsMenuOpen(false);
               }
             }}
           >
+            {/* Драг-хэндлер */}
             <div
               onClick={toggleMenu}
               className="py-2 border-b border-gray-700 flex justify-center cursor-pointer"
@@ -115,66 +122,113 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
               <div className="w-12 h-1 bg-gray-400 rounded-full"></div>
             </div>
 
+            {auth && (
+              <div className="px-3 py-2 border-b border-gray-700 text-lg">
+                Logged in as: <span className="font-bold">{username}</span>
+              </div>
+            )}
+
             <div className="flex flex-col justify-evenly min-h-[60vh] px-3 py-1">
-              <Link
-                to="/"
-                onClick={() => setIsMenuOpen(false)}
-                className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
-              >
-                <FaHome className="mr-2 text-blue-500" />
-                Главная
-              </Link>
-              <Link
-                to="/dashboard"
-                onClick={() => setIsMenuOpen(false)}
-                className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
-              >
-                <MdDashboard className="mr-2 text-indigo-500" />
-                Attendance
-              </Link>
-              <Link
-                to="/photo"
-                onClick={() => setIsMenuOpen(false)}
-                className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
-              >
-                <ImCamera className="mr-2 text-gray-400" />
-                Photos
-              </Link>
-              <a
-                href={`${apiUrl}/upload`}
-                onClick={() => setIsMenuOpen(false)}
-                className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
-              >
-                <FaUpload className="mr-2 text-green-500" />
-                Upload
-              </a>
-              <Link
-                to="/map"
-                onClick={() => setIsMenuOpen(false)}
-                className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
-              >
-                <FaMapLocationDot className="mr-2 text-yellow-500" />
-                Map
-              </Link>
-              <button
-                onClick={() => {
-                  toggleTheme();
-                  setIsMenuOpen(false);
-                }}
-                className="flex items-center w-full px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform focus:outline-none"
-              >
-                {currentTheme === "dark" ? (
-                  <>
-                    <FaSun className="mr-2 text-yellow-500" />
-                    Light Mode
-                  </>
-                ) : (
-                  <>
-                    <FaMoon className="mr-2 text-white" />
-                    Dark Mode
-                  </>
-                )}
-              </button>
+              {auth ? (
+                <>
+                  <Link
+                    to="/"
+                    onClick={() => setIsMenuOpen(false)}
+                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                  >
+                    <FaHome className="mr-2 text-blue-500" />
+                    Главная
+                  </Link>
+                  <Link
+                    to="/dashboard"
+                    onClick={() => setIsMenuOpen(false)}
+                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                  >
+                    <MdDashboard className="mr-2 text-indigo-500" />
+                    Attendance
+                  </Link>
+                  <Link
+                    to="/photo"
+                    onClick={() => setIsMenuOpen(false)}
+                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                  >
+                    <ImCamera className="mr-2 text-gray-400" />
+                    Photos
+                  </Link>
+                  <a
+                    href={`${apiUrl}/upload`}
+                    onClick={() => setIsMenuOpen(false)}
+                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                  >
+                    <FaUpload className="mr-2 text-green-500" />
+                    Upload
+                  </a>
+                  <Link
+                    to="/map"
+                    onClick={() => setIsMenuOpen(false)}
+                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                  >
+                    <FaMapLocationDot className="mr-2 text-yellow-500" />
+                    Map
+                  </Link>
+                  <button
+                    onClick={() => {
+                      toggleTheme();
+                      setIsMenuOpen(false);
+                    }}
+                    className="flex items-center w-full px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform focus:outline-none"
+                  >
+                    {currentTheme === "dark" ? (
+                      <>
+                        <FaSun className="mr-2 text-yellow-500" />
+                        Light Mode
+                      </>
+                    ) : (
+                      <>
+                        <FaMoon className="mr-2 text-white" />
+                        Dark Mode
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={() =>
+                      logoutUser(navigate, () => setIsMenuOpen(false))
+                    }
+                    className="flex items-center w-full px-2 py-1 border-t border-gray-700 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform focus:outline-none mt-2 text-red-400"
+                  >
+                    Logout
+                  </button>
+                </>
+              ) : (
+                <>
+                  <Link
+                    to="/login"
+                    onClick={() => setIsMenuOpen(false)}
+                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                  >
+                    Login
+                  </Link>
+                  <button
+                    onClick={() => {
+                      toggleTheme();
+                      setIsMenuOpen(false);
+                    }}
+                    className="flex items-center w-full px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform focus:outline-none mt-2"
+                  >
+                    {currentTheme === "dark" ? (
+                      <>
+                        <FaSun className="mr-2 text-yellow-500" />
+                        Light Mode
+                      </>
+                    ) : (
+                      <>
+                        <FaMoon className="mr-2 text-white" />
+                        Dark Mode
+                      </>
+                    )}
+                  </button>
+                </>
+              )}
             </div>
           </motion.aside>
         )}
