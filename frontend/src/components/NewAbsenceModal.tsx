@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import ReactDOM from "react-dom";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { motion, Variants } from "framer-motion";
@@ -115,8 +116,8 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
     }
   };
 
-  return (
-    <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50 overflow-y-auto">
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-[1000]">
       <motion.div
         className="bg-white dark:bg-gray-800 p-8 rounded-xl shadow-2xl w-full max-w-md relative transition-all"
         variants={modalVariants}
@@ -266,7 +267,8 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
           </motion.button>
         </form>
       </motion.div>
-    </div>
+    </div>,
+    document.body
   );
 };
 

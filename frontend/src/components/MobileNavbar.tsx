@@ -64,7 +64,8 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
 
   return (
     <>
-      <header className="lg:hidden sticky top-0 z-50 bg-primary-dark text-text-light shadow-md">
+      {/* Header  */}
+      <header className="lg:hidden sticky top-0 z-[999] bg-primary-dark text-text-light shadow-md">
         <div className="flex items-center justify-between px-4 py-3">
           <button
             onClick={toggleMenu}
@@ -81,10 +82,11 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
         </div>
       </header>
 
+      {/* Затемняющий фон */}
       <AnimatePresence>
         {isMenuOpen && (
           <motion.div
-            className="fixed inset-0 bg-black z-40"
+            className="fixed inset-0 bg-black z-[1000]"
             variants={overlayVariants}
             initial="hidden"
             animate="visible"
@@ -95,11 +97,12 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
         )}
       </AnimatePresence>
 
+      {/* Панель мобильного меню */}
       <AnimatePresence>
         {isMenuOpen && (
           <motion.aside
             ref={panelRef}
-            className="fixed bottom-0 left-0 right-0 z-50 bg-primary-dark text-text-light rounded-t-lg shadow-xl overflow-y-auto"
+            className="fixed bottom-0 left-0 right-0 z-[1001] bg-primary-dark text-text-light rounded-t-lg shadow-xl overflow-y-auto"
             variants={panelVariants}
             initial="hidden"
             animate="visible"
