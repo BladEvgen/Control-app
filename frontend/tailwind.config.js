@@ -48,6 +48,23 @@ module.exports = {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    function ({ addVariant, e }) {
+      addVariant("portrait", ({ modifySelectors, separator }) => {
+        modifySelectors(({ className }) => {
+          return `@media (orientation: portrait) { .${e(
+            `portrait${separator}${className}`
+          )} }`;
+        });
+      });
+      addVariant("landscape", ({ modifySelectors, separator }) => {
+        modifySelectors(({ className }) => {
+          return `@media (orientation: landscape) { .${e(
+            `landscape${separator}${className}`
+          )} }`;
+        });
+      });
+    },
+  ],
   darkMode: "class",
 };
