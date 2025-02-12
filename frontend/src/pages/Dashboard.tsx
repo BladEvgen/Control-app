@@ -1,5 +1,11 @@
-import React, { useEffect, useState, useCallback, useMemo } from "react";
-import { Line, Pie } from "react-chartjs-2";
+import React, {
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
+import { Line, Doughnut } from "react-chartjs-2";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 
@@ -10,6 +16,7 @@ import LoaderComponent from "../components/LoaderComponent";
 import { motion } from "framer-motion";
 import useWindowSize from "../hooks/useWindowSize";
 import EditableDateField from "../components/EditableDateField";
+import { FaCompress, FaExpand } from "react-icons/fa";
 
 ChartJS.register(...registerables);
 
@@ -21,12 +28,49 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
   })();
 
   const [selectedDate, setSelectedDate] = useState<string>(initialDate);
-
   const [stats, setStats] = useState<AttendanceStats | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-
   const { width } = useWindowSize();
+
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+
+  const diagramRef = useRef<HTMLDivElement>(null);
+
+  const handleFullscreenChange = useCallback(() => {
+    const isFs = !!document.fullscreenElement;
+    setIsFullscreen(isFs);
+  }, []);
+
+  useEffect(() => {
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, [handleFullscreenChange]);
+
+  const handleFullscreenToggle = useCallback(() => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch((err) => {
+        console.error("Ошибка при входе в полноэкранный режим:", err);
+      });
+    } else {
+      document.exitFullscreen();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isFullscreen) {
+      if (diagramRef.current) {
+        const elementTop =
+          diagramRef.current.getBoundingClientRect().top + window.scrollY;
+        const offset = window.innerHeight * 0.16;
+        window.scrollTo({ top: elementTop - offset, behavior: "smooth" });
+      }
+    } else {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, [isFullscreen]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -38,9 +82,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
       }
       const response = await axiosInstance.get(
         `${apiUrl}/api/attendance/stats/`,
-        {
-          params,
-        }
+        { params }
       );
       setStats(response.data);
     } catch (err) {
@@ -200,7 +242,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
     []
   );
 
-  const pieData = useMemo(() => {
+  const doughnutData = useMemo(() => {
     if (!chartData) return null;
 
     const generateColor = (index: number, total: number, lightness = 50) => {
@@ -267,13 +309,15 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
       </h1>
       <h2 className="text-xl md:text-2xl mb-6 text-center text-gray-400">
         Посещаемость сотрудников на{" "}
-        <EditableDateField
-          value={selectedDate}
-          onChange={(e) => setSelectedDate(e.target.value)}
-          containerClassName="inline-block"
-          inputClassName="bg-transparent border-b border-gray-400 text-center focus:outline-none transition-all duration-200 text-gray-200"
-          displayClassName="cursor-pointer hover:underline transition-all duration-200"
-        />
+        <span>
+          <EditableDateField
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            containerClassName="inline-block"
+            inputClassName="bg-transparent border-b border-gray-400 text-center focus:outline-none transition-all duration-200 text-gray-200"
+            displayClassName="cursor-pointer hover:underline transition-all duration-200"
+          />
+        </span>
       </h2>
       {stats.total_staff_count === 0 ? (
         <p className="text-center text-gray-400">Нет данных для отображения</p>
@@ -286,14 +330,38 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
             <h2 className="text-xl md:text-2xl font-semibold mb-4 text-center text-gray-700 dark:text-gray-300">
               Процент посещаемости по сотрудникам
             </h2>
-            <div className="relative w-full h-80 md:h-96 lg:h-[32rem]">
-              {width < 768 && pieData ? (
-                <Pie
-                  key="pie"
-                  data={pieData}
+            {/* Кнопка полноэкранного режима размещена над диаграммой */}
+            <div className="flex justify-end pr-4 pb-2 landscape:hidden lg:landscape:flex">
+              <motion.button
+                onClick={handleFullscreenToggle}
+                className="bg-white text-gray-700 p-3 rounded-full shadow-lg hover:bg-gray-100 transition-all duration-200"
+                aria-label={
+                  isFullscreen
+                    ? "Выйти из полноэкранного режима"
+                    : "Перейти в полноэкранный режим"
+                }
+              >
+                {isFullscreen ? (
+                  <FaCompress className="w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7" />
+                ) : (
+                  <FaExpand className="w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7" />
+                )}
+              </motion.button>
+            </div>
+            <div
+              ref={diagramRef}
+              className="relative w-full h-96 md:h-96 lg:h-[32rem]"
+            >
+              {width < 768 && doughnutData ? (
+                <Doughnut
+                  key="doughnut"
+                  data={doughnutData}
                   options={{
                     responsive: true,
                     maintainAspectRatio: false,
+                    layout: {
+                      padding: { bottom: 40 },
+                    },
                     plugins: {
                       legend: {
                         display: true,
@@ -316,8 +384,9 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
                 )
               )}
             </div>
+            {/* Контейнер карточек статистики */}
             <motion.div
-              className={`flex flex-col md:flex-row gap-6 mx-4 ${
+              className={`flex flex-col md:flex-row flex-wrap gap-6 mx-4 ${
                 width < 768 ? "mt-16" : "mt-6"
               } mb-6 justify-center`}
               initial="hidden"
@@ -326,7 +395,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
             >
               <motion.div
                 variants={cardVariants}
-                className="flex-1 min-w-[300px] p-6 bg-white dark:bg-gray-800 dark:border dark:border-gray-700 shadow-2xl dark:shadow-xl rounded-lg text-center transition-transform duration-200 hover:scale-105 md:hover:scale-110 md:hover:-translate-y-3 flex flex-col items-center"
+                className="flex-1 min-w-[200px] md:min-w-[300px] p-6 bg-white dark:bg-gray-800 dark:border dark:border-gray-700 shadow-2xl dark:shadow-xl rounded-lg text-center transition-transform duration-200 hover:scale-105 md:hover:scale-110 md:hover:-translate-y-3 flex flex-col items-center"
               >
                 <div className="w-full border-t-4 border-blue-600 mb-2"></div>
                 <h2 className="text-xl font-semibold text-blue-600">
@@ -340,7 +409,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
 
               <motion.div
                 variants={cardVariants}
-                className="flex-1 min-w-[300px] p-6 bg-white dark:bg-gray-800 dark:border dark:border-gray-700 shadow-2xl dark:shadow-xl rounded-lg text-center transition-transform duration-200 hover:scale-105 md:hover:scale-110 md:hover:-translate-y-3 flex flex-col items-center"
+                className="flex-1 min-w-[200px] md:min-w-[300px] p-6 bg-white dark:bg-gray-800 dark:border dark:border-gray-700 shadow-2xl dark:shadow-xl rounded-lg text-center transition-transform duration-200 hover:scale-105 md:hover:scale-110 md:hover:-translate-y-3 flex flex-col items-center"
               >
                 <div className="w-full border-t-4 border-green-600 mb-2"></div>
                 <h2 className="text-xl font-semibold text-green-600">
@@ -354,7 +423,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
 
               <motion.div
                 variants={cardVariants}
-                className="flex-1 min-w-[300px] p-6 bg-white dark:bg-gray-800 dark:border dark:border-gray-700 shadow-2xl dark:shadow-xl rounded-lg text-center transition-transform duration-200 hover:scale-105 md:hover:scale-110 md:hover:-translate-y-3 flex flex-col items-center"
+                className="flex-1 min-w-[200px] md:min-w-[300px] p-6 bg-white dark:bg-gray-800 dark:border dark:border-gray-700 shadow-2xl dark:shadow-xl rounded-lg text-center transition-transform duration-200 hover:scale-105 md:hover:scale-110 md:hover:-translate-y-3 flex flex-col items-center"
               >
                 <div className="w-full border-t-4 border-orange-500 mb-2"></div>
                 <h2 className="text-xl font-semibold text-orange-500">
