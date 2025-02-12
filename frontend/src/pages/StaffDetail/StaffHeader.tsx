@@ -1,14 +1,81 @@
-import React from "react";
-import { motion } from "framer-motion";
+import React, { useState } from "react";
 import { FaChevronLeft, FaArchive } from "react-icons/fa";
 import { BsFileEarmarkTextFill, BsPlusLg } from "react-icons/bs";
 import { formatDepartmentName } from "../../utils/utils";
 import { apiUrl } from "../../../apiConfig";
 import { StaffData } from "../../schemas/IData";
+import { motion, AnimatePresence } from "framer-motion";
 
-const buttonVariants = {
-  hover: { scale: 1.1, transition: { duration: 0.2 } },
-  tap: { scale: 0.95, transition: { duration: 0.1 } },
+interface IconButtonWithTooltipProps {
+  icon: React.ReactNode;
+  tooltip: string;
+  onClick: () => void;
+  extraClasses?: string;
+}
+const IconButtonWithTooltip: React.FC<IconButtonWithTooltipProps> = ({
+  icon,
+  tooltip,
+  onClick,
+  extraClasses = "",
+}) => {
+  const [isHovered, setIsHovered] = useState(false);
+
+  return (
+    <div className="relative flex flex-col items-center">
+      <motion.button
+        onClick={onClick}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        className={`flex items-center justify-center w-12 h-12 rounded-lg shadow-lg transition-all focus:outline-none ${extraClasses}`}
+        whileHover={{ scale: 1.05 }}
+        whileTap={{ scale: 0.95 }}
+      >
+        {icon}
+      </motion.button>
+      <AnimatePresence>
+        {isHovered && (
+          <motion.div
+            initial={{ opacity: 0, y: -5 }}
+            animate={{ opacity: 1, y: -10 }}
+            exit={{ opacity: 0, y: -5 }}
+            className="absolute bottom-full mb-2 px-2 py-1 bg-gray-900 text-white dark:bg-white dark:text-black text-xs rounded break-words max-w-xs z-10"
+          >
+            {tooltip}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+const BackButton: React.FC<{ onClick: () => void; tooltip: string }> = ({
+  onClick,
+  tooltip,
+}) => {
+  const [isHovered, setIsHovered] = useState(false);
+
+  return (
+    <div className="relative flex flex-col items-center">
+      <button
+        onClick={onClick}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        className="flex items-center justify-center w-12 h-12 bg-transparent text-green-500 dark:text-green-400 focus:outline-none rounded-full transition-all duration-300 ease-in-out hover:bg-green-100 dark:hover:bg-green-800"
+      >
+        <FaChevronLeft
+          size={24}
+          className={`transition-transform duration-300 ease-in-out ${
+            isHovered ? "animate-wiggle" : ""
+          }`}
+        />
+      </button>
+      {isHovered && (
+        <div className="absolute bottom-full mb-2 px-2 py-1 bg-gray-900 text-white text-xs rounded break-words max-w-xs z-10 transition-opacity duration-200">
+          {tooltip}
+        </div>
+      )}
+    </div>
+  );
 };
 
 interface StaffHeaderProps {
@@ -31,15 +98,10 @@ const StaffHeader: React.FC<StaffHeaderProps> = ({
   return (
     <div className="flex flex-col sm:flex-row items-center justify-between p-8 border-b border-gray-200 dark:border-gray-700">
       <div className="flex items-center space-x-6">
-        <motion.button
-          variants={buttonVariants}
-          whileHover="hover"
-          whileTap="tap"
-          onClick={navigateToChildDepartment}
-          className="hidden sm:block text-green-500 hover:text-green-600 focus:outline-none"
-        >
-          <FaChevronLeft size={28} />
-        </motion.button>
+        {/* Кнопка "Назад" */}
+        <div className="hidden sm:block portrait:hidden landscape:flex">
+          <BackButton onClick={navigateToChildDepartment} tooltip="Назад" />
+        </div>
         <div className="w-28 h-28 rounded-full overflow-hidden shadow-xl">
           <img
             src={`${apiUrl}${staffData.avatar}`}
@@ -58,39 +120,28 @@ const StaffHeader: React.FC<StaffHeaderProps> = ({
           )}
         </div>
       </div>
-      <div className="flex items-center space-x-4">
-        <motion.button
-          variants={buttonVariants}
-          whileHover="hover"
-          whileTap="tap"
+      {/* Группа кнопок для десктопа */}
+      <div className="hidden sm:flex portrait:hidden landscape:flex items-center space-x-4">
+        <IconButtonWithTooltip
           onClick={handleDownloadExcel}
-          className="hidden sm:flex items-center bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg shadow transition-colors focus:outline-none"
-        >
-          <BsFileEarmarkTextFill className="mr-3" size={24} />
-          Скачать Excel
-        </motion.button>
+          tooltip="Скачать Excel"
+          icon={<BsFileEarmarkTextFill size={24} />}
+          extraClasses="bg-gradient-to-r from-green-400 to-green-600 dark:from-green-500 dark:to-green-700 hover:from-green-500 hover:to-green-700 dark:hover:from-green-600 dark:hover:to-green-800"
+        />
         {hasAbsenceWithReason && (
-          <motion.button
-            variants={buttonVariants}
-            whileHover="hover"
-            whileTap="tap"
+          <IconButtonWithTooltip
             onClick={handleDownloadZip}
-            className="hidden sm:flex items-center bg-orange-600 hover:bg-orange-700 text-white px-6 py-3 rounded-lg shadow transition-colors focus:outline-none"
-          >
-            <FaArchive className="mr-3" size={24} />
-            Скачать ZIP
-          </motion.button>
+            tooltip="Скачать ZIP"
+            icon={<FaArchive size={24} />}
+            extraClasses="bg-gradient-to-r from-orange-400 to-orange-600 dark:from-orange-500 dark:to-orange-700 hover:from-orange-500 hover:to-orange-700 dark:hover:from-orange-600 dark:hover:to-orange-800"
+          />
         )}
-        <motion.button
-          variants={buttonVariants}
-          whileHover="hover"
-          whileTap="tap"
+        <IconButtonWithTooltip
           onClick={() => setShowAbsenceModal(true)}
-          className="hidden sm:flex items-center bg-gradient-to-r from-blue-900 to-blue-600 text-white px-6 py-3 rounded-lg shadow transition-colors focus:outline-none"
-        >
-          <BsPlusLg className="mr-3" size={24} />
-          Добавить отсутствие
-        </motion.button>
+          tooltip="Добавить отсутствие"
+          icon={<BsPlusLg size={24} />}
+          extraClasses="bg-gradient-to-r from-blue-500 to-blue-700 dark:from-blue-600 dark:to-blue-800 hover:from-blue-600 hover:to-blue-800 dark:hover:from-blue-700 dark:hover:to-blue-900"
+        />
       </div>
     </div>
   );
