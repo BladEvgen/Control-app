@@ -55,7 +55,7 @@ const EmployeeInfo: React.FC<EmployeeInfoProps> = ({ staffData }) => {
           className="flex items-center justify-center bg-green-100 dark:bg-green-900 rounded-lg p-6"
         >
           <p className="text-lg font-medium text-green-700 dark:text-green-300">
-            Бонус: {staffData.bonus_percentage}%
+            Возможный Бонус: {staffData.bonus_percentage}%
           </p>
         </motion.div>
       )}

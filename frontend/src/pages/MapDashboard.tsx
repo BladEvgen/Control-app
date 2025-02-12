@@ -422,7 +422,7 @@ const MapDashboard: React.FC = () => {
             label="Дата данных:"
             value={dateAt}
             onChange={handleDateChange}
-            labelClassName="mb-2 text-white text-lg" // увеличенный размер текста для метки
+            labelClassName="mb-2 text-white text-lg"
             inputClassName="w-full max-w-sm p-3 border border-gray-300 rounded-lg shadow-lg text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-base"
             displayClassName="w-full max-w-sm cursor-pointer text-center hover:underline transition-all duration-200 text-white text-base"
           />
