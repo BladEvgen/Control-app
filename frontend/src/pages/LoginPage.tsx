@@ -5,6 +5,7 @@ import { FaEye, FaEyeSlash, FaSignInAlt } from "react-icons/fa";
 import { FaBug } from "react-icons/fa6";
 import { apiUrl } from "../../apiConfig";
 import { motion, AnimatePresence } from "framer-motion";
+import { useUserContext } from "../context/UserContext";
 
 const errorVariants = {
   hidden: { opacity: 0, y: -10 },
@@ -26,12 +27,12 @@ const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [failedAttempts, setFailedAttempts] = useState(0);
+  const { setUser } = useUserContext();
 
   const navigate = useNavigate();
 
   const handleSubmit = useCallback(async () => {
     const formattedUsername = username.trim().toLowerCase();
-
     try {
       const res = await axiosInstance.post(
         "/token/",
@@ -41,10 +42,16 @@ const LoginPage = () => {
 
       setCookie("access_token", res.data.access, { path: "/" });
       setCookie("refresh_token", res.data.refresh, { path: "/" });
-      setCookie("username", formattedUsername, { path: "/" });
       setFailedAttempts(0);
+
+      if (res.data.user) {
+        setUser(res.data.user);
+      } else {
+        setUser({ id: 0, username: formattedUsername, is_banned: false });
+        window.dispatchEvent(new Event("userLoggedIn"));
+      }
+
       navigate("/");
-      window.location.reload();
     } catch (error: any) {
       console.error("Login error:", error);
       setLoginError(
@@ -55,7 +62,7 @@ const LoginPage = () => {
         setLoginError("");
       }, 5000);
     }
-  }, [username, password, navigate]);
+  }, [username, password, navigate, setUser]);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -75,7 +82,7 @@ const LoginPage = () => {
           </p>
           <div className="space-y-5">
             <input
-              className="w-full px-4 py-3 text-lg border dark:bg-gray-800  border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all duration-300 text-gray-900 dark:text-gray-100"
+              className="w-full px-4 py-3 text-lg border dark:bg-gray-800 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all duration-300 text-gray-900 dark:text-gray-100"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="Логин"

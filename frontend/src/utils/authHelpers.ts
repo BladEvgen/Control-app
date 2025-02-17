@@ -11,10 +11,11 @@ export const getUsername = (): string => {
 /**
  * Выполняет выход пользователя:
  *  - удаляет cookie,
+ *  - удаляет профиль из localStorage,
  *  - выполняет дополнительную callback-функцию (для обновления UI),
  *  - перенаправляет на страницу логина.
  *
- * @param navigate Функция для навигации 
+ * @param navigate Функция для навигации
  * @param extraCallback Опциональная callback-функция для дополнительных действий (например, сброс состояния)
  */
 export const logoutUser = (
@@ -23,7 +24,8 @@ export const logoutUser = (
 ): void => {
   removeCookie("access_token");
   removeCookie("refresh_token");
-  removeCookie("username");
+  localStorage.removeItem("userProfile");
+
   if (extraCallback) {
     extraCallback();
   }
