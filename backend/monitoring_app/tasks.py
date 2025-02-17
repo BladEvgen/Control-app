@@ -6,6 +6,7 @@ from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
 from monitoring_app import models
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,11 +48,12 @@ def update_lesson_attendance_last_out():
         for lesson in lessons:
             first_in = lesson.first_in
             if not timezone.is_aware(first_in):
-                first_in = timezone.make_aware(first_in, timezone.get_current_timezone())
+                first_in = timezone.make_aware(
+                    first_in, timezone.get_current_timezone()
+                )
             target_time = first_in + three_hours
             end_of_day_naive = datetime.datetime.combine(
-                first_in.date(),
-                datetime.time(23, 59, 59, 999999)
+                first_in.date(), datetime.time(23, 59, 59, 999999)
             )
             end_of_day = timezone.make_aware(end_of_day_naive, first_in.tzinfo)
             if target_time > end_of_day:
@@ -63,13 +65,16 @@ def update_lesson_attendance_last_out():
                     lesson.last_out = target_time
                     updated_lessons.append(lesson)
         if updated_lessons:
-            models.LessonAttendance.objects.bulk_update(updated_lessons, ['last_out'])
-            logger.info(f"Successfully updated `last_out` for {len(updated_lessons)} records.")
+            models.LessonAttendance.objects.bulk_update(updated_lessons, ["last_out"])
+            logger.info(
+                f"Successfully updated `last_out` for {len(updated_lessons)} records."
+            )
         else:
-            logger.info("No LessonAttendance records required updating `last_out` at this time.")
+            logger.info(
+                "No LessonAttendance records required updating `last_out` at this time."
+            )
     except Exception as e:
         logger.error(f"Error executing `update_lesson_attendance_last_out`: {e}")
-
 
 
 @shared_task

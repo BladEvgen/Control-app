@@ -22,6 +22,7 @@ BROWSER_HEADERS = {
     "sec-ch-ua-platform": '"Windows"',
 }
 
+
 class AsyncAttendanceFetcher:
     def __init__(self, chunk_size: int = 50, max_concurrent_requests: int = 6):
         self.chunk_size = chunk_size
@@ -78,9 +79,7 @@ class AsyncAttendanceFetcher:
                 response.raise_for_status()
                 data = await response.json()
                 result = data.get("data", [])
-                logger.info(
-                    "Fetched attendance for PIN %s", pin
-                )
+                logger.info("Fetched attendance for PIN %s", pin)
                 return result
         except Exception as e:
             logger.error(
@@ -138,7 +137,9 @@ class AsyncAttendanceFetcher:
             attendance_data = dict(results)
             logger.info("Completed fetching attendance data for all pins")
 
-        await database_sync_to_async(update_attendance_records)(attendance_data, next_day)
+        await database_sync_to_async(update_attendance_records)(
+            attendance_data, next_day
+        )
 
 
 def update_attendance_records(attendance_data: Dict, next_day: datetime) -> None:
@@ -152,9 +153,7 @@ def update_attendance_records(attendance_data: Dict, next_day: datetime) -> None
     logger.info("Beginning atomic transaction for database updates")
     with transaction.atomic():
         existing_qs = models.StaffAttendance.objects.filter(date_at=next_day.date())
-        existing_records = {
-            (att.staff_id, att.date_at): att for att in existing_qs
-        }
+        existing_records = {(att.staff_id, att.date_at): att for att in existing_qs}
         logger.info(
             "Found %d existing attendance records for date %s",
             len(existing_records),
@@ -173,7 +172,9 @@ def update_attendance_records(attendance_data: Dict, next_day: datetime) -> None
                         datetime.fromisoformat(first_event["eventTime"])
                     )
                     last_event_time = (
-                        timezone.make_aware(datetime.fromisoformat(last_event["eventTime"]))
+                        timezone.make_aware(
+                            datetime.fromisoformat(last_event["eventTime"])
+                        )
                         if len(data) > 1
                         else first_event_time
                     )
@@ -191,7 +192,8 @@ def update_attendance_records(attendance_data: Dict, next_day: datetime) -> None
                 area_name_out = last_event.get("areaName") or "Unknown"
             else:
                 logger.warning(
-                    "No data available for staff PIN %s; using default values.", staff.pin
+                    "No data available for staff PIN %s; using default values.",
+                    staff.pin,
                 )
                 first_event_time = None
                 last_event_time = None

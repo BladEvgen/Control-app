@@ -108,7 +108,9 @@ class EnhancedSecurityMiddleware:
 
         request_times = cache.get(identifier, [])
         # Remove timestamps outside the current window
-        request_times = [timestamp for timestamp in request_times if timestamp > window_start]
+        request_times = [
+            timestamp for timestamp in request_times if timestamp > window_start
+        ]
 
         if len(request_times) >= self.rate_limit:
             return False
@@ -160,7 +162,9 @@ class EnhancedSecurityMiddleware:
         """
         response["Access-Control-Allow-Origin"] = origin
         response["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-        response["Access-Control-Allow-Headers"] = "Content-Type, Authorization, x-api-token"
+        response["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, x-api-token"
+        )
         response["Access-Control-Allow-Credentials"] = "true"
 
     def too_many_requests_response(self):
