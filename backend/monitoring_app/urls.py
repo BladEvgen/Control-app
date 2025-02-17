@@ -61,7 +61,6 @@ urlpatterns = [
     ),
     path("api/token/refresh/", TokenRefreshView.as_view()),
     path("api/token/verify/", TokenVerifyView.as_view()),
-    path("api/user/detail/", views.user_profile_detail, name="user-detail"),
     path("api/user/register/", views.user_register, name="userRegister"),
     path(
         "password-reset/",

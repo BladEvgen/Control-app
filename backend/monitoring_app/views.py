@@ -276,13 +276,14 @@ class StaffAttendanceStatsView(APIView):
         )
         holiday_dates = {holiday.date: holiday.is_working_day for holiday in holidays}
 
-        while date.weekday() >= 5 or (date in holiday_dates and not holiday_dates[date]):
+        while date.weekday() >= 5 or (
+            date in holiday_dates and not holiday_dates[date]
+        ):
             logger.debug(f"{date} is not a working day, moving to previous day.")
             date -= datetime.timedelta(days=1)
 
         logger.debug(f"Last working day determined: {date}")
         return date
-
 
     def query_data(
         self,
@@ -2626,285 +2627,6 @@ def user_register(request):
         )
 
 
-@swagger_auto_schema(
-    method="get",
-    operation_summary="Получить профиль пользователя",
-    operation_description="Получить профиль текущего аутентифицированного пользователя.",
-    responses={
-        200: openapi.Response(
-            description="Данные профиля пользователя",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "is_banned": openapi.Schema(
-                        type=openapi.TYPE_BOOLEAN,
-                        description="Забанен ли пользователь",
-                    ),
-                    "user": openapi.Schema(
-                        type=openapi.TYPE_OBJECT,
-                        properties={
-                            "username": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                description="Имя пользователя",
-                            ),
-                            "email": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                format=openapi.FORMAT_EMAIL,
-                                description="Электронная почта",
-                            ),
-                            "first_name": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                description="Имя",
-                            ),
-                            "last_name": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                description="Фамилия",
-                            ),
-                            "is_staff": openapi.Schema(
-                                type=openapi.TYPE_BOOLEAN,
-                                description="Является ли пользователь сотрудником",
-                            ),
-                            "date_joined": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                format=openapi.FORMAT_DATETIME,
-                                description="Дата регистрации",
-                            ),
-                            "last_login": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                format=openapi.FORMAT_DATETIME,
-                                description="Дата последнего входа",
-                            ),
-                            "phonenumber": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                description="Номер телефона",
-                            ),
-                            "last_login_ip": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                format=openapi.FORMAT_IPV4,
-                                description="Последний IP-адрес входа",
-                            ),
-                        },
-                    ),
-                },
-            ),
-        ),
-        401: openapi.Response(
-            description="Unauthorized: Если пользователь не аутентифицирован.",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "detail": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="Сообщение об ошибке аутентификации",
-                    )
-                },
-            ),
-        ),
-    },
-)
-@swagger_auto_schema(
-    method="put",
-    operation_summary="Обновить профиль пользователя",
-    operation_description="Обновить профиль текущего аутентифицированного пользователя. Можно обновлять одно или несколько полей: first_name, last_name, password, email, phonenumber. Если поле не отправлено, оно останется неизменным.",
-    manual_parameters=[token_param_config],
-    request_body=openapi.Schema(
-        type=openapi.TYPE_OBJECT,
-        properties={
-            "first_name": openapi.Schema(
-                type=openapi.TYPE_STRING,
-                description="Имя пользователя (опционально)",
-            ),
-            "last_name": openapi.Schema(
-                type=openapi.TYPE_STRING,
-                description="Фамилия пользователя (опционально)",
-            ),
-            "password": openapi.Schema(
-                type=openapi.TYPE_STRING,
-                description="Пароль пользователя (опционально)",
-            ),
-            "email": openapi.Schema(
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_EMAIL,
-                description="Электронная почта пользователя (опционально)",
-            ),
-            "phonenumber": openapi.Schema(
-                type=openapi.TYPE_STRING,
-                description="Номер телефона пользователя (опционально)",
-            ),
-        },
-    ),
-    responses={
-        200: openapi.Response(
-            description="Профиль пользователя обновлен",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "user": openapi.Schema(
-                        type=openapi.TYPE_OBJECT,
-                        properties={
-                            "username": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                description="Имя пользователя",
-                            ),
-                            "email": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                format=openapi.FORMAT_EMAIL,
-                                description="Электронная почта",
-                            ),
-                            "first_name": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                description="Имя",
-                            ),
-                            "last_name": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                description="Фамилия",
-                            ),
-                            "phonenumber": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                description="Номер телефона",
-                            ),
-                            "is_banned": openapi.Schema(
-                                type=openapi.TYPE_BOOLEAN,
-                                description="Забанен ли пользователь",
-                            ),
-                            "last_login_ip": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                format=openapi.FORMAT_IPV4,
-                                description="Последний IP-адрес входа",
-                            ),
-                        },
-                    ),
-                },
-            ),
-        ),
-        400: openapi.Response(
-            description="Bad Request: Неверные данные",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "detail": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="Сообщение об ошибке",
-                    )
-                },
-            ),
-        ),
-        401: openapi.Response(
-            description="Unauthorized: Если пользователь не аутентифицирован.",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "detail": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="Сообщение об ошибке аутентификации",
-                    )
-                },
-            ),
-        ),
-    },
-)
-@api_view(["GET", "PUT"])
-@permission_classes([IsAuthenticated])
-def user_profile_detail(request):
-    """
-    Получить или обновить профиль текущего аутентифицированного пользователя.
-
-    Метод GET возвращает данные профиля пользователя.
-    Метод PUT позволяет обновлять поля last_name, first_name, password, email и phonenumber.
-
-    Аргументы:
-    - request: объект запроса.
-
-    Возвращаемые данные:
-    - GET: Ответ с данными профиля пользователя.
-    - PUT: Ответ с обновленными данными профиля пользователя или сообщением об ошибке.
-
-    Возможные ошибки:
-    - 401: Если пользователь не аутентифицирован.
-    - 404: Если профиль пользователя не найден.
-    """
-
-    def get_client_ip(request):
-        x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
-        if x_forwarded_for:
-            ip = x_forwarded_for.split(",")[0]
-        else:
-            ip = request.META.get("REMOTE_ADDR")
-        return ip
-
-    try:
-        user_profile = models.UserProfile.objects.get(user=request.user)
-
-        if request.method == "GET":
-            serializer = serializers.UserProfileSerializer(user_profile)
-            return Response(serializer.data)
-
-        elif request.method == "PUT":
-            data = request.data
-            user = request.user
-            update_user_fields = []
-            update_profile_fields = []
-
-            if "first_name" in data and data["first_name"] != user.first_name:
-                user.first_name = data["first_name"]
-                update_user_fields.append("first_name")
-
-            if "last_name" in data and data["last_name"] != user.last_name:
-                user.last_name = data["last_name"]
-                update_user_fields.append("last_name")
-
-            if "email" in data and data["email"] != user.email:
-                user.email = data["email"]
-                update_user_fields.append("email")
-
-            if "password" in data:
-                user.set_password(data["password"])
-                update_user_fields.append("password")
-
-            if (
-                "phonenumber" in data
-                and data["phonenumber"] != user_profile.phonenumber
-            ):
-                user_profile.phonenumber = data["phonenumber"]
-                update_profile_fields.append("phonenumber")
-
-            client_ip = get_client_ip(request)
-            if client_ip != user_profile.last_login_ip:
-                user_profile.last_login_ip = client_ip
-                update_profile_fields.append("last_login_ip")
-
-            if update_user_fields:
-                user.save(update_fields=update_user_fields)
-
-            if update_profile_fields:
-                user_profile.save(update_fields=update_profile_fields)
-
-            logger.info(
-                f"User {request.user.username} updated their profile. Updated fields: {update_user_fields + update_profile_fields}"
-            )
-
-            serializer = serializers.UserProfileSerializer(user_profile)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-
-    except models.UserProfile.DoesNotExist:
-        logger.error(f"UserProfile does not exist for user {request.user.username}")
-        return Response(
-            status=status.HTTP_404_NOT_FOUND,
-            data={"message": "Профиль пользователя не найден"},
-        )
-    except Exception as e:
-        logger.error(
-            f"Error while updating profile for user {request.user.username}: {str(e)}"
-        )
-        return Response(
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            data={
-                "message": "Произошла ошибка при обновлении профиля",
-                "error": str(e),
-            },
-        )
-
-
 def logout_view(request):
     logout(request)
     return redirect("login_view")
@@ -4191,15 +3913,19 @@ class AbsentReasonView(APIView):
         """
         today = datetime.datetime.today().date()
         default_start = today - datetime.timedelta(days=7)
-        start_date_str = request.query_params.get('start_date')
-        end_date_str = request.query_params.get('end_date')
+        start_date_str = request.query_params.get("start_date")
+        end_date_str = request.query_params.get("end_date")
 
         if start_date_str:
             try:
-                query_start = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                query_start = datetime.datetime.strptime(
+                    start_date_str, "%Y-%m-%d"
+                ).date()
             except ValueError as e:
                 logger.error(f"Неверный формат start_date: {start_date_str}")
-                raise ValueError("Неверный формат start_date. Ожидается YYYY-MM-DD.") from e
+                raise ValueError(
+                    "Неверный формат start_date. Ожидается YYYY-MM-DD."
+                ) from e
         else:
             query_start = default_start
 
@@ -4208,7 +3934,9 @@ class AbsentReasonView(APIView):
                 query_end = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
             except ValueError as e:
                 logger.error(f"Неверный формат end_date: {end_date_str}")
-                raise ValueError("Неверный формат end_date. Ожидается YYYY-MM-DD.") from e
+                raise ValueError(
+                    "Неверный формат end_date. Ожидается YYYY-MM-DD."
+                ) from e
         else:
             query_end = today
 
@@ -4229,25 +3957,34 @@ class AbsentReasonView(APIView):
         ),
         manual_parameters=[
             openapi.Parameter(
-                'start_date', openapi.IN_QUERY, description="Дата начала (YYYY-MM-DD)", type=openapi.TYPE_STRING
+                "start_date",
+                openapi.IN_QUERY,
+                description="Дата начала (YYYY-MM-DD)",
+                type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
-                'end_date', openapi.IN_QUERY, description="Дата окончания (YYYY-MM-DD)", type=openapi.TYPE_STRING
+                "end_date",
+                openapi.IN_QUERY,
+                description="Дата окончания (YYYY-MM-DD)",
+                type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
-                'staffs_all', openapi.IN_QUERY,
+                "staffs_all",
+                openapi.IN_QUERY,
                 description="Если true, возвращаются записи для всех сотрудников, сгруппированные по сотрудникам",
-                type=openapi.TYPE_STRING
+                type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
-                'staff_pin', openapi.IN_QUERY,
+                "staff_pin",
+                openapi.IN_QUERY,
                 description="PIN сотрудника (обязательный, если staffs_all не true)",
-                type=openapi.TYPE_STRING
+                type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
-                'download', openapi.IN_QUERY,
+                "download",
+                openapi.IN_QUERY,
                 description="Если true, возвращается ZIP-архив документов",
-                type=openapi.TYPE_STRING
+                type=openapi.TYPE_STRING,
             ),
         ],
         responses={
@@ -4259,8 +3996,8 @@ class AbsentReasonView(APIView):
                     " - Иначе – список записей отсутствия для указанного сотрудника."
                 )
             ),
-            400: openapi.Response(description="Ошибка в параметрах запроса")
-        }
+            400: openapi.Response(description="Ошибка в параметрах запроса"),
+        },
     )
     def get(self, request, *args, **kwargs):
         """
@@ -4277,14 +4014,14 @@ class AbsentReasonView(APIView):
           - **HTTP 200 OK**: JSON с записями отсутствия или сгруппированными данными по сотрудникам, либо ZIP-архив.
           - **HTTP 400 BAD REQUEST**: При отсутствии обязательных параметров или неверном формате даты.
         """
-        staffs_all = request.query_params.get('staffs_all', '').lower() == 'true'
-        staff_pin = request.query_params.get('staff_pin')
+        staffs_all = request.query_params.get("staffs_all", "").lower() == "true"
+        staff_pin = request.query_params.get("staff_pin")
 
         if not staffs_all and not staff_pin:
             logger.warning("Не передан обязательный параметр 'staff_pin'.")
             return Response(
                 {"error": "Параметр 'staff_pin' обязателен."},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
@@ -4301,7 +4038,7 @@ class AbsentReasonView(APIView):
         if not staffs_all:
             absences = absences.filter(staff__pin=staff_pin)
 
-        download = request.query_params.get('download', '').lower() == 'true'
+        download = request.query_params.get("download", "").lower() == "true"
         if download:
             in_memory = BytesIO()
             with zipfile.ZipFile(in_memory, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -4316,15 +4053,23 @@ class AbsentReasonView(APIView):
                             new_filename = f"{staff.pin}_{fio}_{absence.id}{ext}"
                             zf.write(file_path, arcname=new_filename)
             in_memory.seek(0)
-            logger.info(f"Возвращается ZIP-архив документов за период {query_start} - {query_end}.")
+            logger.info(
+                f"Возвращается ZIP-архив документов за период {query_start} - {query_end}."
+            )
             response = HttpResponse(in_memory, content_type="application/zip")
-            response['Content-Disposition'] = f'attachment; filename="documents_{query_start}_{query_end}.zip"'
+            response["Content-Disposition"] = (
+                f'attachment; filename="documents_{query_start}_{query_end}.zip"'
+            )
             return response
 
         if not staffs_all:
-            serializer_context = {'minimal_staff': True}
-            serializer = serializers.AbsentReasonSerializer(absences, many=True, context=serializer_context)
-            logger.info(f"Возвращается список записей отсутствия для staff_pin: {staff_pin}. Количество записей: {len(absences)}.")
+            serializer_context = {"minimal_staff": True}
+            serializer = serializers.AbsentReasonSerializer(
+                absences, many=True, context=serializer_context
+            )
+            logger.info(
+                f"Возвращается список записей отсутствия для staff_pin: {staff_pin}. Количество записей: {len(absences)}."
+            )
             return Response(serializer.data, status=status.HTTP_200_OK)
 
         grouped = {}
@@ -4333,16 +4078,17 @@ class AbsentReasonView(APIView):
             key = staff.pin
             if key not in grouped:
                 grouped[key] = {
-                    "staff": {
-                        "pin": staff.pin,
-                        "fio": f"{staff.surname} {staff.name}"
-                    },
-                    "absences": []
+                    "staff": {"pin": staff.pin, "fio": f"{staff.surname} {staff.name}"},
+                    "absences": [],
                 }
-            absence_data = serializers.AbsentReasonSerializer(absence, context={'minimal_staff': True}).data
+            absence_data = serializers.AbsentReasonSerializer(
+                absence, context={"minimal_staff": True}
+            ).data
             grouped[key]["absences"].append(absence_data)
         result = list(grouped.values())
-        logger.info(f"Возвращается сгруппированный список записей отсутствия для всех сотрудников. Количество групп: {len(result)}.")
+        logger.info(
+            f"Возвращается сгруппированный список записей отсутствия для всех сотрудников. Количество групп: {len(result)}."
+        )
         return Response(result, status=status.HTTP_200_OK)
 
     @swagger_auto_schema(
@@ -4352,7 +4098,7 @@ class AbsentReasonView(APIView):
             "Тело запроса должно содержать следующие поля:\n"
             " - **staff** (строка): PIN сотрудника.\n"
             " - **reason** (строка): Код причины отсутствия (например, `sick_leave`).\n"
-            "   Если передано некорректное значение, по умолчанию устанавливается `other` (отображается как \"Другая причина\").\n"
+            '   Если передано некорректное значение, по умолчанию устанавливается `other` (отображается как "Другая причина").\n'
             " - **start_date** (строка): Дата начала (формат YYYY-MM-DD).\n"
             " - **end_date** (строка): Дата окончания (формат YYYY-MM-DD).\n"
             " - **approved** (bool): Статус утверждения.\n"
@@ -4361,8 +4107,8 @@ class AbsentReasonView(APIView):
         request_body=serializers.AbsentReasonSerializer,
         responses={
             201: openapi.Response(description="Запись отсутствия успешно создана."),
-            400: openapi.Response(description="Неверные входные данные")
-        }
+            400: openapi.Response(description="Неверные входные данные"),
+        },
     )
     def post(self, request, *args, **kwargs):
         """
@@ -4384,6 +4130,9 @@ class AbsentReasonView(APIView):
         if serializer.is_valid():
             serializer.save()
             logger.info("Запись отсутствия успешно создана.")
-            return Response({"message": "Запись отсутствия успешно создана."}, status=status.HTTP_201_CREATED)
+            return Response(
+                {"message": "Запись отсутствия успешно создана."},
+                status=status.HTTP_201_CREATED,
+            )
         logger.error(f"Ошибка при создании записи отсутствия: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
