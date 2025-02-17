@@ -240,6 +240,7 @@ class JWTAuthMiddleware:
     Если токен недействителен, пытается обновить его по refresh-токену из cookies.
     middleware пропускается и пользователь устанавливается как AnonymousUser.
     """
+
     def __init__(self, inner):
         self.inner = inner
 
@@ -252,7 +253,9 @@ class JWTAuthMiddleware:
         query_string = scope.get("query_string", b"").decode("utf-8")
         token = None
         if query_string:
-            params = dict(pair.split("=") for pair in query_string.split("&") if "=" in pair)
+            params = dict(
+                pair.split("=") for pair in query_string.split("&") if "=" in pair
+            )
             token = params.get("token")
         if token:
             try:
@@ -269,7 +272,9 @@ class JWTAuthMiddleware:
                 refresh_token = cookies.get("refresh_token")
                 if refresh_token:
                     refresh_url = get_refresh_url()
-                    status_code, resp_data = await sync_to_async(refresh_token_request)(refresh_url, refresh_token)
+                    status_code, resp_data = await sync_to_async(refresh_token_request)(
+                        refresh_url, refresh_token
+                    )
                     if status_code == 200 and resp_data:
                         try:
                             new_tokens = json.loads(resp_data)
