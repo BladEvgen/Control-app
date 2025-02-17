@@ -14,7 +14,8 @@ import { FaMapLocationDot } from "react-icons/fa6";
 import { ImCamera } from "react-icons/im";
 import { MdDashboard } from "react-icons/md";
 import { apiUrl } from "../../apiConfig";
-import { getUsername, isAuthenticated, logoutUser } from "../utils/authHelpers";
+import { useUserContext } from "../context/UserContext";
+import { logoutUser } from "../utils/authHelpers";
 
 type MobileNavbarProps = {
   toggleTheme: () => void;
@@ -29,8 +30,9 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
   const panelRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
-  const auth = isAuthenticated();
-  const username = getUsername();
+  const { user } = useUserContext();
+  const username = user ? user.username : "";
+  const auth = Boolean(user);
 
   const toggleMenu = useCallback(() => {
     setIsMenuOpen((prev) => !prev);
@@ -127,7 +129,8 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
 
             {auth && (
               <div className="px-3 py-2 border-b border-gray-700 text-lg">
-                Logged in as: <span className="font-bold">{username}</span>
+                Logged in as:{" "}
+                <span className="font-bold">{username || "Loading..."}</span>
               </div>
             )}
 

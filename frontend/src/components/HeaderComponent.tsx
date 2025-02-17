@@ -1,5 +1,5 @@
 import React, { lazy, Suspense } from "react";
-
+import { useUserContext } from "../context/UserContext";
 type HeaderComponentProps = {
   toggleTheme: () => void;
   currentTheme: string;
@@ -12,6 +12,12 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
   toggleTheme,
   currentTheme,
 }) => {
+  const { isLoading } = useUserContext();
+
+  if (isLoading) {
+    return <header></header>;
+  }
+
   return (
     <header className="bg-primary-dark text-text-light shadow-md">
       <Suspense fallback={null}>

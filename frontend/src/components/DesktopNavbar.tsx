@@ -6,7 +6,6 @@ import React, {
   useMemo,
 } from "react";
 import { Link, useNavigate } from "../RouterUtils";
-import axiosInstance, { setCookie } from "../api";
 import { apiUrl } from "../../apiConfig";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -20,7 +19,8 @@ import {
 import { ImCamera } from "react-icons/im";
 import { FaMapLocationDot } from "react-icons/fa6";
 import { MdDashboard } from "react-icons/md";
-import { getUsername, isAuthenticated, logoutUser } from "../utils/authHelpers";
+import { useUserContext } from "../context/UserContext";
+import { logoutUser } from "../utils/authHelpers";
 
 type DesktopNavbarProps = {
   toggleTheme: () => void;
@@ -32,8 +32,10 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
   currentTheme,
 }) => {
   const navigate = useNavigate();
-  const [username, setUsername] = useState<string>(() => getUsername());
-  const [isAuth, setIsAuth] = useState<boolean>(() => isAuthenticated());
+  const { user, setUser } = useUserContext();
+  const isAuth = Boolean(user);
+  const username = user ? user.username : "";
+
   const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
   const [isStatsDropdownOpen, setIsStatsDropdownOpen] =
     useState<boolean>(false);
@@ -46,37 +48,11 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
   const statsButtonRef = useRef<HTMLButtonElement>(null);
   const profileButtonRef = useRef<HTMLButtonElement>(null);
 
-  const checkAuthentication = useCallback(async () => {
-    if (isAuthenticated()) {
-      if (!username) {
-        try {
-          const userDetails = await axiosInstance.get("/user/detail/");
-          const fetchedUsername = userDetails.data.user.username;
-          setUsername(fetchedUsername);
-          setCookie("username", fetchedUsername, { path: "/" });
-          setIsAuth(true);
-        } catch (error) {
-          console.error("Ошибка при получении данных пользователя:", error);
-          handleLogout();
-        }
-      } else {
-        setIsAuth(true);
-      }
-    } else {
-      handleLogout();
-    }
-  }, [username]);
-
   const handleLogout = useCallback(() => {
     logoutUser(navigate, () => {
-      setIsAuth(false);
-      setUsername("");
+      setUser(null);
     });
-  }, [navigate]);
-
-  useEffect(() => {
-    checkAuthentication();
-  }, [checkAuthentication]);
+  }, [navigate, setUser]);
 
   let dropdownCloseTimeoutRef: number | null = null;
   let statsDropdownCloseTimeoutRef: number | null = null;
@@ -258,7 +234,7 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
           aria-haspopup="true"
           aria-expanded={isDropdownOpen}
         >
-          <span>{username}</span>
+          <span>{username || "Loading..."}</span>
           <FaAngleDown className="ml-2" />
         </button>
         {isDropdownOpen && DropdownMenu}
