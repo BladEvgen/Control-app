@@ -79,22 +79,25 @@ const PhotoDashboard: React.FC = () => {
 
       if (data.photos) {
         log.info("Received photos data.");
-        const newPhotos = data.photos.reverse().slice(0, maxPhotosRef.current);
+        const newPhotos = [...data.photos]
+          .reverse()
+          .slice(0, maxPhotosRef.current);
         setPhotos(newPhotos);
         setLoading(false);
-
-        if (prevPhotosLengthRef.current !== newPhotos.length) {
-          setFocusedIndex(newPhotos.length > 0 ? 0 : -1);
-          prevPhotosLengthRef.current = newPhotos.length;
-        }
-      } else if (data.newPhoto) {
+        prevPhotosLengthRef.current = newPhotos.length;
+        setFocusedIndex(newPhotos.length > 0 ? 0 : -1);
+      }
+      else if (data.newPhoto) {
         log.info("Received new photo data.");
         setPhotos((prev) => {
           const updatedPhotos = [data.newPhoto, ...prev].slice(
             0,
             maxPhotosRef.current
           );
-          if (prev.length !== updatedPhotos.length) {
+          if (
+            prev.length !== updatedPhotos.length &&
+            updatedPhotos.length > 0
+          ) {
             setFocusedIndex((prevIndex) => (prevIndex === -1 ? 0 : prevIndex));
           }
           prevPhotosLengthRef.current = updatedPhotos.length;
@@ -105,6 +108,7 @@ const PhotoDashboard: React.FC = () => {
       log.error("Error processing WebSocket message:", error);
     }
   }, []);
+
 
   const handleOpen = useCallback(() => {
     log.info("WebSocket connection established via hook");
