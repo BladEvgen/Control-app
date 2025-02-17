@@ -75,6 +75,14 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
+
+    const todayStr = new Date().toISOString().split("T")[0];
+    if (selectedDate > todayStr) {
+      setError("Выбранная дата не может быть в будущем");
+      setLoading(false);
+      return;
+    }
+
     try {
       const params: any = { date: selectedDate };
       if (pin) {
@@ -96,6 +104,12 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    if (stats && stats.data_for_date && stats.data_for_date !== selectedDate) {
+      setSelectedDate(stats.data_for_date);
+    }
+  }, [stats, selectedDate]);
 
   useEffect(() => {
     if (!loading && !stats && !error) {
