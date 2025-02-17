@@ -7,18 +7,22 @@ from monitoring_app import models
 
 
 class UserSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(read_only=True)
     date_joined = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
-    last_login = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+    last_login = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", allow_null=True)
 
     class Meta:
         model = User
         fields = [
+            "id",
             "username",
             "email",
             "first_name",
             "last_name",
             "date_joined",
             "last_login",
+            "is_superuser",
+            "is_staff",
         ]
 
 
@@ -27,38 +31,54 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = models.UserProfile
-        fields = ["user", "is_banned", "last_login_ip"]
+        fields = [
+            "user",
+            "is_banned",
+            "last_login_ip",
+        ]
 
     def to_representation(self, instance):
         """
         Преобразует данные профиля пользователя в единый формат JSON,
-        помещая `is_banned` и `last_login_ip` внутрь объекта `user`.
+        помещая флаги is_banned, is_superuser, is_staff и другие данные внутрь объекта user.
+        Если пользователь заблокирован, возвращаются только ограниченные данные.
         """
-        result = {
-            "user": {
-                "username": instance.user.username,
-                "email": instance.user.email,
-                "first_name": instance.user.first_name,
-                "last_name": instance.user.last_name,
-                "date_joined": instance.user.date_joined.strftime("%Y-%m-%d %H:%M:%S"),
-                "last_login": (
-                    instance.user.last_login.strftime("%Y-%m-%d %H:%M:%S")
-                    if instance.user.last_login
-                    else None
-                ),
-                "phonenumber": instance.phonenumber if not instance.is_banned else None,
-                "is_banned": instance.is_banned,
-                "last_login_ip": instance.last_login_ip,
-            }
+        user_obj = instance.user
+
+        user_data = {
+            "id": user_obj.id,
+            "username": user_obj.username,
+            "email": user_obj.email,
+            "first_name": user_obj.first_name,
+            "last_name": user_obj.last_name,
+            "date_joined": user_obj.date_joined.strftime("%Y-%m-%d %H:%M:%S"),
+            "last_login": (
+                user_obj.last_login.strftime("%Y-%m-%d %H:%M:%S")
+                if user_obj.last_login
+                else None
+            ),
+            "is_superuser": user_obj.is_superuser,
+            "is_staff": user_obj.is_staff,
         }
 
-        if instance.is_banned:
-            result["user"] = {
-                "username": instance.user.username,
+        if not instance.is_banned:
+            user_data.update(
+                {
+                    "phonenumber": instance.phonenumber,
+                    "is_banned": instance.is_banned,
+                    "last_login_ip": instance.last_login_ip,
+                }
+            )
+        else:
+            user_data = {
+                "id": user_obj.id,
+                "username": user_obj.username,
                 "is_banned": instance.is_banned,
+                "is_superuser": user_obj.is_superuser,
+                "is_staff": user_obj.is_staff,
             }
 
-        return result
+        return {"user": user_data}
 
 
 def get_main_parent(department):
