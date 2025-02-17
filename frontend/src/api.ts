@@ -201,10 +201,8 @@ const handleLogout = () => {
     secure: !isDebug,
     sameSite: isDebug ? "Lax" : "Strict",
   });
-  removeCookie("username", {
-    secure: !isDebug,
-    sameSite: isDebug ? "Lax" : "Strict",
-  });
+  localStorage.removeItem("userProfile");
+
 
   window.location.href = addPrefix("/login");
 };
