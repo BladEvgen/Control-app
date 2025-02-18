@@ -1,7 +1,9 @@
 import { getCookie, removeCookie } from "../api";
 
 export const isAuthenticated = (): boolean => {
-  return Boolean(getCookie("access_token"));
+  const accessToken = getCookie("access_token");
+  const refreshToken = getCookie("refresh_token");
+  return Boolean(accessToken && refreshToken); 
 };
 
 export const getUsername = (): string => {

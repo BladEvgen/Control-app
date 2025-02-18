@@ -3,9 +3,10 @@ import { createBrowserRouter, Outlet } from "react-router-dom";
 import LoaderComponent from "./components/LoaderComponent";
 import { addPrefix } from "./RouterUtils";
 import Layout from "./Layout";
+import RequireAuth from "./RequireAuth";
 
-const MainPage = lazy(() => import("./pages/MainPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
+const MainPage = lazy(() => import("./pages/MainPage"));
 const DepartmentPage = lazy(() => import("./pages/DepartmentPage"));
 const ChildDepartmentPage = lazy(() => import("./pages/ChildDepartmentPage"));
 const StaffDetail = lazy(() => import("./pages/StaffDetail/StaffDetail"));
@@ -23,17 +24,23 @@ const router = createBrowserRouter([
       </Layout>
     ),
     children: [
-      { path: addPrefix("/"), element: <MainPage /> },
       { path: addPrefix("/login"), element: <LoginPage /> },
-      { path: addPrefix("/department/:id"), element: <DepartmentPage /> },
+
       {
-        path: addPrefix("/childDepartment/:id"),
-        element: <ChildDepartmentPage />,
+        element: <RequireAuth />,
+        children: [
+          { path: addPrefix("/"), element: <MainPage /> },
+          { path: addPrefix("/department/:id"), element: <DepartmentPage /> },
+          {
+            path: addPrefix("/childDepartment/:id"),
+            element: <ChildDepartmentPage />,
+          },
+          { path: addPrefix("/staffDetail/:pin"), element: <StaffDetail /> },
+          { path: addPrefix("/dashboard"), element: <Dashboard /> },
+          { path: addPrefix("/map"), element: <MapPage /> },
+          { path: addPrefix("/photo"), element: <PhotoDashboard /> },
+        ],
       },
-      { path: addPrefix("/staffDetail/:pin"), element: <StaffDetail /> },
-      { path: addPrefix("/dashboard"), element: <Dashboard /> },
-      { path: addPrefix("/map"), element: <MapPage /> },
-      { path: addPrefix("/photo"), element: <PhotoDashboard /> },
     ],
   },
 ]);
