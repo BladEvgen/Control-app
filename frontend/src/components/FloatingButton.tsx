@@ -1,58 +1,58 @@
 import React, { FC } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
-import { Link } from "../RouterUtils"; 
-
+import { Link } from "../RouterUtils";
 
 const buttonVariants = {
-  hover: { scale: 1.1, transition: { duration: 0.2 } },
-  tap: { scale: 0.95, transition: { duration: 0.1 } },
+  hover: { scale: 1.05, transition: { duration: 0.2 } },
+  tap: { scale: 0.9, transition: { duration: 0.1 } },
 };
 
+const floatingColorVariants = {
+  home: `
+    bg-gradient-to-r from-purple-500 to-purple-600
+    hover:from-purple-600 hover:to-purple-700
+    dark:from-purple-600 dark:to-purple-700
+    focus:ring-purple-400
+  `,
+  back: `
+    bg-gradient-to-r from-blue-500 to-blue-600
+    hover:from-blue-600 hover:to-blue-700
+    dark:from-blue-600 dark:to-blue-700
+    focus:ring-blue-400
+  `,
+  download: `
+    bg-gradient-to-r from-green-500 to-green-600
+    hover:from-green-600 hover:to-green-700
+    dark:from-green-600 dark:to-green-700
+    focus:ring-green-400
+  `,
+};
+
+export type FloatingButtonVariant = "home" | "back" | "download";
+
 export interface FloatingButtonProps {
-  /**
-   * If specified, the button will be wrapped in a Link with the given address.
-   */
+  /** Если указано, будет <Link> вместо <button>. */
   to?: string;
-  /**
-   * Click handler if the non-link button variant is used.
-   */
+  /** Обработчик клика, если to не указано. */
   onClick?: () => void;
-  /**
-   * Button horizontal position: 'left' or 'right'. Default is 'right'.
-   */
+  /** Позиция кнопки: 'left' или 'right' внизу экрана. По умолчанию 'right'. */
   position?: "left" | "right";
-  /**
-   * Classes for button background (e.g. for TailwindCSS).
-   */
-  bgColor?: string;
-  /**
-   * Classes for button hover.
-   */
-  hoverBgColor?: string;
-  /**
-   * The icon to display inside the button.
-   */
+  /** Иконка внутри кнопки. */
   icon: React.ReactNode;
-  /**
-   * If true – renders the button via the portal (i.e. attaches it to document.body).
-   * If false – renders the button inline.
-   */
+  /** Рендер через портал (true) или инлайново (false). По умолчанию true. */
   usePortal?: boolean;
+  /** Вариант цветовой схемы: 'home', 'back', или 'download'. */
+  variant: FloatingButtonVariant;
 }
 
-/**
-* FloatingButton component.
-* Rendered via portal by default, which avoids influence of parent elements' CSS properties (e.g. transform).
-*/
 export const FloatingButton: FC<FloatingButtonProps> = ({
   to,
   onClick,
   position = "right",
-  bgColor = "bg-yellow-500",
-  hoverBgColor = "hover:bg-yellow-600",
   icon,
   usePortal = true,
+  variant,
 }) => {
   const buttonContent = (
     <motion.button
@@ -60,9 +60,22 @@ export const FloatingButton: FC<FloatingButtonProps> = ({
       whileHover="hover"
       whileTap="tap"
       onClick={onClick}
-      className={`fixed bottom-4 ${
-        position === "right" ? "right-4" : "left-4"
-      } ${bgColor} ${hoverBgColor} text-white rounded-full p-4 shadow-lg z-50 focus:outline-none transition-transform md:hidden`}
+      className={`
+        fixed bottom-4
+        ${position === "right" ? "right-4" : "left-4"}
+        z-50
+        p-4
+        rounded-full
+        text-white
+        shadow-lg
+        md:hidden              
+        focus:outline-none
+        focus:ring-2
+        focus:ring-offset-2
+        transform-gpu
+        transition-all duration-300
+        ${floatingColorVariants[variant]}
+      `}
     >
       {icon}
     </motion.button>
@@ -72,14 +85,5 @@ export const FloatingButton: FC<FloatingButtonProps> = ({
 
   return usePortal ? createPortal(element, document.body) : element;
 };
-
-/**
-* Inline version of the button (without portal). Can be useful if you need to use the button
-* inside a component where fixed positioning relative to the viewport is not required.
-*/
-export const InlineFloatingButton: FC<FloatingButtonProps> = (props) => {
-  return <FloatingButton {...props} usePortal={false} />;
-};
-
 
 export default FloatingButton;
