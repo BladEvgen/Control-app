@@ -71,7 +71,7 @@ const LoginPage = () => {
   };
 
   return (
-    <div className="flex flex-col min-h-screen ">
+    <div className="flex flex-col min-h-screen">
       <div className="flex-grow flex flex-col items-center justify-center p-4">
         <div className="w-full max-w-3xl p-10 bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-300 relative overflow-hidden">
           <h2 className="text-3xl font-bold text-center text-gray-800 dark:text-gray-100 mb-6">
@@ -80,43 +80,56 @@ const LoginPage = () => {
           <p className="text-center text-gray-600 dark:text-gray-300 mb-6">
             Войдите в свою учётную запись
           </p>
-          <div className="space-y-5">
-            <input
-              className="w-full px-4 py-3 text-lg border dark:bg-gray-800 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all duration-300 text-gray-900 dark:text-gray-100"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="Логин"
-              type="text"
-            />
-            <div className="relative">
-              <input
-                className="w-full px-4 py-3 text-lg border dark:bg-gray-800 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 pr-12 transition-all duration-300 text-gray-900 dark:text-gray-100"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Пароль"
-                type={showPassword ? "text" : "password"}
-                onKeyDown={handleKeyPress}
-              />
-              <button
-                type="button"
-                className="absolute top-1/2 right-3 transform -translate-y-1/2 text-gray-600 hover:text-gray-800 transition-colors duration-300"
-                onClick={() => setShowPassword(!showPassword)}
-              >
-                {showPassword ? (
-                  <FaEyeSlash className="dark:text-white" size={20} />
-                ) : (
-                  <FaEye className="dark:text-white" size={20} />
-                )}
-              </button>
-            </div>
-          </div>
-          <button
-            className="w-full mt-8 px-4 py-3 flex items-center justify-center gap-2 text-lg font-semibold text-white bg-blue-500 rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all duration-300 transform hover:scale-105"
-            onClick={handleSubmit}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSubmit();
+            }}
+            className="space-y-5"
           >
-            <FaSignInAlt size={20} />
-            <span>Войти</span>
-          </button>
+            <div className="space-y-5">
+              <input
+                className="w-full px-4 py-3 text-lg border dark:bg-gray-800 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all duration-300 text-gray-900 dark:text-gray-100"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Логин"
+                type="text"
+                name="username"
+                autoComplete="username"
+              />
+              <div className="relative">
+                <input
+                  className="w-full px-4 py-3 text-lg border dark:bg-gray-800 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 pr-12 transition-all duration-300 text-gray-900 dark:text-gray-100"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Пароль"
+                  type={showPassword ? "text" : "password"}
+                  onKeyDown={handleKeyPress}
+                  name="password"
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  className="absolute top-1/2 right-3 transform -translate-y-1/2 text-gray-600 hover:text-gray-800 transition-colors duration-300"
+                  onClick={() => setShowPassword(!showPassword)}
+                  tabIndex={-1}
+                >
+                  {showPassword ? (
+                    <FaEyeSlash className="dark:text-white" size={20} />
+                  ) : (
+                    <FaEye className="dark:text-white" size={20} />
+                  )}
+                </button>
+              </div>
+            </div>
+            <button
+              type="submit"
+              className="w-full mt-8 px-4 py-3 flex items-center justify-center gap-2 text-lg font-semibold text-white bg-blue-500 rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all duration-300 transform hover:scale-105"
+            >
+              <FaSignInAlt size={20} />
+              <span>Войти</span>
+            </button>
+          </form>
           <AnimatePresence>
             {loginError && (
               <motion.div
