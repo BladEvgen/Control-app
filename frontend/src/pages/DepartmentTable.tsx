@@ -3,6 +3,7 @@ import { IData } from "../schemas/IData";
 import { Link } from "../RouterUtils";
 import { formatDepartmentName } from "../utils/utils";
 import { motion } from "framer-motion";
+import SearchInput from "../components/SearchInput";
 import {
   FaChevronLeft,
   FaChevronRight,
@@ -24,7 +25,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
   const [rowsPerPage] = useState<number>(10);
   const [searchQuery, setSearchQuery] = useState<string>("");
 
-  const sortedChildDepartments = (data.child_departments || []).sort((a, b) =>
+  const sortedChildDepartments = (data?.child_departments ?? []).sort((a, b) =>
     a.name.localeCompare(b.name)
   );
 
@@ -100,16 +101,13 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
       transition={{ duration: 0.3 }}
       className="flex flex-col h-full rounded-lg shadow-lg"
     >
-      <motion.input
-        type="text"
-        placeholder="Поиск отдела"
-        value={searchQuery}
-        onChange={handleSearchChange}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.3 }}
-        className="border border-gray-300 px-4 py-2 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
-      />
+      <div className="mb-4 px-4">
+        <SearchInput
+          value={searchQuery}
+          onChange={handleSearchChange}
+          message="Поиск отдела"
+        />
+      </div>
       <motion.p
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}

@@ -6,16 +6,20 @@ import { apiUrl } from "../../apiConfig";
 import { IChildDepartmentData } from "../schemas/IData";
 import { formatDepartmentName } from "../utils/utils";
 import {
-  FaDownload,
-  FaArrowLeft,
-  FaHome,
   FaCheckCircle,
   FaTimesCircle,
+  FaArrowLeft,
+  FaHome,
 } from "react-icons/fa";
 import { motion } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
 import FloatingButton from "../components/FloatingButton";
 
+import DesktopNavigation from "../components/DesktopNavigation";
+import DateFilterBar from "../components/DateFilterBar";
+import SearchInput from "../components/SearchInput";
+import WaitNotification from "../components/WaitNotification";
+import useWaitNotification from "../hooks/useWaitNotification";
 class BaseAction<T> {
   static SET_LOADING = "SET_LOADING";
   static SET_DATA = "SET_DATA";
@@ -36,23 +40,24 @@ const ChildDepartmentPage = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>("");
-  const [startDate, setStartDate] = useState<string>(
-    new Date(new Date().setDate(new Date().getDate() - 7))
-      .toISOString()
-      .split("T")[0]
-  );
-  const [endDate, setEndDate] = useState<string>(
-    new Date().toISOString().split("T")[0]
-  );
+
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const initialEndDate = yesterday.toISOString().split("T")[0];
+
+  const sevenDaysAgo = new Date(yesterday);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const initialStartDate = sevenDaysAgo.toISOString().split("T")[0];
+
+  const [startDate, setStartDate] = useState<string>(initialStartDate);
+  const [endDate, setEndDate] = useState<string>(initialEndDate);
+  const today = new Date().toISOString().split("T")[0];
+
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
-  const [showWaitMessage, setShowWaitMessage] = useState<boolean>(false);
   const navigate = useNavigate();
 
-  const navigateToChildDepartment = () => {
-    if (data?.child_department.parent) {
-      navigate(`/department/${data.child_department.parent}`);
-    }
-  };
+  const { showWaitMessage, startWaitNotification, clearWaitNotification } =
+    useWaitNotification();
 
   const dispatch = (action: BaseAction<any>) => {
     switch (action.type) {
@@ -67,6 +72,8 @@ const ChildDepartmentPage = () => {
         setError(action.payload as string);
         setIsLoading(false);
         break;
+      default:
+        break;
     }
   };
 
@@ -78,8 +85,8 @@ const ChildDepartmentPage = () => {
           `${apiUrl}/api/child_department/${id}/`
         );
         dispatch(new BaseAction(BaseAction.SET_DATA, res.data));
-      } catch (error) {
-        console.error(`Error: ${error}`);
+      } catch (err) {
+        console.error("Error:", err);
         dispatch(
           new BaseAction(BaseAction.SET_ERROR, "Не удалось загрузить данные")
         );
@@ -103,17 +110,15 @@ const ChildDepartmentPage = () => {
     }
   };
 
+  const navigateToChildDepartment = () => {
+    if (data?.child_department.parent) {
+      navigate(`/department/${data.child_department.parent}`);
+    }
+  };
+
   const handleDownload = async () => {
     setIsDownloading(true);
-    setShowWaitMessage(false);
-
-    const downloadTimeout = setTimeout(() => {
-      setShowWaitMessage(true);
-      const hideWaitMessage = setTimeout(() => {
-        setShowWaitMessage(false);
-      }, 7000);
-      return () => clearTimeout(hideWaitMessage);
-    }, 3000);
+    startWaitNotification();
 
     try {
       const response = await axiosInstance.get(
@@ -124,9 +129,9 @@ const ChildDepartmentPage = () => {
           timeout: 600000,
         }
       );
-
-      clearTimeout(downloadTimeout);
+      clearWaitNotification();
       setIsDownloading(false);
+
       let departmentName = "";
       if (data && data.child_department) {
         departmentName = data.child_department.name
@@ -139,21 +144,15 @@ const ChildDepartmentPage = () => {
       link.setAttribute("download", `Посещаемость_${departmentName}.xlsx`);
       document.body.appendChild(link);
       link.click();
-      if (link.parentNode) {
-        link.parentNode.removeChild(link);
-      }
+      link.remove();
     } catch (error) {
       console.error("Error downloading the file:", error);
+      clearWaitNotification();
       setIsDownloading(false);
     }
   };
 
   const isDownloadDisabled = !startDate || !endDate;
-
-  const containerVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: { opacity: 1, y: 0, transition: { duration: 0.6 } },
-  };
 
   const tableVariants = {
     hidden: { opacity: 0 },
@@ -168,9 +167,14 @@ const ChildDepartmentPage = () => {
     },
   };
 
+  const containerVariants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.6 } },
+  };
+
   return (
     <motion.div
-      className="mx-auto px-4 py-8 dark:text-white max-w-full md:max-w-[75vw]"
+      className="mx-auto px-4 py-8 dark:text-white container"
       variants={containerVariants}
       initial="hidden"
       animate="visible"
@@ -179,11 +183,20 @@ const ChildDepartmentPage = () => {
         <LoaderComponent />
       ) : error ? (
         <div className="flex flex-col items-center justify-center min-h-screen">
-          <FaTimesCircle className="text-red-500 text-5xl mb-4" />
+          <div className="text-red-500 text-5xl mb-4">
+            <FaTimesCircle />
+          </div>
           <p className="text-xl text-red-600 dark:text-red-400">{error}</p>
           <Link
             to="/"
-            className="mt-6 px-4 py-2 bg-yellow-500 dark:bg-yellow-700 text-white text-lg rounded-lg shadow-md hover:bg-yellow-600 transition-colors duration-300 ease-in-out"
+            className="
+              mt-6 px-4 py-2 
+              bg-gradient-to-r from-yellow-500 to-yellow-600 
+              text-white text-lg rounded-full shadow-md 
+              hover:from-yellow-600 hover:to-yellow-700 
+              transform hover:-translate-y-1 hover:scale-105 
+              transition-all duration-300
+            "
           >
             Вернуться на главную
           </Link>
@@ -195,145 +208,30 @@ const ChildDepartmentPage = () => {
               formatDepartmentName(data.child_department.name)}
           </h1>
 
-          {/* Верхний блок с кнопками – виден только на устройствах md и выше */}
-          <div className="hidden md:flex items-end justify-between mb-6">
-            <div className="flex space-x-4">
-              <Link
-                to="/"
-                className="flex items-center px-4 py-2 bg-yellow-500 dark:bg-yellow-700 text-white text-lg rounded-lg shadow-md hover:bg-yellow-600 dark:hover:bg-yellow-800 transition-colors duration-300 ease-in-out"
-              >
-                <FaHome className="mr-2" />
-                <span className="font-semibold">На главную</span>
-              </Link>
-              <button
-                onClick={navigateToChildDepartment}
-                className="flex items-center px-4 py-2 bg-blue-500 dark:bg-blue-700 text-white text-lg rounded-lg shadow-md hover:bg-blue-600 dark:hover:bg-blue-800 transition-colors duration-300 ease-in-out"
-              >
-                <FaArrowLeft className="mr-2" />
-                <span>Вернуться назад</span>
-              </button>
-            </div>
-            {/* Скрываем эту кнопку на ПК */}
-            <button
-              onClick={handleDownload}
-              disabled={isDownloadDisabled || isDownloading}
-              className="flex items-center px-4 py-2 mt-2 bg-green-600 hover:bg-green-800 text-white text-lg rounded-lg shadow-md transition-colors duration-300 ease-in-out md:hidden"
-            >
-              {isDownloading ? (
-                <svg
-                  className="animate-spin h-5 w-5 mr-2 text-white"
-                  viewBox="0 0 24 24"
-                >
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                  ></circle>
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8v8h8a8 8 0 11-16 0z"
-                  ></path>
-                </svg>
-              ) : (
-                <FaDownload className="mr-2" />
-              )}
-              {isDownloading ? "Загрузка" : "Скачать"}
-            </button>
-          </div>
+          <DesktopNavigation
+            onHomeClick={() => navigate("/")}
+            onBackClick={navigateToChildDepartment}
+          />
 
-          {/* Блок с датами и кнопкой скачать (для устройств ниже md) */}
-          <div className="flex flex-col sm:flex-row md:items-end items-center sm:space-x-4 mb-4 px-2 ml">
-            <div className="flex flex-col sm:flex-row sm:items-end w-full sm:w-auto space-y-4 sm:space-y-0">
-              <div className="w-full sm:w-40">
-                <label
-                  htmlFor="startDate"
-                  className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
-                >
-                  Дата начала:
-                </label>
-                <input
-                  type="date"
-                  id="startDate"
-                  value={startDate}
-                  onChange={handleStartDateChange}
-                  className="border border-gray-300 px-3 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
-                />
-              </div>
-            </div>
-            <div className="w-full sm:w-40 mt-4 sm:mt-0">
-              <label
-                htmlFor="endDate"
-                className="block mb-1 font-medium text-gray-200 dark:text-gray-400"
-              >
-                Дата конца:
-              </label>
-              <input
-                type="date"
-                id="endDate"
-                value={endDate}
-                onChange={handleEndDateChange}
-                className="border border-gray-300 px-3 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:text-white dark:border-gray-600"
-              />
-            </div>
-            <div className="w-full sm:w-auto mt-4 sm:mt-0 md:self-end">
-              <button
-                onClick={handleDownload}
-                disabled={isDownloadDisabled || isDownloading}
-                className="w-full sm:w-auto px-4 py-2 bg-green-500 hover:bg-green-600 text-white text-lg rounded-lg shadow-md transition-colors duration-300 ease-in-out"
-              >
-                {isDownloading ? (
-                  <svg
-                    className="animate-spin h-5 w-5 inline mr-2 text-white"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    ></circle>
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8v8h8a8 8 0 11-16 0z"
-                    ></path>
-                  </svg>
-                ) : (
-                  <FaDownload className="inline mr-2" />
-                )}
-                {isDownloading ? "Загрузка" : "Скачать"}
-              </button>
-            </div>
-            {showWaitMessage && (
-              <motion.div
-                animate={{ opacity: [1, 0.1, 1] }}
-                transition={{
-                  duration: 2,
-                  repeat: Infinity,
-                  repeatType: "loop",
-                  ease: "easeInOut",
-                }}
-                className="mt-2 p-3 bg-red-100 text-red-600 text-sm rounded-lg shadow-md dark:bg-red-900 dark:text-red-200"
-              >
-                Загрузка может занять некоторое время, пожалуйста, подождите...
-              </motion.div>
-            )}
-          </div>
+          {/* Блок с датами и кнопкой «Скачать» */}
+          <DateFilterBar
+            startDate={startDate}
+            endDate={endDate}
+            onStartDateChange={handleStartDateChange}
+            onEndDateChange={handleEndDateChange}
+            onDownload={handleDownload}
+            isDownloading={isDownloading}
+            isDownloadDisabled={isDownloadDisabled}
+            today={today}
+          />
 
-          {/* Инпут для поиска – во всю ширину */}
-          <div className="mb-6 px-2">
-            <input
-              type="text"
-              placeholder="Поиск по ФИО"
+          {showWaitMessage && <WaitNotification />}
+
+          <div className="mb-6 px-2 mt-4">
+            <SearchInput
               value={searchQuery}
+              message="Поиск по ФИО"
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="border border-gray-300 px-4 py-2 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors duration-300 ease-in-out dark:bg-gray-800 dark:text-white dark:border-gray-600"
             />
           </div>
 
@@ -341,7 +239,7 @@ const ChildDepartmentPage = () => {
             <strong>Количество сотрудников:</strong> {data?.staff_count}
           </p>
 
-          {/* Мобильная версия карточек */}
+          {/* Мобильная версия – карточки */}
           <div className="block md:hidden space-y-2">
             {data?.staff_data &&
               Object.entries(data.staff_data)
@@ -351,7 +249,7 @@ const ChildDepartmentPage = () => {
                 .map(([pin, staff]) => (
                   <div
                     key={pin}
-                    className="w-full p-6 rounded-lg shadow-md bg-white dark:bg-gray-800"
+                    className="w-fll p-6 rounded-lg sadow-md bg-white dark:bg-gray-800"
                   >
                     <div className="flex justify-between items-center mb-3">
                       <Link
@@ -373,7 +271,7 @@ const ChildDepartmentPage = () => {
                       )}
                     </div>
                     <p className="text-gray-600 dark:text-gray-400 text-base">
-                      <strong>Должность: </strong>
+                      <strong>Должнось: </strong>
                       {staff.positions.length > 2
                         ? `${staff.positions[0]}, ... (ещё ${
                             staff.positions.length - 1
@@ -388,7 +286,7 @@ const ChildDepartmentPage = () => {
                 ))}
           </div>
 
-          {/* Версия для планшетов и ПК с анимацией таблицы */}
+          {/* Версия для планшетов и ПК – таблица */}
           <motion.div
             variants={tableVariants}
             initial="hidden"
@@ -469,26 +367,24 @@ const ChildDepartmentPage = () => {
               </tbody>
             </table>
           </motion.div>
+
+          {/* Плавающие кнопки для мобильных устройств */}
+          <div className="block md:hidden">
+            <FloatingButton
+              variant="back"
+              icon={<FaArrowLeft size={24} />}
+              onClick={navigateToChildDepartment}
+              position="left"
+            />
+            <FloatingButton
+              variant="home"
+              icon={<FaHome size={24} />}
+              to="/"
+              position="right"
+            />
+          </div>
         </>
       )}
-
-      {/* Плавающие кнопки для смартфонов (видны только на экранах ниже md) */}
-      <div className="block md:hidden">
-        <FloatingButton
-          icon={<FaArrowLeft size={24} />}
-          onClick={navigateToChildDepartment}
-          position="left"
-          bgColor="bg-blue-500"
-          hoverBgColor="hover:bg-blue-600 dark:bg-blue-700 dark:hover:bg-blue-800"
-        />
-        <FloatingButton
-          icon={<FaHome size={24} />}
-          to="/"
-          position="right"
-          bgColor="bg-yellow-500"
-          hoverBgColor="hover:bg-yellow-600 dark:bg-yellow-700 dark:hover:bg-yellow-800"
-        />
-      </div>
     </motion.div>
   );
 };
