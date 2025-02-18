@@ -5,7 +5,7 @@ from channels.generic.websocket import JsonWebsocketConsumer
 
 from monitoring_app import models, serializers
 
-logger = logging.getLogger("django")
+logger = logging.getLogger(__name__)
 
 
 class UserDetail(JsonWebsocketConsumer):
