@@ -2,7 +2,7 @@ import { log } from "../api";
 import { useEffect, useRef, useCallback } from "react";
 
 interface UseWebSocketOptions {
-  url: string;
+  url: string | null;
   onMessage: (event: MessageEvent) => void;
   onOpen?: () => void;
   onClose?: (event: CloseEvent) => void;
@@ -24,6 +24,11 @@ const useWebSocket = ({
   pingInterval = 30000,
   pongTimeout = 10000,
 }: UseWebSocketOptions) => {
+  if (!url) {
+    log.warn("WebSocket URL не задан, соединение не устанавливается.");
+    return { sendMessage: () => {} };
+  }
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const isMountedRef = useRef<boolean>(false);

@@ -92,12 +92,12 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, []);
 
-  const wsUrl = useMemo(() => {
-    if (!token) return null;
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const urlObj = new URL(apiUrl);
-    return `${protocol}://${urlObj.host}/ws/user-detail/?token=${token}`;
-  }, [token]);
+const wsUrl = useMemo(() => {
+  if (!token) return null;
+  const urlObj = new URL(apiUrl);
+  const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
+  return `${protocol}://${urlObj.host}/ws/user-detail/?token=${token}`;
+}, [token, apiUrl]);
 
   const { sendMessage } = useWebSocket({
     url: wsUrl || "",

@@ -123,12 +123,11 @@ const PhotoDashboard: React.FC = () => {
   }, []);
 
   const wsUrl = useMemo(() => {
-    const protocol = apiUrl.startsWith("https") ? "wss://" : "ws://";
-    return `${protocol}${apiUrl.replace(
-      /^https?:\/\//,
-      ""
-    )}/ws/photos/?date=${date}`;
+    const urlObj = new URL(apiUrl);
+    const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
+    return `${protocol}://${urlObj.host}/ws/photos/?date=${date}`;
   }, [apiUrl, date]);
+
 
   useWebSocket({
     url: wsUrl,
