@@ -52,12 +52,20 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({
     storedUser ? JSON.parse(storedUser) : null
   );
 
-  const updateUser = useCallback((value: UserProfile | null | ((prev: UserProfile | null) => UserProfile | null)) => {
-    setUser(value);
-    if (typeof value !== 'function') {
-      saveUserToStorage(value);
-    }
-  }, []);
+  const updateUser = useCallback(
+    (
+      value:
+        | UserProfile
+        | null
+        | ((prev: UserProfile | null) => UserProfile | null)
+    ) => {
+      setUser(value);
+      if (typeof value !== "function") {
+        saveUserToStorage(value);
+      }
+    },
+    []
+  );
 
   const [token, setToken] = useState<string | null>(getCookie("access_token"));
 
@@ -92,12 +100,40 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, []);
 
-const wsUrl = useMemo(() => {
-  if (!token) return null;
-  const urlObj = new URL(apiUrl);
-  const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
-  return `${protocol}://${urlObj.host}/ws/user-detail/?token=${token}`;
-}, [token, apiUrl]);
+  useEffect(() => {
+    const onUserLoggedOut = () => {
+      updateUser(null);
+      setToken(null);
+    };
+    window.addEventListener("userLoggedOut", onUserLoggedOut);
+    return () => window.removeEventListener("userLoggedOut", onUserLoggedOut);
+  }, [updateUser]);
+
+  useEffect(() => {
+    const refreshTokenExpires = localStorage.getItem("refresh_token_expires");
+    if (refreshTokenExpires) {
+      const expiresDate = new Date(refreshTokenExpires);
+      const now = new Date();
+      const timeout = expiresDate.getTime() - now.getTime();
+
+      if (timeout > 0) {
+        const timerId = setTimeout(() => {
+          window.dispatchEvent(new Event("userLoggedOut"));
+        }, timeout);
+
+        return () => clearTimeout(timerId);
+      } else {
+        window.dispatchEvent(new Event("userLoggedOut"));
+      }
+    }
+  }, [token]);
+
+  const wsUrl = useMemo(() => {
+    if (!token) return null;
+    const urlObj = new URL(apiUrl);
+    const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
+    return `${protocol}://${urlObj.host}/ws/user-detail/?token=${token}`;
+  }, [token, apiUrl]);
 
   const { sendMessage } = useWebSocket({
     url: wsUrl || "",

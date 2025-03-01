@@ -1,9 +1,16 @@
-import { getCookie, removeCookie } from "../api";
+import { getCookie, clearAuthData } from "../api";
 
+/**
+ * Проверяет, авторизован ли пользователь.
+ * Если отсутствуют оба токена — очищает данные.
+ */
 export const isAuthenticated = (): boolean => {
   const accessToken = getCookie("access_token");
   const refreshToken = getCookie("refresh_token");
-  return Boolean(accessToken && refreshToken); 
+  if (!accessToken && !refreshToken) {
+    clearAuthData();
+  }
+  return Boolean(accessToken && refreshToken);
 };
 
 export const getUsername = (): string => {
@@ -12,24 +19,21 @@ export const getUsername = (): string => {
 
 /**
  * Выполняет выход пользователя:
- *  - удаляет cookie,
- *  - удаляет профиль из localStorage,
- *  - выполняет дополнительную callback-функцию (для обновления UI),
- *  - перенаправляет на страницу логина.
+ *  - Очищает куки и профиль (через clearAuthData),
+ *  - Вызывает дополнительную callback-функцию (если требуется, например, для обновления UI),
+ *  - Перенаправляет на страницу логина.
  *
  * @param navigate Функция для навигации
- * @param extraCallback Опциональная callback-функция для дополнительных действий (например, сброс состояния)
+ * @param extraCallback Опциональный callback для дополнительных действий.
  */
 export const logoutUser = (
   navigate: (path: string) => void,
   extraCallback?: () => void
 ): void => {
-  removeCookie("access_token");
-  removeCookie("refresh_token");
-  localStorage.removeItem("userProfile");
-
+  clearAuthData();
   if (extraCallback) {
     extraCallback();
   }
+  window.dispatchEvent(new Event("userLoggedOut"));
   navigate("/login");
 };
