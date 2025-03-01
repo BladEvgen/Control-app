@@ -51,6 +51,11 @@ const LoginPage = () => {
         window.dispatchEvent(new Event("userLoggedIn"));
       }
 
+      localStorage.setItem(
+        "refresh_token_expires",
+        res.data.refresh_token_expires
+      );
+
       navigate("/");
     } catch (error: any) {
       console.error("Login error:", error);
