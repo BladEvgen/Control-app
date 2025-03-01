@@ -1,7 +1,6 @@
 import { addPrefix } from "./RouterUtils";
 import axios, { AxiosResponse } from "axios";
 import { apiUrl, isDebug } from "../apiConfig";
-import { BaseAction } from "./schemas/BaseAction";
 
 const log = {
   info: (...args: any[]) => {
@@ -62,7 +61,7 @@ export const setCookie = (
   }
 
   document.cookie = cookieString;
-  log.info(`Кука ${name} успешно установлена: ${value}`);
+  log.info(`Cookie ${name} set successfully: ${value}`);
 };
 
 export const removeCookie = (
@@ -75,7 +74,7 @@ export const removeCookie = (
     sameSite: options.sameSite,
     maxAge: -1,
   });
-  log.info(`Кука ${name} успешно удалена.`);
+  log.info(`Cookie ${name} removed successfully.`);
 };
 
 export const getCookie = (name: string): string | null => {
@@ -86,8 +85,20 @@ export const getCookie = (name: string): string | null => {
       return decodeURIComponent(cookieValue);
     }
   }
-  log.warn(`Кука ${name} не найдена.`);
+  log.warn(`Cookie ${name} not found.`);
   return null;
+};
+
+export const clearAuthData = () => {
+  removeCookie("access_token", {
+    secure: !isDebug,
+    sameSite: isDebug ? "Lax" : "Strict",
+  });
+  removeCookie("refresh_token", {
+    secure: !isDebug,
+    sameSite: isDebug ? "Lax" : "Strict",
+  });
+  localStorage.removeItem("userProfile");
 };
 
 const axiosInstance = axios.create({
@@ -98,9 +109,82 @@ const axiosInstance = axios.create({
   },
 });
 
+let refreshPromise: Promise<string> | null = null;
+
+const refreshTokens = async (): Promise<string> => {
+  if (refreshPromise) {
+    return refreshPromise;
+  }
+
+  const refreshToken = getCookie("refresh_token");
+  if (!refreshToken) {
+    log.error("Refresh token not found. Logging out.");
+    handleLogout();
+    return Promise.reject(new Error("No refresh token"));
+  }
+
+  log.info("Attempting to refresh tokens...");
+  refreshPromise = axios
+    .post(
+      `${apiUrl}/api/token/refresh/`,
+      { refresh: refreshToken },
+      { skipAuthInterceptor: true }
+    )
+    .then((response) => {
+      const newAccessToken = response.data.access;
+      const newRefreshToken = response.data.refresh;
+
+      setCookie("access_token", newAccessToken, {
+        secure: !isDebug,
+        sameSite: isDebug ? "Lax" : "Strict",
+        maxAge: 1800,
+      });
+      setCookie("refresh_token", newRefreshToken, {
+        secure: !isDebug,
+        sameSite: isDebug ? "Lax" : "Strict",
+        maxAge: 7200,
+      });
+
+      localStorage.setItem(
+        "access_token_expires",
+        response.data.access_token_expires
+      );
+      localStorage.setItem(
+        "refresh_token_expires",
+        response.data.refresh_token_expires
+      );
+
+      log.info("Tokens refreshed successfully.");
+      refreshPromise = null;
+      return newAccessToken;
+    })
+    .catch((err) => {
+      refreshPromise = null;
+      log.error("Failed to refresh tokens.", err);
+      handleLogout();
+      return Promise.reject(err);
+    });
+
+  return refreshPromise;
+};
+
 axiosInstance.interceptors.request.use(
-  (config) => {
-    const accessToken = getCookie("access_token");
+  async (config) => {
+    if (config.skipAuthInterceptor) {
+      return config;
+    }
+
+    let accessToken = getCookie("access_token");
+    const refreshToken = getCookie("refresh_token");
+
+    if (!accessToken && refreshToken) {
+      try {
+        accessToken = await refreshTokens();
+      } catch (err) {
+        return Promise.reject(err);
+      }
+    }
+
     if (accessToken) {
       config.headers.Authorization = `Bearer ${accessToken}`;
     }
@@ -124,86 +208,21 @@ axiosInstance.interceptors.response.use(
     ) {
       originalRequest._retry = true;
       try {
-        const refreshToken = getCookie("refresh_token");
-        if (!refreshToken) {
-          log.error("Отсутствует refresh_token.");
-          handleLogout();
-          return Promise.reject(
-            BaseAction.createAction(
-              BaseAction.SET_ERROR,
-              "Отсутствует refresh_token."
-            )
-          );
-        }
-
-        const refreshResponse = await axios.post(
-          `${apiUrl}/api/token/refresh/`,
-          { refresh: refreshToken }
-        );
-
-        const newAccessToken = refreshResponse.data.access;
-        const newRefreshToken = refreshResponse.data.refresh;
-
-        setCookie("access_token", newAccessToken, {
-          secure: !isDebug,
-          sameSite: isDebug ? "Lax" : "Strict",
-          maxAge: 1800,
-        });
-        setCookie("refresh_token", newRefreshToken, {
-          secure: !isDebug,
-          sameSite: isDebug ? "Lax" : "Strict",
-          maxAge: 7200,
-        });
-
-        originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
+        const accessToken = await refreshTokens();
+        originalRequest.headers.Authorization = `Bearer ${accessToken}`;
         return axiosInstance(originalRequest);
-      } catch (refreshError: any) {
-        if (
-          refreshError.response?.status === 401 ||
-          refreshError.response?.status === 403
-        ) {
-          log.error("Не удалось обновить токен. Выполняем выход.");
-          handleLogout();
-          return Promise.reject(
-            BaseAction.createAction(
-              BaseAction.SET_ERROR,
-              "Не удалось обновить токен."
-            )
-          );
-        }
-        return Promise.reject(refreshError);
+      } catch (err) {
+        return Promise.reject(err);
       }
     }
-
-    if (error.response?.status === 401) {
-      log.error("401 ошибка. Выполняем выход.");
-      handleLogout();
-      return Promise.reject(
-        BaseAction.createAction(
-          BaseAction.SET_ERROR,
-          "401 ошибка. Выполняем выход."
-        )
-      );
-    }
-
     return Promise.reject(error);
   }
 );
-;
 
 const handleLogout = () => {
-  log.info("Выполняем выход. Удаление токенов...");
-  removeCookie("access_token", {
-    secure: !isDebug,
-    sameSite: isDebug ? "Lax" : "Strict",
-  });
-  removeCookie("refresh_token", {
-    secure: !isDebug,
-    sameSite: isDebug ? "Lax" : "Strict",
-  });
-  localStorage.removeItem("userProfile");
-
-
+  log.info("Logging out. Clearing authentication data...");
+  clearAuthData();
+  window.dispatchEvent(new Event("userLoggedOut"));
   window.location.href = addPrefix("/login");
 };
 

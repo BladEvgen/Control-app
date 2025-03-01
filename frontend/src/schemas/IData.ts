@@ -14,6 +14,8 @@ export class BaseState<T> {
 export interface ITokenResponse {
   refresh: string;
   access: string;
+  access_token_expires: string;
+  refresh_token_expires: string;
   user: {
     username: string;
     is_banned: boolean;
