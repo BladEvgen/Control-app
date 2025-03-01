@@ -1,68 +1,48 @@
 from monitoring_app import models
+from datetime import datetime, timezone
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
-    Кастомный сериализатор для получения JWT токенов (access и refresh).
+    Custom serializer for obtaining JWT tokens with precise expiration times in UTC.
 
-    Расширяет стандартную реализацию, добавляя к токенам минимальные данные
-    о пользователе: `username`, `is_banned` (заблокирован ли пользователь) и `is_staff` (является ли администратором).
-
-    Возвращаемые данные:
-    - Токены (access и refresh).
-    - Пользовательская информация:
-        - `username`: Имя пользователя.
-        - `is_banned`: Статус блокировки пользователя.
-        - `is_staff`: Является ли пользователь персоналом.
-        - `is_super`: Является ли пользовтаель администратором.
+    Returns:
+        dict: {
+            "access": <access token>,
+            "refresh": <refresh token>,
+            "access_token_expires": ISO8601 formatted expiration datetime in UTC (millisecond precision, 'Z' suffix),
+            "refresh_token_expires": ISO8601 formatted expiration datetime in UTC (millisecond precision, 'Z' suffix),
+            "user": {
+                "username": <username>,
+                "is_banned": <bool>,
+                "is_staff": <bool>,
+                "is_super": <bool>
+            }
+        }
     """
-
     def validate(self, attrs):
-        """
-        Переопределяет метод валидации для добавления пользовательских данных
-        в ответ JWT токенов.
-
-        Если у пользователя существует профиль, извлекает данные из профиля, в противном случае
-        возвращает только базовые данные (`username`, `is_banned=False`).
-
-        Args:
-            attrs (dict): Входящие данные для валидации.
-
-        Returns:
-            dict: Данные токенов и информация о пользователе.
-        """
         data = super().validate(attrs)
-        user = self.user
-
+        token = self.get_token(self.user)
+        access_exp = datetime.fromtimestamp(token.access_token["exp"], tz=timezone.utc)
+        refresh_exp = datetime.fromtimestamp(token["exp"], tz=timezone.utc)
+        data["access_token_expires"] = access_exp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        data["refresh_token_expires"] = refresh_exp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
         try:
-            user_profile = models.UserProfile.objects.get(user=user)
-
-            data["user"] = {
-                "username": user.username,
+            user_profile = models.UserProfile.objects.get(user=self.user)
+            user_data = {
+                "username": self.user.username,
                 "is_banned": user_profile.is_banned,
-                "is_staff": user.is_staff,
-                "is_super": user.is_superuser,
+                "is_staff": self.user.is_staff,
+                "is_super": self.user.is_superuser,
             }
-
         except models.UserProfile.DoesNotExist:
-            data["user"] = {
-                "username": user.username,
-                "is_banned": False,
-            }
-
+            user_data = {"username": self.user.username, "is_banned": False}
+        data["user"] = user_data
         return data
-
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     """
-    Кастомное представление для получения JWT токенов (access и refresh).
-
-    Возвращает минимальный набор данных о пользователе вместе с токенами:
-    - `username`: Имя пользователя.
-    - `is_banned`: Статус блокировки пользователя.
-    - `is_staff`: Является ли пользователь администратором.
+    Custom view for obtaining JWT tokens using CustomTokenObtainPairSerializer.
     """
-
     serializer_class = CustomTokenObtainPairSerializer
