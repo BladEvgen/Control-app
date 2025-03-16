@@ -3714,7 +3714,7 @@ def password_reset_confirm_view(request, token):
                 request,
                 "Пароль успешно сброшен. Вы можете войти в систему с новым паролем.",
             )
-            return redirect("reac_app")
+            return redirect("react_app")
         else:
             messages.error(request, "Ошибка при обновлении токена. Попробуйте снова.")
             return redirect("password_reset_confirm", token=token)
