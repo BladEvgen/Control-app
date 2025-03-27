@@ -46,7 +46,6 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
     ? "w-full max-w-xs cursor-pointer text-center hover:underline transition-all duration-200 text-gray-700 text-sm"
     : "w-full max-w-xs cursor-pointer text-center hover:underline transition-all duration-200 text-gray-700 text-base";
 
-  // Подсказка: на мобильных текст меньше, на десктопе — больше
   const hintTextClass = isSmallScreen ? "text-xs" : "text-sm";
 
   const formatDateForDisplay = (dateStr: string): string => {

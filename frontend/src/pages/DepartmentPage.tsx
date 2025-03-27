@@ -12,10 +12,14 @@ import DesktopNavigation from "../components/DesktopNavigation";
 import WaitNotification from "../components/WaitNotification";
 import useWaitNotification from "../hooks/useWaitNotification";
 import { FloatingButton } from "../components/FloatingButton";
-import { FaHome } from "react-icons/fa";
-import { motion } from "framer-motion";
+import { FaHome, FaBuilding } from "react-icons/fa";
+import { motion, AnimatePresence } from "framer-motion";
 
 class BaseAction<T> {
+  static SET_LOADING = "SET_LOADING";
+  static SET_DATA = "SET_DATA";
+  static SET_ERROR = "SET_ERROR";
+
   type: string;
   payload: T;
   constructor(type: string, payload: T) {
@@ -110,7 +114,7 @@ const DepartmentPage: React.FC = () => {
       dispatch(
         new DepartmentAction(
           DepartmentAction.SET_ERROR,
-          "Не удалось загрузить данные"
+          "Не удалось загрузить данные. Пожалуйста, попробуйте позже."
         )
       );
     }
@@ -166,14 +170,33 @@ const DepartmentPage: React.FC = () => {
     }
   };
 
+  const pageVariants = {
+    initial: { opacity: 0 },
+    animate: {
+      opacity: 1,
+      transition: {
+        staggerChildren: 0.1,
+        when: "beforeChildren",
+      },
+    },
+    exit: { opacity: 0 },
+  };
+
+  const itemVariants = {
+    initial: { opacity: 0, y: 20 },
+    animate: { opacity: 1, y: 0 },
+    exit: { opacity: 0, y: -20 },
+  };
+
   return (
-    <>
+    <AnimatePresence mode="wait">
       <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        transition={{ duration: 0.5 }}
-        className="container mx-auto px-4 py-8 dark:text-white"
+        key="department-page"
+        className="max-w-7xl mx-auto"
+        variants={pageVariants}
+        initial="initial"
+        animate="animate"
+        exit="exit"
       >
         {loading ? (
           <LoaderComponent />
@@ -186,48 +209,67 @@ const DepartmentPage: React.FC = () => {
           />
         ) : (
           <>
-            <h1 className="text-3xl font-bold text-center md:text-left text-white mb-8">
-              {formatDepartmentName(data?.name)}
-            </h1>
+            <motion.div
+              className="mb-8 flex items-center justify-center md:justify-start"
+              variants={itemVariants}
+            >
+              <FaBuilding className="text-primary-600 dark:text-primary-400 mr-3 text-2xl md:text-3xl" />
+              <h1 className="section-title mb-0">
+                {formatDepartmentName(data?.name)}
+              </h1>
+            </motion.div>
 
             {shouldRenderLink(location.pathname) && (
-              <DesktopNavigation
-                onHomeClick={() => navigate("/")}
-                visibleButtons={["home"]}
-              />
+              <motion.div variants={itemVariants}>
+                <DesktopNavigation
+                  onHomeClick={() => navigate("/")}
+                  visibleButtons={["home"]}
+                />
+              </motion.div>
             )}
 
             {shouldRenderLink(location.pathname) && (
-              <DateFilterBar
-                startDate={startDate}
-                endDate={endDate}
-                onStartDateChange={handleStartDateChange}
-                onEndDateChange={handleEndDateChange}
-                onDownload={handleDownload}
-                isDownloading={isDownloading}
-                isDownloadDisabled={!startDate || !endDate}
-                today={today}
-              />
+              <motion.div variants={itemVariants} className="mt-6 mb-8">
+                <DateFilterBar
+                  startDate={startDate}
+                  endDate={endDate}
+                  onStartDateChange={handleStartDateChange}
+                  onEndDateChange={handleEndDateChange}
+                  onDownload={handleDownload}
+                  isDownloading={isDownloading}
+                  isDownloadDisabled={!startDate || !endDate}
+                  today={today}
+                />
+              </motion.div>
             )}
 
             {showWaitMessage && (
-              <div className="mx-auto max-w-md my-4">
+              <motion.div
+                variants={itemVariants}
+                className="mx-auto max-w-md my-6"
+              >
                 <WaitNotification />
-              </div>
+              </motion.div>
             )}
 
-            {data && <DepartmentTable data={data} />}
+            {data && (
+              <motion.div
+                variants={itemVariants}
+                className="card overflow-hidden"
+              >
+                <DepartmentTable data={data} />
+              </motion.div>
+            )}
           </>
         )}
       </motion.div>
 
-      {/* Плавающая кнопка для мобильных устройств */}
+      {/* Floating button for mobile devices */}
       {!loading && !error && shouldRenderLink(location.pathname) && (
         <motion.div
-          initial={{ opacity: 0, y: 50 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-          whileHover={{ scale: 1.1 }}
+          transition={{ delay: 0.5 }}
           className="fixed bottom-4 right-4 z-50 block md:hidden"
         >
           <FloatingButton
@@ -238,7 +280,7 @@ const DepartmentPage: React.FC = () => {
           />
         </motion.div>
       )}
-    </>
+    </AnimatePresence>
   );
 };
 

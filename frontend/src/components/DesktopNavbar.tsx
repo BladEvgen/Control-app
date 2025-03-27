@@ -230,7 +230,7 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
       >
         <button
           ref={profileButtonRef}
-          className="flex items-center bg-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary text-sm sm:text-base md:text-lg"
+          className="flex items-center bg-primary hover:bg-primary-dark text-text-dark dark:text-text-light font-bold py-2 px-4 rounded focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary text-sm sm:text-base md:text-lg"
           aria-haspopup="true"
           aria-expanded={isDropdownOpen}
         >
@@ -247,7 +247,7 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
     () => (
       <div className="flex items-center space-x-4">
         <Link to="/login">
-          <button className="bg-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded text-sm sm:text-base md:text-lg">
+          <button className="bg-primary hover:bg-primary-dark text-text-dark dark:text-text-light font-bold py-2 px-4 rounded text-sm sm:text-base md:text-lg">
             Login
           </button>
         </Link>
@@ -255,12 +255,12 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
           onClick={() => {
             toggleTheme();
           }}
-          className="bg-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded flex items-center focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary text-sm sm:text-base md:text-lg"
+          className="bg-primary hover:bg-primary-dark text-text-dark dark:text-text-light font-bold py-2 px-4 rounded flex items-center focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary text-sm sm:text-base md:text-lg"
         >
           {currentTheme === "dark" ? (
             <FaSun className="text-yellow-500 mr-2" />
           ) : (
-            <FaMoon className="text-white mr-2" />
+            <FaMoon className="text-gray-500 mr-2" />
           )}
           {currentTheme === "dark" ? "Light Mode" : "Dark Mode"}
         </button>
@@ -273,7 +273,7 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
     <nav className="container mx-auto px-4 py-3 flex items-center justify-between">
       <Link
         to="/"
-        className="text-xl sm:text-2xl md:text-3xl font-bold flex items-center text-text-light"
+        className="text-xl sm:text-2xl md:text-3xl font-bold flex items-center text-text-dark dark:text-text-light"
       >
         Staff App
         <FaUserClock className="ml-2 text-xl sm:text-2xl md:text-3xl" />

@@ -60,19 +60,32 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
 
   const overlayVariants = {
     hidden: { opacity: 0 },
-    visible: { opacity: 0.5 },
+    visible: { opacity: 0.7 },
     exit: { opacity: 0 },
+  };
+
+  const menuItemVariants = {
+    hidden: { opacity: 0, x: -20 },
+    visible: (i: number) => ({
+      opacity: 1,
+      x: 0,
+      transition: { delay: i * 0.05, duration: 0.3 },
+    }),
+  };
+
+  const handleLogout = () => {
+    logoutUser(navigate, () => setIsMenuOpen(false));
   };
 
   return (
     <>
-      {/* Header  */}
-      <header className="lg:hidden sticky top-0 z-[999] bg-primary-dark text-text-light shadow-md">
+      {/* Header */}
+      <header className="lg:hidden sticky top-0 z-[999] bg-primary-900 dark:bg-primary-950 text-text-light shadow-md">
         <div className="flex items-center justify-between px-4 py-3">
           <button
             onClick={toggleMenu}
             className="text-2xl focus:outline-none active:scale-95 transition-transform"
-            aria-label={isMenuOpen ? "Закрыть меню" : "Открыть меню"}
+            aria-label={isMenuOpen ? "Close menu" : "Open menu"}
           >
             {isMenuOpen ? <FaTimes /> : <FaBars />}
           </button>
@@ -84,7 +97,7 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
         </div>
       </header>
 
-      {/* Затемняющий фон */}
+      {/* Overlay background */}
       <AnimatePresence>
         {isMenuOpen && (
           <motion.div
@@ -99,12 +112,12 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
         )}
       </AnimatePresence>
 
-      {/* Панель мобильного меню */}
+      {/* Mobile menu panel */}
       <AnimatePresence>
         {isMenuOpen && (
           <motion.aside
             ref={panelRef}
-            className="fixed bottom-0 left-0 right-0 z-[1001] bg-primary-dark text-text-light rounded-t-lg shadow-xl overflow-y-auto"
+            className="fixed bottom-0 left-0 right-0 z-[1001] bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-t-2xl shadow-xl overflow-hidden"
             variants={panelVariants}
             initial="hidden"
             animate="visible"
@@ -119,120 +132,222 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
               }
             }}
           >
-            {/* Драг-хэндлер */}
+            {/* Drag handle */}
             <div
               onClick={toggleMenu}
-              className="py-2 border-b border-gray-700 flex justify-center cursor-pointer"
+              className="py-2 border-b border-gray-200 dark:border-gray-800 flex justify-center cursor-pointer"
             >
-              <div className="w-12 h-1 bg-gray-400 rounded-full"></div>
+              <div className="w-12 h-1 bg-gray-300 dark:bg-gray-700 rounded-full"></div>
             </div>
 
             {auth && (
-              <div className="px-3 py-2 border-b border-gray-700 text-lg">
-                Logged in as:{" "}
-                <span className="font-bold">{username || "Loading..."}</span>
+              <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-primary-50 dark:bg-primary-900/40">
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  Logged in as
+                </div>
+                <div className="font-semibold text-lg text-primary-900 dark:text-primary-300">
+                  {username || "Loading..."}
+                </div>
               </div>
             )}
 
-            <div className="flex flex-col justify-evenly min-h-[60vh] px-3 py-1">
+            <div className="p-4 space-y-1">
               {auth ? (
                 <>
-                  <Link
-                    to="/"
-                    onClick={() => setIsMenuOpen(false)}
-                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                  <motion.div
+                    custom={0}
+                    variants={menuItemVariants}
+                    initial="hidden"
+                    animate="visible"
                   >
-                    <FaHome className="mr-2 text-blue-500" />
-                    Главная
-                  </Link>
-                  <Link
-                    to="/dashboard"
-                    onClick={() => setIsMenuOpen(false)}
-                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                    <Link
+                      to="/"
+                      onClick={() => setIsMenuOpen(false)}
+                      className="flex items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      <FaHome className="mr-3 text-lg text-primary-600 dark:text-primary-400" />
+                      <span className="font-medium">Home</span>
+                    </Link>
+                  </motion.div>
+
+                  <motion.div
+                    custom={1}
+                    variants={menuItemVariants}
+                    initial="hidden"
+                    animate="visible"
                   >
-                    <MdDashboard className="mr-2 text-indigo-500" />
-                    Attendance
-                  </Link>
-                  <Link
-                    to="/photo"
-                    onClick={() => setIsMenuOpen(false)}
-                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                    <Link
+                      to="/dashboard"
+                      onClick={() => setIsMenuOpen(false)}
+                      className="flex items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      <MdDashboard className="mr-3 text-lg text-secondary-600 dark:text-secondary-400" />
+                      <span className="font-medium">Attendance</span>
+                    </Link>
+                  </motion.div>
+
+                  <motion.div
+                    custom={2}
+                    variants={menuItemVariants}
+                    initial="hidden"
+                    animate="visible"
                   >
-                    <ImCamera className="mr-2 text-gray-400" />
-                    Photos
-                  </Link>
-                  <a
-                    href={`${apiUrl}/upload`}
-                    onClick={() => setIsMenuOpen(false)}
-                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                    <Link
+                      to="/photo"
+                      onClick={() => setIsMenuOpen(false)}
+                      className="flex items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      <ImCamera className="mr-3 text-lg text-gray-600 dark:text-gray-400" />
+                      <span className="font-medium">Photos</span>
+                    </Link>
+                  </motion.div>
+
+                  <motion.div
+                    custom={3}
+                    variants={menuItemVariants}
+                    initial="hidden"
+                    animate="visible"
                   >
-                    <FaUpload className="mr-2 text-green-500" />
-                    Upload
-                  </a>
-                  <Link
-                    to="/map"
-                    onClick={() => setIsMenuOpen(false)}
-                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                    <a
+                      href={`${apiUrl}/upload`}
+                      onClick={() => setIsMenuOpen(false)}
+                      className="flex items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      <FaUpload className="mr-3 text-lg text-success-600 dark:text-success-400" />
+                      <span className="font-medium">Upload</span>
+                    </a>
+                  </motion.div>
+
+                  <motion.div
+                    custom={4}
+                    variants={menuItemVariants}
+                    initial="hidden"
+                    animate="visible"
                   >
-                    <FaMapLocationDot className="mr-2 text-yellow-500" />
-                    Map
-                  </Link>
-                  <button
-                    onClick={() => {
-                      toggleTheme();
-                      setIsMenuOpen(false);
-                    }}
-                    className="flex items-center w-full px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform focus:outline-none"
+                    <Link
+                      to="/map"
+                      onClick={() => setIsMenuOpen(false)}
+                      className="flex items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      <FaMapLocationDot className="mr-3 text-lg text-warning-600 dark:text-warning-400" />
+                      <span className="font-medium">Map</span>
+                    </Link>
+                  </motion.div>
+
+                  <motion.div
+                    custom={5}
+                    variants={menuItemVariants}
+                    initial="hidden"
+                    animate="visible"
                   >
-                    {currentTheme === "dark" ? (
-                      <>
-                        <FaSun className="mr-2 text-yellow-500" />
-                        Light Mode
-                      </>
-                    ) : (
-                      <>
-                        <FaMoon className="mr-2 text-white" />
-                        Dark Mode
-                      </>
-                    )}
-                  </button>
-                  <button
-                    onClick={() =>
-                      logoutUser(navigate, () => setIsMenuOpen(false))
-                    }
-                    className="flex items-center w-full px-2 py-1 border-t border-gray-700 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform focus:outline-none mt-2 text-red-400"
+                    <button
+                      onClick={() => {
+                        toggleTheme();
+                        setIsMenuOpen(false);
+                      }}
+                      className="w-full flex items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      {currentTheme === "dark" ? (
+                        <>
+                          <FaSun className="mr-3 text-lg text-warning-600 dark:text-warning-400" />
+                          <span className="font-medium">Light Mode</span>
+                        </>
+                      ) : (
+                        <>
+                          <FaMoon className="mr-3 text-lg text-primary-900 dark:text-primary-300" />
+                          <span className="font-medium">Dark Mode</span>
+                        </>
+                      )}
+                    </button>
+                  </motion.div>
+
+                  <div className="border-t border-gray-200 dark:border-gray-800 my-2"></div>
+
+                  <motion.div
+                    custom={6}
+                    variants={menuItemVariants}
+                    initial="hidden"
+                    animate="visible"
                   >
-                    Logout
-                  </button>
+                    <button
+                      onClick={handleLogout}
+                      className="w-full flex items-center p-3 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30 text-red-600 dark:text-red-400 transition-colors"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-5 w-5 mr-3"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+                        />
+                      </svg>
+                      <span className="font-medium">Logout</span>
+                    </button>
+                  </motion.div>
                 </>
               ) : (
                 <>
-                  <Link
-                    to="/login"
-                    onClick={() => setIsMenuOpen(false)}
-                    className="flex items-center px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform"
+                  <motion.div
+                    custom={0}
+                    variants={menuItemVariants}
+                    initial="hidden"
+                    animate="visible"
                   >
-                    Login
-                  </Link>
-                  <button
-                    onClick={() => {
-                      toggleTheme();
-                      setIsMenuOpen(false);
-                    }}
-                    className="flex items-center w-full px-2 py-1 hover:bg-gray-700 rounded text-lg active:scale-95 transition-transform focus:outline-none mt-2"
+                    <Link
+                      to="/login"
+                      onClick={() => setIsMenuOpen(false)}
+                      className="flex items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-5 w-5 mr-3 text-primary-600 dark:text-primary-400"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"
+                        />
+                      </svg>
+                      <span className="font-medium">Login</span>
+                    </Link>
+                  </motion.div>
+
+                  <motion.div
+                    custom={1}
+                    variants={menuItemVariants}
+                    initial="hidden"
+                    animate="visible"
                   >
-                    {currentTheme === "dark" ? (
-                      <>
-                        <FaSun className="mr-2 text-yellow-500" />
-                        Light Mode
-                      </>
-                    ) : (
-                      <>
-                        <FaMoon className="mr-2 text-white" />
-                        Dark Mode
-                      </>
-                    )}
-                  </button>
+                    <button
+                      onClick={() => {
+                        toggleTheme();
+                        setIsMenuOpen(false);
+                      }}
+                      className="w-full flex items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                    >
+                      {currentTheme === "dark" ? (
+                        <>
+                          <FaSun className="mr-3 text-lg text-warning-600 dark:text-warning-400" />
+                          <span className="font-medium">Light Mode</span>
+                        </>
+                      ) : (
+                        <>
+                          <FaMoon className="mr-3 text-lg text-primary-900 dark:text-primary-300" />
+                          <span className="font-medium">Dark Mode</span>
+                        </>
+                      )}
+                    </button>
+                  </motion.div>
                 </>
               )}
             </div>

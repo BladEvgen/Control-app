@@ -213,26 +213,18 @@ const PhotoDashboard: React.FC = () => {
   const renderLoading = () => (
     <div className="flex flex-col justify-center items-center h-screen text-gray-700">
       <LoaderComponent />
-      <motion.p
-        className="mt-6 text-xl font-medium text-gray-200"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.5 }}
-      >
-        Загрузка данных, пожалуйста, подождите...
-      </motion.p>
     </div>
   );
 
   const renderNoPhotos = () => (
     <motion.div
-      className="flex flex-col justify-center items-center h-screen text-white"
+      className="flex flex-col justify-center items-center h-screen dark:text-text-light text-text-dark"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.5 }}
     >
-      <FaSadTear className="text-6xl mb-4 " />
+      <FaSadTear className="text-6xl mb-4 dark:text-text-light text-text-black" />
       <p className="text-xl">Фотографии отсутствуют</p>
     </motion.div>
   );

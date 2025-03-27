@@ -3,48 +3,46 @@ import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import { Link } from "../RouterUtils";
 
-const buttonVariants = {
-  hover: { scale: 1.05, transition: { duration: 0.2 } },
-  tap: { scale: 0.9, transition: { duration: 0.1 } },
-};
-
-const floatingColorVariants = {
-  home: `
-    bg-gradient-to-r from-purple-500 to-purple-600
-    hover:from-purple-600 hover:to-purple-700
-    dark:from-purple-600 dark:to-purple-700
-    focus:ring-purple-400
-  `,
-  back: `
-    bg-gradient-to-r from-blue-500 to-blue-600
-    hover:from-blue-600 hover:to-blue-700
-    dark:from-blue-600 dark:to-blue-700
-    focus:ring-blue-400
-  `,
-  download: `
-    bg-gradient-to-r from-green-500 to-green-600
-    hover:from-green-600 hover:to-green-700
-    dark:from-green-600 dark:to-green-700
-    focus:ring-green-400
-  `,
-};
-
-export type FloatingButtonVariant = "home" | "back" | "download";
-
-export interface FloatingButtonProps {
-  /** Если указано, будет <Link> вместо <button>. */
-  to?: string;
-  /** Обработчик клика, если to не указано. */
+interface FloatingButtonProps {
+  /** If provided, will render a <Link> instead of a <button>. */
+  to?: string | number;
+  /** Click handler, if to is not provided. */
   onClick?: () => void;
-  /** Позиция кнопки: 'left' или 'right' внизу экрана. По умолчанию 'right'. */
+  /** Position: 'left' or 'right' at the bottom of the screen. Default is 'right'. */
   position?: "left" | "right";
-  /** Иконка внутри кнопки. */
+  /** Icon to display inside the button. */
   icon: React.ReactNode;
-  /** Рендер через портал (true) или инлайново (false). По умолчанию true. */
+  /** Render via portal (true) or inline (false). Default is true. */
   usePortal?: boolean;
-  /** Вариант цветовой схемы: 'home', 'back', или 'download'. */
-  variant: FloatingButtonVariant;
+  /** Color variant: 'home', 'back', or 'download'. */
+  variant: "home" | "back" | "download";
 }
+
+const getButtonGradient = (variant: string) => {
+  switch (variant) {
+    case "home":
+      return "bg-gradient-to-r from-secondary-600 to-secondary-700 hover:from-secondary-700 hover:to-secondary-800";
+    case "back":
+      return "bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800";
+    case "download":
+      return "bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700";
+    default:
+      return "bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800";
+  }
+};
+
+const getRingColor = (variant: string) => {
+  switch (variant) {
+    case "home":
+      return "focus:ring-secondary-500";
+    case "back":
+      return "focus:ring-primary-500";
+    case "download":
+      return "focus:ring-success-500";
+    default:
+      return "focus:ring-primary-500";
+  }
+};
 
 export const FloatingButton: FC<FloatingButtonProps> = ({
   to,
@@ -54,28 +52,37 @@ export const FloatingButton: FC<FloatingButtonProps> = ({
   usePortal = true,
   variant,
 }) => {
+  const buttonVariants = {
+    initial: { scale: 1, y: 0 },
+    hover: { scale: 1.05, y: -3 },
+    tap: { scale: 0.95 },
+  };
+
+  const buttonClassName = `
+    fixed bottom-5 
+    ${position === "right" ? "right-5" : "left-5"}
+    z-50
+    p-4
+    rounded-full
+    text-white
+    shadow-lg
+    md:hidden              
+    focus:outline-none
+    focus:ring-2
+    focus:ring-offset-2
+    ${getButtonGradient(variant)}
+    ${getRingColor(variant)}
+  `;
+
   const buttonContent = (
     <motion.button
       variants={buttonVariants}
+      initial="initial"
       whileHover="hover"
       whileTap="tap"
       onClick={onClick}
-      className={`
-        fixed bottom-4
-        ${position === "right" ? "right-4" : "left-4"}
-        z-50
-        p-4
-        rounded-full
-        text-white
-        shadow-lg
-        md:hidden              
-        focus:outline-none
-        focus:ring-2
-        focus:ring-offset-2
-        transform-gpu
-        transition-all duration-300
-        ${floatingColorVariants[variant]}
-      `}
+      className={buttonClassName}
+      aria-label={variant}
     >
       {icon}
     </motion.button>

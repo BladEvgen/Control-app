@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { MapContainer, TileLayer, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, useMap, ZoomControl } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L, { Map as LeafletMap } from "leaflet";
 import axiosInstance from "../api";
@@ -8,8 +8,8 @@ import Notification from "../components/Notification";
 import AnimatedMarker from "../components/AnimatedMarker";
 import { BaseAction } from "../schemas/BaseAction";
 import { LocationData } from "../schemas/IData";
-import { FaExpand, FaCompress } from "react-icons/fa";
-import { motion, AnimatePresence, Variants } from "framer-motion";
+import { FaExpand, FaCompress, FaCalendarAlt } from "react-icons/fa";
+import { motion, Variants } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
 import EditableDateField from "../components/EditableDateField";
 
@@ -19,21 +19,13 @@ const getFormattedDateAt = (): string => {
   return yesterday.toISOString().split("T")[0];
 };
 
-/**
- * Расчет расстояния между двумя точками на Земле с использованием формулы Хаверсина
- * @param lat1 Широта первой точки
- * @param lon1 Долгота первой точки
- * @param lat2 Широта второй точки
- * @param lon2 Долгота второй точки
- * @returns Расстояние в километрах
- */
 const calculateDistance = (
   lat1: number,
   lon1: number,
   lat2: number,
   lon2: number
 ): number => {
-  const R = 6371; // Радиус Земли в километрах
+  const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
   const a =
@@ -45,49 +37,80 @@ const calculateDistance = (
   return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 };
 
-/**
- * Кастомная функция генерации различимых цветов с использованием золотого сечения
- * @param numColors Количество необходимых цветов
- * @returns Массив строковых значений цветов в формате HSL
- */
-const generateDistinctColors = (numColors: number): string[] => {
+const generateVibrantColors = (numColors: number): string[] => {
+  const vibrantColors = [
+    "#FF0000", // Bright Red
+    "#0066FF", // Bright Blue
+    "#00CC00", // Vibrant Green
+    "#FF6600", // Bright Orange
+    "#9900FF", // Bright Purple
+    "#00CCFF", // Bright Cyan
+    "#FF0099", // Bright Magenta
+    "#FFCC00", // Bright Yellow
+    "#3300FF", // Bright Indigo
+    "#66FF00", // Vibrant Lime
+    "#FF3300", // Vibrant Deep Orange
+    "#00FFCC", // Vibrant Teal
+    "#CC00FF", // Vibrant Deep Purple
+    "#FFAA00", // Vibrant Amber
+    "#0099FF", // Vibrant Light Blue
+    "#FF0066", // Vibrant Pink
+    "#33FF00", // Vibrant Light Green
+    "#FFDD00", // Vibrant Yellow
+    "#0033FF", // Vibrant Deep Blue
+    "#FF9900", // Vibrant Orange
+  ];
+
   const colors: string[] = [];
-  const saturation = 65;
-  const lightness = 40;
 
-  const goldenRatioConjugate = 0.618033988749895;
-  let hue = Math.random();
+  if (numColors <= vibrantColors.length) {
+    return vibrantColors.slice(0, numColors);
+  }
 
-  const excludedRanges = [{ start: 50, end: 100 }];
+  colors.push(...vibrantColors);
 
-  const isExcluded = (h: number) => {
-    return excludedRanges.some((range) => h >= range.start && h <= range.end);
-  };
+  const secondaryColors = vibrantColors.map((color) => {
+    const r = parseInt(color.slice(1, 3), 16);
+    const g = parseInt(color.slice(3, 5), 16);
+    const b = parseInt(color.slice(5, 7), 16);
 
-  while (colors.length < numColors) {
-    hue += goldenRatioConjugate;
-    hue %= 1;
-    const h = Math.floor(hue * 360);
+    const brighterColor = `#${Math.min(255, Math.floor(r * 1.2))
+      .toString(16)
+      .padStart(2, "0")}${Math.min(255, Math.floor(g * 1.2))
+      .toString(16)
+      .padStart(2, "0")}${Math.min(255, Math.floor(b * 1.2))
+      .toString(16)
+      .padStart(2, "0")}`;
 
-    if (!isExcluded(h)) {
-      colors.push(`hsl(${h}, ${saturation}%, ${lightness}%)`);
+    return brighterColor;
+  });
+
+  colors.push(...secondaryColors);
+
+  if (colors.length < numColors) {
+    for (let i = colors.length; i < numColors; i++) {
+      const r = Math.floor(Math.random() * 155 + 100)
+        .toString(16)
+        .padStart(2, "0");
+      const g = Math.floor(Math.random() * 155 + 100)
+        .toString(16)
+        .padStart(2, "0");
+      const b = Math.floor(Math.random() * 155 + 100)
+        .toString(16)
+        .padStart(2, "0");
+      colors.push(`#${r}${g}${b}`);
     }
   }
 
   return colors;
 };
 
-/**
- * Функция присвоения цветов локациям с учетом близости
- * @param locations Массив локаций
- * @param distanceThreshold Порог расстояния в километрах для определения соседей
- * @returns Массив цветов, индексированный по индексам локаций
- */
-const assignColors = (
+const assignHighContrastColors = (
   locations: LocationData[],
   distanceThreshold: number
 ): string[] => {
   const numLocations = locations.length;
+
   const adjacencyList: number[][] = Array.from(
     { length: numLocations },
     () => []
@@ -108,13 +131,19 @@ const assignColors = (
     }
   }
 
-  const colorPalette = generateDistinctColors(numLocations * 4);
+  const colorPalette = generateVibrantColors(Math.max(numLocations * 2, 40));
 
   const assignedColors: string[] = Array(numLocations).fill("");
   const colorAssigned: number[] = Array(numLocations).fill(-1);
 
-  for (let i = 0; i < numLocations; i++) {
+  const locationIndices = Array.from(
+    { length: numLocations },
+    (_, i) => i
+  ).sort((a, b) => adjacencyList[b].length - adjacencyList[a].length);
+
+  for (const i of locationIndices) {
     const usedColors = new Set<number>();
+
     for (const neighbor of adjacencyList[i]) {
       if (colorAssigned[neighbor] !== -1) {
         usedColors.add(colorAssigned[neighbor]);
@@ -126,7 +155,6 @@ const assignColors = (
       colorIndex++;
     }
 
-    // Присвоение цвета
     colorAssigned[i] = colorIndex;
     assignedColors[i] = colorPalette[colorIndex % colorPalette.length];
   }
@@ -135,84 +163,50 @@ const assignColors = (
 };
 
 const containerVariants: Variants = {
-  hidden: { opacity: 0, y: 50 },
+  hidden: { opacity: 0 },
   visible: {
     opacity: 1,
-    y: 0,
     transition: { duration: 0.5, ease: "easeOut" },
   },
-  exit: { opacity: 0, y: -50, transition: { duration: 0.3, ease: "easeIn" } },
+  exit: { opacity: 0, transition: { duration: 0.3, ease: "easeIn" } },
 };
 
-const formVariants: Variants = {
-  hidden: { opacity: 0, scale: 0.8 },
+const mapContainerVariants: Variants = {
+  hidden: { opacity: 0, scale: 0.98 },
   visible: {
     opacity: 1,
     scale: 1,
-    transition: { delay: 0.3, duration: 0.5, ease: "easeOut" },
+    transition: { delay: 0.2, duration: 0.5, ease: "easeOut" },
   },
 };
 
-const buttonVariants: Variants = {
-  hover: {
-    scale: 1.2,
-    rotate: 15,
-    transition: {
-      duration: 0.3,
-      repeat: Infinity,
-      repeatType: "loop" as const,
-      ease: "easeOut",
-    },
-  },
-  tap: {
-    scale: 0.9,
-    rotate: -15,
-    transition: { duration: 0.2 },
-  },
-  initial: {
-    scale: 1,
-    rotate: 0,
-  },
-};
-
-const mapVariants: Variants = {
-  hidden: { opacity: 0, scale: 0.95 },
-  visible: {
-    opacity: 1,
-    scale: 1,
-    transition: { delay: 0.5, duration: 0.5, ease: "easeOut" },
-  },
-  exit: {
-    opacity: 0,
-    scale: 0.95,
-    transition: { duration: 0.3, ease: "easeIn" },
-  },
-};
-
-const loadingVariants: Variants = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { duration: 0.5 } },
-  exit: { opacity: 0, transition: { duration: 0.3 } },
-};
-
-const errorVariants: Variants = {
+const dateVariants: Variants = {
   hidden: { opacity: 0, y: -20 },
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.3, ease: "easeOut" },
+    transition: { delay: 0.1, duration: 0.4 },
   },
-  exit: { opacity: 0, y: 20, transition: { duration: 0.2, ease: "easeIn" } },
+};
+
+const buttonVariants: Variants = {
+  initial: { scale: 1 },
+  hover: { scale: 1.05 },
+  tap: { scale: 0.95 },
 };
 
 const useFullscreenChange = (callback: () => void) => {
   useEffect(() => {
-    const handleFullscreenChange = () => {
-      callback();
-    };
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("fullscreenchange", callback);
+    document.addEventListener("webkitfullscreenchange", callback);
+    document.addEventListener("mozfullscreenchange", callback);
+    document.addEventListener("MSFullscreenChange", callback);
+
     return () => {
-      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("fullscreenchange", callback);
+      document.removeEventListener("webkitfullscreenchange", callback);
+      document.removeEventListener("mozfullscreenchange", callback);
+      document.removeEventListener("MSFullscreenChange", callback);
     };
   }, [callback]);
 };
@@ -238,24 +232,38 @@ const MapEventHandler: React.FC<{
 
 const MapDashboard: React.FC = () => {
   const [locations, setLocations] = useState<LocationData[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [visiblePopup, setVisiblePopup] = useState<string | null>(null);
   const [isMarkersVisible, setIsMarkersVisible] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [zoomLevel, setZoomLevel] = useState<number>(13.5);
-  const mapRef = useRef<LeafletMap | null>(null);
   const [assignedColors, setAssignedColors] = useState<string[]>([]);
   const [dateAt, setDateAt] = useState<string>(getFormattedDateAt());
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-  const formRef = useRef<HTMLDivElement>(null);
 
-  /**
-   * Функция для загрузки данных о локациях
-   * @param selectedDate - Выбранная дата
-   */
+  const mapRef = useRef<LeafletMap | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+
+  const dispatch = (action: BaseAction<any>) => {
+    switch (action.type) {
+      case BaseAction.SET_LOADING:
+        setLoading(action.payload as boolean);
+        break;
+      case BaseAction.SET_DATA:
+        setLocations(action.payload as LocationData[]);
+        setLoading(false);
+        break;
+      case BaseAction.SET_ERROR:
+        setError(action.payload as string);
+        setLoading(false);
+        break;
+      default:
+        break;
+    }
+  };
+
   const fetchLocations = async (selectedDate: string) => {
-    setLoading(true);
+    dispatch(new BaseAction(BaseAction.SET_LOADING, true));
     try {
       const response = await axiosInstance.get(
         `${apiUrl}/api/locations?employees=true&date_at=${selectedDate}`
@@ -263,10 +271,11 @@ const MapDashboard: React.FC = () => {
       const fetchedLocations: LocationData[] = response.data.filter(
         (loc: LocationData) => loc.employees > 0
       );
-      setLocations(fetchedLocations);
+
+      dispatch(new BaseAction(BaseAction.SET_DATA, fetchedLocations));
 
       const distanceThreshold = 0.25;
-      const tempAssignedColors = assignColors(
+      const tempAssignedColors = assignHighContrastColors(
         fetchedLocations,
         distanceThreshold
       );
@@ -278,13 +287,11 @@ const MapDashboard: React.FC = () => {
         );
       }
 
-      new BaseAction(BaseAction.SET_DATA, fetchedLocations);
-    } catch (error) {
-      setError("Не удалось загрузить данные.");
-      new BaseAction<string>(BaseAction.SET_ERROR, "Ошибка загрузки данных");
-    } finally {
-      setLoading(false);
       setIsMarkersVisible(true);
+    } catch (error) {
+      dispatch(
+        new BaseAction(BaseAction.SET_ERROR, "Не удалось загрузить данные.")
+      );
     }
   };
 
@@ -292,10 +299,28 @@ const MapDashboard: React.FC = () => {
     fetchLocations(dateAt);
   }, [dateAt]);
 
-  /**
-   * Обработчик изменения даты
-   * @param event - Событие изменения ввода
-   */
+  useEffect(() => {
+    if (locations.length > 0) {
+      const timeoutId = setTimeout(() => {
+        if (mapRef.current && mapRef.current.getContainer()) {
+          try {
+            mapRef.current.setView(
+              [locations[0].lat, locations[0].lng],
+              mapRef.current.getZoom(),
+              {
+                animate: false,
+              }
+            );
+          } catch (error) {
+            console.error("Error setting map view:", error);
+          }
+        }
+      }, 500);
+
+      return () => clearTimeout(timeoutId);
+    }
+  }, [locations]);
+
   const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedDate = event.target.value;
     const today = new Date().toISOString().split("T")[0];
@@ -309,11 +334,6 @@ const MapDashboard: React.FC = () => {
     }
   };
 
-  /**
-   * Обработчик переключения видимости попапа
-   * @param location - Локация, на которую кликнули
-   * @param index - Индекс локации
-   */
   const toggleVisibility = (location: LocationData, index: number) => {
     const identifier = `${location.name}-${location.address}-${index}`;
     setVisiblePopup(visiblePopup === identifier ? null : identifier);
@@ -335,24 +355,62 @@ const MapDashboard: React.FC = () => {
   });
 
   const handleFullscreenToggle = () => {
+    // Scroll to top immediately when toggling fullscreen
+    window.scrollTo(0, 0);
+
+    // Set a timeout to ensure scrolling happens after DOM updates
+    setTimeout(() => {
+      window.scrollTo(0, 0);
+
+      // Center the map if it exists
+      if (mapRef.current) {
+        const currentCenter = mapRef.current.getCenter();
+        mapRef.current.setView(currentCenter, mapRef.current.getZoom());
+      }
+    }, 100);
+
     if (!isFullscreen) {
-      document.documentElement.requestFullscreen?.();
-      setIsFullscreen(true);
-      setTimeout(() => {
-        formRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "start",
-        });
-      }, 300);
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen();
+      } else if ((document.documentElement as any).webkitRequestFullscreen) {
+        (document.documentElement as any).webkitRequestFullscreen();
+      } else if ((document.documentElement as any).mozRequestFullScreen) {
+        (document.documentElement as any).mozRequestFullScreen();
+      } else if ((document.documentElement as any).msRequestFullscreen) {
+        (document.documentElement as any).msRequestFullscreen();
+      }
     } else {
-      document.exitFullscreen?.();
-      setIsFullscreen(false);
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      } else if ((document as any).webkitExitFullscreen) {
+        (document as any).webkitExitFullscreen();
+      } else if ((document as any).mozCancelFullScreen) {
+        (document as any).mozCancelFullScreen();
+      } else if ((document as any).msExitFullscreen) {
+        (document as any).msExitFullscreen();
+      }
     }
   };
 
   const handleFullscreenChange = useCallback(() => {
-    const isFs = !!document.fullscreenElement;
-    setIsFullscreen(isFs);
+    const newFullscreenState =
+      !!document.fullscreenElement ||
+      !!(document as any).webkitFullscreenElement ||
+      !!(document as any).mozFullScreenElement ||
+      !!(document as any).msFullscreenElement;
+
+    setIsFullscreen(newFullscreenState);
+
+    // Recenter map after fullscreen change
+    setTimeout(() => {
+      window.scrollTo(0, 0);
+
+      if (mapRef.current) {
+        const currentCenter = mapRef.current.getCenter();
+        mapRef.current.invalidateSize();
+        mapRef.current.setView(currentCenter, mapRef.current.getZoom());
+      }
+    }, 300);
   }, []);
 
   useFullscreenChange(handleFullscreenChange);
@@ -363,139 +421,154 @@ const MapDashboard: React.FC = () => {
     }
   }, []);
 
-  if (loading)
-    return (
-      <motion.div
-        className="flex flex-col justify-center items-center h-screen text-white"
-        variants={loadingVariants}
-        initial="hidden"
-        animate="visible"
-        exit="exit"
-      >
-        <LoaderComponent />
-        <motion.p
-          className="mt-4 text-lg font-medium text-white"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.3, duration: 0.5 }}
-        >
-          Загрузка данных, пожалуйста, подождите...
-        </motion.p>
-      </motion.div>
-    );
+  // Scroll to top when exiting
+  useEffect(() => {
+    return () => {
+      window.scrollTo(0, 0);
+    };
+  }, []);
 
-  if (error)
+  if (loading) {
     return (
-      <AnimatePresence>
-        <motion.div
-          variants={errorVariants}
-          initial="hidden"
-          animate="visible"
-          exit="exit"
-          className="flex justify-center items-center h-screen bg-red-100"
-        >
-          <Notification message={error} type="error" link="/" />
-        </motion.div>
-      </AnimatePresence>
+      <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-primary-900 to-secondary-900">
+        <LoaderComponent />
+      </div>
     );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-primary-900 to-secondary-900">
+        <Notification message={error} type="error" link="/" />
+      </div>
+    );
+  }
 
   return (
-    <AnimatePresence>
+    <motion.div
+      className="relative min-h-screen bg-gradient-to-b from-gray-900 to-black"
+      variants={containerVariants}
+      initial="hidden"
+      animate="visible"
+      exit="exit"
+    >
+      {/* Background pattern overlay */}
+      <div
+        className="absolute inset-0 z-0 opacity-10 pointer-events-none"
+        style={{
+          backgroundImage:
+            "radial-gradient(rgba(255,255,255,0.1) 1px, transparent 1px)",
+          backgroundSize: "30px 30px",
+        }}
+      />
+
       <motion.div
-        className="relative h-screen w-screen"
-        variants={containerVariants}
+        className="absolute top-4 right-6 z-10 bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden"
+        variants={dateVariants}
         initial="hidden"
         animate="visible"
-        exit="exit"
       >
-        <motion.div
-          ref={formRef}
-          className={`flex flex-col items-center justify-center mb-4 transition-all duration-500 ${
-            isFullscreen ? "mt-4" : "mt-10"
-          }`}
-          variants={formVariants}
-          initial="hidden"
-          animate="visible"
-          exit="hidden"
-        >
-          <EditableDateField
-            label="Дата данных:"
-            value={dateAt}
-            onChange={handleDateChange}
-            labelClassName="mb-2 text-white text-lg"
-            inputClassName="w-full max-w-sm p-3 border border-gray-300 rounded-lg shadow-lg text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-base"
-            displayClassName="w-full max-w-sm cursor-pointer text-center hover:underline transition-all duration-200 text-white text-base"
-          />
-        </motion.div>
+        <div className="p-4 flex items-center gap-3">
+          <FaCalendarAlt className="text-primary-600 dark:text-primary-400" />
+          <div>
+            <EditableDateField
+              label="Дата данных"
+              value={dateAt}
+              onChange={handleDateChange}
+              containerClassName="m-0 p-0"
+              labelClassName="text-xs text-gray-500 dark:text-gray-400 mb-0 mr-2"
+              displayClassName="font-medium text-gray-800 dark:text-gray-200 hover:text-primary-600 dark:hover:text-primary-400 cursor-pointer"
+            />
+          </div>
+        </div>
+      </motion.div>
 
-        <motion.button
-          onClick={handleFullscreenToggle}
-          className="fixed top-4 right-4 sm:right-6 md:right-8 z-20 bg-white text-gray-700 p-3 rounded-full shadow-lg hover:bg-gray-100 transition-all duration-200"
-          aria-label={
-            isFullscreen
-              ? "Выйти из полноэкранного режима"
-              : "Перейти в полноэкранный режим"
-          }
-          variants={buttonVariants}
-          initial="initial"
-          whileHover="hover"
-          whileTap="tap"
-        >
-          {isFullscreen ? (
-            <FaCompress className="w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7" />
-          ) : (
-            <FaExpand className="w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7" />
-          )}
-        </motion.button>
+      {/* Fullscreen toggle button */}
+      <motion.button
+        onClick={handleFullscreenToggle}
+        className="absolute top-4 left-4 z-20 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 p-3 rounded-full shadow-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200"
+        aria-label={
+          isFullscreen
+            ? "Выйти из полноэкранного режима"
+            : "Полноэкранный режим"
+        }
+        variants={buttonVariants}
+        initial="initial"
+        whileHover="hover"
+        whileTap="tap"
+      >
+        {isFullscreen ? (
+          <FaCompress className="w-5 h-5" />
+        ) : (
+          <FaExpand className="w-5 h-5" />
+        )}
+      </motion.button>
 
+      {/* Main map container with responsive sizing */}
+      <div className="flex justify-center items-center w-full h-screen py-8 px-4">
         <motion.div
           ref={mapContainerRef}
-          className="max-w-[90%] max-h-[90%] mx-auto my-4 border-2 rounded-lg shadow-lg overflow-hidden"
-          style={{ padding: "2%", height: isFullscreen ? "95vh" : "80vh" }}
-          variants={mapVariants}
+          variants={mapContainerVariants}
           initial="hidden"
           animate="visible"
-          exit="exit"
+          className={`relative transition-all duration-700 ease-in-out ${
+            isFullscreen
+              ? "w-[105%] h-[98vh] -mx-6"
+              : "w-[85%] h-[70vh] mx-auto"
+          }`}
         >
-          <MapContainer
-            center={[43.2644734, 76.9393907]}
-            zoom={zoomLevel}
+          {/* Map inner container with shadow and border effects */}
+          <div
+            className={`w-full h-full overflow-hidden shadow-2xl transition-all duration-700 ease-in-out ${
+              isFullscreen
+                ? "rounded-none"
+                : "rounded-xl border-4 border-gray-800"
+            }`}
             style={{
-              width: "100%",
-              height: "100%",
-              borderRadius: "12px",
-              boxShadow: "0 4px 12px rgba(0, 0, 0, 0.1)",
-              transition: "filter 0.5s ease",
+              boxShadow: isFullscreen
+                ? "0 0 40px 10px rgba(0, 0, 0, 0.5)"
+                : "0 4px 30px rgba(0, 0, 0, 0.5)",
             }}
-            tap={false}
           >
-            <MapEventHandler mapRef={mapRef} handleZoom={handleZoom} />
+            <MapContainer
+              center={[54.328962, 48.389899]}
+              zoom={zoomLevel}
+              style={{ width: "100%", height: "100%" }}
+              zoomControl={false}
+              className="z-10"
+            >
+              <ZoomControl position="bottomright" />
+              <MapEventHandler mapRef={mapRef} handleZoom={handleZoom} />
 
-            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              <TileLayer
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              />
 
-            {locations.map((location, index) => {
-              const identifier = `${location.name}-${location.address}-${index}`;
-              return (
-                <AnimatedMarker
-                  key={identifier}
-                  position={[location.lat, location.lng]}
-                  name={location.name}
-                  address={location.address}
-                  employees={location.employees}
-                  isVisible={isMarkersVisible}
-                  icon={customIcon}
-                  onClick={() => toggleVisibility(location, index)}
-                  popupVisible={visiblePopup === identifier}
-                  radius={160}
-                  color={assignedColors[index]}
-                  zoomLevel={zoomLevel}
-                />
-              );
-            })}
-          </MapContainer>
+              {locations.map((location, index) => {
+                const identifier = `${location.name}-${location.address}-${index}`;
+                return (
+                  <AnimatedMarker
+                    key={identifier}
+                    position={[location.lat, location.lng]}
+                    name={location.name}
+                    address={location.address}
+                    employees={location.employees}
+                    isVisible={isMarkersVisible}
+                    icon={customIcon}
+                    onClick={() => toggleVisibility(location, index)}
+                    popupVisible={visiblePopup === identifier}
+                    radius={160}
+                    color={assignedColors[index]}
+                    zoomLevel={zoomLevel}
+                  />
+                );
+              })}
+            </MapContainer>
+          </div>
         </motion.div>
-      </motion.div>
-    </AnimatePresence>
+      </div>
+    </motion.div>
   );
 };
 
