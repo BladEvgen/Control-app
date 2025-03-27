@@ -405,52 +405,144 @@ def add_api_key_header(func):
 
 
 def send_password_reset_email(user, request):
-    reset_link = f"{request.scheme}://{request.get_host()}{reverse('password_reset_confirm', args=[models.PasswordResetToken.generate_token(user)])}"
+    """
+    Send a password reset email to the user with branding and design consistent with the website footer.
 
-    subject = "Инструкция по сбросу пароля"
-    html_message = format_html(
-        """
-        <div style="font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ececec; border-radius: 10px; background-color: #ffffff;">
-            <h2 style="color: #007bff; text-align: center; margin-bottom: 20px;">Сброс пароля</h2>
-            <p style="color: #333; line-height: 1.6; margin-bottom: 20px; text-align: center;">
-                Здравствуйте, {username}. Вы запросили сброс пароля для своего аккаунта. 
-                Пожалуйста, нажмите кнопку ниже, чтобы сбросить пароль.
-            </p>
-            <div style="text-align: center; margin-bottom: 30px;">
-                <a href="{reset_link}" style="display: inline-block; padding: 15px 30px; color: #ffffff; background-color: #007bff; text-decoration: none; border-radius: 5px; font-size: 18px; font-weight: bold;">
-                    Сбросить пароль
-                </a>
-            </div>
-            <p style="color: #555; line-height: 1.6; margin-bottom: 20px; text-align: center;">
-                Ссылка для сброса пароля действительна в течение <strong>1 часа</strong>. Если вы не запрашивали сброс пароля, просто проигнорируйте это письмо.
-            </p>
-            <hr style="border: none; border-top: 1px solid #ececec; margin: 30px 0;">
-            <p style="font-size: 12px; color: #999; text-align: center;">
-                Мы рады помочь вам сохранить безопасность вашего аккаунта. 
-            </p>
-        </div>
-        """,
-        username=user.username,
-        reset_link=reset_link,
-    )
+    Args:
+        user: The user object who requested password reset
+        request: The request object to build the reset URL
 
-    plain_message = (
-        f"Здравствуйте, {user.username}!\n\n"
-        "Вы получили это письмо, потому что был запрошен сброс пароля для вашего аккаунта.\n\n"
-        f"Для сброса пароля перейдите по следующей ссылке: {reset_link}\n\n"
-        "Эта ссылка будет действительна в течение 1 часа. Для вашей безопасности не передавайте эту ссылку другим лицам.\n\n"
-        "Если вы не запрашивали сброс пароля, проигнорируйте это письмо, и ваш пароль останется неизменным.\n\n"
-        "С уважением,\n"
-        "Команда поддержки."
-    )
+    Returns:
+        bool: True if email was sent successfully, False otherwise
+    """
+    try:
+        token = models.PasswordResetToken.generate_token(user)
 
-    send_mail(
-        subject,
-        plain_message,
-        settings.DEFAULT_FROM_EMAIL,
-        [user.email],
-        html_message=html_message,
-    )
+        site_name = getattr(settings, 'SITE_NAME', "KRMU")
+
+        reset_scheme = 'https' if request.is_secure() else request.scheme
+        reset_link = f"{reset_scheme}://{request.get_host()}{reverse('password_reset_confirm', args=[token])}"
+
+        expiry_time = timezone.now() + datetime.timedelta(hours=1)
+        expiry_time_str = expiry_time.strftime("%H:%M %d.%m.%Y")
+
+        current_year = timezone.now().year
+
+        user_display_name = getattr(user, 'first_name', user.username) or user.username
+
+        subject = f"Сброс пароля на сайте {site_name}"
+
+        html_message = format_html(
+            """
+            <!DOCTYPE html>
+            <html lang="ru">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Сброс пароля</title>
+            </head>
+            <body style="margin: 0; padding: 0; font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', sans-serif; background-color: #f7f9fc; color: #333333;">
+                <div style="max-width: 600px; margin: 20px auto; padding: 30px; border-radius: 12px; background-color: #ffffff; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
+                    <div style="text-align: center; margin-bottom: 30px;">
+                        <h1 style="color: #2563EB; font-size: 24px; margin: 0 0 5px 0;">Сброс пароля</h1>
+                        <p style="color: #6B7280; font-size: 16px; margin: 0;">Инструкция по восстановлению доступа</p>
+                    </div>
+                    
+                    <div style="padding: 20px; background-color: #F3F4F6; border-radius: 8px; margin-bottom: 25px;">
+                        <p style="color: #4B5563; line-height: 1.6; margin: 0 0 15px 0;">
+                            Здравствуйте, <strong>{user_name}</strong>!
+                        </p>
+                        <p style="color: #4B5563; line-height: 1.6; margin: 0 0 15px 0;">
+                            Мы получили запрос на сброс пароля для вашего аккаунта. Если это были вы, используйте кнопку ниже для создания нового пароля.
+                        </p>
+                    </div>
+                    
+                    <div style="text-align: center; margin-bottom: 30px;">
+                        <a href="{reset_link}" style="display: inline-block; padding: 14px 32px; color: #ffffff; background-color: #2563EB; text-decoration: none; border-radius: 6px; font-size: 16px; font-weight: 600; transition: background-color 0.2s ease;">
+                            Сбросить пароль
+                        </a>
+                    </div>
+                    
+                    <div style="border-left: 4px solid #FCD34D; padding: 12px 15px; background-color: #FFFBEB; margin-bottom: 25px; border-radius: 0 6px 6px 0;">
+                        <p style="color: #92400E; font-size: 14px; line-height: 1.5; margin: 0;">
+                            <strong>Важно:</strong> Ссылка действительна до <strong>{expiry_time}</strong>.<br>
+                            Если вы не запрашивали сброс пароля, пожалуйста, игнорируйте это письмо или обратитесь в службу поддержки.
+                        </p>
+                    </div>
+                    
+                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #E5E7EB; text-align: center;">
+                        <div style="display: inline-block; margin: 0 15px 15px 0;">
+                            <a href="{site_url}" style="color: #4B5563; text-decoration: none; font-size: 14px;">
+                                Home
+                            </a>
+                        </div>
+                        <div style="display: inline-block; margin: 0 15px 15px 0;">
+                            <a href="https://new.krmu.edu.kz" style="color: #4B5563; text-decoration: none; font-size: 14px;">
+                                KRMU
+                            </a>
+                        </div>
+                        <div style="display: inline-block; margin: 0 0 15px 0;">
+                            <a href="https://new.krmu.edu.kz/О_нас/Об_университете/" style="color: #4B5563; text-decoration: none; font-size: 14px;">
+                                About Us
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """,
+            user_name=user_display_name,
+            reset_link=reset_link,
+            expiry_time=expiry_time_str,
+            site_name=site_name,
+            current_year=current_year,
+            site_url=f"{reset_scheme}://{request.get_host()}/",
+        )
+
+        plain_message = (
+            f"Сброс пароля на сайте {site_name}\n"
+            f"=============================================\n\n"
+            f"Здравствуйте, {user_display_name}!\n\n"
+            "Мы получили запрос на сброс пароля для вашего аккаунта.\n\n"
+            f"Для создания нового пароля перейдите по следующей ссылке:\n{reset_link}\n\n"
+            f"Важно: Ссылка действительна до {expiry_time_str}.\n\n"
+            "Если вы не запрашивали сброс пароля, пожалуйста, игнорируйте это письмо\n"
+            "или обратитесь в службу поддержки.\n\n"
+            "---\n"
+            "Home: https://krmu.edu.kz\n"
+            "KRMU: https://new.krmu.edu.kz\n"
+            "About Us: https://new.krmu.edu.kz/О_нас/Об_университете/\n\n"
+            f"© {current_year} {site_name}, Inc."
+        )
+
+        success = send_mail(
+            subject=subject,
+            message=plain_message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            html_message=html_message,
+            fail_silently=False,
+        )
+
+        if success:
+            logger.info(f"Password reset email sent for user ID: {user.id}")
+
+            if hasattr(models, 'SecurityAuditLog'):
+                models.SecurityAuditLog.objects.create(
+                    user=user,
+                    action_type='password_reset_request',
+                    ip_address=request.META.get('REMOTE_ADDR', ''),
+                    user_agent=request.META.get('HTTP_USER_AGENT', ''),
+                )
+
+            return True
+        else:
+            logger.error(f"Failed to send password reset email to user ID: {user.id}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Failed to send password reset email: {str(e)}")
+        return False
 
 
 def get_user_timezone(request):
