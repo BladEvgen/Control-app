@@ -183,7 +183,7 @@ const ChildDepartmentPage = () => {
   };
 
   return (
-    <AnimatePresence mode="wait">
+    <AnimatePresence mode="sync">
       <motion.div
         className="max-w-7xl mx-auto pb-10"
         variants={containerVariants}

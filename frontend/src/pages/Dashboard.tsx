@@ -318,7 +318,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
       animate="visible"
       variants={containerVariants}
     >
-      <h1 className="text-3xl md:text-4xl lg:text-5xl font-bold mb-4 text-center text-gray-200">
+      <h1 className="text-3xl md:text-4xl lg:text-5xl font-bold mb-4 text-center text-text-dark dark:text-text-light">
         Посещаемость отдела {stats.department_name}
       </h1>
       <h2 className="text-xl md:text-2xl mb-6 text-center text-gray-400">
@@ -328,8 +328,8 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
             value={selectedDate}
             onChange={(e) => setSelectedDate(e.target.value)}
             containerClassName="inline-block"
-            inputClassName="bg-transparent border-b border-gray-400 text-center focus:outline-none transition-all duration-200 text-gray-200"
-            displayClassName="cursor-pointer hover:underline transition-all duration-200"
+            inputClassName="bg-transparent border-b border-gray-400 text-center focus:outline-none transition-all duration-200 text-text-dark dark:text-text-light"
+            displayClassName="cursor-pointer hover:underline transition-all duration-200 gray-200"
           />
         </span>
       </h2>
