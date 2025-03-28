@@ -9,10 +9,10 @@ app = Celery('django_settings')
 app.conf.update(
     broker_url='redis://localhost:6379/0',
     result_backend='redis://localhost:6379/0',
-    broker_connection_retry_on_startup=True,  # Повторное подключение при старте
-    task_soft_time_limit=21600,  # Ограничение времени выполнения задачи (6 часов)
-    task_time_limit=21660,  # Жёсткое ограничение времени выполнения задачи (6 часов 1 минута)
-    worker_max_memory_per_child=2048000,  # Ограничение памяти для воркера (2 GB)
+    broker_connection_retry_on_startup=True,
+    task_soft_time_limit=21600,
+    task_time_limit=21660,
+    worker_max_memory_per_child=2048000,
 )
 
 app.conf.task_serializer = 'json'
