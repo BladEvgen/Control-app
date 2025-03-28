@@ -1,81 +1,195 @@
-<nav class="bg-[#123075] px-6 py-4 shadow-md">
-  <div class="flex justify-between items-center container mx-auto">
-    <a href="{%url 'react_app'%}" class="text-white text-2xl font-bold flex items-center">
-      Staff App
-      <i class="fas fa-user-clock ml-2"></i>
-    </a>
+<header class="bg-[#123075] shadow-md sticky top-0 z-50">
+  <div class="container mx-auto px-4">
+    <div class="flex justify-between items-center py-3">
+      <!-- Logo -->
+      <a href="{%url 'react_app'%}" class="text-white text-2xl font-bold flex items-center">
+        Staff App
+        <i class="fas fa-user-clock ml-2"></i>
+      </a>
 
+      <!-- Desktop Navigation -->
+      <div class="hidden lg:flex items-center space-x-4">
 
-    <div class="hidden lg:flex items-center space-x-4">
-      {% if request.user.is_authenticated %}
-      <div class="relative">
-        <button
-          class="flex items-center bg-blue-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded focus:outline-none"
-          id="profile-button">
-          {{ request.user.username }} <i class="fas fa-angle-down ml-2"></i>
-        </button>
-        <div class="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg z-50 hidden" id="dropdown-menu">
-          <a href="{% url 'react_app' %}" class="block px-4 py-3 hover:bg-gray-200">
-            <i class="fas fa-home mr-2 text-blue-500"></i> Home
+          
+          <div class="relative ml-4">
+            <button id="user-menu-button" 
+                    class="flex items-center text-white bg-blue-700 hover:bg-blue-800 px-4 py-2 rounded-md transition duration-200" 
+                    aria-expanded="false" 
+                    aria-haspopup="true">
+              <span class="mr-2">{{ request.user.username }}</span>
+              <i class="fas fa-chevron-down text-xs"></i>
+            </button>
+            
+            <div id="user-dropdown" 
+                class="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg overflow-hidden z-50 hidden transition duration-200 transform origin-top-right scale-95 opacity-0"
+                role="menu" 
+                aria-orientation="vertical" 
+                aria-labelledby="user-menu-button"
+                tabindex="-1">
+              
+              <a href="{% url 'react_app' %}" class="block px-4 py-3 text-gray-700 hover:bg-gray-100 transition duration-200" role="menuitem" tabindex="-1">
+                <i class="fas fa-home mr-2 text-blue-500"></i> Home
+              </a>
+              
+              {% if request.user.is_authenticated %}
+                {% if request.user.is_superuser %}
+                <a href="{% url 'schema-swagger-ui' %}" class="block px-4 py-3 text-gray-700 hover:bg-gray-100 transition duration-200" role="menuitem" tabindex="-1">
+                  <i class="fas fa-code mr-2"></i> Swagger
+                </a>
+              {% endif %}
+              <a href="{% url 'uploadFile' %}" class="block px-4 py-3 text-gray-700 hover:bg-gray-100 transition duration-200" role="menuitem" tabindex="-1">
+                <i class="fas fa-upload mr-2 text-green-500"></i> Upload Files
+              </a>
+              
+              <a href="{% url 'logout' %}" class="block px-4 py-3 text-red-600 hover:bg-gray-100 transition duration-200" role="menuitem" tabindex="-1">
+                <i class="fas fa-sign-out-alt mr-2"></i> Logout
+              </a>
+            </div>
+          </div>
+        {% else %}
+          <a href="{% url 'login_view' %}" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md transition duration-200">
+            <i class="fas fa-sign-in-alt mr-2"></i> Login
           </a>
-          {% if request.user.is_superuser %}
-          <a href="{% url 'schema-swagger-ui' %}" class="block px-4 py-3 hover:bg-gray-200">
-            <i class="fa-solid fa-code mr-2 text-green-500"></i> Swagger
-          </a>
-          {% endif %}
-          <a href="{% url 'logout' %}" class="block px-4 py-3 hover:bg-gray-200 text-red-500">
-            <i class="fas fa-sign-out-alt mr-2"></i> Logout
-          </a>
-        </div>
+        {% endif %}
       </div>
-      {% else %}
-      <a href="{% url 'login_view' %}"
-        class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">Login</a>
-      {% endif %}
-    </div>
 
-    <div class="lg:hidden flex items-center">
-      <button id="mobile-menu-button" class="text-white text-2xl">
-        <i class="fas fa-bars"></i>
+      <!-- Mobile Menu Button -->
+      <button id="mobile-menu-button" class="lg:hidden flex items-center text-white focus:outline-none">
+        <i class="fas fa-bars text-xl"></i>
       </button>
     </div>
   </div>
-</nav>
+</header>
 
-<div class="lg:hidden bg-[#123075] text-white shadow-md mt-2 p-4 rounded-md space-y-4 hidden" id="mobile-menu">
-  <a href="{% url 'react_app' %}" class="block text-lg hover:bg-blue-700 px-4 py-2 rounded-md">
-    <i class="fas fa-home mr-2"></i> Home
-  </a>
-  <a href="{% url 'logout' %}" class="block text-lg hover:bg-blue-700 px-4 py-2 rounded-md text-red-500">
-    <i class="fas fa-sign-out-alt mr-2"></i> Logout
-  </a>
+<!-- Mobile Menu Container -->
+<div id="mobile-menu-container" class="mobile-menu-container lg:hidden">
+  <div class="mobile-menu">
+    <div class="drag-indicator"></div>
+      <div class="px-4 py-3">
+        <div class="text-sm font-medium text-gray-500">Logged in as</div>
+        <div class="text-base font-medium text-gray-800">{{ request.user.username }}</div>
+      </div>
+    <div class="px-2 pt-2 pb-3 space-y-1">
+      <a href="{% url 'react_app' %}" class="block px-4 py-3 rounded-md text-base font-medium text-gray-800 hover:bg-gray-100 transition duration-200">
+        <i class="fas fa-home mr-2 text-blue-500"></i> Home
+      </a>
+      
+      {% if request.user.is_authenticated %}
+        {% if request.user.is_superuser %}
+        <a href="{% url 'schema-swagger-ui' %}" class="block px-4 py-3 rounded-md text-base font-medium text-gray-800 hover:bg-gray-100 transition duration-200">
+          <i class="fas fa-code mr-2 text-green-500"></i> Swagger
+        </a>
+        {% endif %}
+        
+        <a href="{% url 'uploadFile' %}" class="block px-4 py-3 rounded-md text-base font-medium text-gray-800 hover:bg-gray-100 transition duration-200">
+          <i class="fas fa-upload mr-2 text-green-500"></i> Upload Files
+        </a>
+        
+        <div class="border-t border-gray-200 my-2"></div>
+        
+
+        
+        <div class="border-t border-gray-200 my-2"></div>
+        
+        <a href="{% url 'logout' %}" class="block px-4 py-3 rounded-md text-base font-medium text-red-600 hover:bg-red-50 transition duration-200">
+          <i class="fas fa-sign-out-alt mr-2"></i> Logout
+        </a>
+      {% else %}
+        <div class="my-3 px-4">
+          <a href="{% url 'login_view' %}" class="block w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md text-center transition duration-200">
+            <i class="fas fa-sign-in-alt mr-2"></i> Login
+          </a>
+        </div>
+      {% endif %}
+    </div>
+  </div>
 </div>
 
 <script>
-  document.addEventListener('DOMContentLoaded', function () {
-    const profileButton = document.getElementById('profile-button');
-    const dropdownMenu = document.getElementById('dropdown-menu');
+  document.addEventListener('DOMContentLoaded', function() {
+    // Desktop dropdown menu
+    const userMenuButton = document.getElementById('user-menu-button');
+    const userDropdown = document.getElementById('user-dropdown');
+    
+    if (userMenuButton && userDropdown) {
+      userMenuButton.addEventListener('click', function() {
+        const expanded = this.getAttribute('aria-expanded') === 'true';
+        this.setAttribute('aria-expanded', !expanded);
+        
+        if (!expanded) {
+          userDropdown.classList.remove('hidden', 'scale-95', 'opacity-0');
+          userDropdown.classList.add('scale-100', 'opacity-100');
+        } else {
+          userDropdown.classList.add('scale-95', 'opacity-0');
+          setTimeout(() => {
+            userDropdown.classList.add('hidden');
+          }, 200);
+        }
+      });
+      
+      // Close dropdown when clicking outside
+      document.addEventListener('click', function(event) {
+        if (!userMenuButton.contains(event.target) && !userDropdown.contains(event.target)) {
+          userMenuButton.setAttribute('aria-expanded', 'false');
+          userDropdown.classList.add('scale-95', 'opacity-0');
+          setTimeout(() => {
+            userDropdown.classList.add('hidden');
+          }, 200);
+        }
+      });
+    }
+    
+    // Mobile menu
     const mobileMenuButton = document.getElementById('mobile-menu-button');
-    const mobileMenu = document.getElementById('mobile-menu');
-
-    profileButton.addEventListener('click', function () {
-      dropdownMenu.classList.toggle('hidden');
-    });
-
-    document.addEventListener('click', function (event) {
-      if (!dropdownMenu.contains(event.target) && !profileButton.contains(event.target)) {
-        dropdownMenu.classList.add('hidden');
+    const mobileMenuContainer = document.getElementById('mobile-menu-container');
+    const mobileMenu = mobileMenuContainer?.querySelector('.mobile-menu');
+    
+    if (mobileMenuButton && mobileMenuContainer) {
+      mobileMenuButton.addEventListener('click', function() {
+        mobileMenuContainer.classList.toggle('active');
+        document.body.style.overflow = mobileMenuContainer.classList.contains('active') ? 'hidden' : '';
+      });
+      
+      // Close when clicking outside the menu
+      mobileMenuContainer.addEventListener('click', function(event) {
+        if (event.target === mobileMenuContainer) {
+          mobileMenuContainer.classList.remove('active');
+          document.body.style.overflow = '';
+        }
+      });
+      
+      // Touch drag functionality
+      if (mobileMenu) {
+        let startY, currentY;
+        let isDragging = false;
+        
+        mobileMenu.addEventListener('touchstart', function(e) {
+          startY = e.touches[0].clientY;
+          isDragging = true;
+          mobileMenu.style.transition = 'none';
+        });
+        
+        mobileMenu.addEventListener('touchmove', function(e) {
+          if (!isDragging) return;
+          currentY = e.touches[0].clientY;
+          const deltaY = currentY - startY;
+          
+          if (deltaY > 0) {
+            mobileMenu.style.transform = `translateY(${deltaY}px)`;
+          }
+        });
+        
+        mobileMenu.addEventListener('touchend', function() {
+          mobileMenu.style.transition = 'transform 0.3s ease';
+          if (isDragging && currentY - startY > 100) {
+            mobileMenuContainer.classList.remove('active');
+            document.body.style.overflow = '';
+          } else {
+            mobileMenu.style.transform = '';
+          }
+          isDragging = false;
+        });
       }
-    });
-
-    mobileMenuButton.addEventListener('click', function () {
-      mobileMenu.classList.toggle('hidden');
-    });
-
-    document.addEventListener('click', function (event) {
-      if (!mobileMenu.contains(event.target) && !mobileMenuButton.contains(event.target)) {
-        mobileMenu.classList.add('hidden');
-      }
-    });
+    }
   });
 </script>
