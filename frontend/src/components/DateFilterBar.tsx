@@ -71,7 +71,7 @@ const DateFilterBar: React.FC<DateFilterBarProps> = ({
             loading={isDownloading}
             className="w-full md:w-auto py-2.5"
           >
-            {isDownloading ? "Загрузка..." : "Загрузить отчет"}
+            {isDownloading ? "Загрузка..." : "Загрузить"}
           </ModernButton>
         </div>
       </div>

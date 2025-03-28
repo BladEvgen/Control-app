@@ -355,14 +355,11 @@ const MapDashboard: React.FC = () => {
   });
 
   const handleFullscreenToggle = () => {
-    // Scroll to top immediately when toggling fullscreen
     window.scrollTo(0, 0);
 
-    // Set a timeout to ensure scrolling happens after DOM updates
     setTimeout(() => {
       window.scrollTo(0, 0);
 
-      // Center the map if it exists
       if (mapRef.current) {
         const currentCenter = mapRef.current.getCenter();
         mapRef.current.setView(currentCenter, mapRef.current.getZoom());
@@ -401,7 +398,6 @@ const MapDashboard: React.FC = () => {
 
     setIsFullscreen(newFullscreenState);
 
-    // Recenter map after fullscreen change
     setTimeout(() => {
       window.scrollTo(0, 0);
 
@@ -421,7 +417,6 @@ const MapDashboard: React.FC = () => {
     }
   }, []);
 
-  // Scroll to top when exiting
   useEffect(() => {
     return () => {
       window.scrollTo(0, 0);
@@ -430,7 +425,7 @@ const MapDashboard: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-primary-900 to-secondary-900">
+      <div className="flex items-center justify-center min-h-screen ">
         <LoaderComponent />
       </div>
     );
@@ -438,7 +433,7 @@ const MapDashboard: React.FC = () => {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-primary-900 to-secondary-900">
+      <div className="flex items-center justify-center min-h-screen">
         <Notification message={error} type="error" link="/" />
       </div>
     );
@@ -446,13 +441,12 @@ const MapDashboard: React.FC = () => {
 
   return (
     <motion.div
-      className="relative min-h-screen bg-gradient-to-b from-gray-900 to-black"
+      className="relative min-h-screen bg-gradient-to-b "
       variants={containerVariants}
       initial="hidden"
       animate="visible"
       exit="exit"
     >
-      {/* Background pattern overlay */}
       <div
         className="absolute inset-0 z-0 opacity-10 pointer-events-none"
         style={{
@@ -483,7 +477,6 @@ const MapDashboard: React.FC = () => {
         </div>
       </motion.div>
 
-      {/* Fullscreen toggle button */}
       <motion.button
         onClick={handleFullscreenToggle}
         className="absolute top-4 left-4 z-20 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 p-3 rounded-full shadow-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200"
@@ -504,7 +497,6 @@ const MapDashboard: React.FC = () => {
         )}
       </motion.button>
 
-      {/* Main map container with responsive sizing */}
       <div className="flex justify-center items-center w-full h-screen py-8 px-4">
         <motion.div
           ref={mapContainerRef}
@@ -517,7 +509,6 @@ const MapDashboard: React.FC = () => {
               : "w-[85%] h-[70vh] mx-auto"
           }`}
         >
-          {/* Map inner container with shadow and border effects */}
           <div
             className={`w-full h-full overflow-hidden shadow-2xl transition-all duration-700 ease-in-out ${
               isFullscreen
