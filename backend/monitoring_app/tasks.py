@@ -24,57 +24,99 @@ def get_all_attendance_task():
 
 @shared_task
 def update_lesson_attendance_last_out():
-    """
-    Periodic Celery task to update the `last_out` field in the `LessonAttendance` model.
+    """Updates the last_out field for lesson attendance records that have been open for more than 3 hours.
 
-    This task performs the following operations:
-    1. Retrieves all `LessonAttendance` records where `last_out` is not set (`isnull=True`).
-    2. For each record:
-        a. Calculates `target_time` as `first_in + 3 hours`.
-        b. Determines the end of the day (`23:59:59`) for the date of `first_in`.
-        c. If `target_time` is within the same day and has already passed, sets `last_out` to `target_time`.
-        d. If `target_time` exceeds the current day, sets `last_out` to `23:59:59` of the same day.
-    3. Performs a bulk update of all modified records.
-    4. Logs the outcome of the operation.
+    This task handles the automatic closure of lesson attendance records by setting the last_out time
+    based on the following rules:
+    1. Finds all lessons without last_out time that started more than 3 hours ago
+    2. For each lesson:
+        - If the target time (first_in + 3 hours) is on the same day, sets last_out to that time
+        - If the target time crosses midnight, sets last_out to 23:59:59.999999 of the start day
+
+    The processing is done in batches to optimize memory usage and database performance.
+
+    Note:
+        - Uses Django's timezone-aware datetime handling
+        - Processes records in batches of 1000
+        - Performs bulk updates to minimize database calls
+
+    Returns:
+        None
+
+    Raises:
+        Exception: If any error occurs during processing. All exceptions are logged and re-raised.
+
+    Example:
+        >>> update_lesson_attendance_last_out.delay()  # When called as Celery task
+        >>> update_lesson_attendance_last_out()  # When called directly
+
+    Performance Considerations:
+        - Uses batch processing with configurable BATCH_SIZE (default: 1000)
+        - Implements chunked iteration (chunk_size=100) for memory efficiency
+        - Uses bulk_update for optimal database performance
+
+    Logging:
+        - INFO: Processing progress and successful updates
+        - ERROR: Any exceptions during execution
+        - INFO: No records found message when applicable
     """
     try:
         now = timezone.now()
-        three_hours = datetime.timedelta(hours=3)
-        lessons = models.LessonAttendance.objects.filter(last_out__isnull=True)
-        if not lessons.exists():
+        three_hours_ago = now - datetime.timedelta(hours=3)
+
+        lessons_to_update = models.LessonAttendance.objects.filter(
+            last_out__isnull=True, first_in__lte=three_hours_ago
+        )
+
+        if not lessons_to_update.exists():
             logger.info("No LessonAttendance records found for updating `last_out`.")
             return
-        updated_lessons = []
-        for lesson in lessons:
-            first_in = lesson.first_in
-            if not timezone.is_aware(first_in):
-                first_in = timezone.make_aware(
-                    first_in, timezone.get_current_timezone()
+
+        BATCH_SIZE = 1000
+        total_updated = 0
+
+        total_records = lessons_to_update.count()
+
+        for offset in range(0, total_records, BATCH_SIZE):
+            batch = lessons_to_update[offset : offset + BATCH_SIZE]
+
+            updates = []
+
+            for lesson in batch.iterator(chunk_size=100):
+                first_in = lesson.first_in
+
+                if not timezone.is_aware(first_in):
+                    first_in = timezone.make_aware(first_in, timezone.get_current_timezone())
+
+                end_of_day = timezone.make_aware(
+                    datetime.datetime.combine(first_in.date(), datetime.time(23, 59, 59, 999999)),
+                    first_in.tzinfo,
                 )
-            target_time = first_in + three_hours
-            end_of_day_naive = datetime.datetime.combine(
-                first_in.date(), datetime.time(23, 59, 59, 999999)
-            )
-            end_of_day = timezone.make_aware(end_of_day_naive, first_in.tzinfo)
-            if target_time > end_of_day:
-                if end_of_day <= now:
-                    lesson.last_out = end_of_day
-                    updated_lessons.append(lesson)
-            else:
-                if target_time <= now:
-                    lesson.last_out = target_time
-                    updated_lessons.append(lesson)
-        if updated_lessons:
-            models.LessonAttendance.objects.bulk_update(updated_lessons, ["last_out"])
-            logger.info(
-                f"Successfully updated `last_out` for {len(updated_lessons)} records."
-            )
-        else:
-            logger.info(
-                "No LessonAttendance records required updating `last_out` at this time."
-            )
+
+                target_time = first_in + datetime.timedelta(hours=3)
+
+                if target_time.date() > first_in.date():
+                    last_out = end_of_day
+                else:
+                    last_out = target_time
+
+                lesson.last_out = last_out
+                updates.append(lesson)
+
+            if updates:
+                models.LessonAttendance.objects.bulk_update(updates, ["last_out"], batch_size=100)
+                total_updated += len(updates)
+
+            if total_records > BATCH_SIZE:
+                logger.info(
+                    f"Processed {min(offset + BATCH_SIZE, total_records)}/{total_records} records"
+                )
+
+        logger.info(f"Successfully updated `last_out` for {total_updated} records.")
+
     except Exception as e:
-        logger.error(f"Error executing `update_lesson_attendance_last_out`: {e}")
+        logger.error(f"Error executing `update_lesson_attendance_last_out`: {e}", exc_info=True)
+        raise
 
 
 @shared_task
