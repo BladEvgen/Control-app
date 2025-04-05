@@ -1,5 +1,7 @@
-import React, { lazy, Suspense } from "react";
+import React, { lazy, Suspense, useEffect } from "react";
 import { useUserContext } from "../context/UserContext";
+import { isAuthenticated } from "../utils/authHelpers";
+
 type HeaderComponentProps = {
   toggleTheme: () => void;
   currentTheme: string;
@@ -12,7 +14,15 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
   toggleTheme,
   currentTheme,
 }) => {
-  const { isLoading } = useUserContext();
+  const { isLoading, user } = useUserContext();
+
+  useEffect(() => {
+    const authStatus = isAuthenticated();
+
+    if (!authStatus && user) {
+      window.dispatchEvent(new Event("userLoggedOut"));
+    }
+  }, [user]);
 
   if (isLoading) {
     return <header></header>;

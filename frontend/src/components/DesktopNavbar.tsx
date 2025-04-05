@@ -20,7 +20,7 @@ import { ImCamera } from "react-icons/im";
 import { FaMapLocationDot } from "react-icons/fa6";
 import { MdDashboard } from "react-icons/md";
 import { useUserContext } from "../context/UserContext";
-import { logoutUser } from "../utils/authHelpers";
+import { logoutUser, isAuthenticated } from "../utils/authHelpers";
 
 type DesktopNavbarProps = {
   toggleTheme: () => void;
@@ -33,7 +33,8 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
 }) => {
   const navigate = useNavigate();
   const { user, setUser } = useUserContext();
-  const isAuth = Boolean(user);
+
+  const isAuth = isAuthenticated() && Boolean(user);
   const username = user ? user.username : "";
 
   const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
@@ -51,6 +52,8 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
   const handleLogout = useCallback(() => {
     logoutUser(navigate, () => {
       setUser(null);
+      setIsDropdownOpen(false);
+      setIsStatsDropdownOpen(false);
     });
   }, [navigate, setUser]);
 
@@ -85,6 +88,18 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
       setIsStatsDropdownOpen(false);
     }, 200);
   };
+
+  useEffect(() => {
+    const handleUserLoggedOut = () => {
+      setIsDropdownOpen(false);
+      setIsStatsDropdownOpen(false);
+    };
+
+    window.addEventListener("userLoggedOut", handleUserLoggedOut);
+    return () => {
+      window.removeEventListener("userLoggedOut", handleUserLoggedOut);
+    };
+  }, []);
 
   useEffect(() => {
     if (

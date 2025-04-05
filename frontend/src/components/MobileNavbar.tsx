@@ -15,7 +15,7 @@ import { ImCamera } from "react-icons/im";
 import { MdDashboard } from "react-icons/md";
 import { apiUrl } from "../../apiConfig";
 import { useUserContext } from "../context/UserContext";
-import { logoutUser } from "../utils/authHelpers";
+import { logoutUser, isAuthenticated } from "../utils/authHelpers";
 
 type MobileNavbarProps = {
   toggleTheme: () => void;
@@ -32,10 +32,21 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
 
   const { user } = useUserContext();
   const username = user ? user.username : "";
-  const auth = Boolean(user);
+  const auth = isAuthenticated() && Boolean(user);
 
   const toggleMenu = useCallback(() => {
     setIsMenuOpen((prev) => !prev);
+  }, []);
+
+  useEffect(() => {
+    const handleUserLoggedOut = () => {
+      setIsMenuOpen(false);
+    };
+
+    window.addEventListener("userLoggedOut", handleUserLoggedOut);
+    return () => {
+      window.removeEventListener("userLoggedOut", handleUserLoggedOut);
+    };
   }, []);
 
   useEffect(() => {
