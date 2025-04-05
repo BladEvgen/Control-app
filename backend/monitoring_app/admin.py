@@ -355,31 +355,75 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
             ("late", "Опоздал"),
             ("left_early", "Ушел раньше"),
             ("remote", "Удаленно"),
+            ("partial", "Неполный рабочий день"),
         )
 
     def queryset(self, request, queryset):
         today = timezone.now().date()
+
+        LATE_THRESHOLD_MINUTES = 15
+        EARLY_LEAVE_THRESHOLD_MINUTES = 15
+        MINIMUM_WORKDAY_HOURS = 4
+        STANDARD_WORKDAY_HOURS = 8
+
+        work_start = timezone.now().replace(hour=9, minute=0, second=0, microsecond=0)
+        work_end = timezone.now().replace(hour=18, minute=0, second=0, microsecond=0)
+
+        late_threshold = work_start + timedelta(minutes=LATE_THRESHOLD_MINUTES)
+        early_leave_threshold = work_end - timedelta(minutes=EARLY_LEAVE_THRESHOLD_MINUTES)
+
         if self.value() == "present":
             return queryset.filter(
-                first_in__isnull=False, date_at=today, absence_reason__isnull=True
-            )
-        elif self.value() == "absent":
-            return queryset.filter(
-                Q(first_in__isnull=True) | Q(absence_reason__isnull=False),
-                date_at=today,
-            )
-        elif self.value() == "late":
-            nine_am = timezone.now().replace(hour=9, minute=0, second=0, microsecond=0)
-            return queryset.filter(first_in__gt=nine_am, date_at=today)
-        elif self.value() == "left_early":
-            five_pm = timezone.now().replace(hour=18, minute=0, second=0, microsecond=0)
-            return queryset.filter(last_out__lt=five_pm, last_out__isnull=False, date_at=today)
-        elif self.value() == "remote":
-            remote_staff_ids = RemoteWork.objects.filter(
-                Q(permanent_remote=True) | Q(start_date__lte=today, end_date__gte=today)
-            ).values_list("staff_id", flat=True)
+                Q(attendance__date_at=today),
+                Q(attendance__first_in__isnull=False),
+                Q(attendance__absence_reason__isnull=True),
+                Q(attendance__last_out__isnull=True)
+                | Q(attendance__last_out__gte=early_leave_threshold),
+            ).distinct()
 
-            return queryset.filter(staff_id__in=remote_staff_ids, date_at=today)
+        elif self.value() == "absent":
+            staff_with_attendance = queryset.filter(
+                attendance__date_at=today, attendance__first_in__isnull=False
+            ).distinct()
+
+            return queryset.filter(
+                Q(id__in=queryset.exclude(id__in=staff_with_attendance))
+                | Q(attendance__date_at=today, attendance__absence_reason__isnull=False)
+            ).distinct()
+
+        elif self.value() == "late":
+            return queryset.filter(
+                attendance__date_at=today, attendance__first_in__gt=late_threshold
+            ).distinct()
+
+        elif self.value() == "left_early":
+            return queryset.filter(
+                attendance__date_at=today,
+                attendance__last_out__isnull=False,
+                attendance__last_out__lt=early_leave_threshold,
+            ).distinct()
+
+        elif self.value() == "remote":
+            return queryset.filter(
+                Q(remote_work__permanent_remote=True)
+                | Q(remote_work__start_date__lte=today, remote_work__end_date__gte=today)
+            ).distinct()
+
+        elif self.value() == "partial":
+            return (
+                queryset.filter(
+                    attendance__date_at=today,
+                    attendance__first_in__isnull=False,
+                    attendance__last_out__isnull=False,
+                )
+                .annotate(workday_duration=F('attendance__last_out') - F('attendance__first_in'))
+                .filter(
+                    workday_duration__gte=timedelta(hours=MINIMUM_WORKDAY_HOURS),
+                    workday_duration__lt=timedelta(hours=STANDARD_WORKDAY_HOURS),
+                )
+                .distinct()
+            )
+
         return queryset
 
 
