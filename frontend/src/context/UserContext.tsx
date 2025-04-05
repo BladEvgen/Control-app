@@ -9,7 +9,7 @@ import React, {
 import { apiUrl } from "../../apiConfig";
 import useWebSocket from "../hooks/useWebSocket";
 import { log } from "../api";
-import { getCookie } from "../api";
+import { getCookie, clearAuthData, removeCookie } from "../api";
 import axiosInstance from "../api";
 
 export interface UserProfile {
@@ -37,9 +37,37 @@ const UserContext = createContext<UserContextType | undefined>(undefined);
 
 const saveUserToStorage = (user: UserProfile | null) => {
   if (user) {
-    localStorage.setItem("userProfile", JSON.stringify(user));
+    try {
+      localStorage.setItem("userProfile", JSON.stringify(user));
+    } catch (error) {
+      log.error("Failed to save user to localStorage:", error);
+    }
   } else {
-    localStorage.removeItem("userProfile");
+    try {
+      localStorage.removeItem("userProfile");
+    } catch (error) {
+      log.error("Failed to remove user from localStorage:", error);
+    }
+  }
+};
+
+const isTokenValid = (token: string | null): boolean => {
+  if (!token) return false;
+
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return false;
+
+    const payload = JSON.parse(atob(parts[1]));
+
+    if (payload.exp && payload.exp * 1000 < Date.now()) {
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    log.error("Error validating token:", error);
+    return false;
   }
 };
 
@@ -47,10 +75,34 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const [isLoading, setIsLoading] = useState(true);
-  const storedUser = localStorage.getItem("userProfile");
-  const [user, setUser] = useState<UserProfile | null>(
-    storedUser ? JSON.parse(storedUser) : null
-  );
+
+  useEffect(() => {
+    const loadingTimeout = setTimeout(() => {
+      if (isLoading) {
+        log.warn("Loading timeout reached, forcing loading state to complete");
+        setIsLoading(false);
+      }
+    }, 5000);
+
+    return () => clearTimeout(loadingTimeout);
+  }, [isLoading]);
+
+  let initialUser: UserProfile | null = null;
+  try {
+    const storedUser = localStorage.getItem("userProfile");
+    if (storedUser) {
+      initialUser = JSON.parse(storedUser);
+    }
+  } catch (error) {
+    log.error("Error reading user from localStorage:", error);
+    try {
+      localStorage.removeItem("userProfile");
+    } catch (innerError) {
+      log.error("Failed to remove corrupted user data:", innerError);
+    }
+  }
+
+  const [user, setUser] = useState<UserProfile | null>(initialUser);
 
   const updateUser = useCallback(
     (
@@ -67,7 +119,15 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({
     []
   );
 
-  const [token, setToken] = useState<string | null>(getCookie("access_token"));
+  const [token, setToken] = useState<string | null>(() => {
+    const accessToken = getCookie("access_token");
+    if (accessToken && !isTokenValid(accessToken)) {
+      log.warn("Invalid access token detected on initialization, removing");
+      removeCookie("access_token");
+      return null;
+    }
+    return accessToken;
+  });
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -78,6 +138,20 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({
         } catch (error) {
           console.error("Error fetching user data:", error);
           updateUser(null);
+
+          if (
+            error &&
+            typeof error === "object" &&
+            "response" in error &&
+            error.response &&
+            typeof error.response === "object" &&
+            "status" in error.response &&
+            (error.response.status === 401 || error.response.status === 403)
+          ) {
+            log.warn("Authentication error, clearing auth data");
+            clearAuthData();
+            setToken(null);
+          }
         } finally {
           setIsLoading(false);
         }
@@ -110,22 +184,33 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [updateUser]);
 
   useEffect(() => {
-    const refreshTokenExpires = localStorage.getItem("refresh_token_expires");
-    if (refreshTokenExpires) {
-      const expiresDate = new Date(refreshTokenExpires);
-      const now = new Date();
-      const timeout = expiresDate.getTime() - now.getTime();
+    const checkTokenExpiration = () => {
+      try {
+        const refreshTokenExpires = localStorage.getItem(
+          "refresh_token_expires"
+        );
+        if (refreshTokenExpires) {
+          const expiresDate = new Date(refreshTokenExpires);
+          const now = new Date();
 
-      if (timeout > 0) {
-        const timerId = setTimeout(() => {
-          window.dispatchEvent(new Event("userLoggedOut"));
-        }, timeout);
+          if (expiresDate <= now) {
+            log.warn("Refresh token expired, logging out");
+            window.dispatchEvent(new Event("userLoggedOut"));
+            return;
+          }
 
-        return () => clearTimeout(timerId);
-      } else {
-        window.dispatchEvent(new Event("userLoggedOut"));
+          const timeout = expiresDate.getTime() - now.getTime();
+          const checkInterval = Math.min(timeout, 3600000);
+
+          const timerId = setTimeout(checkTokenExpiration, checkInterval);
+          return () => clearTimeout(timerId);
+        }
+      } catch (error) {
+        log.error("Error checking token expiration:", error);
       }
-    }
+    };
+
+    checkTokenExpiration();
   }, [token]);
 
   const wsUrl = useMemo(() => {
