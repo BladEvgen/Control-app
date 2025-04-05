@@ -517,11 +517,11 @@ class APIKeyAdmin(admin.ModelAdmin):
         "created_at",
         "created_by",
     )
-    actions = ["deactivate_keys", "reactivate_keys"]
+    actions = ["deactivate_keys", "reactivate_keys", "generate_new_keys"]
 
     fieldsets = (
         (
-            None,
+            "Основная информация",
             {
                 "fields": ("key_name", "key", "is_active"),
                 "classes": ("wide",),
@@ -538,12 +538,15 @@ class APIKeyAdmin(admin.ModelAdmin):
 
     def short_key(self, obj):
         return format_html(
-            '<span class="copy-to-clipboard" data-clipboard-text="{}">{}</span>',
+            '<span class="copy-to-clipboard api-key" data-clipboard-text="{}">'
+            '<span class="key-preview">{}</span>'
+            '<span class="copy-icon">📋</span>'
+            '</span>',
             obj.key,
             f"{obj.key[:8]}...",
         )
 
-    short_key.short_description = "Ключ"
+    short_key.short_description = "Ключ API"
 
     def save_model(self, request, obj, form, change):
         if not change:
@@ -563,6 +566,7 @@ class APIKeyAdmin(admin.ModelAdmin):
     reactivate_keys.short_description = "Активировать выбранные ключи"
 
     class Media:
+        css = {"all": ("admin/css/apikey_admin.css",)}
         js = ("admin/js/clipboard.min.js", "admin/js/copy-to-clipboard.js")
 
 
@@ -640,7 +644,8 @@ class FileCategoryAdmin(admin.ModelAdmin):
     search_fields = ("name",)
     prepopulated_fields = {"slug": ("name",)}
     ordering = ("name",)
-
+    list_display_links = None
+    readonly_fields = ("slug", "name")
 
 @admin.register(ParentDepartment, site=admin_site)
 class ParentDepartmentAdmin(admin.ModelAdmin):
@@ -648,12 +653,11 @@ class ParentDepartmentAdmin(admin.ModelAdmin):
         "id",
         "name",
         "date_of_creation",
-        "child_departments_count",
-        "staff_count",
     )
     search_fields = ("name",)
     ordering = ("name",)
-    readonly_fields = ("date_of_creation", "child_departments_count", "staff_count")
+    readonly_fields = ("date_of_creation", "name")
+    list_display_links = None
 
     fieldsets = (
         (
@@ -663,25 +667,7 @@ class ParentDepartmentAdmin(admin.ModelAdmin):
                 "classes": ("wide",),
             },
         ),
-        (
-            "Статистика",
-            {
-                "fields": ("child_departments_count", "staff_count"),
-                "classes": ("collapse",),
-            },
-        ),
     )
-
-    def child_departments_count(self, obj):
-        return ChildDepartment.objects.filter(parent=obj).count()
-
-    child_departments_count.short_description = "Количество подотделов"
-
-    def staff_count(self, obj):
-        child_departments = ChildDepartment.objects.filter(parent=obj)
-        return Staff.objects.filter(department__in=child_departments).count()
-
-    staff_count.short_description = "Количество сотрудников"
 
 
 @admin.register(ChildDepartment, site=admin_site)
@@ -697,7 +683,8 @@ class ChildDepartmentAdmin(admin.ModelAdmin):
     search_fields = ("name", "parent__name")
     ordering = ("name",)
     list_filter = ("parent",)
-    readonly_fields = ("date_of_creation", "staff_count", "avg_salary")
+    readonly_fields = ("date_of_creation", "staff_count", "avg_salary", "parent", "name", "id")
+    list_display_links = None
 
     fieldsets = (
         (
@@ -1266,16 +1253,18 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
     def duration(self, obj):
         if obj.first_in and obj.last_out:
             delta = obj.last_out - obj.first_in
-            total_seconds = int(delta.total_seconds())
-            hours = total_seconds // 3600
-            minutes = (total_seconds % 3600) // 60
-            seconds = total_seconds % 60
+            total_seconds = delta.total_seconds()
+            hours, remainder = divmod(int(total_seconds), 3600)
+            minutes, seconds = divmod(remainder, 60)
 
-            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            if hours > 24:
+                hours = hours % 24
 
-            if hours < 4:
+            time_str = f"{hours:02d}:{minutes:02d}"
+
+            if hours < 1:
                 return format_html('<span style="color: red;">{}</span>', time_str)
-            elif hours < 7:
+            elif hours < 2:
                 return format_html('<span style="color: orange;">{}</span>', time_str)
             else:
                 return format_html('<span style="color: green;">{}</span>', time_str)
@@ -1649,20 +1638,13 @@ class ClassLocationAdmin(ModelAdmin):
     geomap_default_zoom = "16"
     geomap_autozoom = "15.9"
 
-    readonly_fields = ("created_at", "updated_at", "location_map", "attendance_stats")
+    readonly_fields = ("created_at", "updated_at", "attendance_stats")
 
     fieldsets = (
         (
             "Основная информация",
             {
                 "fields": ("name", "address"),
-                "classes": ("wide",),
-            },
-        ),
-        (
-            "Координаты",
-            {
-                "fields": (("latitude", "longitude"), "location_map"),
                 "classes": ("wide",),
             },
         ),
@@ -1691,17 +1673,6 @@ class ClassLocationAdmin(ModelAdmin):
     )
     list_filter = ("created_at",)
     search_fields = ("name", "address")
-
-    def location_map(self, obj):
-        if obj.latitude and obj.longitude:
-            return format_html(
-                '<div id="location-map" data-lat="{}" data-lng="{}" style="width: 100%; height: 300px;"></div>',
-                obj.latitude,
-                obj.longitude,
-            )
-        return "Координаты не указаны"
-
-    location_map.short_description = "Карта"
 
     def attendance_stats(self, obj):
         html = """
