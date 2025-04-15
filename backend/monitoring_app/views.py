@@ -11,13 +11,11 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 from drf_yasg import openapi
-from django.urls import reverse
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import status
 from openpyxl import load_workbook
 from django.contrib import messages
-from django.core.cache import caches
 from celery.result import AsyncResult
 from django.db.models import Count, Q
 from django.views.generic import View
@@ -50,6 +48,7 @@ from monitoring_app import (
     serializers,
     attendance_fetcher,
 )
+from monitoring_app.cache_conf import get_cache, Cache
 
 logger = logging.getLogger(__name__)
 
@@ -60,42 +59,12 @@ class StaffAttendancePagination(PageNumberPagination):
     max_page_size = 20000
 
 
-Cache = caches["default"]
 token_param_config = openapi.Parameter(
     "Authorization",
     in_=openapi.IN_HEADER,
     description="Token [access_token]",
     type=openapi.TYPE_STRING,
 )
-
-
-def get_cache(
-    key: str,
-    query: callable = lambda: any,
-    timeout: int = 10,
-    cache: any = Cache,
-) -> any:
-    """
-    Получает данные из кэша по указанному ключу `key`.
-
-    Args:
-        key (str): Строковый ключ для доступа к данным в кэше.
-        query (callable, optional): Функция, вызываемая для получения данных в случае их отсутствия в кэше.
-            По умолчанию используется `lambda: any`, возвращающая всегда `True`.
-        timeout (int, optional): Время жизни данных в кэше в секундах. По умолчанию: 10 секунд.
-        cache (any, optional): Объект кэша, используемый для хранения данных. По умолчанию: `Cache`.
-
-    Returns:
-        any: Возвращает данные из кэша, если они есть, иначе данные, полученные из запроса.
-
-    Examples:
-        >>> get_cache("my_data_key")
-    """
-    data = cache.get(key)
-    if data is None:
-        data = query()
-        cache.set(key, data, timeout)
-    return data
 
 
 @permission_classes([AllowAny])
@@ -2745,73 +2714,76 @@ async def fetch_data_view(request):
 
 @swagger_auto_schema(
     method="get",
-    operation_summary="Получение данных о посещаемости в формате Excel",
-    operation_description="Получение данных о посещаемости с внешнего сервера и создание Excel файла. Требуется аутентификация.",
+    operation_summary="Generate Attendance Excel File",
+    operation_description=(
+        "Generates an Excel file containing attendance data for the specified department and its child departments. "
+        "You must provide the department ID as a path parameter, and the report period via the `startDate` and `endDate` "
+        "query parameters formatted as YYYY-MM-DD. If the provided endDate is greater than today, it will be capped to today's date. "
+        "Authentication is required by providing a valid API key in the X-API-KEY header or by using other credentials."
+    ),
     manual_parameters=[
         openapi.Parameter(
-            name="X-API-KEY",
-            in_=openapi.IN_HEADER,
-            type=openapi.TYPE_STRING,
+            name="department_id",
+            in_=openapi.IN_PATH,
+            type=openapi.TYPE_INTEGER,
             required=True,
-            description="API ключ для аутентификации запроса.",
-        ),
-        openapi.Parameter(
-            name="endDate",
-            in_=openapi.IN_QUERY,
-            type=openapi.TYPE_STRING,
-            required=True,
-            description="Конечная дата для данных о посещаемости в формате YYYY-MM-DD.",
+            description="The ID of the department for which the attendance report is to be generated.",
         ),
         openapi.Parameter(
             name="startDate",
             in_=openapi.IN_QUERY,
             type=openapi.TYPE_STRING,
+            format="date",
             required=True,
-            description="Начальная дата для данных о посещаемости в формате YYYY-MM-DD.",
+            description="The start date of the attendance report period, formatted as YYYY-MM-DD.",
+        ),
+        openapi.Parameter(
+            name="endDate",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_STRING,
+            format="date",
+            required=True,
+            description="The end date of the attendance report period, formatted as YYYY-MM-DD.",
+        ),
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="API key for authentication.",
         ),
     ],
     responses={
         200: openapi.Response(
-            description="Excel файл с данными о посещаемости.",
-            schema=openapi.Schema(
-                type=openapi.TYPE_FILE,
-                description="Созданный Excel файл, содержащий данные о посещаемости.",
-            ),
+            description="Excel file generated successfully. Returns an Excel file stream.",
+            examples={
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Binary Excel data"
+            },
         ),
-        400: openapi.Response(
-            description="Bad Request: отсутствует начальная или конечная дата."
-        ),
-        403: openapi.Response(
-            description="Forbidden: если доступ запрещен или отсутствует API ключ."
-        ),
-        500: openapi.Response(
-            description="Internal server error: если сервер столкнулся с ошибкой."
-        ),
+        400: "Bad Request: Missing or invalid query parameters (startDate, endDate) or date format issues.",
+        404: "Not Found: The specified department or associated staff records were not found.",
+        500: "Internal Server Error: Failed to generate the Excel file due to a server error.",
     },
 )
-@api_view(http_method_names=["GET"])
+@api_view(["GET"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
-@utils.add_api_key_header
 def sent_excel(request, department_id):
     """
-    Получение данных о посещаемости в формате Excel.
+    Optimized function for generating and returning attendance Excel files.
 
-    Получение данных о посещаемости с внешнего сервера на основе ID отдела,
-    начальной и конечной дат. Создание и возврат Excel файла с данными о посещаемости.
+    Args:
+        request: HTTP request object
+        department_id: ID of the department to generate report for
 
-    Параметры запроса:
-        - startDate (str): Начальная дата в формате YYYY-MM-DD.
-        - endDate (str): Конечная дата в формате YYYY-MM-DD.
-
-    Возвращает:
-        HttpResponse: Ответ с созданным Excel файлом или сообщение об ошибке.
+    Returns:
+        HttpResponse with Excel file or error Response
     """
-    logger.info(
-        f"Request received to generate Excel file for department ID {department_id}"
-    )
+    start_time = datetime.datetime.now()
+    logger.info(f"Starting Excel generation for department ID {department_id}")
 
     end_date_str = request.query_params.get("endDate")
     start_date_str = request.query_params.get("startDate")
+
     if not all([end_date_str, start_date_str]):
         logger.warning(
             f"Missing startDate or endDate in request for department ID {department_id}"
@@ -2824,87 +2796,78 @@ def sent_excel(request, department_id):
     try:
         end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
         start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
+
+        today = datetime.datetime.now().date()
+        if end_date > today:
+            logger.info(f"Capping end_date from {end_date} to {today}")
+            end_date = today
+
+        if start_date > end_date:
+            logger.warning(f"Start date {start_date} is after end date {end_date}")
+            return Response(
+                {"error": "Start date cannot be after end date"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     except ValueError as e:
-        logger.error(f"Invalid date format for department ID {department_id}: {e}")
+        logger.error(f"Invalid date format: {e}")
         return Response(
             {"error": f"Invalid date format: {e}"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    logger.debug(
-        f"Parsed dates for department ID {department_id}: start_date={start_date}, end_date={end_date}"
-    )
-
-    cache_key = f"excel_department_stats_{department_id}_{start_date}_{end_date}"
-
-    def generate_excel_file():
-        """Fetches all pages, processes the data, creates the Excel file, and returns its binary content."""
-        rows = []
-        page = 1
-
-        base_url = request.build_absolute_uri(
-            reverse("department-stats", args=[department_id])
-        )
-        while True:
-            url = f"{base_url}?end_date={end_date}&start_date={start_date}&page={page}"
-            logger.debug(
-                f"Fetching page {page} for department ID {department_id} from URL: {url}"
-            )
-
-            data = utils.fetch_data(url)
-            if "results" not in data or not data["results"]:
-                logger.info(
-                    f"No more results found for department ID {department_id} on page {page}"
-                )
-                break
-
-            rows.extend(utils.parse_attendance_data(data["results"]))
-            logger.debug(
-                f"Processed page {page} for department ID {department_id}, total rows so far: {len(rows)}"
-            )
-
-            if not data.get("next"):
-                logger.info(
-                    f"All pages processed for department ID {department_id}, total rows: {len(rows)}"
-                )
-                break
-
-            page += 1
-
-        if not rows:
-            logger.error(f"No data rows found for department ID {department_id}")
-            return None
-
-        logger.info(
-            f"Creating Excel file for department ID {department_id} with {len(rows)} rows"
-        )
-        df_pivot_sorted = utils.create_dataframe(rows)
-        wb = utils.save_to_excel(df_pivot_sorted, rows)
-
-        bio = BytesIO()
-        wb.save(bio)
-        bio.seek(0)
-        file_data = bio.getvalue()
-        return file_data
-
-    file_content = get_cache(cache_key, query=generate_excel_file, timeout=3600)
-    if not file_content:
+    try:
+        department = models.ChildDepartment.objects.get(id=department_id)
+        logger.info(f"Department found: {department.name}")
+    except models.ChildDepartment.DoesNotExist:
+        logger.warning(f"Department with ID {department_id} not found")
         return Response(
-            {"error": "Failed to generate Excel file"},
+            {"error": "Department not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    all_departments = utils.get_all_child_departments(department)
+    department_ids = [dept.id for dept in all_departments]
+    logger.info(f"Found {len(department_ids)} departments in hierarchy")
+
+    staff_list = models.Staff.objects.filter(
+        department_id__in=department_ids
+    ).select_related("department")
+    if not staff_list.exists():
+        logger.warning(
+            f"No staff found for department ID {department_id} or its children"
+        )
+        return Response(
+            {"error": "No staff found for this department"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    attendance_data = utils.collect_attendance_data(staff_list, start_date, end_date)
+
+    try:
+        excel_file = utils.generate_excel_file(
+            attendance_data, department.name, start_date, end_date
+        )
+
+        processing_time = datetime.datetime.now() - start_time
+        logger.info(
+            f"Excel file generated in {utils.format_duration(processing_time.total_seconds())}"
+        )
+
+        response = HttpResponse(
+            excel_file,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = (
+            f"attachment; filename=Attendance_{department_id}_{start_date_str}_{end_date_str}.xlsx"
+        )
+        return response
+
+    except Exception as e:
+        logger.error(f"Error generating Excel file: {str(e)}", exc_info=True)
+        return Response(
+            {"error": "Failed to generate Excel file: " + str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-
-    response = HttpResponse(
-        file_content,
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-    response["Content-Disposition"] = (
-        f"attachment; filename=Посещаемость_{department_id}.xlsx"
-    )
-    logger.info(
-        f"Excel file successfully created and cached for department ID {department_id}"
-    )
-    return response
 
 
 class UploadFileView(View):
