@@ -6,28 +6,22 @@ import logging
 import datetime
 import numpy as np
 import pandas as pd
-from functools import wraps
+from typing import Any, Dict
 from openpyxl import Workbook
 from django.urls import reverse
 from django.conf import settings
 from django.utils import timezone
-from rest_framework import status
-from django.core.cache import cache
-from django.http import HttpRequest
+from monitoring_app import models
 from sklearn.neighbors import KDTree
 from cryptography.fernet import Fernet
 from django.core.mail import send_mail
 from django.db.models import Func, Count
 from django.utils.html import format_html
-from typing import Any, Dict, List, Optional
-from rest_framework.response import Response
 from collections import defaultdict, Counter
+from monitoring_app.cache_conf import get_cache
 from django.contrib.admin import SimpleListFilter
 from django.utils.translation import gettext_lazy as _
-from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.styles import Alignment, Font, PatternFill
-
-from monitoring_app import models
 
 DAYS = settings.DAYS
 
@@ -190,220 +184,6 @@ def fetch_data(url: str) -> Dict[str, Any]:
         return {}
 
 
-def parse_attendance_data(data: List[Dict[str, Any]]) -> List[List[Optional[str]]]:
-    """
-    Parses raw attendance data and returns structured rows for the DataFrame.
-
-    Args:
-        data: Raw attendance data from the API or source.
-
-    Returns:
-        A list of rows with structured attendance data.
-    """
-    rows = []
-    holidays_cache = cache.get("holidays_cache")
-
-    if not holidays_cache:
-        holidays_cache = {
-            holiday.date: holiday for holiday in models.PublicHoliday.objects.all()
-        }
-        cache.set("holidays_cache", holidays_cache, timeout=12 * 60 * 60)
-
-    def parse_datetime_with_timezone(dt_str: Optional[str]) -> Optional[str]:
-        if not dt_str:
-            return None
-        try:
-            dt = datetime.datetime.fromisoformat(dt_str)
-            return dt.strftime("%H:%M:%S")
-        except ValueError:
-            return None
-
-    for record in data:
-        for date, details in record.items():
-            try:
-                date_obj = datetime.datetime.strptime(date, "%Y-%m-%d").date()
-                date_str = date_obj.strftime("%d.%m.%Y")
-            except ValueError:
-                continue
-
-            public_holiday = holidays_cache.get(date_obj)
-            is_holiday = public_holiday and not public_holiday.is_working_day
-            is_weekend = date_obj.weekday() >= 5
-
-            department = details.get("department", "").replace("_", " ").capitalize()
-            for attendance in details.get("attendance", []):
-                staff_fio = attendance.get("staff_fio", "")
-                first_in = parse_datetime_with_timezone(attendance.get("first_in"))
-                last_out = parse_datetime_with_timezone(attendance.get("last_out"))
-                remote_work = attendance.get("remote_work", False)
-                absence_reason = attendance.get("absence_reason", None)
-                area_name = attendance.get("area_name", "Unknown Area")
-
-                if is_weekend or is_holiday:
-                    if first_in and last_out:
-                        attendance_info = f"{first_in} - {last_out}\r\n({area_name})"
-                        meta = "holiday_with_attendance"
-                    else:
-                        attendance_info = "Выходной"
-                        meta = "holiday"
-                else:
-                    if first_in and last_out and absence_reason:
-                        attendance_info = f"{first_in} - {last_out}\r\n({area_name})"
-                        meta = "workday_with_reason"
-                    elif first_in and last_out:
-                        attendance_info = f"{first_in} - {last_out}\r\n({area_name})"
-                        meta = "workday"
-                    elif absence_reason:
-                        attendance_info = absence_reason
-                        meta = "absence_reason"
-                    elif remote_work:
-                        attendance_info = "Удаленная работа"
-                        meta = "remote_work"
-                    else:
-                        attendance_info = "Отсутствие"
-                        meta = "absence"
-
-                rows.append([staff_fio, department, date_str, attendance_info, meta])
-    return rows
-
-
-def create_dataframe(rows: List[List[Optional[str]]]) -> pd.DataFrame:
-    """
-    Converts structured rows into a pivoted DataFrame.
-
-    Args:
-        rows: List of structured rows containing attendance data.
-
-    Returns:
-        A pivoted pandas DataFrame for further processing.
-    """
-    display_rows = [row[:-1] for row in rows]
-
-    df = pd.DataFrame(display_rows, columns=["ФИО", "Отдел", "Дата", "Посещаемость"])
-    df_pivot = df.pivot_table(
-        index=["ФИО", "Отдел"],
-        columns="Дата",
-        values="Посещаемость",
-        aggfunc="first",
-        fill_value="Отсутствие",
-    )
-    df_pivot_sorted = df_pivot.reindex(
-        sorted(
-            df_pivot.columns,
-            key=lambda x: pd.to_datetime(x, format="%d.%m.%Y"),
-            reverse=True,
-        ),
-        axis=1,
-    )
-    return df_pivot_sorted
-
-
-def save_to_excel(
-    df_pivot_sorted: pd.DataFrame, rows: List[List[Optional[str]]]
-) -> Workbook:
-    """
-    Форматирует данные посещаемости в Excel-таблицу.
-
-    Args:
-        df_pivot_sorted: Поворотный DataFrame с данными посещаемости.
-        rows: Оригинальные строки с метаданными для форматирования.
-
-    Returns:
-        Объект Workbook из openpyxl.
-    """
-    wb = Workbook()
-    ws = wb.active
-
-    data_font = Font(name="Roboto", size=12)
-    header_font = Font(name="Roboto", size=15, bold=True)
-    data_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    header_alignment = Alignment(
-        horizontal="center", vertical="center", wrap_text=False
-    )
-
-    absence_fill = PatternFill(
-        start_color="ab0a0a", end_color="ab0a0a", fill_type="solid"
-    )
-    remote_work_fill = PatternFill(
-        start_color="ADD8E6", end_color="ADD8E6", fill_type="solid"
-    )
-    reason_fill = PatternFill(
-        start_color="FFA500", end_color="FFA500", fill_type="solid"
-    )
-    holiday_fill = PatternFill(
-        start_color="D3F9D8", end_color="D3F9D8", fill_type="solid"
-    )
-
-    df_flat = df_pivot_sorted.reset_index()
-    df_flat_sorted = df_flat.sort_values(by=["Отдел", "ФИО"])
-
-    meta_dict = {(row[0], row[2]): row[-1] for row in rows}
-
-    max_col_widths = [0] * len(df_flat_sorted.columns)
-    max_row_heights = [0] * (len(df_flat_sorted) + 1)
-
-    for r_idx, r in enumerate(
-        dataframe_to_rows(df_flat_sorted, index=False, header=True), 1
-    ):
-        for c_idx, value in enumerate(r, 1):
-            cell = ws.cell(row=r_idx, column=c_idx, value=value)
-
-            if r_idx == 1:
-                cell.font = header_font
-                cell.alignment = header_alignment
-            else:
-                cell.font = data_font
-                cell.alignment = data_alignment
-
-                if c_idx > 2:
-                    staff_fio = r[0]
-                    date = df_flat_sorted.columns[c_idx - 1]
-                    meta = meta_dict.get((staff_fio, date), None)
-                    if meta == "holiday_with_attendance":
-                        cell.fill = holiday_fill
-                    elif meta == "absence_reason":
-                        cell.fill = reason_fill
-                    elif meta == "remote_work":
-                        cell.fill = remote_work_fill
-                    elif meta == "absence":
-                        cell.fill = absence_fill
-                        cell.font = Font(color="FFFFFF")
-
-            value_length = len(str(value)) if value else 0
-            max_col_widths[c_idx - 1] = max(max_col_widths[c_idx - 1], value_length + 2)
-            max_row_heights[r_idx - 1] = max(max_row_heights[r_idx - 1], value_length)
-
-    for idx, col_width in enumerate(max_col_widths, start=1):
-        ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = max(
-            col_width, 15
-        )
-
-    for idx, row_height in enumerate(max_row_heights, start=1):
-        ws.row_dimensions[idx].height = max(row_height * 2, 25)
-
-    return wb
-
-
-def add_api_key_header(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        request = args[0]
-
-        if isinstance(request, HttpRequest):
-            api_key = models.APIKey.objects.filter(is_active=True).first()
-            if api_key:
-                request.META["HTTP_X_API_KEY"] = api_key.key
-            else:
-                return Response(
-                    {"error": "No active API key available for authentication."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
-        return func(*args, **kwargs)
-
-    return wrapper
-
-
 def send_password_reset_email(user, request):
     """
     Send a password reset email to the user with branding and design consistent with the website footer.
@@ -418,9 +198,9 @@ def send_password_reset_email(user, request):
     try:
         token = models.PasswordResetToken.generate_token(user)
 
-        site_name = getattr(settings, 'SITE_NAME', "KRMU")
+        site_name = getattr(settings, "SITE_NAME", "KRMU")
 
-        reset_scheme = 'https' if request.is_secure() else request.scheme
+        reset_scheme = "https" if request.is_secure() else request.scheme
         reset_link = f"{reset_scheme}://{request.get_host()}{reverse('password_reset_confirm', args=[token])}"
 
         expiry_time = timezone.now() + datetime.timedelta(hours=1)
@@ -428,7 +208,7 @@ def send_password_reset_email(user, request):
 
         current_year = timezone.now().year
 
-        user_display_name = getattr(user, 'first_name', user.username) or user.username
+        user_display_name = getattr(user, "first_name", user.username) or user.username
 
         subject = f"Сброс пароля на сайте {site_name}"
 
@@ -527,12 +307,12 @@ def send_password_reset_email(user, request):
         if success:
             logger.info(f"Password reset email sent for user ID: {user.id}")
 
-            if hasattr(models, 'SecurityAuditLog'):
+            if hasattr(models, "SecurityAuditLog"):
                 models.SecurityAuditLog.objects.create(
                     user=user,
-                    action_type='password_reset_request',
-                    ip_address=request.META.get('REMOTE_ADDR', ''),
-                    user_agent=request.META.get('HTTP_USER_AGENT', ''),
+                    action_type="password_reset_request",
+                    ip_address=request.META.get("REMOTE_ADDR", ""),
+                    user_agent=request.META.get("HTTP_USER_AGENT", ""),
                 )
 
             return True
@@ -952,3 +732,425 @@ def get_bonus_percentage(num_days, percent_for_period):
         return float(rule.bonus_percentage)
 
     return 0.0
+
+
+def get_all_child_departments(department):
+    """
+    Recursively get all child departments of a given department.
+
+    Args:
+        department: The parent department
+
+    Returns:
+        List of departments including the parent and all children
+    """
+    result = [department]
+    children = models.ChildDepartment.objects.filter(parent=department)
+
+    for child in children:
+        result.extend(get_all_child_departments(child))
+
+    return result
+
+
+def collect_attendance_data(staff_list, start_date, end_date):
+    """
+    Collect attendance data for staff within the date range.
+    Data is cached for 6 hours.
+
+    Args:
+        staff_list: QuerySet of Staff objects
+        start_date: Start date for attendance data
+        end_date: End date for attendance data
+
+    Returns:
+        List of attendance data organized by date and staff
+    """
+
+    def generate_cache_key():
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = end_date.strftime("%Y-%m-%d")
+
+        dept_ids = sorted(
+            set(staff.department_id for staff in staff_list if staff.department_id is not None)
+        )
+        dept_str = f"dept_{'_'.join(map(str, dept_ids))}" if dept_ids else "no_dept"
+
+        staff_ids = sorted(staff_list.values_list("id", flat=True))
+        staff_count = len(staff_ids)
+
+        return f"attendance_data_{start_str}_to_{end_str}_{dept_str}_staff_count_{staff_count}"
+
+    cache_key = generate_cache_key()
+    cached_results = get_cache(
+        cache_key,
+        query=lambda: _collect_attendance_data_impl(staff_list, start_date, end_date),
+        timeout=6 * 60 * 60,
+    )
+
+    return cached_results
+
+
+def _collect_attendance_data_impl(staff_list, start_date, end_date):
+    """
+    Implementation of attendance data collection.
+    """
+    from django.db.models import Q
+
+    logger.info(
+        f"Collecting attendance data from {start_date} to {end_date} for {staff_list.count()} staff members"
+    )
+
+    date_range = [
+        start_date + datetime.timedelta(days=i) for i in range((end_date - start_date).days + 1)
+    ]
+
+    staff_ids = list(staff_list.values_list("id", flat=True))
+
+    holidays = get_cache(
+        "public_holidays",
+        query=lambda: {
+            holiday.date: holiday.is_working_day
+            for holiday in models.PublicHoliday.objects.filter(date__range=[start_date, end_date])
+        },
+        timeout=10 * 60,  # 10 minutes
+    )
+
+    attendance_qs = models.StaffAttendance.objects.filter(
+        staff_id__in=staff_ids,
+        date_at__range=[
+            start_date + datetime.timedelta(days=1),
+            end_date + datetime.timedelta(days=1),
+        ],
+    ).select_related("staff")
+
+    remote_work_qs = models.RemoteWork.objects.filter(
+        Q(staff_id__in=staff_ids)
+        & (Q(start_date__lte=end_date, end_date__gte=start_date) | Q(permanent_remote=True))
+    ).select_related("staff")
+
+    absence_qs = models.AbsentReason.objects.filter(
+        staff_id__in=staff_ids, start_date__lte=end_date, end_date__gte=start_date
+    ).select_related("staff")
+
+    attendance_map = defaultdict(lambda: defaultdict(dict))
+    for att in attendance_qs:
+        local_date = (
+            convert_to_local(att.first_in)
+            if att.first_in
+            else convert_to_local(att.date_at) - datetime.timedelta(days=1)
+        )
+        date_key = local_date.strftime("%Y-%m-%d")
+        staff_id = att.staff_id
+
+        first_in_local = convert_to_local(att.first_in) if att.first_in else None
+        last_out_local = convert_to_local(att.last_out) if att.last_out else None
+
+        if staff_id not in attendance_map[date_key]:
+            attendance_map[date_key][staff_id] = {
+                "first_in": first_in_local,
+                "last_out": last_out_local,
+                "area_name": att.area_name_in,
+            }
+        else:
+            current_rec = attendance_map[date_key][staff_id]
+            if att.first_in and (
+                not current_rec["first_in"]
+                or convert_to_local(att.first_in) < current_rec["first_in"]
+            ):
+                current_rec["first_in"] = convert_to_local(att.first_in)
+            if att.last_out and (
+                not current_rec["last_out"]
+                or convert_to_local(att.last_out) > current_rec["last_out"]
+            ):
+                current_rec["last_out"] = convert_to_local(att.last_out)
+
+    remote_work_map = defaultdict(set)
+    for rw in remote_work_qs:
+        staff_id = rw.staff_id
+
+        rw_start = start_date if rw.permanent_remote else max(rw.start_date, start_date)
+        rw_end = end_date if rw.permanent_remote else min(rw.end_date, end_date)
+
+        date_keys = [
+            (rw_start + datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+            for i in range((rw_end - rw_start).days + 1)
+        ]
+
+        for date_key in date_keys:
+            remote_work_map[date_key].add(staff_id)
+
+    absence_map = defaultdict(lambda: defaultdict(list))
+    for absence in absence_qs:
+        staff_id = absence.staff_id
+        abs_start = max(absence.start_date, start_date)
+        abs_end = min(absence.end_date, end_date)
+
+        for i in range((abs_end - abs_start).days + 1):
+            current = abs_start + datetime.timedelta(days=i)
+            date_key = current.strftime("%Y-%m-%d")
+            absence_map[date_key][staff_id].append(
+                {"reason": absence.get_reason_display(), "approved": absence.approved}
+            )
+
+    results = []
+    staff_data_cache = {
+        staff.id: (
+            f"{staff.surname} {staff.name}",
+            staff.department.name if staff.department else "N/A",
+        )
+        for staff in staff_list
+    }
+
+    for date in date_range:
+        date_str = date.strftime("%Y-%m-%d")
+        date_display = date.strftime("%d.%m.%Y")
+        is_weekend = date.weekday() >= 5
+        is_holiday = date in holidays and not holidays[date]
+        is_off_day = is_weekend or is_holiday
+
+        for staff in staff_list:
+            staff_id = staff.id
+            staff_fio, department_name = staff_data_cache[staff_id]
+
+            attendance = None
+            if staff_id in attendance_map.get(date_str, {}):
+                att_data = attendance_map[date_str][staff_id]
+                first_in = att_data["first_in"]
+                last_out = att_data["last_out"]
+
+                if first_in and last_out:
+                    attendance = (
+                        f"{first_in.strftime('%H:%M:%S')} - {last_out.strftime('%H:%M:%S')}\n"
+                        f"({att_data['area_name']})"
+                    )
+
+            is_remote = staff_id in remote_work_map.get(date_str, set())
+            has_absence = staff_id in absence_map.get(date_str, {})
+
+            if is_off_day:
+                status_info = attendance if attendance else "Выходной"
+                meta = "holiday_with_attendance" if attendance else "holiday"
+            else:
+                if is_remote:
+                    status_info = "Удаленная работа"
+                    meta = "remote_work"
+                elif has_absence:
+                    absence_info = absence_map[date_str][staff_id][0]
+                    status_info = absence_info["reason"]
+                    meta = (
+                        "absence_reason_approved" if absence_info["approved"] else "absence_reason"
+                    )
+                elif attendance:
+                    status_info = attendance
+                    meta = "workday"
+                else:
+                    status_info = "Отсутствие"
+                    meta = "absence"
+
+            results.append([staff_fio, department_name, date_display, status_info, meta])
+
+    logger.info(f"Collected {len(results)} attendance records")
+    return results
+
+
+def generate_excel_file(attendance_data, department_name, user_start_date, user_end_date):
+    """
+    Generate an Excel file from attendance data with improved formatting and filtering.
+
+    Args:
+        attendance_data: List of attendance records
+            [ФИО, Отдел, 'DD.MM.YYYY', Посещаемость, meta].
+            The data has been obtained from the DB and may be for only a subset of the
+            user-requested period.
+        department_name: Name of the department (str).
+        user_start_date: The user-requested start date (datetime.date).
+        user_end_date: The user-requested end date (datetime.date).
+
+    Returns:
+        Bytes data of the Excel file.
+    """
+    import io
+    from openpyxl.styles import Border, Side
+    from openpyxl.utils import get_column_letter
+
+    logger.info("Generating refined Excel file...")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Отчет посещаемости"
+
+    title_font = Font(name="Arial", size=16, bold=True)
+    subtitle_font = Font(name="Arial", size=12, bold=True)
+    header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    data_font = Font(name="Arial", size=10, color="000000")
+
+    center_wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    header_fill = PatternFill(start_color="0070C0", end_color="0070C0", fill_type="solid")
+    fill_holiday = PatternFill(start_color="F59E0B", end_color="F59E0B", fill_type="solid")
+    fill_holiday_work = PatternFill(start_color="34D399", end_color="34D399", fill_type="solid")
+    fill_remote = PatternFill(start_color="38BDF8", end_color="38BDF8", fill_type="solid")
+    fill_approved = PatternFill(start_color="A78BFA", end_color="A78BFA", fill_type="solid")
+    fill_not_approved = PatternFill(start_color="FB7185", end_color="FB7185", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+
+    ws.merge_cells("A1:E1")
+    title_cell = ws.cell(row=1, column=1, value=f"Отчет посещаемости: {department_name}")
+    title_cell.font = title_font
+    title_cell.alignment = center_wrap
+
+    ws.merge_cells("A2:E2")
+    subtitle_cell = ws.cell(
+        row=2,
+        column=1,
+        value=f"Период: {user_start_date.strftime('%d.%m.%Y')} - {user_end_date.strftime('%d.%m.%Y')}",
+    )
+    subtitle_cell.font = subtitle_font
+    subtitle_cell.alignment = center_wrap
+
+    legend_row = 4
+    legend_title = ws.cell(row=legend_row, column=1, value="Легенда:")
+    legend_title.font = subtitle_font
+    legend_title.alignment = center_wrap
+
+    legends = [
+        ("Выходной день", fill_holiday),
+        ("Работа в выходной", fill_holiday_work),
+        ("Удаленная работа", fill_remote),
+        ("Одобрено", fill_approved),
+        ("Не одобрено", fill_not_approved),
+    ]
+    for i, (legend_text, legend_fill) in enumerate(legends, start=1):
+        row_idx = legend_row + i
+        color_cell = ws.cell(row=row_idx, column=1, value="")
+        color_cell.fill = legend_fill
+        color_cell.border = thin_border
+        color_cell.alignment = center_wrap
+        desc_cell = ws.cell(row=row_idx, column=2, value=legend_text)
+        desc_cell.font = data_font
+        desc_cell.border = thin_border
+        desc_cell.alignment = center_wrap
+
+    data_start_row = legend_row + len(legends) + 2
+
+    df = pd.DataFrame(attendance_data, columns=["ФИО", "Отдел", "Дата", "Посещаемость", "meta"])
+    df["date_obj"] = pd.to_datetime(df["Дата"], format="%d.%m.%Y")
+    df = df[
+        (df["date_obj"] >= pd.to_datetime(user_start_date))
+        & (df["date_obj"] <= pd.to_datetime(user_end_date))
+    ]
+    if df.empty:
+        logger.warning("No attendance data for the selected date range.")
+
+    df = df.sort_values(by="date_obj", ascending=False)
+
+    unique_staff = df[["ФИО", "Отдел"]].drop_duplicates()
+    unique_staff = unique_staff.sort_values(by=["Отдел", "ФИО"], ascending=True)
+
+    unique_dates = df["Дата"].unique()
+
+    headers = ["ФИО", "Отдел"] + list(unique_dates)
+    for col_idx, header_val in enumerate(headers, start=1):
+        cell = ws.cell(row=data_start_row, column=col_idx, value=header_val)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_wrap
+        cell.border = thin_border
+
+    attendance_lookup = {}
+    meta_lookup = {}
+    for row in df.itertuples(index=False):
+        key = (row.ФИО, row.Отдел, row.Дата)
+        attendance_lookup[key] = row.Посещаемость
+        meta_lookup[key] = row.meta
+
+    public_holidays = get_cache(
+        "public_holidays_for_excel",
+        query=lambda: {
+            holiday.date.strftime("%d.%m.%Y"): holiday.is_working_day
+            for holiday in models.PublicHoliday.objects.filter(
+                date__range=[user_start_date, user_end_date]
+            )
+        },
+        timeout=10 * 60,
+    )
+
+    row_idx = data_start_row + 1
+    for _, staff_row in unique_staff.iterrows():
+        fio = staff_row["ФИО"]
+        dept = staff_row["Отдел"]
+
+        fio_cell = ws.cell(row=row_idx, column=1, value=fio)
+        fio_cell.font = data_font
+        fio_cell.alignment = center_wrap
+        fio_cell.border = thin_border
+
+        dept_cell = ws.cell(row=row_idx, column=2, value=dept)
+        dept_cell.font = data_font
+        dept_cell.alignment = center_wrap
+        dept_cell.border = thin_border
+
+        for col_offset, date_str in enumerate(unique_dates, start=3):
+            key = (fio, dept, date_str)
+            value = attendance_lookup.get(key, "")
+            meta = meta_lookup.get(key, "")
+            data_cell = ws.cell(row=row_idx, column=col_offset, value=value)
+            data_cell.font = data_font
+            data_cell.alignment = center_wrap
+            data_cell.border = thin_border
+
+            is_working_holiday = date_str in public_holidays and public_holidays[date_str]
+
+            if meta == "holiday":
+                if not is_working_holiday:
+                    data_cell.fill = fill_holiday
+            elif meta == "holiday_with_attendance":
+                if not is_working_holiday:
+                    data_cell.fill = fill_holiday_work
+            elif meta == "remote_work":
+                data_cell.fill = fill_remote
+            elif meta == "absence_reason_approved":
+                data_cell.fill = fill_approved
+            elif meta in ["absence", "absence_reason"]:
+                data_cell.fill = fill_not_approved
+                data_cell.font = Font(name="Arial", size=10, color="FFFFFF")
+        row_idx += 1
+
+    for col_idx in range(1, ws.max_column + 1):
+        max_length = 0
+        col_letter = get_column_letter(col_idx)
+        for r_idx in range(1, ws.max_row + 1):
+            cell_val = ws.cell(row=r_idx, column=col_idx).value
+            if cell_val and isinstance(cell_val, str):
+                max_length = max(max_length, len(cell_val))
+        ws.column_dimensions[col_letter].width = max_length + 2
+
+    for r_idx in range(1, ws.max_row + 1):
+        max_lines = 1
+        for c_idx in range(1, ws.max_column + 1):
+            cell_val = ws.cell(row=r_idx, column=c_idx).value
+            if cell_val and isinstance(cell_val, str):
+                max_lines = max(max_lines, cell_val.count("\n") + 1)
+        ws.row_dimensions[r_idx].height = 15 * max_lines
+
+    excel_data = io.BytesIO()
+    wb.save(excel_data)
+    excel_data.seek(0)
+    logger.info(
+        "Excel file generation completed with proper timezone conversion, filtering, and sorting."
+    )
+    return excel_data.getvalue()
+
+
+def convert_to_local(dt):
+    if dt is None:
+        return None
+    if isinstance(dt, datetime.date) and not isinstance(dt, datetime.datetime):
+        dt = datetime.datetime.combine(dt, datetime.time(0, 0, 0))
+        dt = timezone.make_aware(dt, timezone.get_current_timezone())
+    return timezone.localtime(dt)
