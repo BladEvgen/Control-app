@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
     Custom serializer for obtaining JWT tokens with precise expiration times in UTC.
@@ -21,13 +22,18 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             }
         }
     """
+
     def validate(self, attrs):
         data = super().validate(attrs)
         token = self.get_token(self.user)
         access_exp = datetime.fromtimestamp(token.access_token["exp"], tz=timezone.utc)
         refresh_exp = datetime.fromtimestamp(token["exp"], tz=timezone.utc)
-        data["access_token_expires"] = access_exp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-        data["refresh_token_expires"] = refresh_exp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        data["access_token_expires"] = access_exp.isoformat(
+            timespec="milliseconds"
+        ).replace("+00:00", "Z")
+        data["refresh_token_expires"] = refresh_exp.isoformat(
+            timespec="milliseconds"
+        ).replace("+00:00", "Z")
         try:
             user_profile = models.UserProfile.objects.get(user=self.user)
             user_data = {
@@ -41,8 +47,10 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         data["user"] = user_data
         return data
 
+
 class CustomTokenObtainPairView(TokenObtainPairView):
     """
     Custom view for obtaining JWT tokens using CustomTokenObtainPairSerializer.
     """
+
     serializer_class = CustomTokenObtainPairSerializer

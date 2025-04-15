@@ -162,11 +162,13 @@ class MonitoringAdminSite(admin.AdminSite):
             date_at=timezone.now().date()
         ).count()
 
-        context["recent_logs"] = LogEntry.objects.select_related("content_type", "user")[:10]
+        context["recent_logs"] = LogEntry.objects.select_related(
+            "content_type", "user"
+        )[:10]
 
-        departments = ChildDepartment.objects.annotate(staff_count=Count("staff")).order_by(
-            "-staff_count"
-        )[:5]
+        departments = ChildDepartment.objects.annotate(
+            staff_count=Count("staff")
+        ).order_by("-staff_count")[:5]
 
         context["departments"] = departments
 
@@ -269,9 +271,9 @@ class DepartmentHierarchyFilter(SimpleListFilter):
             descendants = set(queue)
             while queue:
                 current = queue.pop(0)
-                children = ChildDepartment.objects.filter(parent_id=current).values_list(
-                    "id", flat=True
-                )
+                children = ChildDepartment.objects.filter(
+                    parent_id=current
+                ).values_list("id", flat=True)
                 queue.extend(children)
                 descendants.update(children)
             cache.set(cache_key, descendants, 3600)
@@ -370,7 +372,9 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
         work_end = timezone.now().replace(hour=18, minute=0, second=0, microsecond=0)
 
         late_threshold = work_start + timedelta(minutes=LATE_THRESHOLD_MINUTES)
-        early_leave_threshold = work_end - timedelta(minutes=EARLY_LEAVE_THRESHOLD_MINUTES)
+        early_leave_threshold = work_end - timedelta(
+            minutes=EARLY_LEAVE_THRESHOLD_MINUTES
+        )
 
         if self.value() == "present":
             return queryset.filter(
@@ -406,7 +410,9 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
         elif self.value() == "remote":
             return queryset.filter(
                 Q(remote_work__permanent_remote=True)
-                | Q(remote_work__start_date__lte=today, remote_work__end_date__gte=today)
+                | Q(
+                    remote_work__start_date__lte=today, remote_work__end_date__gte=today
+                )
             ).distinct()
 
         elif self.value() == "partial":
@@ -416,7 +422,10 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
                     attendance__first_in__isnull=False,
                     attendance__last_out__isnull=False,
                 )
-                .annotate(workday_duration=F('attendance__last_out') - F('attendance__first_in'))
+                .annotate(
+                    workday_duration=F("attendance__last_out")
+                    - F("attendance__first_in")
+                )
                 .filter(
                     workday_duration__gte=timedelta(hours=MINIMUM_WORKDAY_HOURS),
                     workday_duration__lt=timedelta(hours=STANDARD_WORKDAY_HOURS),
@@ -458,7 +467,9 @@ class PasswordResetTokenAdmin(admin.ModelAdmin):
             hours = time_left.seconds // 3600
             minutes = (time_left.seconds % 3600) // 60
 
-            if time_left.days < 0 or (time_left.days == 0 and hours == 0 and minutes == 0):
+            if time_left.days < 0 or (
+                time_left.days == 0 and hours == 0 and minutes == 0
+            ):
                 return format_html('<span style="color: red;">Истек</span>')
 
             return format_html(
@@ -523,7 +534,9 @@ class PasswordResetRequestLogAdmin(admin.ModelAdmin):
         minutes = int(time_left.total_seconds() // 60)
         seconds = int(time_left.total_seconds() % 60)
 
-        return format_html('<span style="color: orange;">{} мин. {} сек.</span>', minutes, seconds)
+        return format_html(
+            '<span style="color: orange;">{} мин. {} сек.</span>', minutes, seconds
+        )
 
     time_until_next.short_description = "Время до разблокировки"
 
@@ -585,7 +598,7 @@ class APIKeyAdmin(admin.ModelAdmin):
             '<span class="copy-to-clipboard api-key" data-clipboard-text="{}">'
             '<span class="key-preview">{}</span>'
             '<span class="copy-icon">📋</span>'
-            '</span>',
+            "</span>",
             obj.key,
             f"{obj.key[:8]}...",
         )
@@ -691,6 +704,7 @@ class FileCategoryAdmin(admin.ModelAdmin):
     list_display_links = None
     readonly_fields = ("slug", "name")
 
+
 @admin.register(ParentDepartment, site=admin_site)
 class ParentDepartmentAdmin(admin.ModelAdmin):
     list_display = (
@@ -727,7 +741,14 @@ class ChildDepartmentAdmin(admin.ModelAdmin):
     search_fields = ("name", "parent__name")
     ordering = ("name",)
     list_filter = ("parent",)
-    readonly_fields = ("date_of_creation", "staff_count", "avg_salary", "parent", "name", "id")
+    readonly_fields = (
+        "date_of_creation",
+        "staff_count",
+        "avg_salary",
+        "parent",
+        "name",
+        "id",
+    )
     list_display_links = None
 
     fieldsets = (
@@ -753,7 +774,9 @@ class ChildDepartmentAdmin(admin.ModelAdmin):
     staff_count.short_description = "Количество сотрудников"
 
     def avg_salary(self, obj):
-        avg = Salary.objects.filter(staff__department=obj).aggregate(avg=Avg("net_salary"))["avg"]
+        avg = Salary.objects.filter(staff__department=obj).aggregate(
+            avg=Avg("net_salary")
+        )["avg"]
         return f"{int(avg)} руб." if avg else "Н/Д"
 
     avg_salary.short_description = "Средняя зарплата"
@@ -903,8 +926,12 @@ class StaffAdmin(admin.ModelAdmin):
 
     def needs_training_status(self, obj):
         if obj.needs_training:
-            return format_html('<span style="color: red;">⚠️ Нуждается в тренировке</span>')
-        return format_html('<span style="color: green;">✓ Тренировка не требуется</span>')
+            return format_html(
+                '<span style="color: red;">⚠️ Нуждается в тренировке</span>'
+            )
+        return format_html(
+            '<span style="color: green;">✓ Тренировка не требуется</span>'
+        )
 
     needs_training_status.short_description = "Статус тренировки ML"
 
@@ -960,7 +987,9 @@ class StaffAdmin(admin.ModelAdmin):
 
         current_date = start_date
         while current_date <= end_date:
-            record = next((a for a in attendance_records if a.date_at == current_date), None)
+            record = next(
+                (a for a in attendance_records if a.date_at == current_date), None
+            )
 
             is_weekend = current_date.weekday() >= 5
             bg_color = "#f5f5f5" if is_weekend else "white"
@@ -1027,7 +1056,9 @@ class StaffAdmin(admin.ModelAdmin):
     )
 
     def export_staff_data(self, request, queryset):
-        self.message_user(request, f"Данные {queryset.count()} сотрудников экспортированы.")
+        self.message_user(
+            request, f"Данные {queryset.count()} сотрудников экспортированы."
+        )
 
     export_staff_data.short_description = "Экспортировать данные сотрудников"
 
@@ -1131,12 +1162,17 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
                             '<div style="border: 1px solid #ddd; padding: 3px; border-radius: 3px;">'
                             '<img src="{}" width="80" height="80" style="object-fit: cover;" />'
                             "</div>",
-                            os.path.join(settings.AUGMENT_URL, obj.staff.pin, entry.name),
+                            os.path.join(
+                                settings.AUGMENT_URL, obj.staff.pin, entry.name
+                            ),
                         )
 
             images_html += "</div>"
 
-            if images_html == '<div style="display: flex; flex-wrap: wrap; gap: 5px;"></div>':
+            if (
+                images_html
+                == '<div style="display: flex; flex-wrap: wrap; gap: 5px;"></div>'
+            ):
                 return "No Augmented Images"
 
             cache.set(cache_key, images_html, timeout=3600)
@@ -1190,15 +1226,21 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
 
     def regenerate_masks(self, request, queryset):
         count = queryset.count()
-        self.message_user(request, f"Запущена регенерация масок для {count} сотрудников.")
+        self.message_user(
+            request, f"Запущена регенерация масок для {count} сотрудников."
+        )
 
-    regenerate_masks.short_description = "Регенерировать маски для выбранных сотрудников"
+    regenerate_masks.short_description = (
+        "Регенерировать маски для выбранных сотрудников"
+    )
 
     def force_augmentation(self, request, queryset):
         count = queryset.count()
         self.message_user(request, f"Запущена аугментация для {count} сотрудников.")
 
-    force_augmentation.short_description = "Запустить аугментацию для выбранных сотрудников"
+    force_augmentation.short_description = (
+        "Запустить аугментацию для выбранных сотрудников"
+    )
 
 
 # ===== ATTENDANCE MODELS =====
@@ -1389,7 +1431,9 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
     def export_attendance_data(self, request, queryset):
         count = queryset.count()
-        self.message_user(request, f"Экспортированы данные о посещаемости для {count} записей.")
+        self.message_user(
+            request, f"Экспортированы данные о посещаемости для {count} записей."
+        )
 
     export_attendance_data.short_description = "Экспортировать данные о посещаемости"
 
@@ -1507,13 +1551,17 @@ class LessonAttendanceAdmin(ModelAdmin):
                 hours = hours % 24
 
             if hours < 1:
-                return format_html('<span style="color: red;">{:02}:{:02}</span>', hours, minutes)
+                return format_html(
+                    '<span style="color: red;">{:02}:{:02}</span>', hours, minutes
+                )
             elif hours < 2:
                 return format_html(
                     '<span style="color: orange;">{:02}:{:02}</span>', hours, minutes
                 )
             else:
-                return format_html('<span style="color: green;">{:02}:{:02}</span>', hours, minutes)
+                return format_html(
+                    '<span style="color: green;">{:02}:{:02}</span>', hours, minutes
+                )
         return "-"
 
     lesson_duration.short_description = "Продолжительность"
@@ -1629,7 +1677,10 @@ class LessonAttendanceAdmin(ModelAdmin):
     closest_location.short_description = "Ближайшая локация"
 
     def photo_preview(self, obj):
-        if obj.staff_image_path and obj.staff_image_path != "/static/media/images/no-avatar.png":
+        if (
+            obj.staff_image_path
+            and obj.staff_image_path != "/static/media/images/no-avatar.png"
+        ):
             return format_html(
                 """
                 <div style="text-align: center;">
@@ -1824,7 +1875,9 @@ class SalaryAdmin(admin.ModelAdmin):
 
     def export_salary_report(self, request, queryset):
         count = queryset.count()
-        self.message_user(request, f"Экспортирован отчет по зарплате для {count} сотрудников.")
+        self.message_user(
+            request, f"Экспортирован отчет по зарплате для {count} сотрудников."
+        )
 
     export_salary_report.short_description = "Экспортировать отчет по зарплате"
 
@@ -1854,7 +1907,9 @@ class PublicHolidayAdmin(admin.ModelAdmin):
         if days < 0:
             return "Прошел"
         elif days == 0:
-            return format_html('<span style="color: green; font-weight: bold;">Сегодня!</span>')
+            return format_html(
+                '<span style="color: green; font-weight: bold;">Сегодня!</span>'
+            )
         elif days <= 7:
             return format_html('<span style="color: orange;">{} дн.</span>', days)
         else:
@@ -2025,14 +2080,18 @@ class RemoteWorkAdmin(admin.ModelAdmin):
 
     def extend_remote_work(self, request, queryset):
         count = queryset.count()
-        self.message_user(request, f"Период удаленной работы продлен для {count} сотрудников.")
+        self.message_user(
+            request, f"Период удаленной работы продлен для {count} сотрудников."
+        )
 
     extend_remote_work.short_description = "Продлить период удаленной работы"
 
     def terminate_remote_work(self, request, queryset):
         today = timezone.now().date()
         count = queryset.filter(end_date__gt=today).update(end_date=today)
-        self.message_user(request, f"Удаленная работа завершена для {count} сотрудников.")
+        self.message_user(
+            request, f"Удаленная работа завершена для {count} сотрудников."
+        )
 
     terminate_remote_work.short_description = "Завершить удаленную работу"
 

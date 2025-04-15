@@ -86,10 +86,14 @@ def update_lesson_attendance_last_out():
                 first_in = lesson.first_in
 
                 if not timezone.is_aware(first_in):
-                    first_in = timezone.make_aware(first_in, timezone.get_current_timezone())
+                    first_in = timezone.make_aware(
+                        first_in, timezone.get_current_timezone()
+                    )
 
                 end_of_day = timezone.make_aware(
-                    datetime.datetime.combine(first_in.date(), datetime.time(23, 59, 59, 999999)),
+                    datetime.datetime.combine(
+                        first_in.date(), datetime.time(23, 59, 59, 999999)
+                    ),
                     first_in.tzinfo,
                 )
 
@@ -104,7 +108,9 @@ def update_lesson_attendance_last_out():
                 updates.append(lesson)
 
             if updates:
-                models.LessonAttendance.objects.bulk_update(updates, ["last_out"], batch_size=100)
+                models.LessonAttendance.objects.bulk_update(
+                    updates, ["last_out"], batch_size=100
+                )
                 total_updated += len(updates)
 
             if total_records > BATCH_SIZE:
@@ -115,7 +121,9 @@ def update_lesson_attendance_last_out():
         logger.info(f"Successfully updated `last_out` for {total_updated} records.")
 
     except Exception as e:
-        logger.error(f"Error executing `update_lesson_attendance_last_out`: {e}", exc_info=True)
+        logger.error(
+            f"Error executing `update_lesson_attendance_last_out`: {e}", exc_info=True
+        )
         raise
 
 
