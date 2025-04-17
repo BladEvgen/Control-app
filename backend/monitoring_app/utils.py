@@ -793,7 +793,8 @@ def collect_attendance_data(staff_list, start_date, end_date):
 
 def _collect_attendance_data_impl(staff_list, start_date, end_date):
     """
-    Implementation of attendance data collection.
+    Implementation of attendance data collection combining StaffAttendance and LessonAttendance.
+    Handles the difference in date_at fields between models and merges data properly.
     """
     from django.db.models import Q
 
@@ -813,8 +814,18 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             holiday.date: holiday.is_working_day
             for holiday in models.PublicHoliday.objects.filter(date__range=[start_date, end_date])
         },
-        timeout=10 * 60,  # 10 minutes
+        timeout=10 * 60,
     )
+
+    class_locations = list(models.ClassLocation.objects.all())
+    location_searcher = None
+    if class_locations:
+        location_data = [
+            {"latitude": loc.latitude, "longitude": loc.longitude, "name": loc.name}
+            for loc in class_locations
+        ]
+        location_searcher = LocationSearcher(location_data)
+        logger.info(f"LocationSearcher initialized with {len(class_locations)} locations")
 
     attendance_qs = models.StaffAttendance.objects.filter(
         staff_id__in=staff_ids,
@@ -822,6 +833,11 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             start_date + datetime.timedelta(days=1),
             end_date + datetime.timedelta(days=1),
         ],
+    ).select_related("staff")
+
+    lesson_attendance_qs = models.LessonAttendance.objects.filter(
+        staff_id__in=staff_ids,
+        date_at__range=[start_date, end_date],
     ).select_related("staff")
 
     remote_work_qs = models.RemoteWork.objects.filter(
@@ -834,6 +850,7 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
     ).select_related("staff")
 
     attendance_map = defaultdict(lambda: defaultdict(dict))
+
     for att in attendance_qs:
         local_date = (
             convert_to_local(att.first_in)
@@ -850,7 +867,8 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             attendance_map[date_key][staff_id] = {
                 "first_in": first_in_local,
                 "last_out": last_out_local,
-                "area_name": att.area_name_in,
+                "area_name": att.area_name_in if att.area_name_in else "Неизвестная локация",
+                "source": "staff_attendance",
             }
         else:
             current_rec = attendance_map[date_key][staff_id]
@@ -859,11 +877,95 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                 or convert_to_local(att.first_in) < current_rec["first_in"]
             ):
                 current_rec["first_in"] = convert_to_local(att.first_in)
+                current_rec["source"] = (
+                    "staff_attendance"
+                    if current_rec.get("source") == "lesson_attendance"
+                    else "mixed"
+                )
+                current_rec["area_name"] = (
+                    att.area_name_in if att.area_name_in else current_rec["area_name"]
+                )
+
             if att.last_out and (
                 not current_rec["last_out"]
                 or convert_to_local(att.last_out) > current_rec["last_out"]
             ):
                 current_rec["last_out"] = convert_to_local(att.last_out)
+                current_rec["source"] = (
+                    "staff_attendance"
+                    if current_rec.get("source") == "lesson_attendance"
+                    else "mixed"
+                )
+                if att.area_name_out:
+                    current_rec["area_name"] = att.area_name_out
+
+    for lesson_att in lesson_attendance_qs:
+        local_date = (
+            convert_to_local(lesson_att.first_in)
+            if lesson_att.first_in
+            else convert_to_local(lesson_att.date_at)
+        )
+        date_key = local_date.strftime("%Y-%m-%d")
+        staff_id = lesson_att.staff_id
+
+        first_in_local = convert_to_local(lesson_att.first_in) if lesson_att.first_in else None
+        last_out_local = convert_to_local(lesson_att.last_out) if lesson_att.last_out else None
+
+        location_name = "Неизвестная локация"
+        try:
+            if location_searcher:
+                location_name = location_searcher.find_nearest(
+                    lesson_att.latitude, lesson_att.longitude, radius=200
+                )
+            else:
+                for loc in class_locations:
+                    if is_within_radius(
+                        lesson_att.latitude,
+                        lesson_att.longitude,
+                        loc.latitude,
+                        loc.longitude,
+                        radius=200,
+                    ):
+                        location_name = loc.name
+                        break
+        except Exception as e:
+            logger.warning(f"Error finding location for LessonAttendance {lesson_att.id}: {e}")
+
+        if staff_id not in attendance_map[date_key]:
+            attendance_map[date_key][staff_id] = {
+                "first_in": first_in_local,
+                "last_out": last_out_local,
+                "area_name": location_name,
+                "source": "lesson_attendance",
+            }
+        else:
+            current_rec = attendance_map[date_key][staff_id]
+
+            if lesson_att.first_in and (
+                not current_rec["first_in"]
+                or convert_to_local(lesson_att.first_in) < current_rec["first_in"]
+            ):
+                current_rec["first_in"] = convert_to_local(lesson_att.first_in)
+                current_rec["source"] = (
+                    "lesson_attendance"
+                    if current_rec.get("source") == "staff_attendance"
+                    else "mixed"
+                )
+                if current_rec.get("source") == "lesson_attendance":
+                    current_rec["area_name"] = location_name
+
+            if lesson_att.last_out and (
+                not current_rec["last_out"]
+                or convert_to_local(lesson_att.last_out) > current_rec["last_out"]
+            ):
+                current_rec["last_out"] = convert_to_local(lesson_att.last_out)
+                current_rec["source"] = (
+                    "lesson_attendance"
+                    if current_rec.get("source") == "staff_attendance"
+                    else "mixed"
+                )
+                if current_rec.get("source") == "lesson_attendance":
+                    current_rec["area_name"] = location_name
 
     remote_work_map = defaultdict(set)
     for rw in remote_work_qs:
@@ -892,7 +994,6 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             absence_map[date_key][staff_id].append(
                 {"reason": absence.get_reason_display(), "approved": absence.approved}
             )
-
     results = []
     staff_data_cache = {
         staff.id: (
@@ -913,26 +1014,61 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             staff_id = staff.id
             staff_fio, department_name = staff_data_cache[staff_id]
 
-            attendance = None
-            if staff_id in attendance_map.get(date_str, {}):
+            has_attendance = staff_id in attendance_map.get(date_str, {})
+            is_remote = staff_id in remote_work_map.get(date_str, set())
+            has_absence = staff_id in absence_map.get(date_str, {})
+
+            attendance_info = None
+            if has_attendance:
                 att_data = attendance_map[date_str][staff_id]
                 first_in = att_data["first_in"]
                 last_out = att_data["last_out"]
 
                 if first_in and last_out:
-                    attendance = (
+                    area_name = att_data.get("area_name", "Неизвестная локация")
+                    attendance_info = (
                         f"{first_in.strftime('%H:%M:%S')} - {last_out.strftime('%H:%M:%S')}\n"
-                        f"({att_data['area_name']})"
+                        f"({area_name})"
                     )
 
-            is_remote = staff_id in remote_work_map.get(date_str, set())
-            has_absence = staff_id in absence_map.get(date_str, {})
-
             if is_off_day:
-                status_info = attendance if attendance else "Выходной"
-                meta = "holiday_with_attendance" if attendance else "holiday"
+                if attendance_info:
+                    status_info = attendance_info
+                    meta = "holiday_with_attendance"
+                else:
+                    status_info = "Выходной"
+                    meta = "holiday"
             else:
-                if is_remote:
+                if has_attendance and is_remote:
+                    status_info = (
+                        f"Удаленная работа + Присутствие\n{attendance_info}"
+                        if attendance_info
+                        else "Удаленная работа"
+                    )
+                    meta = "remote_work"
+                elif has_attendance and has_absence:
+                    absence_info = absence_map[date_str][staff_id][0]
+                    reason = absence_info["reason"]
+                    approved = absence_info["approved"]
+
+                    if approved:
+                        status_info = (
+                            f"{reason} + Присутствие\n{attendance_info}"
+                            if attendance_info
+                            else reason
+                        )
+                        meta = "absence_reason_approved"
+                    else:
+                        status_info = (
+                            f"Неутв: {reason} + Присутствие\n{attendance_info}"
+                            if attendance_info
+                            else f"Не одобрено: {reason}"
+                        )
+                        meta = "absence_reason"
+                elif attendance_info:
+                    status_info = attendance_info
+                    meta = "workday"
+                elif is_remote:
                     status_info = "Удаленная работа"
                     meta = "remote_work"
                 elif has_absence:
@@ -941,16 +1077,13 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     meta = (
                         "absence_reason_approved" if absence_info["approved"] else "absence_reason"
                     )
-                elif attendance:
-                    status_info = attendance
-                    meta = "workday"
                 else:
                     status_info = "Отсутствие"
                     meta = "absence"
 
             results.append([staff_fio, department_name, date_display, status_info, meta])
 
-    logger.info(f"Collected {len(results)} attendance records")
+    logger.info(f"Collected {len(results)} attendance records with combined status information")
     return results
 
 

@@ -994,6 +994,7 @@ def get_staff_detail(staff, start_date, end_date):
     )
 
     combined_attendance = {}
+
     for record in attendance_qs:
         date_key = record.date_at - datetime.timedelta(days=1)
         if date_key not in combined_attendance:
@@ -1004,13 +1005,14 @@ def get_staff_detail(staff, start_date, end_date):
         else:
             combined_attendance[date_key]["first_in"] = (
                 min(combined_attendance[date_key]["first_in"], record.first_in)
-                if combined_attendance[date_key]["first_in"]
-                else record.first_in
+                if combined_attendance[date_key]["first_in"] and record.first_in
+                else combined_attendance[date_key]["first_in"] or record.first_in
             )
+
             combined_attendance[date_key]["last_out"] = (
                 max(combined_attendance[date_key]["last_out"], record.last_out)
-                if combined_attendance[date_key]["last_out"]
-                else record.last_out
+                if combined_attendance[date_key]["last_out"] and record.last_out
+                else combined_attendance[date_key]["last_out"] or record.last_out
             )
 
     for record in lesson_qs:
@@ -1021,16 +1023,19 @@ def get_staff_detail(staff, start_date, end_date):
                 "last_out": record.last_out,
             }
         else:
-            combined_attendance[date_key]["first_in"] = (
-                min(combined_attendance[date_key]["first_in"], record.first_in)
-                if combined_attendance[date_key]["first_in"]
-                else record.first_in
-            )
-            combined_attendance[date_key]["last_out"] = (
-                max(combined_attendance[date_key]["last_out"], record.last_out)
-                if combined_attendance[date_key]["last_out"]
-                else record.last_out
-            )
+            if record.first_in:
+                combined_attendance[date_key]["first_in"] = (
+                    min(combined_attendance[date_key]["first_in"], record.first_in)
+                    if combined_attendance[date_key]["first_in"]
+                    else record.first_in
+                )
+
+            if record.last_out:
+                combined_attendance[date_key]["last_out"] = (
+                    max(combined_attendance[date_key]["last_out"], record.last_out)
+                    if combined_attendance[date_key]["last_out"]
+                    else record.last_out
+                )
 
     logger.debug(f"Объединенные данные посещаемости: {combined_attendance}")
 
@@ -1065,6 +1070,10 @@ def get_staff_detail(staff, start_date, end_date):
         dates.extend(attendance_dates)
     else:
         attendance_dates = []
+
+    if lesson_qs.exists():
+        lesson_dates = [lesson.date_at for lesson in lesson_qs]
+        dates.extend(lesson_dates)
 
     if remote_work_qs.exists():
         remote_dates = []
@@ -3419,7 +3428,6 @@ class UploadFileView(View):
                             str(date_cell), "%d.%m.%Y"
                         ).date()
                     except ValueError:
-                        # Попытка другого формата, например, "YYYY-MM-DD"
                         try:
                             date = datetime.datetime.strptime(
                                 str(date_cell), "%Y-%m-%d"
