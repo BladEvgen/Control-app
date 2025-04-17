@@ -111,14 +111,74 @@ export const declensionDays = (daysCount: number) => {
   }
 };
 
-export const formatDate = (dateString: string | null) => {
-  if (!dateString) return "Нет данных";
-  const timePart = dateString.split("T")[1].split("+")[0];
-  const [hours, minutes] = timePart.split(":");
-
-  return `${hours}:${minutes}`;
+/**
+ * Извлекает временную зону из ISO строки
+ * @param isoString ISO строка с датой
+ * @returns Строка с временной зоной в формате +HH:MM или -HH:MM
+ */
+export const extractTimezone = (isoString: string | null): string => {
+  if (!isoString) return "+00:00";
+  const timezoneMatch = isoString.match(/[+-]\d{2}:\d{2}$/);
+  return timezoneMatch ? timezoneMatch[0] : "+00:00"; 
 };
 
+/**
+ * Парсит ISO строку с учетом временной зоны
+ * @param isoString ISO строка с датой и временной зоной
+ * @returns Объект Date
+ */
+export const parseISOWithTimezone = (isoString: string | null): Date => {
+  if (!isoString) return new Date();
+  return new Date(isoString);
+};
+
+/**
+ * Форматирует время из ISO строки, сохраняя временную зону
+ * @param dateString ISO строка с датой
+ * @returns Строка с отформатированным временем (HH:MM)
+ */
+export const formatTime = (dateString: string | null): string => {
+  if (!dateString) return "Нет данных";
+
+  const timezone = extractTimezone(dateString);
+  const date = parseISOWithTimezone(dateString);
+
+  return date.toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: convertTimezoneFormat(timezone),
+  });
+};
+
+/**
+ * Форматирует время из ISO строки, включая секунды, с сохранением временной зоны
+ * @param dateString ISO строка с датой
+ * @returns Строка с отформатированным временем (HH:MM:SS)
+ */
+export const formatTimeWithSeconds = (dateString: string | null): string => {
+  if (!dateString) return "Нет данных";
+
+  const timezone = extractTimezone(dateString);
+  const date = parseISOWithTimezone(dateString);
+
+  return date.toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: convertTimezoneFormat(timezone),
+  });
+};
+
+/**
+ * Алиас для обратной совместимости с предыдущим API
+ */
+export const formatDate = formatTime;
+
+/**
+ * Форматирует количество минут в строку (HH:MM)
+ * @param totalMinutes Общее количество минут
+ * @returns Строка в формате HH:MM
+ */
 export const formatMinutes = (totalMinutes: number) => {
   let hours = Math.floor(totalMinutes / 60);
   let minutes = Math.round(totalMinutes % 60);
@@ -129,4 +189,80 @@ export const formatMinutes = (totalMinutes: number) => {
   }
 
   return `${hours}:${minutes < 10 ? "0" : ""}${minutes}`;
+};
+
+/**
+ * Форматирует ISO дату с учетом временной зоны
+ * @param isoString ISO строка с датой
+ * @param format Формат вывода: time, date или datetime
+ * @returns Форматированная строка
+ */
+export const formatISOWithTimezone = (
+  isoString: string | null,
+  format: "time" | "date" | "datetime" = "time"
+): string => {
+  if (!isoString) return "Нет данных";
+
+  const timezone = extractTimezone(isoString);
+  const date = parseISOWithTimezone(isoString);
+  const timeZoneOption = convertTimezoneFormat(timezone);
+
+  // Определяем формат вывода
+  if (format === "time") {
+    return date.toLocaleTimeString("ru-RU", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZone: timeZoneOption,
+    });
+  } else if (format === "date") {
+    return date.toLocaleDateString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      timeZone: timeZoneOption,
+    });
+  } else {
+    return date.toLocaleString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZone: timeZoneOption,
+    });
+  }
+};
+
+/**
+ * Конвертирует формат временной зоны из ISO (+05:00) в формат Etc/GMT
+ * @param timezone Строка с временной зоной в формате +HH:MM или -HH:MM
+ * @returns Строка с временной зоной в формате для использования в опциях toLocaleString
+ */
+export const convertTimezoneFormat = (timezone: string): string => {
+  if (timezone === "+00:00" || timezone === "-00:00") return "UTC";
+
+  const invertedSign = timezone.startsWith("+") ? "-" : "+";
+  const hours = parseInt(timezone.substr(1, 2), 10);
+
+  return `Etc/GMT${invertedSign}${hours}`;
+};
+
+/**
+ * Форматирует диапазон времени с сохранением временной зоны
+ * @param firstInISO ISO строка с начальным временем
+ * @param lastOutISO ISO строка с конечным временем
+ * @returns Строка в формате "HH:MM - HH:MM"
+ */
+export const formatTimeRange = (
+  firstInISO: string | null,
+  lastOutISO: string | null
+): string => {
+  if (!firstInISO || !lastOutISO) return "Нет данных";
+
+  const firstIn = formatTimeWithSeconds(firstInISO);
+  const lastOut = formatTimeWithSeconds(lastOutISO);
+
+  return `${firstIn} - ${lastOut}`;
 };

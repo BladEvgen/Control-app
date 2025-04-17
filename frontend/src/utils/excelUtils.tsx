@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import { StaffData, AttendanceData } from "../schemas/IData";
-import { formatDepartmentName } from "./utils";
+import { formatDepartmentName, formatTimeRange } from "./utils";
 
 export const generateAndDownloadExcel = async (
   staffData: StaffData,
@@ -196,9 +196,7 @@ export const generateAndDownloadExcel = async (
 
     let attendanceInfo = "";
     if (record.first_in && record.last_out) {
-      const firstIn = new Date(record.first_in).toLocaleTimeString("ru-RU");
-      const lastOut = new Date(record.last_out).toLocaleTimeString("ru-RU");
-      attendanceInfo = `${firstIn} - ${lastOut}`;
+      attendanceInfo = formatTimeRange(record.first_in, record.last_out);
     } else if (record.is_weekend) {
       attendanceInfo = "Выходной";
     } else if (record.is_remote_work) {
