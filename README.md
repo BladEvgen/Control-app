@@ -1,8 +1,8 @@
-# DRF-React-Control-personal
+# Control-app
 
 ## Overview
 
-DRF-React-Control-personal is a system designed for managing employee attendance, calculating work efficiency, and handling administrative tasks. It integrates Django Rest Framework (DRF) on the backend and React on the frontend.
+Control-app is a system designed for managing employee attendance, calculating work efficiency, and handling administrative tasks. It integrates Django Rest Framework (DRF) on the backend and React on the frontend.
 
 ## Key Features
 
@@ -49,7 +49,7 @@ DRF-React-Control-personal is a system designed for managing employee attendance
 ### Setup
 You may download the setup script using the following command:
 ```bash
-wget https://github.com/BladEvgen/DRF-React-Control-personal/blob/main/backend/scripts/setup.sh
+wget https://github.com/BladEvgen/Control-app/blob/main/backend/scripts/setup.sh
 ```
 
 #### CUDA Installation
@@ -76,8 +76,8 @@ Make sure to follow all the steps carefully to avoid any issues during the insta
 1. Clone the repository:
 
 ```bash
-   git clone https://github.com/BladEvgen/DRF-React-Control-personal.git
-   cd DRF-React-Control-personal/backend
+   git clone https://github.com/BladEvgen/Control-app.git
+   cd Control-app/backend
 ```
 
 ### Linux/MacOS
