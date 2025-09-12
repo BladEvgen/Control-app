@@ -20,7 +20,7 @@ ERROR_COUNT=0
 DEFAULT_USERNAME="admin"
 DEFAULT_DOMAIN="mydomain.example.com"
 DEFAULT_APP_DIR="/var/www/myapp"
-GIT_REPO_URL="https://github.com/BladEvgen/DRF-React-Control-personal.git"
+GIT_REPO_URL="https://github.com/BladEvgen/Control-app.git"
 
 DB_NAME="my_database"
 DB_USER="db_admin"
