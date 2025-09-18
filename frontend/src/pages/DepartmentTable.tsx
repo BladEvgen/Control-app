@@ -16,9 +16,13 @@ import {
 
 interface DepartmentTableProps {
   data: IData;
+  mode?: "root" | "department";
 }
 
-const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
+const DepartmentTable: React.FC<DepartmentTableProps> = ({
+  data,
+  mode = "department",
+}) => {
   const [page, setPage] = useState<number>(0);
   const [rowsPerPage] = useState<number>(10);
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -162,9 +166,9 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
               >
                 <Link
                   to={
-                    department.has_child_departments
+                    mode === "root"
                       ? `/department/${department.child_id}`
-                      : `/childDepartment/${department.child_id}`
+                      : `/child_department/${department.child_id}`
                   }
                   className="block"
                 >

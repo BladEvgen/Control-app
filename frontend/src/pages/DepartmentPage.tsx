@@ -1,6 +1,6 @@
 import { useState, useEffect, useReducer, ChangeEvent } from "react";
-import { IData } from "../schemas/IData";
-import { useParams, useLocation, useNavigate } from "react-router-dom";
+import { IData, IChildDepartment } from "../schemas/IData";
+import { useParams, useNavigate } from "react-router-dom";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { formatDepartmentName } from "../utils/utils";
@@ -19,7 +19,6 @@ class BaseAction<T> {
   static SET_LOADING = "SET_LOADING";
   static SET_DATA = "SET_DATA";
   static SET_ERROR = "SET_ERROR";
-
   type: string;
   payload: T;
   constructor(type: string, payload: T) {
@@ -36,6 +35,7 @@ class DepartmentAction extends BaseAction<any> {
 
 interface DepartmentState {
   data: IData;
+  mode?: "root" | "department";
   loading: boolean;
   error: string | null;
 }
@@ -67,25 +67,21 @@ const reducer = (
   }
 };
 
-const shouldRenderLink = (pathname: string): boolean => {
-  const excludedPaths = ["/app/", "/app/department/1", "/app"];
-  return !excludedPaths.includes(pathname);
+const shouldRenderLink = (hasDepartmentId: boolean): boolean => {
+  return Boolean(hasDepartmentId);
 };
 
 const DepartmentPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  const location = useLocation();
   const navigate = useNavigate();
-  const departmentId = id ? id : "1";
+  const departmentId = id ?? null;
 
   const getFormattedDate = (date: Date): string =>
     date.toISOString().split("T")[0];
 
   const todayDate = new Date();
-
   const yesterdayDate = new Date(todayDate);
   yesterdayDate.setDate(yesterdayDate.getDate() - 1);
-
   const startInitialDate = new Date(yesterdayDate);
   startInitialDate.setDate(startInitialDate.getDate() - 7);
 
@@ -104,6 +100,55 @@ const DepartmentPage: React.FC = () => {
   const { showWaitMessage, startWaitNotification, clearWaitNotification } =
     useWaitNotification();
 
+  const canDownload = Boolean(
+    startDate && endDate && departmentId && departmentId !== "1"
+  );
+
+  const fetchRootDepartments = async () => {
+    dispatch(new DepartmentAction(DepartmentAction.SET_LOADING, true));
+    try {
+      const idsRes = await axiosInstance.get(
+        `${apiUrl}/api/parent_department_id/`
+      );
+      const ids: string[] = idsRes.data ?? [];
+      const results = await Promise.all(
+        ids.map((depId) =>
+          axiosInstance.get(`${apiUrl}/api/department/${depId}/`)
+        )
+      );
+      const virtualChildren: IChildDepartment[] = ids.map((depId, idx) => {
+        const d = results[idx].data as IData;
+        const hasKids =
+          Array.isArray(d.child_departments) && d.child_departments.length > 0;
+        const created = d.date_of_creation ?? "";
+        return {
+          child_id: depId,
+          name: d.name ?? String(depId),
+          date_of_creation: created,
+          parent: "",
+          has_child_departments: !!hasKids,
+        };
+      });
+      const virtualRoot: IData = {
+        name: "Структура Университета",
+        date_of_creation: "",
+        child_departments: virtualChildren,
+        total_staff_count: results.reduce(
+          (sum, r) => sum + (Number(r.data?.total_staff_count) || 0),
+          0
+        ),
+      };
+      dispatch(new DepartmentAction(DepartmentAction.SET_DATA, virtualRoot));
+    } catch (err) {
+      dispatch(
+        new DepartmentAction(
+          DepartmentAction.SET_ERROR,
+          "Не удалось загрузить корневые отделы. Пожалуйста, попробуйте позже."
+        )
+      );
+    }
+  };
+
   const fetchDepartmentData = async (id: string) => {
     dispatch(new DepartmentAction(DepartmentAction.SET_LOADING, true));
     try {
@@ -121,7 +166,11 @@ const DepartmentPage: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchDepartmentData(departmentId);
+    if (departmentId) {
+      fetchDepartmentData(departmentId);
+    } else {
+      fetchRootDepartments();
+    }
   }, [departmentId]);
 
   const handleStartDateChange = (e: ChangeEvent<HTMLInputElement>) => {
@@ -141,6 +190,7 @@ const DepartmentPage: React.FC = () => {
   };
 
   const handleDownload = async () => {
+    if (!canDownload) return;
     setIsDownloading(true);
     clearWaitNotification();
     startWaitNotification();
@@ -219,7 +269,7 @@ const DepartmentPage: React.FC = () => {
               </h1>
             </motion.div>
 
-            {shouldRenderLink(location.pathname) && (
+            {shouldRenderLink(!!departmentId) && (
               <motion.div variants={itemVariants}>
                 <DesktopNavigation
                   onHomeClick={() => navigate("/")}
@@ -228,7 +278,7 @@ const DepartmentPage: React.FC = () => {
               </motion.div>
             )}
 
-            {shouldRenderLink(location.pathname) && (
+            {shouldRenderLink(!!departmentId) && (
               <motion.div variants={itemVariants} className="mt-6 mb-8">
                 <DateFilterBar
                   startDate={startDate}
@@ -237,7 +287,7 @@ const DepartmentPage: React.FC = () => {
                   onEndDateChange={handleEndDateChange}
                   onDownload={handleDownload}
                   isDownloading={isDownloading}
-                  isDownloadDisabled={!startDate || !endDate}
+                  isDownloadDisabled={!canDownload}
                   today={today}
                 />
               </motion.div>
@@ -257,7 +307,10 @@ const DepartmentPage: React.FC = () => {
                 variants={itemVariants}
                 className="card overflow-hidden"
               >
-                <DepartmentTable data={data} />
+                <DepartmentTable
+                  data={data}
+                  mode={departmentId ? "department" : "root"}
+                />
               </motion.div>
             )}
           </>
@@ -265,7 +318,7 @@ const DepartmentPage: React.FC = () => {
       </motion.div>
 
       {/* Floating button for mobile devices */}
-      {!loading && !error && shouldRenderLink(location.pathname) && (
+      {!loading && !error && shouldRenderLink(!!departmentId) && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
