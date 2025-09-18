@@ -480,26 +480,24 @@ def map_location(request):
 
 @swagger_auto_schema(
     method="GET",
-    operation_summary="Получить ID всех родительских департаментов",
-    operation_description="Метод для получения списка всех родительских департаментов.",
+    operation_summary="Получить ID всех корневых (root) подразделений",
+    operation_description="Возвращает список ID из ChildDepartment, где parent IS NULL.",
     responses={
         200: openapi.Response(
-            description="Успешный запрос. Возвращается список ID родительских департаментов.",
+            description="Ок",
             schema=openapi.Schema(
                 type=openapi.TYPE_ARRAY,
                 items=openapi.Schema(
-                    type=openapi.TYPE_INTEGER,
-                    description="ID родительского департамента.",
+                    type=openapi.TYPE_STRING,
+                    description="ID корневого подразделения (ChildDepartment).",
                 ),
             ),
         ),
         404: openapi.Response(
-            description="Не удалось найти департаменты",
+            description="Не удалось найти корни",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
-                properties={
-                    "error": openapi.Schema(type=openapi.TYPE_STRING),
-                },
+                properties={"error": openapi.Schema(type=openapi.TYPE_STRING)},
             ),
         ),
     },
@@ -525,13 +523,19 @@ def get_parent_id(request):
     logger.info("Request received to get parent department IDs.")
 
     try:
-        parent_departments = models.ParentDepartment.objects.all()
-        parent_ids = [department.id for department in parent_departments]
-        logger.info(f"Found {len(parent_ids)} parent departments.")
-        return Response(data=parent_ids, status=status.HTTP_200_OK)
+        roots = (
+            models.ChildDepartment.objects.filter(parent__isnull=True)
+            .order_by("id")
+            .values_list("id", flat=True)
+        )
+        root_ids = [str(pk) for pk in roots]
+        if not root_ids:
+            return Response(
+                {"error": "Корни не найдены"}, status=status.HTTP_404_NOT_FOUND
+            )
+        return Response(root_ids, status=status.HTTP_200_OK)
     except Exception as e:
-        logger.error(f"Error retrieving parent department IDs: {str(e)}")
-        return Response(data={"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
 
 
 @swagger_auto_schema(
@@ -606,17 +610,32 @@ def department_summary(request, parent_department_id):
 
     try:
 
-        def calculate_staff_count(department):
-            child_departments = models.ChildDepartment.objects.filter(parent=department)
-            staff_count = (
-                child_departments.aggregate(total_staff=Count("staff"))["total_staff"]
-                or 0
+        def calculate_staff_count(department: models.ChildDepartment) -> int:
+            rows = list(models.ChildDepartment.objects.values_list("id", "parent_id"))
+
+            children_by_parent = {}
+            for cid, pid in rows:
+                children_by_parent.setdefault(pid, []).append(cid)
+
+            visited = set()
+            stack = [department.id]
+            subtree_ids = []
+
+            while stack:
+                cur = stack.pop()
+                if cur in visited:
+                    continue
+                visited.add(cur)
+                subtree_ids.append(cur)
+                stack.extend(children_by_parent.get(cur, []))
+
+            total = (
+                models.Staff.objects.filter(department_id__in=subtree_ids)
+                .values("id")
+                .distinct()
+                .count()
             )
-
-            for child_dept in child_departments:
-                staff_count += calculate_staff_count(child_dept)
-
-            return staff_count
+            return total
 
         parent_department = get_object_or_404(
             models.ChildDepartment, id=parent_department_id
