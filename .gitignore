@@ -312,3 +312,5 @@ backend/static/media/examples.zip
 *.npy
 *.pt
 /driver
+*.service
+*.conf
