@@ -101,7 +101,7 @@ const DepartmentPage: React.FC = () => {
     useWaitNotification();
 
   const canDownload = Boolean(
-    startDate && endDate && departmentId && departmentId !== "1"
+    startDate && endDate && departmentId
   );
 
   const fetchRootDepartments = async () => {
