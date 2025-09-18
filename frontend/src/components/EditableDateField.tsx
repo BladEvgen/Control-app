@@ -118,7 +118,7 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
       )}
       {isEditing && (
         <motion.p
-          className={`mt-1 text-center text-gray-600 ${hintTextClass}`}
+          className={`mt-1 text-center text-gray-600  dark:text-gray-200 ${hintTextClass}`}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
         >
