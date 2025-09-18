@@ -100,9 +100,7 @@ const DepartmentPage: React.FC = () => {
   const { showWaitMessage, startWaitNotification, clearWaitNotification } =
     useWaitNotification();
 
-  const canDownload = Boolean(
-    startDate && endDate && departmentId
-  );
+  const canDownload = Boolean(startDate && endDate && departmentId);
 
   const fetchRootDepartments = async () => {
     dispatch(new DepartmentAction(DepartmentAction.SET_LOADING, true));
@@ -110,12 +108,16 @@ const DepartmentPage: React.FC = () => {
       const idsRes = await axiosInstance.get(
         `${apiUrl}/api/parent_department_id/`
       );
-      const ids: string[] = idsRes.data ?? [];
+      const ids: string[] = Array.from(
+        new Set((idsRes.data ?? []).map(String))
+      );
+
       const results = await Promise.all(
         ids.map((depId) =>
           axiosInstance.get(`${apiUrl}/api/department/${depId}/`)
         )
       );
+
       const virtualChildren: IChildDepartment[] = ids.map((depId, idx) => {
         const d = results[idx].data as IData;
         const hasKids =
@@ -129,17 +131,22 @@ const DepartmentPage: React.FC = () => {
           has_child_departments: !!hasKids,
         };
       });
+
+      const rootTotal = results.reduce((sum, r) => {
+        const n = Number((r.data as IData)?.total_staff_count);
+        return sum + (Number.isFinite(n) ? n : 0);
+      }, 0);
+
       const virtualRoot: IData = {
         name: "Структура Университета",
         date_of_creation: "",
         child_departments: virtualChildren,
-        total_staff_count: results.reduce(
-          (sum, r) => sum + (Number(r.data?.total_staff_count) || 0),
-          0
-        ),
+        total_staff_count: rootTotal,
       };
+
       dispatch(new DepartmentAction(DepartmentAction.SET_DATA, virtualRoot));
     } catch (err) {
+      console.error("fetchRootDepartments failed:", err);
       dispatch(
         new DepartmentAction(
           DepartmentAction.SET_ERROR,
