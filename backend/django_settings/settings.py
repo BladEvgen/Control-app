@@ -281,7 +281,7 @@ STATICFILES_DIRS = [
 
 # Media files
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "static/media"
+MEDIA_ROOT = BASE_DIR / "media"
 
 # Attendance and augment paths
 ATTENDANCE_URL = "/attendance_media/"

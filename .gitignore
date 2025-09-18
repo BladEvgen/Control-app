@@ -314,3 +314,4 @@ backend/static/media/examples.zip
 /driver
 *.service
 *.conf
+backend/media/examples.zip
