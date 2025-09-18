@@ -5,11 +5,15 @@ import React, {
   useMemo,
   useRef,
 } from "react";
-import { Line, Doughnut } from "react-chartjs-2";
+import { Bar, Doughnut } from "react-chartjs-2";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
-
-import { Chart as ChartJS, registerables, TooltipItem } from "chart.js";
+import {
+  Chart as ChartJS,
+  registerables,
+  TooltipItem,
+  ChartData,
+} from "chart.js";
 import { AttendanceStats } from "../schemas/IData";
 import Notification from "../components/Notification";
 import LoaderComponent from "../components/LoaderComponent";
@@ -34,7 +38,6 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
   const { width } = useWindowSize();
 
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-
   const diagramRef = useRef<HTMLDivElement>(null);
 
   const handleFullscreenChange = useCallback(() => {
@@ -85,9 +88,8 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
 
     try {
       const params: any = { date: selectedDate };
-      if (pin) {
-        params.pin = pin;
-      }
+      if (pin) params.pin = pin;
+
       const response = await axiosInstance.get(
         `${apiUrl}/api/attendance/stats/`,
         { params }
@@ -132,76 +134,109 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
   const chartData = useMemo(() => {
     if (!stats) return null;
 
-    const filteredData = stats.present_data
-      .map((staff) => ({
-        ...staff,
-        individual_percentage: Math.ceil(staff.individual_percentage),
+    const filtered = stats.present_data
+      .map((s) => ({
+        ...s,
+        individual_percentage: Math.ceil(s.individual_percentage),
       }))
       .filter(
-        (staff) =>
-          staff.individual_percentage >= 5 &&
-          !["s99999999", "s99999999998"].includes(staff.staff_pin)
+        (s) =>
+          s.individual_percentage >= 5 &&
+          !["s99999999", "s99999999998"].includes(s.staff_pin)
       );
 
-    const maxPercentage = Math.max(
-      ...filteredData.map((staff) => staff.individual_percentage)
-    );
-    const ranges: number[] = [];
-    for (let i = 5; i <= maxPercentage; i += 10) {
-      ranges.push(i);
-    }
-    ranges.push(maxPercentage);
+    const totalPeople = filtered.length;
 
-    let staffCountsInRanges = ranges.map((range, index) => {
-      const nextRange = ranges[index + 1] || maxPercentage + 1;
-      return filteredData.filter(
-        (staff) =>
-          staff.individual_percentage >= range &&
-          staff.individual_percentage < nextRange
+    if (!totalPeople) {
+      return {
+        labels: [],
+        counts: [],
+        maxPct: 0,
+        avg: 0,
+        median: 0,
+        niceStep: 1,
+        barData: { labels: [], datasets: [] },
+      };
+    }
+
+    const maxPct = Math.max(...filtered.map((s) => s.individual_percentage));
+
+    const ranges: number[] = [];
+    for (let i = 5; i <= maxPct; i += 10) ranges.push(i);
+    ranges.push(maxPct);
+
+    let counts = ranges.map((start, i) => {
+      const end = ranges[i + 1] || maxPct + 1;
+      return filtered.filter(
+        (s) => s.individual_percentage >= start && s.individual_percentage < end
       ).length;
     });
 
-    for (let i = staffCountsInRanges.length - 1; i > 0; i--) {
-      while (staffCountsInRanges[i] < 3 && i > 0) {
-        staffCountsInRanges[i - 1] += staffCountsInRanges[i];
-        staffCountsInRanges.splice(i, 1);
+    for (let i = counts.length - 1; i > 0; i--) {
+      while (counts[i] < 3 && i > 0) {
+        counts[i - 1] += counts[i];
+        counts.splice(i, 1);
         ranges.splice(i, 1);
       }
     }
-    staffCountsInRanges[staffCountsInRanges.length - 1] = filteredData.filter(
-      (staff) => staff.individual_percentage >= ranges[ranges.length - 1]
+
+    counts[counts.length - 1] = filtered.filter(
+      (s) => s.individual_percentage >= ranges[ranges.length - 1]
     ).length;
 
-    const lineColor = "#2563EB";
-    const hoverColor = "#F59E0B";
+    const labels = ranges
+      .slice(0, counts.length)
+      .map((start, i) => `${start}% - ${ranges[i + 1] ?? maxPct}%`);
 
-    const lineData = {
-      labels: ranges
-        .slice(0, staffCountsInRanges.length)
-        .map((range, index) => {
-          const nextRange = ranges[index + 1] || maxPercentage;
-          return `${range}% - ${nextRange}%`;
-        }),
+    const avg =
+      filtered.reduce((acc, s) => acc + s.individual_percentage, 0) /
+      totalPeople;
+
+    const sorted = [...filtered].sort(
+      (a, b) => a.individual_percentage - b.individual_percentage
+    );
+    const mid = Math.floor(totalPeople / 2);
+    const median =
+      totalPeople % 2
+        ? sorted[mid].individual_percentage
+        : Math.round(
+            (sorted[mid - 1].individual_percentage +
+              sorted[mid].individual_percentage) /
+              2
+          );
+
+    const maxBin = counts.length ? Math.max(...counts) : 0;
+    const niceStep =
+      maxBin <= 10 ? 2 : maxBin <= 20 ? 5 : maxBin <= 50 ? 10 : 25;
+
+    const barData = {
+      labels,
       datasets: [
         {
           label: "Количество сотрудников",
-          data: staffCountsInRanges,
-          fill: false,
-          borderColor: lineColor,
-          backgroundColor: lineColor,
-          tension: 0.1,
-          pointBackgroundColor: lineColor,
-          pointBorderColor: "#fff",
-          pointHoverBackgroundColor: hoverColor,
-          pointHoverBorderColor: "#fff",
-          pointRadius: 6,
-          pointHoverRadius: 10,
-          pointStyle: "circle",
+          data: counts,
+          backgroundColor: "rgba(37, 99, 235, 0.35)",
+          borderColor: "#2563EB",
+          borderWidth: 2,
+          borderRadius: 6,
+          hoverBackgroundColor: "rgba(245, 158, 11, 0.5)",
+          hoverBorderColor: "#F59E0B",
+          barPercentage: 0.8,
+          categoryPercentage: 0.8,
         },
       ],
     };
 
-    return { lineData, ranges, staffCountsInRanges, maxPercentage };
+    return {
+      labels,
+      counts,
+      maxPct,
+      totalPeople,
+      avg,
+      median,
+      niceStep,
+      barData,
+    };
   }, [stats]);
 
   const chartOptions = useMemo(
@@ -209,80 +244,101 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
       responsive: true,
       maintainAspectRatio: false,
       animation: { duration: 800, easing: "easeInOutQuart" as const },
+      interaction: { mode: "index" as const, intersect: false },
+      layout: { padding: { right: 8, left: 4, top: 0, bottom: 0 } },
       scales: {
         y: {
           beginAtZero: true,
-          grid: { color: "rgba(107, 114, 128, 0.2)" },
+          suggestedMax: chartData
+            ? Math.ceil(
+                (Math.max(1, ...chartData.counts) + chartData.niceStep) /
+                  chartData.niceStep
+              ) * chartData.niceStep
+            : undefined,
           ticks: {
+            stepSize: chartData?.niceStep,
+            precision: 0,
             color: "#6B7280",
             font: { size: 16, weight: "bold" as const },
+            padding: 8,
+          },
+          grid: {
+            color: "rgba(107, 114, 128, 0.18)",
+            drawTicks: false,
           },
           title: {
             display: true,
             text: "Количество сотрудников",
-            font: { size: 16, weight: "bold" as const, color: "#6B7280" },
-          },
-        },
-        x: {
-          ticks: {
-            display: true,
             color: "#6B7280",
             font: { size: 16, weight: "bold" as const },
           },
-          grid: { color: "rgba(107, 114, 128, 0.2)" },
+        },
+        x: {
+          offset: true,
+          ticks: {
+            autoSkip: true,
+            maxTicksLimit: 8,
+            maxRotation: 0,
+            minRotation: 0,
+            padding: 8,
+            color: "#6B7280",
+            font: { size: 16, weight: "bold" as const },
+          },
+          grid: {
+            color: "rgba(107, 114, 128, 0.12)",
+            drawOnChartArea: false,
+            drawTicks: false,
+          },
           title: {
             display: true,
             text: "Процент времени на работе",
-            font: { size: 16, weight: "bold" as const, color: "#6B7280" },
+            color: "#6B7280",
+            font: { size: 16, weight: "bold" as const },
           },
         },
       },
       plugins: {
         legend: { display: false },
         tooltip: {
-          callbacks: {
-            label: (context: TooltipItem<"line">) =>
-              `Количество: ${context.raw}`,
-          },
-          backgroundColor: "rgba(0, 0, 0, 0.8)",
-          titleFont: { size: 18, weight: "bold" as const, color: "#fff" },
-          bodyFont: { size: 16, weight: "bold" as const, color: "#fff" },
-          footerFont: { size: 14, weight: "bold" as const, color: "#fff" },
+          backgroundColor: "rgba(0, 0, 0, 0.85)",
           padding: 10,
-          cornerRadius: 3,
+          cornerRadius: 4,
+          titleFont: { size: 18, weight: "bold" as const },
+          bodyFont: { size: 16, weight: "bold" as const },
+          callbacks: {
+            title: (items: TooltipItem<"bar">[]) => items[0]?.label ?? "",
+            label: (ctx: TooltipItem<"bar">) => {
+              const value = Number(ctx.raw ?? 0);
+              const total = chartData?.totalPeople ?? 0;
+              const share = total ? Math.round((value / total) * 100) : 0;
+              return `Количество: ${value} (${share}%)`;
+            },
+          },
         },
       },
     }),
-    []
+    [chartData]
   );
 
-  const doughnutData = useMemo(() => {
-    if (!chartData) return null;
-
-    const generateColor = (index: number, total: number, lightness = 50) => {
-      const hue = Math.floor((360 / total) * index);
-      return `hsl(${hue}, 70%, ${lightness}%)`;
-    };
-
-    const totalSegments = chartData.ranges.length;
-    const backgroundColors = chartData.ranges.map((_, i) =>
-      generateColor(i, totalSegments, 50)
-    );
-    const hoverBackgroundColors = chartData.ranges.map((_, i) =>
-      generateColor(i, totalSegments, 40)
-    );
-
-    return {
-      labels: chartData.lineData.labels,
+  const doughnutChartData = useMemo<ChartData<"doughnut", number[], string>>(
+    () => ({
+      labels: chartData?.labels ?? [],
       datasets: [
         {
-          data: chartData.staffCountsInRanges,
-          backgroundColor: backgroundColors,
-          hoverBackgroundColor: hoverBackgroundColors,
+          data: chartData?.counts ?? [],
+          backgroundColor: (chartData?.labels ?? []).map((_, i) => {
+            const hue = Math.floor((360 / (chartData?.labels.length || 1)) * i);
+            return `hsl(${hue}, 70%, 50%)`;
+          }),
+          hoverBackgroundColor: (chartData?.labels ?? []).map((_, i) => {
+            const hue = Math.floor((360 / (chartData?.labels.length || 1)) * i);
+            return `hsl(${hue}, 70%, 40%)`;
+          }),
         },
       ],
-    };
-  }, [chartData]);
+    }),
+    [chartData]
+  );
 
   if (loading) return <LoaderComponent />;
   if (error) return <Notification message={error} type="error" />;
@@ -318,21 +374,46 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
       animate="visible"
       variants={containerVariants}
     >
-      <h1 className="text-3xl md:text-4xl lg:text-5xl font-bold mb-4 text-center text-text-dark dark:text-text-light">
+      <h1 className="text-3xl md:text-4xl lg:text-5xl font-bold mb-1 text-center text-text-dark dark:text-text-light">
         Посещаемость отдела {stats.department_name}
       </h1>
-      <h2 className="text-xl md:text-2xl mb-6 text-center text-gray-400">
-        Посещаемость сотрудников на{" "}
-        <span>
+
+      <div className="mb-5 flex flex-col items-center">
+        <div className="flex items-center gap-2 text-gray-400">
+          <span>Дата:</span>
           <EditableDateField
             value={selectedDate}
             onChange={(e) => setSelectedDate(e.target.value)}
             containerClassName="inline-block"
             inputClassName="bg-transparent border-b border-gray-400 text-center focus:outline-none transition-all duration-200 text-text-dark dark:text-text-light"
-            displayClassName="cursor-pointer hover:underline transition-all duration-200 gray-200"
+            displayClassName="cursor-pointer hover:underline transition-all duration-200 text-text-dark dark:text-text-light"
           />
-        </span>
-      </h2>
+        </div>
+
+        {chartData && (
+          <div className="mt-2 flex flex-wrap justify-center gap-2 text-sm md:text-base">
+            <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700/50 dark:text-gray-200">
+              Среднее:&nbsp;
+              <b className="text-text-dark dark:text-text-light">
+                {Math.round(chartData.avg)}%
+              </b>
+            </span>
+            <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700/50 dark:text-gray-200">
+              Медиана:&nbsp;
+              <b className="text-text-dark dark:text-text-light">
+                {Math.round(chartData.median)}%
+              </b>
+            </span>
+            <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700/50 dark:text-gray-200">
+              Участников анализа:&nbsp;
+              <b className="text-text-dark dark:text-text-light">
+                {chartData.totalPeople}
+              </b>
+            </span>
+          </div>
+        )}
+      </div>
+
       {stats.total_staff_count === 0 ? (
         <p className="text-center text-gray-400">Нет данных для отображения</p>
       ) : (
@@ -341,10 +422,10 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
             className="bg-white dark:bg-gray-800 shadow-xl rounded-lg mb-6"
             variants={cardVariants}
           >
-            <h2 className="text-xl md:text-2xl font-semibold mb-4 text-center text-gray-700 dark:text-gray-300">
+            <h2 className="text-xl md:text-2xl font-semibold mb-1 text-center text-gray-700 dark:text-gray-300">
               Процент посещаемости по сотрудникам
             </h2>
-            {/* Кнопка полноэкранного режима размещена над диаграммой */}
+
             <div className="flex justify-end pr-4 pb-2 landscape:hidden lg:landscape:flex">
               <motion.button
                 onClick={handleFullscreenToggle}
@@ -362,27 +443,35 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
                 )}
               </motion.button>
             </div>
+
             <div
               ref={diagramRef}
               className="relative w-full h-96 md:h-96 lg:h-[32rem]"
             >
-              {width < 768 && doughnutData ? (
+              {width < 768 && chartData ? (
                 <Doughnut
                   key="doughnut"
-                  data={doughnutData}
+                  data={doughnutChartData}
                   options={{
                     responsive: true,
                     maintainAspectRatio: false,
-                    layout: {
-                      padding: { bottom: 40 },
-                    },
+                    layout: { padding: { bottom: 40 } },
                     plugins: {
                       legend: {
                         display: true,
                         position: "bottom",
-                        labels: {
-                          color: "#6B7280",
-                          font: { size: 14 },
+                        labels: { color: "#6B7280", font: { size: 14 } },
+                      },
+                      tooltip: {
+                        callbacks: {
+                          label: (ctx) => {
+                            const value = Number(ctx.raw ?? 0);
+                            const total = chartData.totalPeople;
+                            const share = total
+                              ? Math.round((value / total) * 100)
+                              : 0;
+                            return ` ${value} (${share}%)`;
+                          },
                         },
                       },
                     },
@@ -390,15 +479,15 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
                 />
               ) : (
                 chartData && (
-                  <Line
-                    key="line"
-                    data={chartData.lineData}
+                  <Bar
+                    key="bar"
+                    data={chartData.barData}
                     options={chartOptions}
                   />
                 )
               )}
             </div>
-            {/* Контейнер карточек статистики */}
+
             <motion.div
               className={`flex flex-col md:flex-row flex-wrap gap-6 mx-4 ${
                 width < 768 ? "mt-16" : "mt-6"
@@ -449,33 +538,28 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
                 <div className="w-full h-px bg-gray-300 dark:bg-gray-600 mt-4"></div>
               </motion.div>
             </motion.div>
-            {width >= 768 && (
+
+            {width >= 768 && chartData && (
               <motion.div
                 className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 mx-4"
                 initial="hidden"
                 animate="visible"
                 variants={containerVariants}
               >
-                {chartData?.ranges
-                  .slice(0, chartData.staffCountsInRanges.length)
-                  .map((range, index) => {
-                    const nextRange =
-                      chartData.ranges[index + 1] || chartData.maxPercentage;
-                    return (
-                      <motion.div
-                        key={index}
-                        variants={cardVariants}
-                        className="flex flex-col md:flex-row justify-between bg-gray-100 dark:bg-gray-700 dark:border dark:border-gray-600 shadow-2xl dark:shadow-xl p-4 rounded-lg transition-all duration-200 hover:shadow-xl"
-                      >
-                        <span className="font-semibold text-gray-700 dark:text-gray-300">
-                          {`${range}% - ${nextRange}%`}
-                        </span>
-                        <span className="text-gray-900 dark:text-gray-100">
-                          {`Сотрудников: ${chartData.staffCountsInRanges[index]}`}
-                        </span>
-                      </motion.div>
-                    );
-                  })}
+                {chartData.labels.map((label, i) => (
+                  <motion.div
+                    key={label}
+                    variants={cardVariants}
+                    className="flex flex-col md:flex-row justify-between bg-gray-100 dark:bg-gray-700 dark:border dark:border-gray-600 shadow-2xl dark:shadow-xl p-4 rounded-lg transition-all duration-200 hover:shadow-xl"
+                  >
+                    <span className="font-semibold text-gray-700 dark:text-gray-300">
+                      {label}
+                    </span>
+                    <span className="text-gray-900 dark:text-gray-100">
+                      {`Сотрудников: ${chartData.counts[i]}`}
+                    </span>
+                  </motion.div>
+                ))}
               </motion.div>
             )}
           </motion.div>
