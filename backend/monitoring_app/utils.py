@@ -22,6 +22,8 @@ from monitoring_app.cache_conf import get_cache
 from django.contrib.admin import SimpleListFilter
 from django.utils.translation import gettext_lazy as _
 from openpyxl.styles import Alignment, Font, PatternFill
+from functools import lru_cache
+from difflib import get_close_matches
 
 DAYS = settings.DAYS
 
@@ -29,16 +31,101 @@ logger = logging.getLogger("django")
 
 arcface_model = None
 
-AREA_ADDRESS_MAPPING = {
-    "Абылайхана турникет": "Проспект Абылай хана, 51/53",
-    "вход в 8 этаж": "Проспект Абылай хана, 51/53",
-    "вход Абылайхана": "Проспект Абылай хана, 51/53",
-    "военные 3 этаж": "Проспект Абылай хана, 51/53",
-    "лифтовые с 1 по 7": "Проспект Абылай хана, 51/53",
-    "выход ЦОС": "Проспект Абылай хана, 51/53",
-    "Торекулва турникет": "Улица Торекулова, 71",
-    "карасай батыра турникет": "Улица Карасай батыра, 75",
+CANONICAL_ADDRESSES: dict[str, str] = {
+    "abilai": "Проспект Абылай хана, 51/53",
+    "torekulova": "Улица Торекулова, 71",
+    "karasai": "Улица Карасай батыра, 75",
 }
+
+_PUNCT = re.compile(r"[\"'’`.,:;!?\(\)\[\]{}_/\\]+")
+_WS = re.compile(r"\s+")
+
+
+def _norm(s: str) -> str:
+    if not s:
+        return ""
+    s = s.strip().lower()
+    s = s.replace("ё", "е")
+    s = _PUNCT.sub(" ", s)
+    s = _WS.sub(" ", s)
+    return s
+
+
+ALIASES: dict[str, str] = {
+    "абылайхана": "abilai",
+    "абылайхана турникет": "abilai",
+    "вход абылайхана": "abilai",
+    "цос": "abilai",
+    "выход цос": "abilai",
+    "военные 3 этаж": "abilai",
+    "лифтовые с 1 по 7": "abilai",
+    "торекулова": "torekulova",
+    "торекулова турникет": "torekulova",
+    "торекулва турникет": "torekulova",
+    "карасай": "karasai",
+    "карасай батыр": "karasai",
+    "карасай батыра": "karasai",
+    "карасай батыра турникет": "karasai",
+}
+
+_RX_ABILAI = re.compile(
+    r"(абылай\s*хана|абылайхана|цос|военные|\bвход\b|\bвыход\b|\bлифт\w*)",
+    re.IGNORECASE,
+)
+
+_RX_TOREKULOVA = re.compile(r"торекулов\w*", re.IGNORECASE)
+
+_RX_KARASAI = re.compile(r"карасай", re.IGNORECASE)
+
+_RX_LIFT = re.compile(r"\bлифт[\s\-]*\d+\b|\bлифты?\b|\bлифт\w*\b", re.IGNORECASE)
+
+KEYWORDS = {
+    "abilai": ["абылай", "абылайхана", "цос", "военные", "вход", "выход", "лифт"],
+    "torekulova": ["торекулова", "торекулов", "турекулова", "торекулв"],
+    "karasai": ["карасай", "карасайбатыра", "карасай батыр"],
+}
+
+
+def _fuzzy_family(n: str) -> str | None:
+    tokens = n.split()
+    joined = " ".join(tokens)
+    for fam, hints in KEYWORDS.items():
+        if get_close_matches(joined, hints, n=1, cutoff=0.86):
+            return fam
+        if any(get_close_matches(t, hints, n=1, cutoff=0.88) for t in tokens):
+            return fam
+    return None
+
+
+@lru_cache(maxsize=4096)
+def resolve_area_address(area_name: str | None) -> str | None:
+    """
+    Преобразует произвольное имя зоны (любой регистр/формат) к одному из:
+      - 'Проспект Абылай хана, 51/53'
+      - 'Улица Торекулова, 71'
+      - 'Улица Карасай батыра, 75'
+    Возвращает None, если распознать нельзя.
+    """
+    if not area_name:
+        return None
+
+    n = _norm(area_name)
+
+    if n in ALIASES:
+        return CANONICAL_ADDRESSES[ALIASES[n]]
+
+    if _RX_TOREKULOVA.search(n):
+        return CANONICAL_ADDRESSES["torekulova"]
+    if _RX_KARASAI.search(n):
+        return CANONICAL_ADDRESSES["karasai"]
+    if _RX_ABILAI.search(n) or _RX_LIFT.search(n):
+        return CANONICAL_ADDRESSES["abilai"]
+
+    fam = _fuzzy_family(n)
+    if fam:
+        return CANONICAL_ADDRESSES[fam]
+
+    return None
 
 
 def get_client_ip(request):
@@ -477,7 +564,7 @@ def generate_map_data(
                             f"Найдена запись StaffAttendance без area_name_in для даты вставки {data_insert_date}"
                         )
                         continue
-                    address = AREA_ADDRESS_MAPPING.get(area_name_in)
+                    address = resolve_area_address(area_name_in)
                     if address:
                         comparison_address = clean_address(address)
                         matched_location = next(
@@ -772,7 +859,11 @@ def collect_attendance_data(staff_list, start_date, end_date):
         end_str = end_date.strftime("%Y-%m-%d")
 
         dept_ids = sorted(
-            set(staff.department_id for staff in staff_list if staff.department_id is not None)
+            set(
+                staff.department_id
+                for staff in staff_list
+                if staff.department_id is not None
+            )
         )
         dept_str = f"dept_{'_'.join(map(str, dept_ids))}" if dept_ids else "no_dept"
 
@@ -803,7 +894,8 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
     )
 
     date_range = [
-        start_date + datetime.timedelta(days=i) for i in range((end_date - start_date).days + 1)
+        start_date + datetime.timedelta(days=i)
+        for i in range((end_date - start_date).days + 1)
     ]
 
     staff_ids = list(staff_list.values_list("id", flat=True))
@@ -812,7 +904,9 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         "public_holidays",
         query=lambda: {
             holiday.date: holiday.is_working_day
-            for holiday in models.PublicHoliday.objects.filter(date__range=[start_date, end_date])
+            for holiday in models.PublicHoliday.objects.filter(
+                date__range=[start_date, end_date]
+            )
         },
         timeout=10 * 60,
     )
@@ -825,7 +919,9 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             for loc in class_locations
         ]
         location_searcher = LocationSearcher(location_data)
-        logger.info(f"LocationSearcher initialized with {len(class_locations)} locations")
+        logger.info(
+            f"LocationSearcher initialized with {len(class_locations)} locations"
+        )
 
     attendance_qs = models.StaffAttendance.objects.filter(
         staff_id__in=staff_ids,
@@ -842,7 +938,10 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
 
     remote_work_qs = models.RemoteWork.objects.filter(
         Q(staff_id__in=staff_ids)
-        & (Q(start_date__lte=end_date, end_date__gte=start_date) | Q(permanent_remote=True))
+        & (
+            Q(start_date__lte=end_date, end_date__gte=start_date)
+            | Q(permanent_remote=True)
+        )
     ).select_related("staff")
 
     absence_qs = models.AbsentReason.objects.filter(
@@ -867,7 +966,9 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             attendance_map[date_key][staff_id] = {
                 "first_in": first_in_local,
                 "last_out": last_out_local,
-                "area_name": att.area_name_in if att.area_name_in else "Неизвестная локация",
+                "area_name": (
+                    att.area_name_in if att.area_name_in else "Неизвестная локация"
+                ),
                 "source": "staff_attendance",
             }
         else:
@@ -908,8 +1009,12 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         date_key = local_date.strftime("%Y-%m-%d")
         staff_id = lesson_att.staff_id
 
-        first_in_local = convert_to_local(lesson_att.first_in) if lesson_att.first_in else None
-        last_out_local = convert_to_local(lesson_att.last_out) if lesson_att.last_out else None
+        first_in_local = (
+            convert_to_local(lesson_att.first_in) if lesson_att.first_in else None
+        )
+        last_out_local = (
+            convert_to_local(lesson_att.last_out) if lesson_att.last_out else None
+        )
 
         location_name = "Неизвестная локация"
         try:
@@ -929,7 +1034,9 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                         location_name = loc.name
                         break
         except Exception as e:
-            logger.warning(f"Error finding location for LessonAttendance {lesson_att.id}: {e}")
+            logger.warning(
+                f"Error finding location for LessonAttendance {lesson_att.id}: {e}"
+            )
 
         if staff_id not in attendance_map[date_key]:
             attendance_map[date_key][staff_id] = {
@@ -1075,19 +1182,27 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     absence_info = absence_map[date_str][staff_id][0]
                     status_info = absence_info["reason"]
                     meta = (
-                        "absence_reason_approved" if absence_info["approved"] else "absence_reason"
+                        "absence_reason_approved"
+                        if absence_info["approved"]
+                        else "absence_reason"
                     )
                 else:
                     status_info = "Отсутствие"
                     meta = "absence"
 
-            results.append([staff_fio, department_name, date_display, status_info, meta])
+            results.append(
+                [staff_fio, department_name, date_display, status_info, meta]
+            )
 
-    logger.info(f"Collected {len(results)} attendance records with combined status information")
+    logger.info(
+        f"Collected {len(results)} attendance records with combined status information"
+    )
     return results
 
 
-def generate_excel_file(attendance_data, department_name, user_start_date, user_end_date):
+def generate_excel_file(
+    attendance_data, department_name, user_start_date, user_end_date
+):
     """
     Generate an Excel file from attendance data with improved formatting and filtering.
 
@@ -1119,12 +1234,24 @@ def generate_excel_file(attendance_data, department_name, user_start_date, user_
     data_font = Font(name="Arial", size=10, color="000000")
 
     center_wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    header_fill = PatternFill(start_color="0070C0", end_color="0070C0", fill_type="solid")
-    fill_holiday = PatternFill(start_color="F59E0B", end_color="F59E0B", fill_type="solid")
-    fill_holiday_work = PatternFill(start_color="34D399", end_color="34D399", fill_type="solid")
-    fill_remote = PatternFill(start_color="38BDF8", end_color="38BDF8", fill_type="solid")
-    fill_approved = PatternFill(start_color="A78BFA", end_color="A78BFA", fill_type="solid")
-    fill_not_approved = PatternFill(start_color="FB7185", end_color="FB7185", fill_type="solid")
+    header_fill = PatternFill(
+        start_color="0070C0", end_color="0070C0", fill_type="solid"
+    )
+    fill_holiday = PatternFill(
+        start_color="F59E0B", end_color="F59E0B", fill_type="solid"
+    )
+    fill_holiday_work = PatternFill(
+        start_color="34D399", end_color="34D399", fill_type="solid"
+    )
+    fill_remote = PatternFill(
+        start_color="38BDF8", end_color="38BDF8", fill_type="solid"
+    )
+    fill_approved = PatternFill(
+        start_color="A78BFA", end_color="A78BFA", fill_type="solid"
+    )
+    fill_not_approved = PatternFill(
+        start_color="FB7185", end_color="FB7185", fill_type="solid"
+    )
     thin_border = Border(
         left=Side(style="thin"),
         right=Side(style="thin"),
@@ -1133,7 +1260,9 @@ def generate_excel_file(attendance_data, department_name, user_start_date, user_
     )
 
     ws.merge_cells("A1:E1")
-    title_cell = ws.cell(row=1, column=1, value=f"Отчет посещаемости: {department_name}")
+    title_cell = ws.cell(
+        row=1, column=1, value=f"Отчет посещаемости: {department_name}"
+    )
     title_cell.font = title_font
     title_cell.alignment = center_wrap
 
@@ -1171,7 +1300,9 @@ def generate_excel_file(attendance_data, department_name, user_start_date, user_
 
     data_start_row = legend_row + len(legends) + 2
 
-    df = pd.DataFrame(attendance_data, columns=["ФИО", "Отдел", "Дата", "Посещаемость", "meta"])
+    df = pd.DataFrame(
+        attendance_data, columns=["ФИО", "Отдел", "Дата", "Посещаемость", "meta"]
+    )
     df["date_obj"] = pd.to_datetime(df["Дата"], format="%d.%m.%Y")
     df = df[
         (df["date_obj"] >= pd.to_datetime(user_start_date))
@@ -1237,7 +1368,9 @@ def generate_excel_file(attendance_data, department_name, user_start_date, user_
             data_cell.alignment = center_wrap
             data_cell.border = thin_border
 
-            is_working_holiday = date_str in public_holidays and public_holidays[date_str]
+            is_working_holiday = (
+                date_str in public_holidays and public_holidays[date_str]
+            )
 
             if meta == "holiday":
                 if not is_working_holiday:
