@@ -98,7 +98,7 @@ class StaffAttendanceStatsView(APIView):
     """
     Представление для получения статистики о посещаемости персонала.
 
-    Это представление фильтрует данные, чтобы включать только сотрудников, относящихся к отделу с ID 4958.
+    Это представление фильтрует данные, чтобы включать только сотрудников, относящихся к отделу с ID AUP.
 
     Параметры запроса:
         date (str): Дата, для которой запрашивается статистика посещаемости, в формате 'YYYY-MM-DD'. По умолчанию используется текущая дата.
@@ -294,7 +294,8 @@ class StaffAttendanceStatsView(APIView):
                 department_name = child.name
             case _:
                 staff_queryset = models.Staff.objects.filter(
-                    department__parent_id="4958"
+                    Q(department__parent__name__icontains="AUP")
+                    | Q(department__parent__name__icontains="АУП")
                 ).select_related("department")
                 department_name = (
                     staff_queryset.first().department.parent.name
