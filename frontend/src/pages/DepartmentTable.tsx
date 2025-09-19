@@ -168,7 +168,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
                   to={
                     mode === "root"
                       ? `/department/${department.child_id}`
-                      : `/child_department/${department.child_id}`
+                      : `/childDepartment/${department.child_id}`
                   }
                   className="block"
                 >
