@@ -1,54 +1,54 @@
-import os
-import json
-import time
 import base64
-import logging
-import zipfile
 import datetime
-from io import BytesIO
-from pathlib import Path
+import json
+import logging
+import os
+import time
+import zipfile
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
+from pathlib import Path
 
-from drf_yasg import openapi
-from django.conf import settings
-from django.utils import timezone
-from rest_framework import status
-from openpyxl import load_workbook
-from django.contrib import messages
-from celery.result import AsyncResult
-from django.db.models import Count, Q
-from django.views.generic import View
 from asgiref.sync import sync_to_async
+from celery.result import AsyncResult
+from django.conf import settings
+from django.contrib import messages
+from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
+from django.db import IntegrityError, connection, transaction
+from django.db.models import Q
+from django.http import FileResponse, Http404, HttpResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
+from django.views.generic import View
+from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+from openpyxl import load_workbook
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
-from django.contrib.auth import authenticate, login, logout
-from django.http import FileResponse, Http404, HttpResponse
-from django.db import IntegrityError, connection, transaction
-from django.shortcuts import get_object_or_404, redirect, render
-from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import (
     AllowAny,
     IsAdminUser,
     IsAuthenticated,
 )
-from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from monitoring_app import (
-    ml,
-    tasks,
-    utils,
-    models,
     async_logic,
+    attendance_fetcher,
+    ml,
+    models,
     permissions,
     serializers,
-    attendance_fetcher,
+    tasks,
+    utils,
 )
-from monitoring_app.cache_conf import get_cache, Cache
+from monitoring_app.cache_conf import Cache, get_cache
 
 logger = logging.getLogger(__name__)
 
@@ -1101,14 +1101,25 @@ def get_staff_detail(staff, start_date, end_date):
             if remote_work.permanent_remote:
                 remote_dates.extend(attendance_dates)
             else:
-                remote_start = max(remote_work.start_date, start_date)
-                remote_end = min(remote_work.end_date, end_date)
-                remote_dates.extend(
-                    [
-                        remote_start + datetime.timedelta(days=x)
-                        for x in range((remote_end - remote_start).days + 1)
-                    ]
+                rw_start = (
+                    remote_work.start_date
+                    if remote_work.start_date is not None
+                    else start_date
                 )
+                rw_end = (
+                    remote_work.end_date
+                    if remote_work.end_date is not None
+                    else end_date
+                )
+                remote_start = max(rw_start, start_date)
+                remote_end = min(rw_end, end_date)
+                if remote_start <= remote_end:
+                    remote_dates.extend(
+                        [
+                            remote_start + datetime.timedelta(days=x)
+                            for x in range((remote_end - remote_start).days + 1)
+                        ]
+                    )
         dates.extend(remote_dates)
     else:
         remote_dates = []
@@ -1491,7 +1502,7 @@ def process_attendance(
             penalty = penalty_rate * cost_per_day
             percent_for_period -= penalty
             logger.warning(
-                f"Нет записей о посещаемости за дату {event_date}. Применяется штраф {penalty}%."
+                f"Нет записей о посещаемости за дату {event_date}. Применяется штраф {penalty}%. "
             )
 
     attendance_record = {
@@ -2185,6 +2196,7 @@ def staff_detail_by_department_id(request, department_id):
         "count": 1,
         "next": null,
         "previous": null,
+
         "results": [
             {
                 "2024-10-29": {
@@ -2228,7 +2240,7 @@ def staff_detail_by_department_id(request, department_id):
         page = request.query_params.get("page", 1)
 
         if not end_date_str or not start_date_str:
-            logger.warning("Missing start_date or end_date in request parameters")
+            logger.warning("Missing startDate or endDate in request parameters")
             return Response(
                 status=status.HTTP_400_BAD_REQUEST,
                 data={"error": "Не указаны параметры начала или конца периода"},
@@ -2404,11 +2416,16 @@ def staff_detail_by_department_id(request, department_id):
                     rw_start = start_date
                     rw_end = end_date
                 else:
-                    rw_start = max(rw["start_date"], start_date)
-                    rw_end = min(rw["end_date"], end_date)
-                for single_date in daterange(rw_start, rw_end):
-                    date_key = single_date.strftime("%Y-%m-%d")
-                    remote_work_map[rw["staff_id"]][date_key] = True
+                    raw_start = rw.get("start_date")
+                    raw_end = rw.get("end_date")
+                    tmp_start = raw_start if raw_start is not None else start_date
+                    tmp_end = raw_end if raw_end is not None else end_date
+                    rw_start = max(tmp_start, start_date)
+                    rw_end = min(tmp_end, end_date)
+                if rw_start <= rw_end:
+                    for single_date in daterange(rw_start, rw_end):
+                        date_key = single_date.strftime("%Y-%m-%d")
+                        remote_work_map[rw["staff_id"]][date_key] = True
 
             results = []
 
@@ -3081,8 +3098,27 @@ class UploadFileView(View):
                 if not all([name, address, latitude, longitude]):
                     raise ValueError("Отсутствуют необходимые данные.")
 
-                latitude = float(latitude)
-                longitude = float(longitude)
+                try:
+                    if latitude is None or str(latitude).strip() == "":
+                        raise ValueError("Latitude is missing or empty")
+                    if longitude is None or str(longitude).strip() == "":
+                        raise ValueError("Longitude is missing or empty")
+
+                    lat_str = (
+                        latitude
+                        if isinstance(latitude, (int, float))
+                        else str(latitude).strip().replace(",", ".")
+                    )
+                    lon_str = (
+                        longitude
+                        if isinstance(longitude, (int, float))
+                        else str(longitude).strip().replace(",", ".")
+                    )
+
+                    latitude = float(lat_str)
+                    longitude = float(lon_str)
+                except (TypeError, ValueError) as e:
+                    raise ValueError(f"Invalid coordinates: {e}")
 
                 if (name, address) in existing_locations:
                     location = existing_locations[(name, address)]
@@ -3658,16 +3694,26 @@ def password_reset_request_view(request):
                 user, ip_address
             )
             if not models.PasswordResetRequestLog.can_request_again(user, ip_address):
-                next_possible_time = timezone.localtime(
-                    last_request_time + timezone.timedelta(minutes=5), user_timezone
-                )
-                last_request_time_local = timezone.localtime(
-                    last_request_time, user_timezone
-                )
-                messages.warning(
-                    request,
-                    f"Запрос уже был отправлен. Повторный запрос возможен в {next_possible_time.strftime('%H:%M:%S %Z')} ({next_possible_time.tzinfo}). Последний запрос был в {last_request_time_local.strftime('%H:%M:%S %Z')} ({last_request_time_local.tzinfo}).",
-                )
+                if last_request_time:
+                    next_possible_time = timezone.localtime(
+                        last_request_time + timezone.timedelta(minutes=5),
+                        user_timezone,
+                    )
+                    last_request_time_local = timezone.localtime(
+                        last_request_time, user_timezone
+                    )
+                    messages.warning(
+                        request,
+                        f"Запрос уже был отправлен. Повторный запрос возможен в {next_possible_time.strftime('%H:%M:%S %Z')} ({next_possible_time.tzinfo}). Последний запрос был в {last_request_time_local.strftime('%H:%M:%S %Z')} ({last_request_time_local.tzinfo}).",
+                    )
+                else:
+                    current_time_local = timezone.localtime(
+                        timezone.now(), user_timezone
+                    )
+                    messages.warning(
+                        request,
+                        f"Запрос уже был отправлен. Повторный запрос возможен в ближайшее время. Последний запрос: неизвестен. Текущее время {current_time_local.strftime('%H:%M:%S %Z')} ({current_time_local.tzinfo}).",
+                    )
             else:
                 utils.send_password_reset_email(user, request)
                 models.PasswordResetRequestLog.log_request(user, ip_address)
@@ -4105,7 +4151,7 @@ class AbsentReasonView(APIView):
         """
         **POST** запрос для создания новой записи отсутствия.
 
-        **Тело запроса (multipart/form-data или JSON):**
+        **Тело запроса:**
           - **staff** (строка): PIN сотрудника.
           - **reason** (строка): Код причины отсутствия (например, `sick_leave` или `other`).
           - **start_date** (строка): Дата начала (формат YYYY-MM-DD).

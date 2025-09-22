@@ -8,8 +8,14 @@ from monitoring_app import models
 
 class UserSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(read_only=True)
-    date_joined = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
-    last_login = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", allow_null=True)
+    date_joined = serializers.SerializerMethodField()
+    last_login = serializers.SerializerMethodField()
+
+    def get_date_joined(self, obj):
+        return obj.date_joined.strftime("%Y-%m-%d %H:%M:%S") if obj.date_joined else None
+
+    def get_last_login(self, obj):
+        return obj.last_login.strftime("%Y-%m-%d %H:%M:%S") if obj.last_login else None
 
     class Meta:
         model = User
