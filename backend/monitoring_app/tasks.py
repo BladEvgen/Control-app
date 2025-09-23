@@ -221,3 +221,8 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
     logger.warning(f"Итоговые ошибки записи: {error_records}")
 
     return {"success_records": success_records, "error_records": error_records}
+
+@shared_task(name="monitoring_app.tasks.augment_user_images", bind=True, queue="control_app_queue")
+def augment_user_images(self):
+    from monitoring_app.augment import run_dali_augmentation_for_all_staff
+    return run_dali_augmentation_for_all_staff()
