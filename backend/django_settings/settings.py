@@ -4,6 +4,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from celery.schedules import crontab
 from datetime import timedelta, datetime
+from kombu import Queue
 
 # Host names and DEBUG setting
 HOST_NAMES = ["RogStrix", "MacBook-Pro.local", "MacbookPro"]
@@ -367,6 +368,17 @@ REDOC_SETTINGS = {
 CELERY_BROKER_URL = "redis://localhost:6379/0"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
+
+CELERY_TASK_QUEUES = (
+    Queue("control_app_queue", routing_key="control_app_queue"),
+)
+
+CELERY_TASK_ROUTES = {
+    "monitoring_app.tasks.*": {
+        "queue": "control_app_queue",
+        "routing_key": "control_app_queue",
+    },
+}
 
 CELERY_BEAT_SCHEDULE = (
     {}
