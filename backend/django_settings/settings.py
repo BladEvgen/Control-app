@@ -392,10 +392,10 @@ CELERY_BEAT_SCHEDULE = (
             "task": "monitoring_app.tasks.update_lesson_attendance_last_out",
             "schedule": crontab(minute="*/5"),
         },
-        "augment-images-every-day": {
-            "task": "monitoring_app.tasks.augment_user_images",
-            "schedule": crontab(day_of_month="*/3", hour=1, minute=0),
-        },
+        # "augment-images-every-day": {
+        #     "task": "monitoring_app.tasks.augment_user_images",
+        #     "schedule": crontab(day_of_month="*/3", hour=1, minute=0), #! Disabled no CUDA driver
+        # },
     }
 )
 
