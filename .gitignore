@@ -315,3 +315,4 @@ backend/static/media/examples.zip
 *.service
 *.conf
 backend/media/examples.zip
+backend/media/
