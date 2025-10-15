@@ -1,10 +1,10 @@
 import os
 import socket
+from kombu import Queue
 from pathlib import Path
 from dotenv import load_dotenv
 from celery.schedules import crontab
 from datetime import timedelta, datetime
-from kombu import Queue
 
 # Host names and DEBUG setting
 HOST_NAMES = ["RogStrix", "MacBook-Pro.local", "MacbookPro"]
@@ -121,6 +121,7 @@ INSTALLED_APPS = [
     "django_extensions",
     "django_admin_geomap",
     "rest_framework.authtoken",
+    "django_celery_beat",
 ]
 
 # Channel layers configuration
