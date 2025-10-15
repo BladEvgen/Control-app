@@ -122,6 +122,7 @@ INSTALLED_APPS = [
     "django_admin_geomap",
     "rest_framework.authtoken",
     "django_celery_beat",
+    "django_celery_results",
 ]
 
 # Channel layers configuration
