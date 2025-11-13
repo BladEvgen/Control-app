@@ -1014,14 +1014,16 @@ def get_staff_detail(staff, start_date, end_date):
     )
 
     class_locations = list(models.ClassLocation.objects.all())
-    location_searcher = None
+    kd_tree = None
+    class_names = None
     if class_locations:
-        location_data = [
-            {"latitude": loc.latitude, "longitude": loc.longitude, "name": loc.name}
-            for loc in class_locations
+        class_coords = [
+            (loc.latitude, loc.longitude) for loc in class_locations
         ]
-        location_searcher = utils.LocationSearcher(location_data)
-        logger.debug(f"LocationSearcher initialized with {len(class_locations)} locations")
+        class_names = [loc.name for loc in class_locations]
+        from sklearn.neighbors import KDTree
+        kd_tree = KDTree(class_coords, metric="euclidean")
+        logger.debug(f"KDTree initialized with {len(class_locations)} locations")
 
     combined_attendance = {}
 
@@ -1066,57 +1068,85 @@ def get_staff_detail(staff, start_date, end_date):
                         area_address = utils.resolve_area_address(record.area_name_out)
                         combined_attendance[date_key]["area_name_out"] = area_address or record.area_name_out
 
+    lesson_by_date = defaultdict(list)
     for record in lesson_qs:
         date_key = record.date_at
+        lesson_by_date[date_key].append(record)
+
+    for date_key, lesson_records in lesson_by_date.items():
+        earliest_record = None
+        latest_record = None
+        
+        for record in lesson_records:
+            if record.first_in:
+                if earliest_record is None or record.first_in < earliest_record.first_in:
+                    earliest_record = record
+            if record.last_out:
+                if latest_record is None or record.last_out > latest_record.last_out:
+                    latest_record = record
+
         if date_key not in combined_attendance:
             combined_attendance[date_key] = {
-                "first_in": record.first_in,
-                "last_out": record.last_out,
+                "first_in": earliest_record.first_in if earliest_record else None,
+                "last_out": latest_record.last_out if latest_record else None,
                 "area_name_in": None,
                 "area_name_out": None,
-                "first_in_source": "lesson_attendance",
-                "last_out_source": "lesson_attendance",
+                "first_in_source": "lesson_attendance" if earliest_record else None,
+                "last_out_source": "lesson_attendance" if latest_record else None,
             }
-            if location_searcher:
-                if record.first_in:
-                    location_name = location_searcher.find_nearest(
-                        record.latitude, record.longitude, radius=200
-                    )
-                    if location_name != "Unknown Area":
-                        combined_attendance[date_key]["area_name_in"] = location_name
-                if record.last_out:
-                    location_name = location_searcher.find_nearest(
-                        record.latitude, record.longitude, radius=200
-                    )
-                    if location_name != "Unknown Area":
-                        combined_attendance[date_key]["area_name_out"] = location_name
-        else:
-
-            if record.first_in:
-                current_first_in = combined_attendance[date_key]["first_in"]
-                if not current_first_in or record.first_in < current_first_in:
-                    combined_attendance[date_key]["first_in"] = record.first_in
-                    combined_attendance[date_key]["first_in_source"] = "lesson_attendance"
-                    if location_searcher:
-                        location_name = location_searcher.find_nearest(
-                            record.latitude, record.longitude, radius=200
-                        )
-                        if location_name != "Unknown Area":
+            if kd_tree and class_names:
+                if earliest_record and earliest_record.first_in:
+                    try:
+                        distances, indices = kd_tree.query([[earliest_record.latitude, earliest_record.longitude]], k=1)
+                        if hasattr(indices, "ndim") and indices.ndim > 1:
+                            indices = indices.flatten()
+                        if len(indices) > 0:
+                            location_name = class_names[int(indices[0])]
                             combined_attendance[date_key]["area_name_in"] = location_name
-
-
-
-            if record.last_out:
-                current_last_out = combined_attendance[date_key]["last_out"]
-                if not current_last_out or record.last_out > current_last_out:
-                    combined_attendance[date_key]["last_out"] = record.last_out
-                    combined_attendance[date_key]["last_out_source"] = "lesson_attendance"
-                    if location_searcher:
-                        location_name = location_searcher.find_nearest(
-                            record.latitude, record.longitude, radius=200
-                        )
-                        if location_name != "Unknown Area":
+                    except Exception as e:
+                        logger.warning(f"Error finding location for earliest_record: {e}")
+                if latest_record and latest_record.last_out:
+                    try:
+                        distances, indices = kd_tree.query([[latest_record.latitude, latest_record.longitude]], k=1)
+                        if hasattr(indices, "ndim") and indices.ndim > 1:
+                            indices = indices.flatten()
+                        if len(indices) > 0:
+                            location_name = class_names[int(indices[0])]
                             combined_attendance[date_key]["area_name_out"] = location_name
+                    except Exception as e:
+                        logger.warning(f"Error finding location for latest_record: {e}")
+        else:
+            if earliest_record and earliest_record.first_in:
+                current_first_in = combined_attendance[date_key]["first_in"]
+                if not current_first_in or earliest_record.first_in < current_first_in:
+                    combined_attendance[date_key]["first_in"] = earliest_record.first_in
+                    combined_attendance[date_key]["first_in_source"] = "lesson_attendance"
+                    if kd_tree and class_names:
+                        try:
+                            distances, indices = kd_tree.query([[earliest_record.latitude, earliest_record.longitude]], k=1)
+                            if hasattr(indices, "ndim") and indices.ndim > 1:
+                                indices = indices.flatten()
+                            if len(indices) > 0:
+                                location_name = class_names[int(indices[0])]
+                                combined_attendance[date_key]["area_name_in"] = location_name
+                        except Exception as e:
+                            logger.warning(f"Error finding location for earliest_record: {e}")
+
+            if latest_record and latest_record.last_out:
+                current_last_out = combined_attendance[date_key]["last_out"]
+                if not current_last_out or latest_record.last_out > current_last_out:
+                    combined_attendance[date_key]["last_out"] = latest_record.last_out
+                    combined_attendance[date_key]["last_out_source"] = "lesson_attendance"
+                    if kd_tree and class_names:
+                        try:
+                            distances, indices = kd_tree.query([[latest_record.latitude, latest_record.longitude]], k=1)
+                            if hasattr(indices, "ndim") and indices.ndim > 1:
+                                indices = indices.flatten()
+                            if len(indices) > 0:
+                                location_name = class_names[int(indices[0])]
+                                combined_attendance[date_key]["area_name_out"] = location_name
+                        except Exception as e:
+                            logger.warning(f"Error finding location for latest_record: {e}")
 
 
     logger.debug(f"Объединенные данные посещаемости: {combined_attendance}")
