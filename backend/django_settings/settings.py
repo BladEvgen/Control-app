@@ -1,6 +1,8 @@
 import os
 import socket
 from pathlib import Path
+import numpy as np
+import random
 from dotenv import load_dotenv
 from celery.schedules import crontab
 from datetime import timedelta, datetime
@@ -13,16 +15,24 @@ DEBUG = socket.gethostname() in HOST_NAMES
 # Base directories
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
+load_dotenv(BASE_DIR / ".env")
 
 # Custom settings
 DAYS = 1
-FACE_RECOGNITION_THRESHOLD = 0.76
+FACE_RECOGNITION_THRESHOLD = float(os.getenv("FACE_RECOGNITION_THRESHOLD", "0.78"))
 RATE_PERIOD = 600
 RATE_LIMIT = 40
-NO_ALBUMENTATIONS_UPDATE: int = os.getenv("NO_ALBUMENTATIONS_UPDATE", 1)
+NO_ALBUMENTATIONS_UPDATE: int = int(os.getenv("NO_ALBUMENTATIONS_UPDATE", "1"))
+
+# ML/Vision feature flags and quality gates
+USE_GPU = os.getenv("USE_GPU", "True").lower() in ("1", "true", "yes")
+MAX_AUG_VARIANTS = int(os.getenv("MAX_AUG_VARIANTS", "12"))
+FACE_MIN_BLUR_VAR = float(os.getenv("FACE_MIN_BLUR_VAR", "50.0"))
+FACE_MIN_SIZE_PX = int(os.getenv("FACE_MIN_SIZE_PX", "80"))
+RANDOM_SEED = int(os.getenv("RANDOM_SEED", "42"))
+IDENTITY_GATE_THRESHOLD = float(os.getenv("IDENTITY_GATE_THRESHOLD", "0.9"))
 
 # Load environment variables
-load_dotenv(BASE_DIR / ".env")
 
 # Secret keys and API configurations
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -36,7 +46,7 @@ DB_TYPE = os.getenv("DB_TYPE", "sqlite3").lower()
 # Email configurations
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND")
 EMAIL_HOST = os.getenv("EMAIL_HOST")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT"))
+EMAIL_PORT = int(os.getenv("EMAIL_PORT") or 0)
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS") == "True"
 EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL") == "True"
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
@@ -46,6 +56,31 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL")
 # Authentication URLs
 LOGIN_URL = "/login_view/"
 LOGOUT_URL = "/logout/"
+
+# Deterministic seeds for reproducibility across processes
+try:
+    random.seed(RANDOM_SEED)
+    np.random.seed(RANDOM_SEED)
+    # Torch seeding (optional import if available)
+    try:
+        import torch  # type: ignore
+
+        torch.manual_seed(RANDOM_SEED)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(RANDOM_SEED)
+            # Ensure deterministic algorithms when possible
+            try:
+                torch.use_deterministic_algorithms(True)
+            except Exception:
+                pass
+            if hasattr(torch.backends, "cudnn"):
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
+    except Exception:
+        # Torch may not be installed in some environments
+        pass
+except Exception:
+    pass
 
 
 # Function to get the local IP address

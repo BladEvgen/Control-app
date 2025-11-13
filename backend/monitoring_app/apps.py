@@ -8,3 +8,18 @@ class MonitoringAppConfig(AppConfig):
 
     def ready(self):
         import monitoring_app.signals
+        # Load ArcFace at startup and warm-up once
+        try:
+            from monitoring_app import ml
+            ml.load_arcface_model()
+            # Enable cudnn benchmark for speed on GPU
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    if hasattr(torch.backends, "cudnn"):
+                        torch.backends.cudnn.benchmark = True
+            except Exception:
+                pass
+        except Exception:
+            # Avoid startup crash if model init fails; runtime will retry on first use
+            pass

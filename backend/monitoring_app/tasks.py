@@ -228,5 +228,29 @@ def augment_user_images(self):
     if not getattr(settings, "ENABLE_AUGMENT", False):
         logger.info("augment_user_images: disabled by settings")
         return "disabled"
-    from monitoring_app.augment import run_dali_augmentation_for_all_staff
-    return run_dali_augmentation_for_all_staff()
+    from monitoring_app.augment import run_albu_augmentation_for_all_staff
+    return run_albu_augmentation_for_all_staff()
+
+
+@shared_task(name="monitoring_app.tasks.align_and_augment_staff", bind=True, queue="control_app_queue")
+def align_and_augment_staff(self, staff_pin: str):
+    try:
+        staff = models.Staff.objects.get(pin=staff_pin)
+    except models.Staff.DoesNotExist:
+        logger.warning("align_and_augment_staff: staff %s not found", staff_pin)
+        return "not_found"
+    from monitoring_app.augment import run_albu_augmentation_for_all_staff
+    # Reuse batch function; it's efficient enough for now
+    return run_albu_augmentation_for_all_staff()
+
+
+@shared_task(name="monitoring_app.tasks.build_embeddings_for_staff", bind=True, queue="control_app_queue")
+def build_embeddings_for_staff(self, staff_pin: str):
+    try:
+        staff = models.Staff.objects.get(pin=staff_pin)
+    except models.Staff.DoesNotExist:
+        logger.warning("build_embeddings_for_staff: staff %s not found", staff_pin)
+        return "not_found"
+    from monitoring_app import ml
+    ml.create_embeddings_for_staff(staff)
+    return "ok"

@@ -52,6 +52,12 @@ from monitoring_app.cache_conf import Cache, get_cache
 
 logger = logging.getLogger(__name__)
 
+try:
+    from PIL import Image, UnidentifiedImageError
+except Exception:
+    Image = None
+    UnidentifiedImageError = Exception
+
 
 class StaffAttendancePagination(PageNumberPagination):
     page_size = 5000
@@ -3793,8 +3799,71 @@ def download_examples_zip(request):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+def analyze_face(request):
+    logger = logging.getLogger("django")
+    logger.info("Received request to analyze faces.")
+
+    staff_image = request.FILES.get("image")
+    if not staff_image:
+        return Response({"error": "Image is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    ok, reason = _validate_uploaded_image(staff_image)
+    if not ok:
+        return Response({"error": reason}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        img = ml.load_image_from_memory(staff_image)
+        ml.load_arcface_model()
+        faces = ml.arcface_model.get(img)
+        if not faces:
+            return Response({"faces": []}, status=status.HTTP_200_OK)
+
+        results = []
+        for f in faces:
+            bbox = f.bbox.astype(int).tolist()
+            # optional attributes (if available in FaceAnalysis result)
+            age = getattr(f, "age", None)
+            gender = getattr(f, "gender", None)
+            aligned = ml.align_face_with_landmarks(img, f.kps)
+            if aligned is None:
+                crop = img[int(f.bbox[1]): int(f.bbox[3]), int(f.bbox[0]): int(f.bbox[2])]
+                aligned = cv2.resize(crop, (112, 112), interpolation=cv2.INTER_LINEAR)
+            emb = ml.arcface_model.get(aligned)[0].embedding if aligned is not None else f.embedding
+            emb = ml._l2_normalize(np.asarray(emb, dtype=np.float32))
+
+            # similarity to nearest centroid (top-1)
+            centroids, owners = ml.get_staff_centroids()
+            if centroids.size:
+                sims, idxs, owners2 = ml.ann_topk(emb.reshape(1, -1), k=3)
+                if sims is None:
+                    from sklearn.neighbors import NearestNeighbors
+                    nbrs = NearestNeighbors(n_neighbors=3, metric="cosine").fit(centroids)
+                    dists, inds = nbrs.kneighbors(emb.reshape(1, -1))
+                    sims = 1 - dists
+                    idxs = inds
+                    owners2 = owners
+                topk = [
+                    {"pin": owners2[j].pin, "similarity": float(sims[0][k])}
+                    for k, j in enumerate(idxs[0])
+                ]
+            else:
+                topk = []
+
+            results.append({
+                "bbox": bbox,
+                "age": int(age) if age is not None else None,
+                "gender": gender,
+                "topk": topk,
+            })
+
+        return Response({"faces": results}, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error("analyze_face failed: %s", e)
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 def verify_face(request):
     import numpy as np
+    import cv2
     from sklearn.metrics.pairwise import cosine_similarity
 
     logger = logging.getLogger("django")
@@ -3809,11 +3878,9 @@ def verify_face(request):
             {"error": "PIN and image are required."}, status=status.HTTP_400_BAD_REQUEST
         )
 
-    if staff_image.size == 0:
-        logger.warning("Uploaded image is empty.")
-        return Response(
-            {"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST
-        )
+    ok, reason = _validate_uploaded_image(staff_image)
+    if not ok:
+        return Response({"error": reason}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         staff = models.Staff.objects.get(pin=staff_pin)
@@ -3840,8 +3907,17 @@ def verify_face(request):
         )
 
     try:
+        import time
+        t0 = time.time()
         new_image = ml.load_image_from_memory(staff_image)
-        new_embedding = ml.create_face_encoding(new_image)
+        emb, kps, bbox = ml.detect_align_embed_single(new_image)
+        if emb is None:
+            logger.warning("No face detected in the uploaded image.")
+            return Response(
+                {"error": "No face detected in the image."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        new_embedding = emb.reshape(1, -1)
         if new_embedding is None:
             logger.warning("No face detected in the uploaded image.")
             return Response(
@@ -3862,13 +3938,16 @@ def verify_face(request):
         threshold = settings.FACE_RECOGNITION_THRESHOLD
         verified = max_similarity >= threshold
 
+        latency_ms = int((time.time() - t0) * 1000)
         logger.info(
-            f"Verification completed for PIN {staff_pin}. Score: {max_similarity}, Verified: {verified}"
+            "Verify: pin=%s, score=%.3f, verified=%s, latency_ms=%s, provider=%s",
+            staff_pin,
+            float(max_similarity),
+            verified,
+            latency_ms,
+            getattr(ml, "selected_provider", None),
         )
-        return Response(
-            {"verified": verified, "score": float(max_similarity)},
-            status=status.HTTP_200_OK,
-        )
+        return Response({"verified": verified, "score": float(max_similarity)}, status=status.HTTP_200_OK)
 
     except Exception as e:
         logger.error(f"Error during face verification for PIN {staff_pin}: {str(e)}")
@@ -3889,18 +3968,9 @@ def recognize_faces(request):
             {"error": "Image is required."}, status=status.HTTP_400_BAD_REQUEST
         )
 
-    if not staff_image.name.lower().endswith((".png", ".jpg", ".jpeg")):
-        logger.warning("Invalid image format provided.")
-        return Response(
-            {"error": "Invalid image format. Only PNG, JPG, and JPEG are allowed."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if staff_image.size == 0:
-        logger.warning("Uploaded image is empty.")
-        return Response(
-            {"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST
-        )
+    ok, reason = _validate_uploaded_image(staff_image)
+    if not ok:
+        return Response({"error": reason}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         recognized_staff, unknown_faces = ml.recognize_faces_in_image(staff_image)
@@ -4173,3 +4243,38 @@ class AbsentReasonView(APIView):
             )
         logger.error(f"Ошибка при создании записи отсутствия: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _validate_uploaded_image(django_file):
+    max_megapixels = 10_000_000
+    max_bytes = getattr(settings, "DATA_UPLOAD_MAX_MEMORY_SIZE", 50 * 1024 * 1024)
+    content_type = getattr(django_file, "content_type", "") or ""
+    if not content_type.lower().startswith("image/"):
+        return False, "Invalid content type"
+    if getattr(django_file, "size", 0) and django_file.size > max_bytes:
+        return False, "Image too large"
+    if Image is None:
+        return True, None
+    pos = django_file.tell() if hasattr(django_file, "tell") else None
+    try:
+        if hasattr(django_file, "seek"):
+            django_file.seek(0)
+        with Image.open(django_file) as im:
+            im.verify()
+        if hasattr(django_file, "seek"):
+            django_file.seek(0)
+        with Image.open(django_file) as im2:
+            width, height = im2.size
+        if width * height > max_megapixels:
+            return False, "Image exceeds megapixel limit"
+        return True, None
+    except UnidentifiedImageError:
+        return False, "Unrecognized image file"
+    except Exception as e:
+        return False, f"Image validation failed: {e}"
+    finally:
+        if pos is not None and hasattr(django_file, "seek"):
+            try:
+                django_file.seek(pos)
+            except Exception:
+                pass

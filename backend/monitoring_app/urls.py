@@ -74,6 +74,7 @@ urlpatterns = [
     ),
     path("verify-face/", views.verify_face, name="verify-face"),
     path("recognize-faces/", views.recognize_faces, name="recognize-faces"),
+    path("analyze-face/", views.analyze_face, name="analyze-face"),
     path(
         "download/examples/", views.download_examples_zip, name="download_examples_zip"
     ),
