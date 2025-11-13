@@ -1013,6 +1013,16 @@ def get_staff_detail(staff, start_date, end_date):
         date_at__range=[start_date, end_date],
     )
 
+    class_locations = list(models.ClassLocation.objects.all())
+    location_searcher = None
+    if class_locations:
+        location_data = [
+            {"latitude": loc.latitude, "longitude": loc.longitude, "name": loc.name}
+            for loc in class_locations
+        ]
+        location_searcher = utils.LocationSearcher(location_data)
+        logger.debug(f"LocationSearcher initialized with {len(class_locations)} locations")
+
     combined_attendance = {}
 
     for record in attendance_qs:
@@ -1021,19 +1031,40 @@ def get_staff_detail(staff, start_date, end_date):
             combined_attendance[date_key] = {
                 "first_in": record.first_in,
                 "last_out": record.last_out,
+                "area_name_in": None,
+                "area_name_out": None,
+                "first_in_source": None,
+                "last_out_source": None,
             }
+            if record.area_name_in:
+                area_address = utils.resolve_area_address(record.area_name_in)
+                combined_attendance[date_key]["area_name_in"] = area_address or record.area_name_in
+            if record.area_name_out:
+                area_address = utils.resolve_area_address(record.area_name_out)
+                combined_attendance[date_key]["area_name_out"] = area_address or record.area_name_out
+            if record.first_in:
+                combined_attendance[date_key]["first_in_source"] = "staff_attendance"
+            if record.last_out:
+                combined_attendance[date_key]["last_out_source"] = "staff_attendance"
         else:
-            combined_attendance[date_key]["first_in"] = (
-                min(combined_attendance[date_key]["first_in"], record.first_in)
-                if combined_attendance[date_key]["first_in"] and record.first_in
-                else combined_attendance[date_key]["first_in"] or record.first_in
-            )
 
-            combined_attendance[date_key]["last_out"] = (
-                max(combined_attendance[date_key]["last_out"], record.last_out)
-                if combined_attendance[date_key]["last_out"] and record.last_out
-                else combined_attendance[date_key]["last_out"] or record.last_out
-            )
+            if record.first_in:
+                current_first_in = combined_attendance[date_key]["first_in"]
+                if not current_first_in or record.first_in < current_first_in:
+                    combined_attendance[date_key]["first_in"] = record.first_in
+                    combined_attendance[date_key]["first_in_source"] = "staff_attendance"
+                    if record.area_name_in:
+                        area_address = utils.resolve_area_address(record.area_name_in)
+                        combined_attendance[date_key]["area_name_in"] = area_address or record.area_name_in
+
+            if record.last_out:
+                current_last_out = combined_attendance[date_key]["last_out"]
+                if not current_last_out or record.last_out > current_last_out:
+                    combined_attendance[date_key]["last_out"] = record.last_out
+                    combined_attendance[date_key]["last_out_source"] = "staff_attendance"
+                    if record.area_name_out:
+                        area_address = utils.resolve_area_address(record.area_name_out)
+                        combined_attendance[date_key]["area_name_out"] = area_address or record.area_name_out
 
     for record in lesson_qs:
         date_key = record.date_at
@@ -1041,21 +1072,52 @@ def get_staff_detail(staff, start_date, end_date):
             combined_attendance[date_key] = {
                 "first_in": record.first_in,
                 "last_out": record.last_out,
+                "area_name_in": None,
+                "area_name_out": None,
+                "first_in_source": "lesson_attendance",
+                "last_out_source": "lesson_attendance",
             }
+            if location_searcher:
+                if record.first_in:
+                    location_name = location_searcher.find_nearest(
+                        record.latitude, record.longitude, radius=200
+                    )
+                    if location_name != "Unknown Area":
+                        combined_attendance[date_key]["area_name_in"] = location_name
+                if record.last_out:
+                    location_name = location_searcher.find_nearest(
+                        record.latitude, record.longitude, radius=200
+                    )
+                    if location_name != "Unknown Area":
+                        combined_attendance[date_key]["area_name_out"] = location_name
         else:
+
             if record.first_in:
-                combined_attendance[date_key]["first_in"] = (
-                    min(combined_attendance[date_key]["first_in"], record.first_in)
-                    if combined_attendance[date_key]["first_in"]
-                    else record.first_in
-                )
+                current_first_in = combined_attendance[date_key]["first_in"]
+                if not current_first_in or record.first_in < current_first_in:
+                    combined_attendance[date_key]["first_in"] = record.first_in
+                    combined_attendance[date_key]["first_in_source"] = "lesson_attendance"
+                    if location_searcher:
+                        location_name = location_searcher.find_nearest(
+                            record.latitude, record.longitude, radius=200
+                        )
+                        if location_name != "Unknown Area":
+                            combined_attendance[date_key]["area_name_in"] = location_name
+
+
 
             if record.last_out:
-                combined_attendance[date_key]["last_out"] = (
-                    max(combined_attendance[date_key]["last_out"], record.last_out)
-                    if combined_attendance[date_key]["last_out"]
-                    else record.last_out
-                )
+                current_last_out = combined_attendance[date_key]["last_out"]
+                if not current_last_out or record.last_out > current_last_out:
+                    combined_attendance[date_key]["last_out"] = record.last_out
+                    combined_attendance[date_key]["last_out_source"] = "lesson_attendance"
+                    if location_searcher:
+                        location_name = location_searcher.find_nearest(
+                            record.latitude, record.longitude, radius=200
+                        )
+                        if location_name != "Unknown Area":
+                            combined_attendance[date_key]["area_name_out"] = location_name
+
 
     logger.debug(f"Объединенные данные посещаемости: {combined_attendance}")
 
@@ -1390,6 +1452,8 @@ def process_attendance(
 
     first_in = attendance.get("first_in") if attendance else None
     last_out = attendance.get("last_out") if attendance else None
+    area_name_in = attendance.get("area_name_in") if attendance else None
+    area_name_out = attendance.get("area_name_out") if attendance else None
 
     if is_off_day:
         if first_in and last_out:
@@ -1416,6 +1480,8 @@ def process_attendance(
                 if last_out
                 else None
             ),
+            "area_name_in": area_name_in,
+            "area_name_out": area_name_out,
             "percent_day": round(percent_day, 2),
             "total_minutes": round(total_minutes_worked, 2),
             "is_weekend": True,
@@ -1463,6 +1529,8 @@ def process_attendance(
                     if last_out
                     else None
                 ),
+                "area_name_in": area_name_in,
+                "area_name_out": area_name_out,
                 "percent_day": 0,
                 "total_minutes": 0,
                 "is_weekend": False,
@@ -1512,6 +1580,8 @@ def process_attendance(
         "last_out": (
             last_out.astimezone(timezone.get_current_timezone()) if last_out else None
         ),
+        "area_name_in": area_name_in,
+        "area_name_out": area_name_out,
         "percent_day": round(percent_day, 2),
         "total_minutes": round(total_minutes_worked, 2),
         "is_weekend": is_off_day,
@@ -2466,11 +2536,9 @@ def staff_detail_by_department_id(request, department_id):
                             )
                             if not last_out or sa_last_out > last_out:
                                 last_out = sa_last_out
-                        area_name = utils.AREA_ADDRESS_MAPPING.get(
-                            sa["area_name_in"], "Unknown Area"
-                        )
-                        if area_name != "Unknown Area":
-                            area_names.append(area_name)
+                        area_address = utils.resolve_area_address(sa.get("area_name_in"))
+                        if area_address:
+                            area_names.append(area_address)
 
                     for la in la_records:
                         if la["first_in"]:

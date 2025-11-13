@@ -84,6 +84,12 @@ class Command(BaseCommand):
             default=timezone.now().date().isoformat(),
             help="Date of the attendance in YYYY-MM-DD format.",
         )
+        parser.add_argument(
+            "--first_in",
+            type=str,
+            default=None,
+            help="First in time in YYYY-MM-DD HH:MM:SS format. If not provided, uses current time.",
+        )
 
     def handle(self, *args, **options):
         photo_path = options["photo_path"]
@@ -94,12 +100,23 @@ class Command(BaseCommand):
         latitude = options["latitude"]
         longitude = options["longitude"]
         date_at_str = options["date_at"]
+        first_in_str = options.get("first_in")
 
         try:
             date_at = datetime.strptime(date_at_str, "%Y-%m-%d").date()
         except ValueError:
             self.stderr.write(self.style.ERROR("Invalid date format. Use YYYY-MM-DD."))
             return
+
+        if first_in_str:
+            try:
+                first_in = datetime.strptime(first_in_str, "%Y-%m-%d %H:%M:%S")
+                first_in = timezone.make_aware(first_in)
+            except ValueError:
+                self.stderr.write(self.style.ERROR("Invalid first_in format. Use YYYY-MM-DD HH:MM:SS."))
+                return
+        else:
+            first_in = timezone.now()
 
         if not os.path.isfile(photo_path):
             self.stderr.write(self.style.ERROR(f"Photo file not found at {photo_path}"))
@@ -117,7 +134,7 @@ class Command(BaseCommand):
                 subject_name=subject_name,
                 tutor_id=tutor_id,
                 tutor=tutor,
-                first_in=timezone.now(),
+                first_in=first_in,
                 latitude=latitude,
                 longitude=longitude,
                 date_at=date_at,
