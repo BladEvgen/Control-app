@@ -79,7 +79,9 @@ EXTERNAL_IP = get_external_ip()
 
 # Allowed hosts and CSRF trusted origins
 ALLOWED_HOSTS = ["*"] + (
-    [LOCAL_IP, EXTERNAL_IP] if DEBUG else ["control.krmu.edu.kz", "dot.medkrmu.edu.kz"]
+    [LOCAL_IP, EXTERNAL_IP]
+    if DEBUG
+    else ["control.krmu.edu.kz", "dot.medkrmu.edu.kz", "commander.medkrmu.kz"]
 )
 
 CSRF_TRUSTED_ORIGINS = (
@@ -96,6 +98,7 @@ CSRF_TRUSTED_ORIGINS = (
     else [
         "https://control.krmu.edu.kz",
         "https://dot.medkrmu.kz",
+        "https://commander.medkrmu.kz",
         "http://localhost:3000",
         "http://localhost:5173",
         "http://127.0.0.1:3000",
@@ -162,6 +165,7 @@ CORS_ALLOWED_ORIGINS = (
     else [
         "https://dot.medkrmu.kz",
         "https://control.krmu.edu.kz",
+        "https://commander.medkrmu.kz",
         "http://localhost:3000",
         "http://localhost:5173",
         "http://127.0.0.1:3000",
