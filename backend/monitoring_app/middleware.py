@@ -170,11 +170,12 @@ class EnhancedSecurityMiddleware:
             origin (str): The Origin header from the request.
         """
         response["Access-Control-Allow-Origin"] = origin
-        response["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
         response["Access-Control-Allow-Headers"] = (
-            "Content-Type, Authorization, x-api-token"
+            "Content-Type, Authorization, x-api-token, X-API-KEY, X-Api-Key, Accept, Origin, X-Requested-With"
         )
         response["Access-Control-Allow-Credentials"] = "true"
+        response["Access-Control-Max-Age"] = "86400"  # 24 hours
 
     def too_many_requests_response(self):
         """

@@ -87,11 +87,19 @@ CSRF_TRUSTED_ORIGINS = (
         f"http://{EXTERNAL_IP}:8000",
         f"http://{EXTERNAL_IP}:5173",
         f"http://{EXTERNAL_IP}:3000",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
     ]
     if DEBUG
     else [
         "https://control.krmu.edu.kz",
         "https://dot.medkrmu.kz",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
     ]
 )
 
@@ -145,13 +153,45 @@ CORS_ALLOWED_ORIGINS = (
         f"http://{EXTERNAL_IP}:8000",
         f"http://{EXTERNAL_IP}:3000",
         f"http://{EXTERNAL_IP}:5173",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
     ]
     if DEBUG
     else [
         "https://dot.medkrmu.kz",
         "https://control.krmu.edu.kz",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
     ]
 )
+
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+    "x-api-key",
+    "x-api-token",
+]
+
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
 # Settings for Custom Middleware
 SECURITY_MIDDLEWARE_EXEMPT_PATHS = [
     "/app/",
