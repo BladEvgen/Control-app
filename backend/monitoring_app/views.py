@@ -859,9 +859,74 @@ def child_department_detail(request, child_department_id):
                     ),
                     "attendance": openapi.Schema(
                         type=openapi.TYPE_OBJECT,
+                        description="Данные о посещаемости по датам. Ключ - дата в формате DD-MM-YYYY",
                         additional_properties=openapi.Schema(
                             type=openapi.TYPE_OBJECT,
-                            description="Данные о посещаемости",
+                            description="Данные о посещаемости за конкретную дату",
+                            properties={
+                                "first_in": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format=openapi.FORMAT_DATETIME,
+                                    nullable=True,
+                                    description="Время первого входа в формате ISO 8601",
+                                ),
+                                "last_out": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format=openapi.FORMAT_DATETIME,
+                                    nullable=True,
+                                    description="Время последнего выхода в формате ISO 8601",
+                                ),
+                                "area_name_in": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    nullable=True,
+                                    description="Название места первого входа",
+                                ),
+                                "area_name_out": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    nullable=True,
+                                    description=(
+                                        "Название места последнего выхода. "
+                                        "Примечание: если значение равно 'Unknown', рекомендуется парсить его как null."
+                                    ),
+                                ),
+                                "first_in_source": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    nullable=True,
+                                    description="Источник данных о первом входе (staff_attendance или lesson_attendance)",
+                                ),
+                                "last_out_source": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    nullable=True,
+                                    description="Источник данных о последнем выходе (staff_attendance или lesson_attendance)",
+                                ),
+                                "percent_day": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format=openapi.FORMAT_FLOAT,
+                                    description="Процент отработанного времени за день",
+                                ),
+                                "total_minutes": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format=openapi.FORMAT_FLOAT,
+                                    description="Общее количество отработанных минут за день",
+                                ),
+                                "is_weekend": openapi.Schema(
+                                    type=openapi.TYPE_BOOLEAN,
+                                    description="Является ли день выходным",
+                                ),
+                                "is_remote_work": openapi.Schema(
+                                    type=openapi.TYPE_BOOLEAN,
+                                    description="Является ли работа удаленной",
+                                ),
+                                "is_absent_approved": openapi.Schema(
+                                    type=openapi.TYPE_BOOLEAN,
+                                    description="Утверждено ли отсутствие",
+                                ),
+                                "absent_reason": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    nullable=True,
+                                    description="Причина отсутствия (если применимо)",
+                                ),
+                            },
                         ),
                     ),
                     "percent_for_period": openapi.Schema(

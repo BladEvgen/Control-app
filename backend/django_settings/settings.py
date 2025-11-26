@@ -379,11 +379,15 @@ SIMPLE_JWT = {
 # Token lifetimes based on DEBUG
 SIMPLE_JWT.update(
     {
-        "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10) if DEBUG else timedelta(minutes=30),
+        "ACCESS_TOKEN_LIFETIME": (
+            timedelta(minutes=10) if DEBUG else timedelta(minutes=30)
+        ),
         "REFRESH_TOKEN_LIFETIME": (
             timedelta(minutes=30) if DEBUG else timedelta(hours=2)
         ),
-        "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10) if DEBUG else timedelta(minutes=30),
+        "SLIDING_TOKEN_LIFETIME": (
+            timedelta(minutes=10) if DEBUG else timedelta(minutes=30)
+        ),
         "SLIDING_TOKEN_REFRESH_LIFETIME": (
             timedelta(minutes=30) if DEBUG else timedelta(hours=2)
         ),
@@ -399,7 +403,14 @@ SWAGGER_SETTINGS = {
             "type": "apiKey",
             "name": "Authorization",
             "in": "header",
-        }
+            "description": "JWT токен в формате: Bearer {token}",
+        },
+        "X-API-KEY": {
+            "type": "apiKey",
+            "name": "X-API-KEY",
+            "in": "header",
+            "description": "API ключ для аутентификации",
+        },
     },
     "USE_SESSION_AUTH": True,
     "DEFAULT_AUTO_SCHEMA_CLASS": "drf_yasg.inspectors.SwaggerAutoSchema",
@@ -415,9 +426,7 @@ CELERY_BROKER_URL = "redis://localhost:6379/0"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 
-CELERY_TASK_QUEUES = (
-    Queue("control_app_queue", routing_key="control_app_queue"),
-)
+CELERY_TASK_QUEUES = (Queue("control_app_queue", routing_key="control_app_queue"),)
 
 CELERY_TASK_ROUTES = {
     "monitoring_app.tasks.*": {
