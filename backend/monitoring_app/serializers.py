@@ -1,10 +1,9 @@
 import datetime
 from typing import Any
 
-from rest_framework import serializers
 from django.contrib.auth.models import User
-
 from monitoring_app import models
+from rest_framework import serializers
 
 
 class UserSerializer(serializers.ModelSerializer):

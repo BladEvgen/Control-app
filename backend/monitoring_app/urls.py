@@ -1,12 +1,8 @@
 from django.urls import path, re_path
-from rest_framework_simplejwt.views import (
-    TokenVerifyView,
-    TokenRefreshView,
-)
-
-from monitoring_app import views, custom_jwt
 from django.views.generic import RedirectView
+from monitoring_app import custom_jwt, views
 from monitoring_app.swagger import urlpatterns as doc_urls
+from rest_framework_simplejwt.views import TokenRefreshView, TokenVerifyView
 
 urlpatterns = [
     path("", RedirectView.as_view(url="/app/")),

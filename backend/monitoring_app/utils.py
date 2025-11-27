@@ -20,12 +20,11 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
+from monitoring_app import models
+from monitoring_app.cache_conf import get_cache
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from sklearn.neighbors import KDTree
-
-from monitoring_app import models
-from monitoring_app.cache_conf import get_cache
 
 DAYS = settings.DAYS
 
@@ -1312,18 +1311,14 @@ def generate_excel_file(
     if df.empty:
         logger.warning("No attendance data for the selected date range.")
 
-    df = cast(
-        pd.DataFrame,
-        df.sort_values(by=["date_obj"], ascending=False),  # type: ignore[arg-type]
-    )
+    sort_method = getattr(df, "sort_values")
+    df = cast(pd.DataFrame, sort_method(by="date_obj", ascending=False))
 
     unique_staff = df[["ФИО", "Отдел"]].drop_duplicates()
+    sort_method_staff = getattr(unique_staff, "sort_values")
     unique_staff = cast(
         pd.DataFrame,
-        unique_staff.sort_values(
-            by=["Отдел", "ФИО"],
-            ascending=[True, True],  # type: ignore[arg-type]
-        ),
+        sort_method_staff(by=["Отдел", "ФИО"], ascending=[True, True]),
     )
 
     unique_dates = df["Дата"].unique()

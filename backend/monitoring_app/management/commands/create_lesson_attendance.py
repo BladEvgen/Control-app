@@ -1,11 +1,10 @@
-import os
 import logging
+import os
 from datetime import datetime
 
-from django.utils import timezone
-from django.core.management.base import BaseCommand
 from django.core.exceptions import ObjectDoesNotExist
-
+from django.core.management.base import BaseCommand
+from django.utils import timezone
 from monitoring_app.models import LessonAttendance, Staff
 
 logger = logging.getLogger(__name__)
@@ -113,7 +112,11 @@ class Command(BaseCommand):
                 first_in = datetime.strptime(first_in_str, "%Y-%m-%d %H:%M:%S")
                 first_in = timezone.make_aware(first_in)
             except ValueError:
-                self.stderr.write(self.style.ERROR("Invalid first_in format. Use YYYY-MM-DD HH:MM:SS."))
+                self.stderr.write(
+                    self.style.ERROR(
+                        "Invalid first_in format. Use YYYY-MM-DD HH:MM:SS."
+                    )
+                )
                 return
         else:
             first_in = timezone.now()

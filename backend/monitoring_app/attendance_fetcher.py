@@ -1,16 +1,15 @@
 import asyncio
-import aiohttp
-import backoff
 import logging
 from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from django.conf import settings
-from django.utils import timezone
-from django.db import transaction
+import aiohttp
+import backoff
 from channels.db import database_sync_to_async
-
+from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
 from monitoring_app import models
 
 logger = logging.getLogger("django")

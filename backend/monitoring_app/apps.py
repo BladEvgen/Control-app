@@ -1,5 +1,6 @@
-from django.apps import AppConfig
 from typing import ClassVar
+
+from django.apps import AppConfig
 
 
 class MonitoringAppConfig(AppConfig):

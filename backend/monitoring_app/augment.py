@@ -1,15 +1,14 @@
-import os
 import logging
+import os
+from typing import Any, Callable, Dict, cast
 
 import cv2
 import nvidia.dali.fn as fn
 from django.conf import settings
-from typing import Any, Callable, Dict, cast
-from nvidia.dali.pipeline import pipeline_def
+from monitoring_app import ml, models
 from nvidia.dali.auto_aug import augmentations
 from nvidia.dali.auto_aug.core import signed_bin
-
-from monitoring_app import models, ml
+from nvidia.dali.pipeline import pipeline_def
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

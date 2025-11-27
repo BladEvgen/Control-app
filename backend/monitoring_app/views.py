@@ -26,19 +26,6 @@ from django.utils import timezone
 from django.views.generic import View
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from openpyxl import load_workbook
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import ValidationError
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import (
-    AllowAny,
-    IsAdminUser,
-    IsAuthenticated,
-)
-from rest_framework.response import Response
-from rest_framework.views import APIView
-
 from monitoring_app import (
     async_logic,
     attendance_fetcher,
@@ -50,6 +37,14 @@ from monitoring_app import (
     utils,
 )
 from monitoring_app.cache_conf import Cache, get_cache
+from openpyxl import load_workbook
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 logger = logging.getLogger(__name__)
 

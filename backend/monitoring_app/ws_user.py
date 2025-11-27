@@ -2,7 +2,6 @@ import logging
 
 from asgiref.sync import async_to_sync
 from channels.generic.websocket import JsonWebsocketConsumer
-
 from monitoring_app import models, serializers
 
 logger = logging.getLogger(__name__)

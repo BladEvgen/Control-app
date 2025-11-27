@@ -1,15 +1,16 @@
 # generate_face_masks.py
 import logging
 import traceback
-from django.core.management.base import BaseCommand
+
 from django.core.exceptions import ObjectDoesNotExist
-from monitoring_app.models import Staff, StaffFaceMask
+from django.core.management.base import BaseCommand
 from monitoring_app.augment import run_dali_augmentation_for_all_staff
 from monitoring_app.ml import (
-    train_general_model,
     create_face_encoding,
     train_face_recognition_model,
+    train_general_model,
 )
+from monitoring_app.models import Staff, StaffFaceMask
 
 logger = logging.getLogger(__name__)
 

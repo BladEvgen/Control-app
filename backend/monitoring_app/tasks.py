@@ -1,6 +1,6 @@
-import os
-import logging
 import datetime
+import logging
+import os
 
 from celery import shared_task
 from django.conf import settings
@@ -12,8 +12,9 @@ logger = logging.getLogger(__name__)
 
 @shared_task
 def get_all_attendance_task():
-    from monitoring_app.attendance_fetcher import AsyncAttendanceFetcher
     import asyncio
+
+    from monitoring_app.attendance_fetcher import AsyncAttendanceFetcher
 
     async def main():
         fetcher = AsyncAttendanceFetcher()
@@ -222,11 +223,18 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
 
     return {"success_records": success_records, "error_records": error_records}
 
-@shared_task(name="monitoring_app.tasks.augment_user_images", bind=True, queue="control_app_queue")
+
+@shared_task(
+    name="monitoring_app.tasks.augment_user_images",
+    bind=True,
+    queue="control_app_queue",
+)
 def augment_user_images(self):
     from django.conf import settings
+
     if not getattr(settings, "ENABLE_AUGMENT", False):
         logger.info("augment_user_images: disabled by settings")
         return "disabled"
     from monitoring_app.augment import run_dali_augmentation_for_all_staff
+
     return run_dali_augmentation_for_all_staff()

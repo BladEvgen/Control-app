@@ -1,43 +1,42 @@
 import os
-from datetime import timedelta
 from collections import defaultdict
+from datetime import timedelta
 
-from django.urls import path
 from django.conf import settings
 from django.contrib import admin
-from django.utils import timezone
+from django.contrib.admin import SimpleListFilter
+from django.contrib.admin.models import LogEntry
+from django.contrib.admin.views.decorators import staff_member_required
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
+from django.db.models import Avg, Count, F, Func, Q, Value
+from django.db.models.functions import Power, Sqrt
 from django.http import JsonResponse
+from django.template.response import TemplateResponse
+from django.urls import path
+from django.utils import timezone
+from django.utils.decorators import method_decorator
 from django.utils.html import format_html
 from django_admin_geomap import ModelAdmin
-from django.contrib.admin.models import LogEntry
-from django.contrib.admin import SimpleListFilter
-from django.core.exceptions import ValidationError
-from django.db.models.functions import Power, Sqrt
-from django.utils.decorators import method_decorator
-from django.template.response import TemplateResponse
-from django.db.models import Count, F, Func, Q, Value, Avg
-from django.contrib.admin.views.decorators import staff_member_required
-
 from monitoring_app.models import (
-    Staff,
-    APIKey,
-    Salary,
-    Position,
-    RemoteWork,
-    UserProfile,
     AbsentReason,
-    FileCategory,
-    ClassLocation,
-    PublicHoliday,
-    StaffFaceMask,
+    APIKey,
     ChildDepartment,
-    StaffAttendance,
+    ClassLocation,
+    FileCategory,
     LessonAttendance,
     ParentDepartment,
+    PasswordResetRequestLog,
     PasswordResetToken,
     PerformanceBonusRule,
-    PasswordResetRequestLog,
+    Position,
+    PublicHoliday,
+    RemoteWork,
+    Salary,
+    Staff,
+    StaffAttendance,
+    StaffFaceMask,
+    UserProfile,
 )
 
 

@@ -1,5 +1,5 @@
-from monitoring_app.models import FileCategory
 from django.core.management.base import BaseCommand
+from monitoring_app.models import FileCategory
 
 
 class Command(BaseCommand):

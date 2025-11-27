@@ -1,7 +1,8 @@
 import os
+
 from django.conf import settings
-from monitoring_app.models import Staff
 from django.core.management.base import BaseCommand
+from monitoring_app.models import Staff
 
 
 class Command(BaseCommand):
