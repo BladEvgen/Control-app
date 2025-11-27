@@ -1,7 +1,8 @@
+from typing import Any
+
 from django import template
 from django.utils import timezone
 from django.utils.timesince import timesince
-from typing import Any
 
 register = template.Library()
 
