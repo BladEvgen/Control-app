@@ -1,10 +1,11 @@
 import os
 import socket
-from kombu import Queue
+from datetime import datetime, timedelta
 from pathlib import Path
-from dotenv import load_dotenv
+
 from celery.schedules import crontab
-from datetime import timedelta, datetime
+from dotenv import load_dotenv
+from kombu import Queue
 
 # Host names and DEBUG setting
 HOST_NAMES = ["RogStrix", "MacBook-Pro.local", "MacbookPro"]
@@ -20,6 +21,25 @@ FACE_RECOGNITION_THRESHOLD = 0.76
 RATE_PERIOD = 600
 RATE_LIMIT = 40
 NO_ALBUMENTATIONS_UPDATE: int = int(os.getenv("NO_ALBUMENTATIONS_UPDATE", "1"))
+
+FACE_RECOGNITION_PRO = {
+    "SECURITY_LEVEL": "MEDIUM",  # LOW/MEDIUM/HIGH/ULTRA
+    "SIMILARITY_THRESHOLD": 0.55,
+    "LIVENESS_THRESHOLD": 0.65,
+    "QUALITY_THRESHOLD": 0.60,
+    "ENABLE_LIVENESS_DETECTION": True,
+    "ENABLE_QUALITY_CHECK": True,
+    "ENABLE_MULTI_MODEL": True,
+    "AUGMENTATION_VARIATIONS": 30,
+}
+
+# External training images configuration
+FACEID_UPLOAD_ROOT = os.getenv(
+    "FACEID_UPLOAD_ROOT", "/var/www/kirill/faceid.medkrmu/uploads"
+)
+FACEID_TEACHER_SUBDIRS = ["teacher", "teachers"]  # Subdirectories for teachers
+FACEID_EXTERNAL_SIMILARITY_THRESHOLD = 0.55  # Minimum similarity to match face
+FACEID_EXTERNAL_MAX_IMAGES = 200  # Maximum external images to collect per staff
 
 # Load environment variables
 load_dotenv(BASE_DIR / ".env")
