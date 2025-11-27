@@ -7,15 +7,16 @@ import time
 import zipfile
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
+from typing import Any, Generator, List, Tuple
 
 from asgiref.sync import sync_to_async
 from celery.result import AsyncResult
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import authenticate, login, logout
-from django.contrib.auth.models import User
+from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, connection, transaction
 from django.db.models import Q
@@ -51,6 +52,127 @@ from monitoring_app import (
 from monitoring_app.cache_conf import Cache, get_cache
 
 logger = logging.getLogger(__name__)
+
+ExcelRow = Tuple[Any, ...]
+User = get_user_model()
+
+
+@contextmanager
+def atomic_block() -> Generator[None, None, None]:
+    with transaction.atomic():  # type: ignore[misc]
+        yield
+
+
+LUNCH_BREAK_START = datetime.time(hour=13, minute=0)
+LUNCH_BREAK_END = datetime.time(hour=14, minute=0)
+
+CLASS_LOCATION_CACHE_TTL = datetime.timedelta(minutes=5)
+CLASS_LOCATION_CACHE = {
+    "expires_at": None,
+    "kd_tree": None,
+    "class_names": [],
+    "searcher_payload": [],
+    "searcher": None,
+}
+
+
+def get_class_location_cache():
+    """
+    Возвращает кэшированные данные по локациям, включая KDTree и экземпляр LocationSearcher.
+    Кэш инвалидации – 5 минут.
+    """
+    now = timezone.now()
+    cache_expired = (
+        CLASS_LOCATION_CACHE["expires_at"] is None
+        or CLASS_LOCATION_CACHE["expires_at"] <= now
+    )
+
+    if cache_expired:
+        locations = list(
+            models.ClassLocation.objects.only("name", "latitude", "longitude")
+        )
+        payload = [
+            {
+                "name": loc.name,
+                "latitude": loc.latitude,
+                "longitude": loc.longitude,
+            }
+            for loc in locations
+            if loc.latitude is not None and loc.longitude is not None
+        ]
+
+        kd_tree = None
+        class_names = []
+        if payload:
+            try:
+                from sklearn.neighbors import KDTree
+
+                coords = [(item["latitude"], item["longitude"]) for item in payload]
+                kd_tree = KDTree(coords, metric="euclidean")
+                class_names = [item["name"] for item in payload]
+            except Exception as exc:
+                logger.warning(f"KDTree initialization failed: {exc}")
+                kd_tree = None
+                class_names = []
+
+        searcher = None
+        if payload:
+            try:
+                searcher = utils.LocationSearcher(payload)
+            except Exception as exc:
+                logger.warning(f"LocationSearcher initialization failed: {exc}")
+
+        CLASS_LOCATION_CACHE.update(
+            {
+                "expires_at": now + CLASS_LOCATION_CACHE_TTL,
+                "kd_tree": kd_tree,
+                "class_names": class_names,
+                "searcher_payload": payload,
+                "searcher": searcher,
+            }
+        )
+
+    return CLASS_LOCATION_CACHE
+
+
+def calculate_effective_minutes_with_lunch(first_in, last_out):
+    """
+    Вычисляет количество рабочих минут, исключая обеденный перерыв (13:00-14:00).
+    Если интервал перекрывает несколько дней, вычитает обед за каждый день.
+    """
+    if not first_in or not last_out:
+        return 0
+
+    current_tz = timezone.get_current_timezone()
+    start = timezone.localtime(first_in, current_tz)
+    end = timezone.localtime(last_out, current_tz)
+
+    if end <= start:
+        return 0
+
+    total_minutes = (end - start).total_seconds() / 60
+
+    lunch_overlap_minutes = 0
+    current_day = start.date()
+    while current_day <= end.date():
+        lunch_start_dt = timezone.make_aware(
+            datetime.datetime.combine(current_day, LUNCH_BREAK_START),
+            current_tz,
+        )
+        lunch_end_dt = timezone.make_aware(
+            datetime.datetime.combine(current_day, LUNCH_BREAK_END),
+            current_tz,
+        )
+
+        overlap_start = max(start, lunch_start_dt)
+        overlap_end = min(end, lunch_end_dt)
+        if overlap_end > overlap_start:
+            lunch_overlap_minutes += (overlap_end - overlap_start).total_seconds() / 60
+
+        current_day += datetime.timedelta(days=1)
+
+    effective_minutes = total_minutes - lunch_overlap_minutes
+    return max(effective_minutes, 0)
 
 
 class StaffAttendancePagination(PageNumberPagination):
@@ -89,7 +211,7 @@ def react_app(request):
         response = future.result()
 
     if response is None:
-        return HttpResponse("Error loading React app", status=500)
+        return HttpResponse(b"Error loading React app", status=500)
 
     return response
 
@@ -238,12 +360,17 @@ class StaffAttendanceStatsView(APIView):
         """
         logger.debug(f"Calculating last working day for date: {date}")
 
-        holidays = get_cache(
-            "public_holidays",
-            query=lambda: list(models.PublicHoliday.objects.all()),
-            timeout=10 * 6,
+        holidays = (
+            get_cache(
+                "public_holidays",
+                query=lambda: list(models.PublicHoliday.objects.all()),
+                timeout=10 * 6,
+            )
+            or []
         )
-        holiday_dates = {holiday.date: holiday.is_working_day for holiday in holidays}
+        holiday_dates = {
+            holiday.date: holiday.is_working_day for holiday in holidays if holiday
+        }
 
         while date.weekday() >= 5 or (
             date in holiday_dates and not holiday_dates[date]
@@ -257,7 +384,7 @@ class StaffAttendanceStatsView(APIView):
     def query_data(
         self,
         target_date: datetime.date,
-        next_date: datetime.date,
+        _next_date: datetime.date,
         pin_param: str | None,
     ) -> dict:
         """
@@ -304,20 +431,64 @@ class StaffAttendanceStatsView(APIView):
                 )
 
         target_date_for_filter = target_date + datetime.timedelta(days=1)
-        staff_attendance_queryset = models.StaffAttendance.objects.filter(
-            date_at=target_date_for_filter, staff__in=staff_queryset
-        ).select_related("staff")
+        staff_queryset = staff_queryset.select_related("department__parent").only(
+            "pin",
+            "name",
+            "surname",
+            "department_id",
+            "department__name",
+            "department__parent__name",
+        )
+        staff_members = list(staff_queryset)
 
-        total_staff_count = staff_queryset.count()
-        present_staff = staff_attendance_queryset.exclude(first_in__isnull=True)
-        present_staff_pins = set(present_staff.values_list("staff__pin", flat=True))
+        if not staff_members:
+            return {
+                "department_name": department_name,
+                "total_staff_count": 0,
+                "present_staff_count": 0,
+                "absent_staff_count": 0,
+                "present_between_9_to_18": 0,
+                "present_data": [],
+                "absent_data": [],
+                "data_for_date": target_date.strftime("%Y-%m-%d"),
+            }
+
+        staff_attendance_queryset = (
+            models.StaffAttendance.objects.filter(
+                date_at=target_date_for_filter, staff__in=staff_members
+            )
+            .select_related("staff")
+            .only(
+                "first_in",
+                "last_out",
+                "area_name_in",
+                "area_name_out",
+                "staff__pin",
+                "staff__name",
+                "staff__surname",
+            )
+        )
+
+        attendance_records = list(staff_attendance_queryset)
+        present_staff_records = [
+            record for record in attendance_records if record.first_in is not None
+        ]
+        attendance_by_pin = {
+            record.staff.pin: record for record in present_staff_records
+        }
+        present_staff_pins = set(attendance_by_pin.keys())
+
+        total_staff_count = len(staff_members)
         absent_staff_count = total_staff_count - len(present_staff_pins)
-        present_between_9_to_18 = present_staff.filter(
-            first_in__time__range=["08:00", "19:00"]
-        ).count()
+
+        present_between_9_to_18 = 0
+        for record in present_staff_records:
+            first_in_time = record.first_in.time()
+            if datetime.time(8, 0) <= first_in_time <= datetime.time(19, 0):
+                present_between_9_to_18 += 1
 
         present_data, absent_data = self.get_attendance_data(
-            staff_queryset, present_staff_pins, present_staff
+            staff_members, attendance_by_pin
         )
 
         logger.info(f"Data query successful for department: {department_name}")
@@ -333,14 +504,14 @@ class StaffAttendanceStatsView(APIView):
             "data_for_date": target_date.strftime("%Y-%m-%d"),
         }
 
-    def get_attendance_data(self, staff_queryset, present_staff_pins, present_staff):
+    def get_attendance_data(self, staff_members, attendance_by_pin):
         logger.debug("Generating attendance data.")
         present_data = []
         absent_data = []
         total_minutes = 8 * 60
-        for staff in staff_queryset:
-            if staff.pin in present_staff_pins:
-                attendance = present_staff.get(staff__pin=staff.pin)
+        for staff in staff_members:
+            attendance = attendance_by_pin.get(staff.pin)
+            if attendance:
                 minutes_present = (
                     (attendance.last_out - attendance.first_in).total_seconds() / 60
                     if attendance.last_out
@@ -355,13 +526,14 @@ class StaffAttendanceStatsView(APIView):
                         "individual_percentage": round(individual_percentage, 2),
                     }
                 )
-            else:
-                absent_data.append(
-                    {
-                        "staff_pin": staff.pin,
-                        "name": f"{staff.surname} {staff.name}",
-                    }
-                )
+                continue
+
+            absent_data.append(
+                {
+                    "staff_pin": staff.pin,
+                    "name": f"{staff.surname} {staff.name}",
+                }
+            )
 
         logger.info("Attendance data generation complete.")
         return present_data, absent_data
@@ -1078,17 +1250,11 @@ def get_staff_detail(staff, start_date, end_date):
         date_at__range=[start_date, end_date],
     )
 
-    class_locations = list(models.ClassLocation.objects.all())
-    kd_tree = None
-    class_names = None
-    if class_locations:
-        class_coords = [
-            (loc.latitude, loc.longitude) for loc in class_locations
-        ]
-        class_names = [loc.name for loc in class_locations]
-        from sklearn.neighbors import KDTree
-        kd_tree = KDTree(class_coords, metric="euclidean")
-        logger.debug(f"KDTree initialized with {len(class_locations)} locations")
+    location_cache = get_class_location_cache()
+    kd_tree = location_cache["kd_tree"]
+    class_names = location_cache["class_names"]
+    if kd_tree and class_names:
+        logger.debug(f"KDTree initialized with {len(class_names)} locations")
 
     combined_attendance = {}
 
@@ -1105,33 +1271,44 @@ def get_staff_detail(staff, start_date, end_date):
             }
             if record.area_name_in:
                 area_address = utils.resolve_area_address(record.area_name_in)
-                combined_attendance[date_key]["area_name_in"] = area_address or record.area_name_in
+                combined_attendance[date_key]["area_name_in"] = (
+                    area_address or record.area_name_in
+                )
             if record.area_name_out:
                 area_address = utils.resolve_area_address(record.area_name_out)
-                combined_attendance[date_key]["area_name_out"] = area_address or record.area_name_out
+                combined_attendance[date_key]["area_name_out"] = (
+                    area_address or record.area_name_out
+                )
             if record.first_in:
                 combined_attendance[date_key]["first_in_source"] = "staff_attendance"
             if record.last_out:
                 combined_attendance[date_key]["last_out_source"] = "staff_attendance"
         else:
-
             if record.first_in:
                 current_first_in = combined_attendance[date_key]["first_in"]
                 if not current_first_in or record.first_in < current_first_in:
                     combined_attendance[date_key]["first_in"] = record.first_in
-                    combined_attendance[date_key]["first_in_source"] = "staff_attendance"
+                    combined_attendance[date_key][
+                        "first_in_source"
+                    ] = "staff_attendance"
                     if record.area_name_in:
                         area_address = utils.resolve_area_address(record.area_name_in)
-                        combined_attendance[date_key]["area_name_in"] = area_address or record.area_name_in
+                        combined_attendance[date_key]["area_name_in"] = (
+                            area_address or record.area_name_in
+                        )
 
             if record.last_out:
                 current_last_out = combined_attendance[date_key]["last_out"]
                 if not current_last_out or record.last_out > current_last_out:
                     combined_attendance[date_key]["last_out"] = record.last_out
-                    combined_attendance[date_key]["last_out_source"] = "staff_attendance"
+                    combined_attendance[date_key][
+                        "last_out_source"
+                    ] = "staff_attendance"
                     if record.area_name_out:
                         area_address = utils.resolve_area_address(record.area_name_out)
-                        combined_attendance[date_key]["area_name_out"] = area_address or record.area_name_out
+                        combined_attendance[date_key]["area_name_out"] = (
+                            area_address or record.area_name_out
+                        )
 
     lesson_by_date = defaultdict(list)
     for record in lesson_qs:
@@ -1141,10 +1318,13 @@ def get_staff_detail(staff, start_date, end_date):
     for date_key, lesson_records in lesson_by_date.items():
         earliest_record = None
         latest_record = None
-        
+
         for record in lesson_records:
             if record.first_in:
-                if earliest_record is None or record.first_in < earliest_record.first_in:
+                if (
+                    earliest_record is None
+                    or record.first_in < earliest_record.first_in
+                ):
                     earliest_record = record
             if record.last_out:
                 if latest_record is None or record.last_out > latest_record.last_out:
@@ -1162,22 +1342,32 @@ def get_staff_detail(staff, start_date, end_date):
             if kd_tree and class_names:
                 if earliest_record and earliest_record.first_in:
                     try:
-                        distances, indices = kd_tree.query([[earliest_record.latitude, earliest_record.longitude]], k=1)
+                        _distances, indices = kd_tree.query(
+                            [[earliest_record.latitude, earliest_record.longitude]], k=1
+                        )
                         if hasattr(indices, "ndim") and indices.ndim > 1:
                             indices = indices.flatten()
                         if len(indices) > 0:
                             location_name = class_names[int(indices[0])]
-                            combined_attendance[date_key]["area_name_in"] = location_name
+                            combined_attendance[date_key][
+                                "area_name_in"
+                            ] = location_name
                     except Exception as e:
-                        logger.warning(f"Error finding location for earliest_record: {e}")
+                        logger.warning(
+                            f"Error finding location for earliest_record: {e}"
+                        )
                 if latest_record and latest_record.last_out:
                     try:
-                        distances, indices = kd_tree.query([[latest_record.latitude, latest_record.longitude]], k=1)
+                        _distances, indices = kd_tree.query(
+                            [[latest_record.latitude, latest_record.longitude]], k=1
+                        )
                         if hasattr(indices, "ndim") and indices.ndim > 1:
                             indices = indices.flatten()
                         if len(indices) > 0:
                             location_name = class_names[int(indices[0])]
-                            combined_attendance[date_key]["area_name_out"] = location_name
+                            combined_attendance[date_key][
+                                "area_name_out"
+                            ] = location_name
                     except Exception as e:
                         logger.warning(f"Error finding location for latest_record: {e}")
         else:
@@ -1185,34 +1375,50 @@ def get_staff_detail(staff, start_date, end_date):
                 current_first_in = combined_attendance[date_key]["first_in"]
                 if not current_first_in or earliest_record.first_in < current_first_in:
                     combined_attendance[date_key]["first_in"] = earliest_record.first_in
-                    combined_attendance[date_key]["first_in_source"] = "lesson_attendance"
+                    combined_attendance[date_key][
+                        "first_in_source"
+                    ] = "lesson_attendance"
                     if kd_tree and class_names:
                         try:
-                            distances, indices = kd_tree.query([[earliest_record.latitude, earliest_record.longitude]], k=1)
+                            _distances, indices = kd_tree.query(
+                                [[earliest_record.latitude, earliest_record.longitude]],
+                                k=1,
+                            )
                             if hasattr(indices, "ndim") and indices.ndim > 1:
                                 indices = indices.flatten()
                             if len(indices) > 0:
                                 location_name = class_names[int(indices[0])]
-                                combined_attendance[date_key]["area_name_in"] = location_name
+                                combined_attendance[date_key][
+                                    "area_name_in"
+                                ] = location_name
                         except Exception as e:
-                            logger.warning(f"Error finding location for earliest_record: {e}")
+                            logger.warning(
+                                f"Error finding location for earliest_record: {e}"
+                            )
 
             if latest_record and latest_record.last_out:
                 current_last_out = combined_attendance[date_key]["last_out"]
                 if not current_last_out or latest_record.last_out > current_last_out:
                     combined_attendance[date_key]["last_out"] = latest_record.last_out
-                    combined_attendance[date_key]["last_out_source"] = "lesson_attendance"
+                    combined_attendance[date_key][
+                        "last_out_source"
+                    ] = "lesson_attendance"
                     if kd_tree and class_names:
                         try:
-                            distances, indices = kd_tree.query([[latest_record.latitude, latest_record.longitude]], k=1)
+                            _distances, indices = kd_tree.query(
+                                [[latest_record.latitude, latest_record.longitude]], k=1
+                            )
                             if hasattr(indices, "ndim") and indices.ndim > 1:
                                 indices = indices.flatten()
                             if len(indices) > 0:
                                 location_name = class_names[int(indices[0])]
-                                combined_attendance[date_key]["area_name_out"] = location_name
+                                combined_attendance[date_key][
+                                    "area_name_out"
+                                ] = location_name
                         except Exception as e:
-                            logger.warning(f"Error finding location for latest_record: {e}")
-
+                            logger.warning(
+                                f"Error finding location for latest_record: {e}"
+                            )
 
     logger.debug(f"Объединенные данные посещаемости: {combined_attendance}")
 
@@ -1300,7 +1506,7 @@ def get_staff_detail(staff, start_date, end_date):
         logger.warning(
             "Нет данных о посещаемости, дистанционной работе или причинах отсутствия за указанный период."
         )
-        staff_detail = {
+        staff_detail_data = {
             "name": staff.name,
             "surname": staff.surname if staff.surname != "Нет фамилии" else "",
             "positions": [position.name for position in staff.positions.all()],
@@ -1314,7 +1520,7 @@ def get_staff_detail(staff, start_date, end_date):
             "contract_type": None,
             "salary": None,
         }
-        return staff_detail
+        return staff_detail_data
 
     min_date = max(min(dates), start_date)
     max_date = min(max(dates), end_date)
@@ -1394,7 +1600,7 @@ def get_staff_detail(staff, start_date, end_date):
     avatar_url = staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
     logger.debug(f"URL аватара: {avatar_url}")
 
-    staff_detail = {
+    staff_detail_payload = {
         "name": staff.name,
         "surname": staff.surname if staff.surname != "Нет фамилии" else "",
         "positions": [position.name for position in staff.positions.all()],
@@ -1411,7 +1617,7 @@ def get_staff_detail(staff, start_date, end_date):
     logger.info(
         f"Генерация деталей сотрудника завершена для {staff.name} (PIN: {staff.pin})"
     )
-    return staff_detail
+    return staff_detail_payload
 
 
 def get_average_attendance_for_period(staff, start_date, end_date):
@@ -1552,7 +1758,9 @@ def process_attendance(
 
     if is_off_day:
         if first_in and last_out:
-            total_minutes_worked = (last_out - first_in).total_seconds() / 60
+            total_minutes_worked = calculate_effective_minutes_with_lunch(
+                first_in, last_out
+            )
             percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
             logger.info(
                 f"Сотрудник работал в выходной день {event_date}. Данные отображаются, но не влияют на расчеты."
@@ -1650,7 +1858,9 @@ def process_attendance(
             )
     else:
         if first_in and last_out:
-            total_minutes_worked = (last_out - first_in).total_seconds() / 60
+            total_minutes_worked = calculate_effective_minutes_with_lunch(
+                first_in, last_out
+            )
             percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
             total_minutes_for_period += total_minutes_worked
             total_days_with_data += 1
@@ -2139,7 +2349,7 @@ def create_lesson_attendance(request):
 )
 @api_view(["PUT"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
-def update_lesson_attendance(request, id):
+def update_lesson_attendance(request, attendance_id):
     """
     Обновление записи посещаемости занятия.
 
@@ -2157,7 +2367,7 @@ def update_lesson_attendance(request, id):
         Response: Возвращает сообщение об успешном обновлении записи.
     """
     try:
-        lesson_attendance = get_object_or_404(models.LessonAttendance, id=id)
+        lesson_attendance = get_object_or_404(models.LessonAttendance, id=attendance_id)
 
         first_in = request.data.get("first_in", lesson_attendance.first_in)
         last_out = request.data.get("last_out")
@@ -2541,18 +2751,12 @@ def staff_detail_by_department_id(request, department_id):
             )
             logger.debug(f"RemoteWork records fetched: {remote_works_qs.count()}")
 
-            class_locations = list(models.ClassLocation.objects.all())
-
-            location_searcher = utils.LocationSearcher(
-                [
-                    {
-                        "latitude": loc.latitude,
-                        "longitude": loc.longitude,
-                        "name": loc.name,
-                    }
-                    for loc in class_locations
-                ]
-            )
+            location_cache = get_class_location_cache()
+            location_searcher = location_cache["searcher"]
+            if location_searcher is None:
+                location_searcher = utils.LocationSearcher(
+                    location_cache["searcher_payload"] or []
+                )
 
             staff_attendance_map = defaultdict(lambda: defaultdict(list))
             for sa in staff_attendance_qs:
@@ -2631,7 +2835,9 @@ def staff_detail_by_department_id(request, department_id):
                             )
                             if not last_out or sa_last_out > last_out:
                                 last_out = sa_last_out
-                        area_address = utils.resolve_area_address(sa.get("area_name_in"))
+                        area_address = utils.resolve_area_address(
+                            sa.get("area_name_in")
+                        )
                         if area_address:
                             area_names.append(area_address)
 
@@ -2872,9 +3078,9 @@ async def fetch_data_view(request):
                 data={"error": "Доступ запрещен. Не указан API ключ."},
             )
 
-        get_api_key = sync_to_async(lambda: models.APIKey.objects.get(key=api_key))
+        get_api_key = sync_to_async(models.APIKey.objects.get)
         try:
-            key_obj = await get_api_key()
+            key_obj = await get_api_key(key=api_key)
             if not key_obj.is_active:
                 logger.warning(f"{function_name}: API key {api_key} is inactive")
                 return Response(
@@ -3177,8 +3383,7 @@ class UploadFileView(View):
 
         return render(request, self.template_name)
 
-    @transaction.atomic
-    def handle_excel(self, file_path):
+    def handle_excel(self, file_path) -> List[ExcelRow]:
         """
         Обрабатывает загрузку и импорт данных из файла Excel.
 
@@ -3191,27 +3396,27 @@ class UploadFileView(View):
         """
         logger.info("Handling Excel file")
         try:
-            wb = load_workbook(file_path)
-            ws = wb.active
-            ws.delete_rows(1, 2)
-            rows = list(ws.iter_rows())
-            logger.debug(f"Rows before sorting: {[row[0].value for row in rows]}")
+            with atomic_block():
+                wb = load_workbook(file_path)
+                ws = wb.active
+                ws.delete_rows(1, 2)
+                rows = list(ws.iter_rows())
+                logger.debug(f"Rows before sorting: {[row[0].value for row in rows]}")
 
-            rows.sort(
-                key=lambda row: (
-                    not str(row[0].value).isdigit(),
-                    str(row[0].value).zfill(10),
-                ),
-                reverse=False,
-            )
-            logger.debug(f"Rows after sorting: {[row[0].value for row in rows]}")
-            logger.debug(f"Excel file processed, number of rows: {len(rows)}")
-            return rows
+                rows.sort(
+                    key=lambda row: (
+                        not str(row[0].value).isdigit(),
+                        str(row[0].value).zfill(10),
+                    ),
+                    reverse=False,
+                )
+                logger.debug(f"Rows after sorting: {[row[0].value for row in rows]}")
+                logger.debug(f"Excel file processed, number of rows: {len(rows)}")
+                return rows
         except Exception as e:
             logger.error(f"Error processing Excel file: {str(e)}")
             raise
 
-    @transaction.atomic
     def process_class_locations(self, request, rows):
         """
         Processes a list of Excel file rows to populate the ClassLocation model using bulk_create and bulk_update.
@@ -3237,11 +3442,13 @@ class UploadFileView(View):
             Logs details of processed rows, including created, updated, and skipped rows. If errors
             occur, they are logged and the user is notified.
         """
-        to_create = []
-        to_update = []
-        existing_locations = {
-            (loc.name, loc.address): loc for loc in models.ClassLocation.objects.all()
-        }
+        with atomic_block():
+            to_create = []
+            to_update = []
+            existing_locations = {
+                (loc.name, loc.address): loc
+                for loc in models.ClassLocation.objects.all()
+            }
 
         error_count = 0
         error_details = []
@@ -3462,7 +3669,7 @@ class UploadFileView(View):
                     )
 
                 (
-                    child_department,
+                    _child_department,
                     child_created,
                 ) = models.ChildDepartment.objects.get_or_create(
                     id=child_department_id,
@@ -3592,7 +3799,6 @@ class UploadFileView(View):
             logger.error(f"Error processing staff data: {str(e)}")
             messages.error(request, f"Ошибка при обработке сотрудников: {str(e)}")
 
-    @transaction.atomic
     def process_public_holidays(self, request, rows):
         """
         Обрабатывает данные для категории "public_holidays" из Excel файла.
@@ -3622,69 +3828,72 @@ class UploadFileView(View):
             "не рабочий": False,
         }
 
-        for index, row in enumerate(rows):
-            try:
-                date_cell = row[0].value
-                name_cell = row[1].value
-                is_working_day_cell = row[2].value
+        with atomic_block():
+            for index, row in enumerate(rows):
+                try:
+                    date_cell = row[0].value
+                    name_cell = row[1].value
+                    is_working_day_cell = row[2].value
 
-                if not date_cell or not name_cell:
-                    raise ValueError(
-                        "Отсутствуют обязательные поля 'Дата праздника' или 'Название праздника'."
-                    )
-
-                if isinstance(date_cell, datetime.datetime) or isinstance(
-                    date_cell, datetime.date
-                ):
-                    date = (
-                        date_cell.date()
-                        if isinstance(date_cell, datetime.datetime)
-                        else date_cell
-                    )
-                else:
-                    try:
-                        date = datetime.datetime.strptime(
-                            str(date_cell), "%d.%m.%Y"
-                        ).date()
-                    except ValueError:
-                        try:
-                            date = datetime.datetime.strptime(
-                                str(date_cell), "%Y-%m-%d"
-                            ).date()
-                        except ValueError:
-                            raise ValueError(
-                                "Неверный формат даты. Ожидается DD.MM.YYYY или YYYY-MM-DD."
-                            )
-
-                if isinstance(is_working_day_cell, bool):
-                    is_working_day = is_working_day_cell
-                else:
-                    is_working_day_str = str(is_working_day_cell).strip().lower()
-                    is_working_day = WORKING_DAY_MAPPING.get(is_working_day_str)
-                    if is_working_day is None:
+                    if not date_cell or not name_cell:
                         raise ValueError(
-                            "Неверное значение в поле 'Рабочий день'. Ожидается 'Да' или 'Нет'."
+                            "Отсутствуют обязательные поля 'Дата праздника' или 'Название праздника'."
                         )
 
-                holiday, created = models.PublicHoliday.objects.update_or_create(
-                    date=date,
-                    defaults={
-                        "name": name_cell.strip(),
-                        "is_working_day": is_working_day,
-                    },
-                )
+                    if isinstance(date_cell, datetime.datetime) or isinstance(
+                        date_cell, datetime.date
+                    ):
+                        date = (
+                            date_cell.date()
+                            if isinstance(date_cell, datetime.datetime)
+                            else date_cell
+                        )
+                    else:
+                        try:
+                            date = datetime.datetime.strptime(
+                                str(date_cell), "%d.%m.%Y"
+                            ).date()
+                        except ValueError:
+                            try:
+                                date = datetime.datetime.strptime(
+                                    str(date_cell), "%Y-%m-%d"
+                                ).date()
+                            except ValueError:
+                                raise ValueError(
+                                    "Неверный формат даты. Ожидается DD.MM.YYYY или YYYY-MM-DD."
+                                )
 
-                if created:
-                    created_holidays += 1
-                else:
-                    updated_holidays += 1
+                    if isinstance(is_working_day_cell, bool):
+                        is_working_day = is_working_day_cell
+                    else:
+                        is_working_day_str = str(is_working_day_cell).strip().lower()
+                        is_working_day = WORKING_DAY_MAPPING.get(is_working_day_str)
+                        if is_working_day is None:
+                            raise ValueError(
+                                "Неверное значение в поле 'Рабочий день'. Ожидается 'Да' или 'Нет'."
+                            )
 
-            except Exception as e:
-                logger.error(f"Error processing row {index + 2} for PublicHoliday: {e}")
-                errors.append(f"Строка {index + 2}: {e}")
-                if len(errors) >= MAX_ERROR_DETAILS:
-                    break
-                continue
+                    _holiday, created = models.PublicHoliday.objects.update_or_create(
+                        date=date,
+                        defaults={
+                            "name": name_cell.strip(),
+                            "is_working_day": is_working_day,
+                        },
+                    )
+
+                    if created:
+                        created_holidays += 1
+                    else:
+                        updated_holidays += 1
+
+                except Exception as e:
+                    logger.error(
+                        f"Error processing row {index + 2} for PublicHoliday: {e}"
+                    )
+                    errors.append(f"Строка {index + 2}: {e}")
+                    if len(errors) >= MAX_ERROR_DETAILS:
+                        break
+                    continue
 
         success_message = f"Успешно создано {created_holidays} праздников и обновлено {updated_holidays} праздников."
         messages.success(request, success_message)
@@ -3960,43 +4169,43 @@ def verify_face(request):
     import numpy as np
     from sklearn.metrics.pairwise import cosine_similarity
 
-    logger = logging.getLogger("django")
-    logger.info("Received request to verify face.")
+    face_logger = logging.getLogger("django")
+    face_logger.info("Received request to verify face.")
 
     staff_pin = request.data.get("pin")
     staff_image = request.FILES.get("image")
 
     if not staff_pin or not staff_image:
-        logger.warning("PIN or image is missing in the request.")
+        face_logger.warning("PIN or image is missing in the request.")
         return Response(
             {"error": "PIN and image are required."}, status=status.HTTP_400_BAD_REQUEST
         )
 
     if staff_image.size == 0:
-        logger.warning("Uploaded image is empty.")
+        face_logger.warning("Uploaded image is empty.")
         return Response(
             {"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST
         )
 
     try:
         staff = models.Staff.objects.get(pin=staff_pin)
-        logger.info(f"Staff with PIN {staff_pin} found.")
+        face_logger.info(f"Staff with PIN {staff_pin} found.")
     except models.Staff.DoesNotExist:
-        logger.error(f"Staff with PIN {staff_pin} does not exist.")
+        face_logger.error(f"Staff with PIN {staff_pin} does not exist.")
         return Response({"error": "Staff not found."}, status=status.HTTP_404_NOT_FOUND)
 
     try:
         face_mask = staff.face_mask
-        logger.info(f"Face mask for staff with PIN {staff_pin} found.")
+        face_logger.info(f"Face mask for staff with PIN {staff_pin} found.")
     except models.StaffFaceMask.DoesNotExist:
-        logger.error(f"Face mask for staff with PIN {staff_pin} does not exist.")
+        face_logger.error(f"Face mask for staff with PIN {staff_pin} does not exist.")
         return Response(
             {"error": "Face mask for this staff member are not found."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     if not face_mask.mask_encoding:
-        logger.error(f"Face embeddings for staff with PIN {staff_pin} are empty.")
+        face_logger.error(f"Face embeddings for staff with PIN {staff_pin} are empty.")
         return Response(
             {"error": "Face embeddings for this staff member are empty."},
             status=status.HTTP_400_BAD_REQUEST,
@@ -4012,7 +4221,7 @@ def verify_face(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        logger.info("Face detected, calculating similarity.")
+        face_logger.info("Face detected, calculating similarity.")
         new_embedding = np.array(new_embedding).reshape(1, -1)
         stored_embeddings = np.array(face_mask.mask_encoding)
 
@@ -4025,7 +4234,7 @@ def verify_face(request):
         threshold = settings.FACE_RECOGNITION_THRESHOLD
         verified = max_similarity >= threshold
 
-        logger.info(
+        face_logger.info(
             f"Verification completed for PIN {staff_pin}. Score: {max_similarity}, Verified: {verified}"
         )
         return Response(
@@ -4034,33 +4243,35 @@ def verify_face(request):
         )
 
     except Exception as e:
-        logger.error(f"Error during face verification for PIN {staff_pin}: {str(e)}")
+        face_logger.error(
+            f"Error during face verification for PIN {staff_pin}: {str(e)}"
+        )
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def recognize_faces(request):
-    logger = logging.getLogger("django")
-    logger.info("Received request to recognize faces.")
+    recognize_logger = logging.getLogger("django")
+    recognize_logger.info("Received request to recognize faces.")
 
     staff_image = request.FILES.get("image")
 
     if not staff_image:
-        logger.warning("No image provided in the request.")
+        recognize_logger.warning("No image provided in the request.")
         return Response(
             {"error": "Image is required."}, status=status.HTTP_400_BAD_REQUEST
         )
 
     if not staff_image.name.lower().endswith((".png", ".jpg", ".jpeg")):
-        logger.warning("Invalid image format provided.")
+        recognize_logger.warning("Invalid image format provided.")
         return Response(
             {"error": "Invalid image format. Only PNG, JPG, and JPEG are allowed."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     if staff_image.size == 0:
-        logger.warning("Uploaded image is empty.")
+        recognize_logger.warning("Uploaded image is empty.")
         return Response(
             {"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST
         )
@@ -4075,7 +4286,7 @@ def recognize_faces(request):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        logger.info(
+        recognize_logger.info(
             f"Recognition completed. Recognized staff: {len(recognized_staff)}, Unknown faces: {len(unknown_faces)}."
         )
         return Response(
@@ -4084,10 +4295,10 @@ def recognize_faces(request):
         )
 
     except ValidationError as ve:
-        logger.warning(f"Validation error during face recognition: {str(ve)}")
+        recognize_logger.warning(f"Validation error during face recognition: {str(ve)}")
         return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
-        logger.error(f"Unexpected error during face recognition: {str(e)}")
+        recognize_logger.error(f"Unexpected error during face recognition: {str(e)}")
         return Response(
             {"error": f"Face recognition error: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -4256,7 +4467,9 @@ class AbsentReasonView(APIView):
             logger.info(
                 f"Возвращается ZIP-архив документов за период {query_start} - {query_end}."
             )
-            response = HttpResponse(in_memory, content_type="application/zip")
+            response = HttpResponse(
+                in_memory.getvalue(), content_type="application/zip"
+            )
             response["Content-Disposition"] = (
                 f'attachment; filename="documents_{query_start}_{query_end}.zip"'
             )

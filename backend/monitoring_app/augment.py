@@ -4,6 +4,7 @@ import logging
 import cv2
 import nvidia.dali.fn as fn
 from django.conf import settings
+from typing import Any, Callable, Dict, cast
 from nvidia.dali.pipeline import pipeline_def
 from nvidia.dali.auto_aug import augmentations
 from nvidia.dali.auto_aug.core import signed_bin
@@ -13,21 +14,44 @@ from monitoring_app import models, ml
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-static_augmentations_list = {
-    "brightness_dark": lambda images: augmentations.brightness(
-        images, magnitude_bin=signed_bin(3), num_magnitude_bins=10
+StaticAugmentFn = Callable[[Any], Any]
+
+
+def _apply_auto_aug(func: Any, images: Any, **kwargs: Any) -> Any:
+    callable_func = cast(Callable[..., Any], func)
+    return callable_func(images, **kwargs)
+
+
+static_augmentations_list: Dict[str, StaticAugmentFn] = {
+    "brightness_dark": lambda images: _apply_auto_aug(
+        augmentations.brightness,
+        images,
+        magnitude_bin=signed_bin(3),
+        num_magnitude_bins=10,
     ),
-    "brightness_light": lambda images: augmentations.brightness(
-        images, magnitude_bin=signed_bin(8), num_magnitude_bins=10
+    "brightness_light": lambda images: _apply_auto_aug(
+        augmentations.brightness,
+        images,
+        magnitude_bin=signed_bin(8),
+        num_magnitude_bins=10,
     ),
-    "contrast": lambda images: augmentations.contrast(
-        images, magnitude_bin=signed_bin(5), num_magnitude_bins=10
+    "contrast": lambda images: _apply_auto_aug(
+        augmentations.contrast,
+        images,
+        magnitude_bin=signed_bin(5),
+        num_magnitude_bins=10,
     ),
-    "color": lambda images: augmentations.color(
-        images, magnitude_bin=signed_bin(9), num_magnitude_bins=10
+    "color": lambda images: _apply_auto_aug(
+        augmentations.color,
+        images,
+        magnitude_bin=signed_bin(9),
+        num_magnitude_bins=10,
     ),
-    "sharpness": lambda images: augmentations.sharpness(
-        images, magnitude_bin=signed_bin(7), num_magnitude_bins=40
+    "sharpness": lambda images: _apply_auto_aug(
+        augmentations.sharpness,
+        images,
+        magnitude_bin=signed_bin(7),
+        num_magnitude_bins=40,
     ),
     "flip": lambda images: fn.flip(images, horizontal=1),
 }

@@ -1,5 +1,8 @@
 import os
 import shutil
+from contextlib import AbstractContextManager
+from datetime import date, datetime
+from typing import Any, Optional, cast
 
 from django.conf import settings
 from django.utils import timezone
@@ -7,19 +10,44 @@ from django.contrib import messages
 from django.dispatch import receiver
 from django_admin_geomap import GeoItem
 from django.db import models, transaction
-from django.contrib.auth.models import User
+from django.db.models.fields.files import FieldFile
+from django.contrib.auth import get_user_model
 from django.utils.crypto import get_random_string
 from django.core.exceptions import ValidationError
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.validators import FileExtensionValidator
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 
+User = get_user_model()
+
+
+class AtomicBlock(AbstractContextManager[None]):
+    def __init__(self) -> None:
+        self._context = transaction.atomic()
+
+    def __enter__(self) -> None:
+        self._context.__enter__()
+        return None
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool | None:
+        return self._context.__exit__(exc_type, exc_value, traceback)
+
+
+def atomic_block() -> AtomicBlock:
+    return AtomicBlock()
+
+
+def boolean_field(default_value: bool, **kwargs: Any) -> models.BooleanField:
+    field = models.BooleanField(**kwargs)
+    field.default = default_value
+    return field
+
 
 class PasswordResetTokenManager(models.Manager):
     def mark_as_used(self, token):
         token_obj = self.filter(token=token, _used=False).first()
         if token_obj and token_obj.is_valid():
-            token_obj._used = True
+            token_obj.used = True
             token_obj.save(update_fields=["_used"])
             return True
         return False
@@ -31,7 +59,7 @@ class PasswordResetToken(models.Model):
     )
     token = models.CharField(max_length=64, unique=True, verbose_name="Токен")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
-    _used = models.BooleanField(default=False, verbose_name="Статус использования")
+    _used = boolean_field(False, verbose_name="Статус использования")
 
     objects = PasswordResetTokenManager()
 
@@ -42,6 +70,10 @@ class PasswordResetToken(models.Model):
     def is_valid(self):
         expiration_time = timezone.now() - timezone.timedelta(hours=1)
         return self.created_at > expiration_time and not self._used
+
+    @used.setter
+    def used(self, value: bool) -> None:
+        self._used = value
 
     @staticmethod
     def generate_token(user):
@@ -63,7 +95,7 @@ class PasswordResetToken(models.Model):
 
 class PasswordResetRequestLog(models.Model):
     user = models.ForeignKey(
-        User, on_delete=models.CASCADE, verbose_name="Пользователь"
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, verbose_name="Пользователь"
     )
     ip_address = models.GenericIPAddressField(verbose_name="IP-адрес")
     requested_at = models.DateTimeField(auto_now_add=True, verbose_name="Время запроса")
@@ -108,13 +140,14 @@ class APIKey(models.Model):
         max_length=100, null=False, blank=False, verbose_name="Название ключа"
     )
     created_by = models.ForeignKey(
-        User, on_delete=models.SET_NULL, null=True, verbose_name="Создатель"
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        verbose_name="Создатель",
     )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     key = models.CharField(max_length=256, editable=False, verbose_name="Ключ")
-    is_active = models.BooleanField(
-        default=True, editable=True, verbose_name="Статус активности"
-    )
+    is_active = boolean_field(True, editable=True, verbose_name="Статус активности")
 
     def __str__(self):
         status = "Активен" if self.is_active else "Деактивирован"
@@ -125,7 +158,7 @@ class APIKey(models.Model):
         from monitoring_app import utils
 
         if not self.key:
-            encrypted_key, secret_key = utils.APIKeyUtility.generate_api_key(
+            encrypted_key, _secret_key = utils.APIKeyUtility.generate_api_key(
                 self.key_name, self.created_by
             )
             self.key = encrypted_key
@@ -138,12 +171,12 @@ class APIKey(models.Model):
 
 class UserProfile(models.Model):
     user = models.OneToOneField(
-        User,
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="profile",
         verbose_name="Пользователь",
     )
-    is_banned = models.BooleanField(default=False, verbose_name="Статус Блокировки")
+    is_banned = boolean_field(False, verbose_name="Статус Блокировки")
     phonenumber = models.CharField(max_length=20, verbose_name="Номер телефона")
     last_login_ip = models.GenericIPAddressField(
         verbose_name="Последний IP-адрес входа", null=True, blank=True
@@ -159,11 +192,14 @@ class UserProfile(models.Model):
 
 @receiver(post_save, sender=User)
 def create_user_profile(sender, instance, created, **kwargs):
-    UserProfile.objects.get_or_create(user=instance)
+    _ = sender
+    if created:
+        UserProfile.objects.get_or_create(user=instance)
 
 
 @receiver(post_save, sender=UserProfile)
 def update_user_active_status(sender, instance, **kwargs):
+    _ = sender
     if instance.is_banned:
         instance.user.is_active = False
     else:
@@ -173,6 +209,7 @@ def update_user_active_status(sender, instance, **kwargs):
 
 @receiver(post_delete, sender=UserProfile)
 def delete_user_on_profile_delete(sender, instance, **kwargs):
+    _ = sender
     user = instance.user
     user.delete()
 
@@ -180,6 +217,7 @@ def delete_user_on_profile_delete(sender, instance, **kwargs):
 @receiver(post_save, sender=UserProfile)
 @receiver(post_delete, sender=UserProfile)
 def update_jwt_token(sender, instance, **kwargs):
+    _ = sender
     user = instance.user
     RefreshToken.for_user(user)
 
@@ -188,8 +226,8 @@ class FileCategory(models.Model):
     name = models.CharField(max_length=100, verbose_name="Название шаблона")
     slug = models.SlugField(unique=True, verbose_name="Ссылка")
 
-    def __str__(self):
-        return self.name
+    def __str__(self) -> str:
+        return str(self.name)
 
     class Meta:
         verbose_name = "Категория файла"
@@ -203,8 +241,8 @@ class ParentDepartment(models.Model):
         auto_now_add=True, verbose_name="Дата создания"
     )
 
-    def __str__(self):
-        return self.name
+    def __str__(self) -> str:
+        return str(self.name)
 
     @classmethod
     def len_parent_departments(cls) -> int:
@@ -230,8 +268,8 @@ class ChildDepartment(models.Model):
         verbose_name="Родительский отдел",
     )
 
-    def __str__(self):
-        return self.name
+    def __str__(self) -> str:
+        return str(self.name)
 
     @classmethod
     def len_child_departments(cls) -> int:
@@ -312,7 +350,7 @@ class Staff(models.Model):
         verbose_name="Фото Пользователя",
         validators=[FileExtensionValidator(allowed_extensions=["jpg", "jpeg", "png"])],
     )
-    needs_training = models.BooleanField(default=True, verbose_name="Тренировка модели")
+    needs_training = boolean_field(True, verbose_name="Тренировка модели")
 
     def __str__(self):
         return f"{self.surname} {self.name}"
@@ -320,7 +358,13 @@ class Staff(models.Model):
     def save(self, *args, **kwargs):
         if self.pk:
             old_avatar = Staff.objects.filter(pk=self.pk).values("avatar").first()
-            if old_avatar and old_avatar["avatar"] != self.avatar.name and self.avatar:
+            avatar_field = cast(Optional[FieldFile], self.avatar)
+            if (
+                old_avatar
+                and avatar_field is not None
+                and avatar_field.name
+                and old_avatar["avatar"] != avatar_field.name
+            ):
                 try:
                     old_avatar_path = os.path.join(
                         settings.MEDIA_ROOT, old_avatar["avatar"]
@@ -332,12 +376,16 @@ class Staff(models.Model):
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        avatar_dir = os.path.dirname(self.avatar.path)
-        if os.path.exists(avatar_dir):
-            try:
-                shutil.rmtree(avatar_dir)
-            except Exception as e:
-                print(f"Ошибка при удалении директории с аватаркой: {e}")
+        avatar_field = cast(Optional[FieldFile], self.avatar)
+        if avatar_field is not None and avatar_field.name:
+            avatar_path = getattr(avatar_field, "path", "")
+            if avatar_path:
+                avatar_dir = os.path.dirname(avatar_path)
+                if os.path.exists(avatar_dir):
+                    try:
+                        shutil.rmtree(avatar_dir)
+                    except Exception as e:
+                        print(f"Ошибка при удалении директории с аватаркой: {e}")
         super().delete(*args, **kwargs)
 
     class Meta:
@@ -347,17 +395,21 @@ class Staff(models.Model):
 
 @receiver(post_delete, sender=Staff)
 def delete_avatar_on_staff_delete(sender, instance, **kwargs):
-    if instance.avatar:
-        avatar_dir = os.path.dirname(instance.avatar.path)
-        if os.path.exists(avatar_dir):
-            try:
-                shutil.rmtree(avatar_dir)
-            except Exception as e:
-                print(
-                    f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}"
-                )
-    else:
-        print("Аватар отсутствует, ничего не удаляется.")
+    _ = sender
+    avatar_field = cast(Optional[FieldFile], instance.avatar)
+    if avatar_field is not None and avatar_field.name:
+        avatar_path = getattr(avatar_field, "path", "")
+        if avatar_path:
+            avatar_dir = os.path.dirname(avatar_path)
+            if os.path.exists(avatar_dir):
+                try:
+                    shutil.rmtree(avatar_dir)
+                except Exception as e:
+                    print(
+                        f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}"
+                    )
+            return
+    print("Аватар отсутствует, ничего не удаляется.")
 
 
 class StaffFaceMask(models.Model):
@@ -397,7 +449,7 @@ class AbsentReason(models.Model):
     )
     start_date = models.DateField(verbose_name="Дата начала")
     end_date = models.DateField(verbose_name="Дата окончания")
-    approved = models.BooleanField(default=False, verbose_name="Утверждено")
+    approved = boolean_field(False, verbose_name="Утверждено")
     document = models.FileField(
         upload_to="absence_documents/",
         null=True,
@@ -438,8 +490,8 @@ class RemoteWork(models.Model):
     )
     start_date = models.DateField(verbose_name="Дата начала", null=True, blank=True)
     end_date = models.DateField(verbose_name="Дата окончания", null=True, blank=True)
-    permanent_remote = models.BooleanField(
-        default=False, verbose_name="Постоянная дистанционная работа"
+    permanent_remote = boolean_field(
+        False, verbose_name="Постоянная дистанционная работа"
     )
 
     def clean(self):
@@ -508,7 +560,13 @@ class StaffAttendance(models.Model):
     )
 
     def __str__(self) -> str:
-        return f"{self.staff} {self.date_at.strftime('%d-%m-%Y')}"
+        attendance_value = self.date_at
+        formatted_date = (
+            attendance_value.strftime("%d-%m-%Y")
+            if isinstance(attendance_value, date)
+            else str(attendance_value)
+        )
+        return f"{self.staff} {formatted_date}"
 
     def save(self, *args, **kwargs):
         if "force_insert" in kwargs:
@@ -568,16 +626,17 @@ class LessonAttendance(models.Model, GeoItem):
     @property
     def image_url(self):
         if self.staff_image_path:
-            if self.staff_image_path.startswith(str(settings.ATTENDANCE_ROOT)):
-                relative_path = self.staff_image_path.replace(
-                    str(settings.ATTENDANCE_ROOT), ""
-                )
+            path_value = str(self.staff_image_path)
+            if path_value.startswith(str(settings.ATTENDANCE_ROOT)):
+                relative_path = path_value.replace(str(settings.ATTENDANCE_ROOT), "")
                 return f"{settings.ATTENDANCE_URL}{relative_path}"
-            return f"{settings.MEDIA_URL}{self.staff_image_path.split('media/')[-1]}"
+            media_tail = path_value.split("media/")[-1]
+            return f"{settings.MEDIA_URL}{media_tail}"
         return "/static/media/images/no-avatar.png"
 
     def is_photo_expired(self):
-        return (timezone.now().date() - self.date_at).days > 31
+        lesson_date = cast(date, self.date_at)
+        return (timezone.now().date() - lesson_date).days > 31
 
     @property
     def geomap_longitude(self):
@@ -589,12 +648,16 @@ class LessonAttendance(models.Model, GeoItem):
 
     @property
     def formatted_first_in(self):
-        return self.first_in.strftime("%Y-%m-%d %H:%M:%S")
+        first_in_value = self.first_in
+        if isinstance(first_in_value, datetime):
+            return first_in_value.strftime("%Y-%m-%d %H:%M:%S")
+        return "-"
 
     @property
     def formatted_last_out(self):
-        if self.last_out:
-            return self.last_out.strftime("%Y-%m-%d %H:%M:%S")
+        last_out_value = self.last_out
+        if isinstance(last_out_value, datetime):
+            return last_out_value.strftime("%Y-%m-%d %H:%M:%S")
         return "Ongoing"
 
     @property
@@ -687,7 +750,9 @@ class Salary(models.Model):
         verbose_name_plural = "Зарплаты"
 
     def clean(self):
-        total_rate = sum(self.staff.positions.values_list("rate", flat=True))
+        total_rate = sum(
+            position.rate for position in Position.objects.filter(staff=self.staff)
+        )
         if total_rate > 1.5:
             raise ValidationError(
                 "Суммарная ставка не может превышать 1.5. Пожалуйста, измените ставки должностей."
@@ -699,18 +764,21 @@ class Salary(models.Model):
 
     def calculate_salaries(self):
         self.clean()
-        total_rate = sum(self.staff.positions.values_list("rate", flat=True))
+        total_rate = sum(
+            position.rate for position in Position.objects.filter(staff=self.staff)
+        )
         self.total_salary = self.calculate_total_salary(self.net_salary, total_rate)
 
     def save(self, *args, **kwargs):
         try:
-            with transaction.atomic():
+            with atomic_block():
                 self.calculate_salaries()
                 super().save(*args, **kwargs)
         except ValidationError:
-            if hasattr(self, "_request"):
+            request_context = getattr(self, "request_context", None)
+            if request_context:
                 messages.error(
-                    self._request,
+                    request_context,
                     "Суммарная ставка не может превышать 1.5. Изменения не сохранены.",
                 )
             previous_instance = Salary.objects.get(pk=self.pk)
@@ -719,21 +787,24 @@ class Salary(models.Model):
 
 @receiver(pre_save, sender=Salary)
 def calculate_salaries(sender, instance, **kwargs):
+    _ = sender
     instance.calculate_salaries()
 
 
 @receiver(m2m_changed, sender=Staff.positions.through)
 def update_salary_on_position_change(sender, instance, action, **kwargs):
+    _ = sender
     if action in ["post_add", "post_remove", "post_clear"]:
         for salary in instance.salaries.all():
             try:
-                with transaction.atomic():
+                with atomic_block():
                     salary.calculate_salaries()
                     salary.save(update_fields=["total_salary"])
             except ValidationError:
-                if hasattr(salary, "_request"):
+                request_context = getattr(salary, "request_context", None)
+                if request_context:
                     messages.error(
-                        salary._request,
+                        request_context,
                         "Суммарная ставка не может превышать 1.5. Изменения не сохранены.",
                     )
                 previous_instance = Salary.objects.get(pk=salary.pk)
@@ -743,7 +814,7 @@ def update_salary_on_position_change(sender, instance, action, **kwargs):
 class PublicHoliday(models.Model):
     date = models.DateField(unique=True, verbose_name="Дата праздника")
     name = models.CharField(max_length=255, verbose_name="Название праздника")
-    is_working_day = models.BooleanField(default=False, verbose_name="Рабочий день")
+    is_working_day = boolean_field(False, verbose_name="Рабочий день")
 
     def __str__(self):
         return f"{self.name} ({self.date})"

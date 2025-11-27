@@ -1,7 +1,7 @@
 from django import template
 from django.utils import timezone
 from django.utils.timesince import timesince
-
+from typing import Any
 
 register = template.Library()
 
@@ -22,7 +22,7 @@ def digit_beautify(value) -> str:
         out, rnd = src.split(".")
     else:
         out, rnd = src, "0"
-    chunks = [out[max(i - 3, 0):i] for i in range(len(out), 0, -3)][::-1]
+    chunks = [out[max(i - 3, 0) : i] for i in range(len(out), 0, -3)][::-1]
     formatted_out = " ".join(chunks)
 
     return f"{formatted_out}.{rnd}"
@@ -50,7 +50,7 @@ def relative_time(datetime_value) -> str:
 
 
 @register.filter(name="custom_cut")
-def cutstom_cut(text: any, length: int) -> str:
+def cutstom_cut(text: Any, length: int) -> str:
     """
     Truncates a string to a specified length and adds an ellipsis (...)
     if the string is longer than the provided length.

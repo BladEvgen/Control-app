@@ -1150,7 +1150,7 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
                 return "No Augmented Images"
 
             pattern = f"{obj.staff.pin}_augmented_"
-            images_html = '<div style="display: flex; flex-wrap: wrap; gap: 5px;">'
+            snippet_parts: list[str] = []
             with os.scandir(augmented_dir) as it:
                 for entry in it:
                     if (
@@ -1158,7 +1158,7 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
                         and entry.name.startswith(pattern)
                         and entry.name.endswith(".jpg")
                     ):
-                        images_html += format_html(
+                        snippet = format_html(
                             '<div style="border: 1px solid #ddd; padding: 3px; border-radius: 3px;">'
                             '<img src="{}" width="80" height="80" style="object-fit: cover;" />'
                             "</div>",
@@ -1166,15 +1166,16 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
                                 settings.AUGMENT_URL, obj.staff.pin, entry.name
                             ),
                         )
+                        snippet_parts.append(str(snippet))
 
-            images_html += "</div>"
-
-            if (
-                images_html
-                == '<div style="display: flex; flex-wrap: wrap; gap: 5px;"></div>'
-            ):
+            if not snippet_parts:
                 return "No Augmented Images"
 
+            images_html = (
+                '<div style="display: flex; flex-wrap: wrap; gap: 5px;">'
+                + "".join(snippet_parts)
+                + "</div>"
+            )
             cache.set(cache_key, images_html, timeout=3600)
 
         return format_html(images_html)
@@ -1403,12 +1404,10 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
         excluded = request.GET.get("exclude_unknown", "yes")
         if excluded == "yes":
-            qs = qs.exclude(
-                Q(area_name_in__isnull=True)
-                | Q(area_name_out__isnull=True)
-                | Q(area_name_in="Unknown")
-                | Q(area_name_out="Unknown")
-            )
+            qs = qs.exclude(area_name_in__isnull=True)
+            qs = qs.exclude(area_name_out__isnull=True)
+            qs = qs.exclude(area_name_in="Unknown")
+            qs = qs.exclude(area_name_out="Unknown")
 
         return qs
 

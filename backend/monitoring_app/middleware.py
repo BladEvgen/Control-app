@@ -11,7 +11,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.core.cache import cache
 from django.http import HttpResponse
-from rest_framework_simplejwt.tokens import AccessToken, TokenError
+from rest_framework_simplejwt.tokens import AccessToken
+from rest_framework_simplejwt.exceptions import TokenError
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,9 @@ class EnhancedSecurityMiddleware:
             origin (str): The Origin header from the request.
         """
         response["Access-Control-Allow-Origin"] = origin
-        response["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response["Access-Control-Allow-Methods"] = (
+            "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        )
         response["Access-Control-Allow-Headers"] = (
             "Content-Type, Authorization, x-api-token, X-API-KEY, X-Api-Key, Accept, Origin, X-Requested-With"
         )
@@ -184,7 +187,7 @@ class EnhancedSecurityMiddleware:
         Returns:
             HttpResponse: The HTTP 429 response.
         """
-        return HttpResponse("Too Many Requests", status=429, content_type="text/plain")
+        return HttpResponse(b"Too Many Requests", status=429, content_type="text/plain")
 
 
 def get_refresh_url():

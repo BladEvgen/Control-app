@@ -1,12 +1,14 @@
 import os
-import cv2
 import torch
 import logging
 import traceback
 import numpy as np
 import torch.nn as nn
+import importlib
 from threading import Lock
 from collections import Counter
+from typing import Any, Optional, cast
+
 from django.conf import settings
 from insightface.app import FaceAnalysis
 from sklearn.neighbors import NearestNeighbors
@@ -14,9 +16,12 @@ from sklearn.model_selection import train_test_split
 from rest_framework.exceptions import ValidationError
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import f1_score, precision_score, recall_score
+from torch.optim.adamw import AdamW
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 from monitoring_app import models
+
+cv2 = cast(Any, importlib.import_module("cv2"))
 
 # -----------------------------------
 # 1. Logging Setup
@@ -29,7 +34,12 @@ logger = logging.getLogger("django")
 # 2. Global Variables and Device Setup
 # -----------------------------------
 
-arcface_model = None
+
+class _ArcFaceModelHolder:
+    instance: Optional[FaceAnalysis] = None
+
+
+arcface_model_holder = _ArcFaceModelHolder()
 
 arcface_lock = Lock()
 
@@ -41,18 +51,18 @@ def get_device():
 
 
 def load_arcface_model():
-    global arcface_model
-    if arcface_model is None:
+    if arcface_model_holder.instance is None:
         with arcface_lock:
-            if arcface_model is None:
+            if arcface_model_holder.instance is None:
                 device_type = "GPU" if torch.cuda.is_available() else "CPU"
                 logger.info(f"Using {device_type} for ArcFace model")
-                arcface_model = FaceAnalysis(
+                model = FaceAnalysis(
                     name="buffalo_l",
                     providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
                 )
                 ctx_id = 0 if torch.cuda.is_available() else -1
-                arcface_model.prepare(ctx_id=ctx_id, det_size=(640, 640))
+                model.prepare(ctx_id=ctx_id, det_size=(640, 640))
+                arcface_model_holder.instance = model
 
 
 # -----------------------------------
@@ -226,7 +236,11 @@ def create_face_encoding(image_or_path):
                 return None
             image = image_or_path
 
-        faces = arcface_model.get(image)
+        arcface_instance = arcface_model_holder.instance
+        if arcface_instance is None:
+            logger.error("ArcFace model is not initialized.")
+            return None
+        faces = arcface_instance.get(image)
         if not faces:
             logger.warning(f"No face detected in image {str(image_or_path)}")
             return None
@@ -330,13 +344,10 @@ class GeneralFaceRecognitionModel(nn.Module):
 class FaceRecognitionResNet(nn.Module):
     """
     Individual face recognition model using MLP.
-
-    Args:
-        pretrained (bool): Whether to use pretrained weights.
     """
 
-    def __init__(self, pretrained=False):
-        super(FaceRecognitionResNet, self).__init__()
+    def __init__(self):
+        super().__init__()
         self.fc1 = nn.Linear(512, 512)
         self.bn1 = nn.BatchNorm1d(512)
         self.dropout1 = nn.Dropout(0.5)
@@ -374,9 +385,14 @@ def evaluate_metrics(y_true, y_pred):
     Returns:
         tuple: Precision, Recall, F1-score.
     """
-    precision = precision_score(y_true, y_pred, average="weighted", zero_division=0)
-    recall = recall_score(y_true, y_pred, average="weighted", zero_division=0)
-    f1 = f1_score(y_true, y_pred, average="weighted", zero_division=0)
+    zero_division_safe = cast(Any, 0)
+    precision = precision_score(
+        y_true, y_pred, average="weighted", zero_division=zero_division_safe
+    )
+    recall = recall_score(
+        y_true, y_pred, average="weighted", zero_division=zero_division_safe
+    )
+    f1 = f1_score(y_true, y_pred, average="weighted", zero_division=zero_division_safe)
     return precision, recall, f1
 
 
@@ -397,9 +413,11 @@ def get_class_weights(labels, class_weights):
         WeightedRandomSampler: Sampler for balancing classes.
     """
     samples_weights = class_weights[labels]
-    samples_weights = torch.from_numpy(samples_weights).double()
+    samples_weights_tensor = torch.from_numpy(samples_weights).double()
     sampler = WeightedRandomSampler(
-        samples_weights, num_samples=len(samples_weights), replacement=True
+        samples_weights_tensor.tolist(),
+        num_samples=len(samples_weights_tensor),
+        replacement=True,
     )
     return sampler
 
@@ -457,7 +475,7 @@ def load_model_for_staff(staff, model_path_suffix="model.pt"):
         raise ValueError(f"Модель для {staff.pin} не найдена")
 
     device = get_device()
-    model = FaceRecognitionResNet(pretrained=False).to(device)
+    model = FaceRecognitionResNet().to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     model.eval()
@@ -574,7 +592,7 @@ def train_face_recognition_model(staff, epochs=20, batch_size=256, learning_rate
         dataset, batch_size=batch_size, sampler=sampler, num_workers=0
     )
 
-    inputs_train, inputs_val, labels_train, labels_val = train_test_split(
+    _, inputs_val_np, _, labels_val_np = train_test_split(
         embeddings_combined.cpu().numpy(),
         labels.cpu().numpy(),
         test_size=0.2,
@@ -582,20 +600,18 @@ def train_face_recognition_model(staff, epochs=20, batch_size=256, learning_rate
         stratify=labels.cpu().numpy(),
     )
 
-    inputs_val = torch.tensor(inputs_val, dtype=torch.float32).to(device)
-    labels_val = torch.tensor(labels_val, dtype=torch.float32).to(device)
+    inputs_val = torch.tensor(inputs_val_np, dtype=torch.float32).to(device)
+    labels_val = torch.tensor(labels_val_np, dtype=torch.float32).to(device)
 
     val_dataset = TensorDataset(inputs_val, labels_val)
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False, num_workers=0
     )
 
-    model = FaceRecognitionResNet(pretrained=False).to(device)
+    model = FaceRecognitionResNet().to(device)
 
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=learning_rate, weight_decay=1e-4
-    )
+    optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     scaler = torch.GradScaler("cuda")
 
     best_f1 = 0
@@ -834,9 +850,7 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
 
     model = GeneralFaceRecognitionModel(num_classes=num_staff).to(device)
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=learning_rate, weight_decay=1e-4
-    )
+    optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     scaler = torch.GradScaler("cuda")
 
     best_f1 = 0
@@ -949,7 +963,10 @@ def recognize_faces_in_image(image_file):
     try:
         load_arcface_model()
         img = load_image_from_memory(image_file)
-        faces = arcface_model.get(img)
+        arcface_instance = arcface_model_holder.instance
+        if arcface_instance is None:
+            raise ValidationError("Модель распознавания лиц не инициализирована.")
+        faces = arcface_instance.get(img)
 
         if not faces:
             logger.warning("Лица не найдены на изображении")

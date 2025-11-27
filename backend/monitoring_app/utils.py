@@ -1,29 +1,31 @@
-import re
-import json
-import math
-import pytz
-import logging
 import datetime
+import json
+import logging
+import math
+import re
+from collections import Counter, defaultdict
+from difflib import get_close_matches
+from functools import lru_cache
+from typing import Any, Dict, cast
+
 import numpy as np
 import pandas as pd
-from typing import Any, Dict
-from openpyxl import Workbook
-from django.urls import reverse
-from django.conf import settings
-from django.utils import timezone
-from monitoring_app import models
-from sklearn.neighbors import KDTree
+import pytz
 from cryptography.fernet import Fernet
-from django.core.mail import send_mail
-from django.db.models import Func, Count
-from django.utils.html import format_html
-from collections import defaultdict, Counter
-from monitoring_app.cache_conf import get_cache
+from django.conf import settings
 from django.contrib.admin import SimpleListFilter
+from django.core.mail import send_mail
+from django.db.models import Count
+from django.urls import reverse
+from django.utils import timezone
+from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
+from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from functools import lru_cache
-from difflib import get_close_matches
+from sklearn.neighbors import KDTree
+
+from monitoring_app import models
+from monitoring_app.cache_conf import get_cache
 
 DAYS = settings.DAYS
 
@@ -487,14 +489,6 @@ def transliterate(name):
     return "".join(translit)
 
 
-class Radians(Func):
-    function = "RADIANS"
-
-
-class Cos(Func):
-    function = "COS"
-
-
 def clean_address(address):
     """
     Очищает адрес, удаляя префиксы ('Улица', 'Проспект', и т.д.),
@@ -625,13 +619,11 @@ def generate_map_data(
                 kd_tree = KDTree(class_coords, metric="euclidean")
                 logger.info("KDTree успешно построен.")
 
-                distances, indices = kd_tree.query(lesson_coords, k=1)
+                _distances, indices = kd_tree.query(lesson_coords, k=1)
                 logger.info("KDTree запрос завершен.")
 
                 if hasattr(indices, "ndim") and indices.ndim > 1:
                     indices = indices.flatten()
-                else:
-                    indices = indices
 
                 try:
                     nearest_addresses = [class_addresses[int(idx)] for idx in indices]
@@ -900,15 +892,18 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
 
     staff_ids = list(staff_list.values_list("id", flat=True))
 
-    holidays = get_cache(
-        "public_holidays",
-        query=lambda: {
-            holiday.date: holiday.is_working_day
-            for holiday in models.PublicHoliday.objects.filter(
-                date__range=[start_date, end_date]
-            )
-        },
-        timeout=10 * 60,
+    holidays = (
+        get_cache(
+            "public_holidays",
+            query=lambda: {
+                holiday.date: holiday.is_working_day
+                for holiday in models.PublicHoliday.objects.filter(
+                    date__range=[start_date, end_date]
+                )
+            },
+            timeout=10 * 60,
+        )
+        or {}
     )
 
     class_locations = list(models.ClassLocation.objects.all())
@@ -951,11 +946,14 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
     attendance_map = defaultdict(lambda: defaultdict(dict))
 
     for att in attendance_qs:
-        local_date = (
-            convert_to_local(att.first_in)
-            if att.first_in
-            else convert_to_local(att.date_at) - datetime.timedelta(days=1)
-        )
+        if att.first_in:
+            local_date = convert_to_local(att.first_in)
+        else:
+            local_date = convert_to_local(att.date_at)
+            if local_date is not None:
+                local_date = local_date - datetime.timedelta(days=1)
+        if local_date is None:
+            continue
         date_key = local_date.strftime("%Y-%m-%d")
         staff_id = att.staff_id
 
@@ -1219,6 +1217,7 @@ def generate_excel_file(
         Bytes data of the Excel file.
     """
     import io
+
     from openpyxl.styles import Border, Side
     from openpyxl.utils import get_column_letter
 
@@ -1300,9 +1299,11 @@ def generate_excel_file(
 
     data_start_row = legend_row + len(legends) + 2
 
-    df = pd.DataFrame(
-        attendance_data, columns=["ФИО", "Отдел", "Дата", "Посещаемость", "meta"]
+    columns_index = pd.Index(
+        ["ФИО", "Отдел", "Дата", "Посещаемость", "meta"], dtype="object"
     )
+    df = pd.DataFrame(attendance_data, columns=columns_index)
+    df = cast(pd.DataFrame, df)
     df["date_obj"] = pd.to_datetime(df["Дата"], format="%d.%m.%Y")
     df = df[
         (df["date_obj"] >= pd.to_datetime(user_start_date))
@@ -1311,10 +1312,19 @@ def generate_excel_file(
     if df.empty:
         logger.warning("No attendance data for the selected date range.")
 
-    df = df.sort_values(by="date_obj", ascending=False)
+    df = cast(
+        pd.DataFrame,
+        df.sort_values(by=["date_obj"], ascending=False),  # type: ignore[arg-type]
+    )
 
     unique_staff = df[["ФИО", "Отдел"]].drop_duplicates()
-    unique_staff = unique_staff.sort_values(by=["Отдел", "ФИО"], ascending=True)
+    unique_staff = cast(
+        pd.DataFrame,
+        unique_staff.sort_values(
+            by=["Отдел", "ФИО"],
+            ascending=[True, True],  # type: ignore[arg-type]
+        ),
+    )
 
     unique_dates = df["Дата"].unique()
 
@@ -1333,21 +1343,26 @@ def generate_excel_file(
         attendance_lookup[key] = row.Посещаемость
         meta_lookup[key] = row.meta
 
-    public_holidays = get_cache(
-        "public_holidays_for_excel",
-        query=lambda: {
-            holiday.date.strftime("%d.%m.%Y"): holiday.is_working_day
-            for holiday in models.PublicHoliday.objects.filter(
-                date__range=[user_start_date, user_end_date]
-            )
-        },
-        timeout=10 * 60,
+    public_holidays = (
+        get_cache(
+            "public_holidays_for_excel",
+            query=lambda: {
+                holiday.date.strftime("%d.%m.%Y"): holiday.is_working_day
+                for holiday in models.PublicHoliday.objects.filter(
+                    date__range=[user_start_date, user_end_date]
+                )
+            },
+            timeout=10 * 60,
+        )
+        or {}
     )
 
     row_idx = data_start_row + 1
-    for _, staff_row in unique_staff.iterrows():
-        fio = staff_row["ФИО"]
-        dept = staff_row["Отдел"]
+    for __, staff_row in unique_staff.iterrows():
+        fio_value = staff_row["ФИО"]
+        dept_value = staff_row["Отдел"]
+        fio = "" if bool(pd.isna(fio_value)) else str(fio_value)
+        dept = "" if bool(pd.isna(dept_value)) else str(dept_value)
 
         fio_cell = ws.cell(row=row_idx, column=1, value=fio)
         fio_cell.font = data_font

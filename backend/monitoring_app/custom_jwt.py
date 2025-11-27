@@ -1,7 +1,11 @@
-from monitoring_app import models
 from datetime import datetime, timezone
+from typing import Any, Dict, cast
+
+from rest_framework import exceptions
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
+from monitoring_app import models
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -24,10 +28,16 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
 
     def validate(self, attrs):
-        data = super().validate(attrs)
-        token = self.get_token(self.user)
-        access_exp = datetime.fromtimestamp(token.access_token["exp"], tz=timezone.utc)
-        refresh_exp = datetime.fromtimestamp(token["exp"], tz=timezone.utc)
+        data = cast(Dict[str, Any], super().validate(attrs))
+        user = self.user
+        if user is None:
+            raise exceptions.AuthenticationFailed("User is not authenticated")
+
+        token = self.get_token(user)
+        access_exp_seconds = float(token.access_token["exp"])
+        refresh_exp_seconds = float(token["exp"])
+        access_exp = datetime.fromtimestamp(access_exp_seconds, tz=timezone.utc)
+        refresh_exp = datetime.fromtimestamp(refresh_exp_seconds, tz=timezone.utc)
         data["access_token_expires"] = access_exp.isoformat(
             timespec="milliseconds"
         ).replace("+00:00", "Z")
@@ -35,15 +45,15 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             timespec="milliseconds"
         ).replace("+00:00", "Z")
         try:
-            user_profile = models.UserProfile.objects.get(user=self.user)
+            user_profile = models.UserProfile.objects.get(user=user)
             user_data = {
-                "username": self.user.username,
+                "username": user.username,
                 "is_banned": user_profile.is_banned,
-                "is_staff": self.user.is_staff,
-                "is_super": self.user.is_superuser,
+                "is_staff": user.is_staff,
+                "is_super": user.is_superuser,
             }
         except models.UserProfile.DoesNotExist:
-            user_data = {"username": self.user.username, "is_banned": False}
+            user_data = {"username": user.username, "is_banned": False}
         data["user"] = user_data
         return data
 

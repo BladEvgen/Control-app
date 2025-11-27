@@ -2,15 +2,35 @@ import asyncio
 import aiohttp
 import backoff
 import logging
+from contextlib import AbstractContextManager
 from datetime import datetime
+from typing import Dict, List, Optional
+
 from django.conf import settings
 from django.utils import timezone
 from django.db import transaction
-from monitoring_app import models
-from typing import Dict, List, Optional
 from channels.db import database_sync_to_async
 
+from monitoring_app import models
+
 logger = logging.getLogger("django")
+
+
+class AtomicBlock(AbstractContextManager[None]):
+    def __init__(self) -> None:
+        self._context = transaction.atomic()
+
+    def __enter__(self) -> None:
+        self._context.__enter__()
+        return None
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool | None:
+        return self._context.__exit__(exc_type, exc_value, traceback)
+
+
+def atomic_block() -> AtomicBlock:
+    return AtomicBlock()
+
 
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
@@ -151,7 +171,7 @@ def update_attendance_records(attendance_data: Dict, next_day: datetime) -> None
     creates = []
 
     logger.info("Beginning atomic transaction for database updates")
-    with transaction.atomic():
+    with atomic_block():
         existing_qs = models.StaffAttendance.objects.filter(date_at=next_day.date())
         existing_records = {(att.staff_id, att.date_at): att for att in existing_qs}
         logger.info(

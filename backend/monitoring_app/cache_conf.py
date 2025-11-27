@@ -1,14 +1,18 @@
-from django.core.cache import caches
+from typing import Any, Callable, Optional, TypeVar
 
-Cache = caches["default"]
+from django.core.cache import caches
+from django.core.cache.backends.base import BaseCache
+
+Cache: BaseCache = caches["default"]
+T = TypeVar("T")
 
 
 def get_cache(
     key: str,
-    query: callable = lambda: any,
+    query: Optional[Callable[[], T]] = None,
     timeout: int = 10,
-    cache: any = Cache,
-) -> any:
+    cache: BaseCache = Cache,
+) -> Optional[T]:
     """
     Получает данные из кэша по указанному ключу `key`.
 
@@ -25,8 +29,8 @@ def get_cache(
     Examples:
         >>> get_cache("my_data_key")
     """
-    data = cache.get(key)
-    if data is None:
+    data: Optional[T] = cache.get(key)
+    if data is None and query is not None:
         data = query()
         cache.set(key, data, timeout)
     return data

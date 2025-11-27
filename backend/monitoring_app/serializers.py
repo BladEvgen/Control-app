@@ -1,4 +1,5 @@
 import datetime
+from typing import Any
 
 from rest_framework import serializers
 from django.contrib.auth.models import User
@@ -12,7 +13,9 @@ class UserSerializer(serializers.ModelSerializer):
     last_login = serializers.SerializerMethodField()
 
     def get_date_joined(self, obj):
-        return obj.date_joined.strftime("%Y-%m-%d %H:%M:%S") if obj.date_joined else None
+        return (
+            obj.date_joined.strftime("%Y-%m-%d %H:%M:%S") if obj.date_joined else None
+        )
 
     def get_last_login(self, obj):
         return obj.last_login.strftime("%Y-%m-%d %H:%M:%S") if obj.last_login else None
@@ -267,15 +270,18 @@ class AbsentReasonSerializer(serializers.ModelSerializer):
         the value "other" is returned instead of an error.
         """
         super().__init__(*args, **kwargs)
-        original_to_internal_value = self.fields["reason"].to_internal_value
+        reason_field = self.fields.get("reason")
+        if reason_field is None or not hasattr(reason_field, "to_internal_value"):
+            return
+        original_to_internal_value = reason_field.to_internal_value
 
-        def custom_to_internal_value(data):
+        def custom_to_internal_value(data: Any):
             try:
                 return original_to_internal_value(data)
             except serializers.ValidationError:
                 return "other"
 
-        self.fields["reason"].to_internal_value = custom_to_internal_value
+        reason_field.to_internal_value = custom_to_internal_value
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)

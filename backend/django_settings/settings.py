@@ -19,7 +19,7 @@ DAYS = 1
 FACE_RECOGNITION_THRESHOLD = 0.76
 RATE_PERIOD = 600
 RATE_LIMIT = 40
-NO_ALBUMENTATIONS_UPDATE: int = os.getenv("NO_ALBUMENTATIONS_UPDATE", 1)
+NO_ALBUMENTATIONS_UPDATE: int = int(os.getenv("NO_ALBUMENTATIONS_UPDATE", "1"))
 
 # Load environment variables
 load_dotenv(BASE_DIR / ".env")
@@ -36,7 +36,7 @@ DB_TYPE = os.getenv("DB_TYPE", "sqlite3").lower()
 # Email configurations
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND")
 EMAIL_HOST = os.getenv("EMAIL_HOST")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT"))
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "0"))
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS") == "True"
 EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL") == "True"
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
@@ -441,7 +441,7 @@ CELERY_BEAT_SCHEDULE = (
     else {
         "get-attendance-every-day-5am": {
             "task": "monitoring_app.tasks.get_all_attendance_task",
-            "schedule": crontab(hour=5, minute=0),
+            "schedule": crontab(hour="5", minute="0"),
         },
         "update-lesson-attendance-last-out-every-10-minutes": {
             "task": "monitoring_app.tasks.update_lesson_attendance_last_out",

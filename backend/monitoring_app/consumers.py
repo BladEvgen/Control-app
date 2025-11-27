@@ -1,14 +1,21 @@
 import logging
 from datetime import datetime
-from django.utils import timezone
+
 from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.core.cache import cache
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
 
 class PhotoConsumer(AsyncJsonWebsocketConsumer):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.date = timezone.now().date()
+        self.group_name = ""
+
     async def connect(self):
         query_params = self.scope["query_string"].decode()
         params = dict(
@@ -32,7 +39,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         photos = await self.get_photos_for_date(self.date)
         await self.send_json({"type": "initial_photos", "photos": photos})
 
-    async def disconnect(self, close_code):
+    async def disconnect(self, _close_code):
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
         logger.info(f"Client disconnected and left group {self.group_name}")
 
@@ -101,7 +108,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             logger.error("attendance_id не найден в событии new_photo")
             return
 
-        photo_data = await self.get_photo_data(attendance_id)
+        photo_data = await self.get_photo_data(int(attendance_id))
         if photo_data:
             await self.send_json({"type": "new_photo", "newPhoto": photo_data})
             logger.info("Sent new photo data to client.")
