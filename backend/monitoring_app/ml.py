@@ -11,7 +11,6 @@ import torch
 import torch.nn as nn
 from django.conf import settings
 from insightface.app import FaceAnalysis
-from monitoring_app import models
 from rest_framework.exceptions import ValidationError
 from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
@@ -19,6 +18,8 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.utils.class_weight import compute_class_weight
 from torch.optim.adamw import AdamW
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
+
+from monitoring_app import models
 
 cv2 = cast(Any, importlib.import_module("cv2"))
 

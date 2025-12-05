@@ -1,9 +1,9 @@
-# generate_face_masks.py
 import logging
 import traceback
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.management.base import BaseCommand
+
 from monitoring_app.augment import run_dali_augmentation_for_all_staff
 from monitoring_app.ml import (
     create_face_encoding,
@@ -21,7 +21,6 @@ class Command(BaseCommand):
     )
 
     def handle(self, *args, **kwargs):
-        # Step 1: Create masks for staff without them
         staffs_without_mask = Staff.objects.filter(avatar__isnull=False).exclude(
             face_mask__isnull=False
         )
@@ -82,7 +81,6 @@ class Command(BaseCommand):
                 )
             )
 
-        # Step 2: Augment images and train models for staff needing training
         staff_needing_training = Staff.objects.filter(
             needs_training=True, avatar__isnull=False
         )
@@ -98,14 +96,12 @@ class Command(BaseCommand):
                         f"Training model for {staff.name} {staff.surname} (PIN: {staff.pin})"
                     )
                     try:
-                        # Check if avatar exists before training
                         if not staff.avatar or not staff.avatar.path:
                             logger.warning(
                                 f"Staff {staff.pin} has no associated avatar file. Skipping training."
                             )
                             continue
 
-                        # Train individual model
                         train_face_recognition_model(staff)
                         staff.needs_training = False
                         staff.save()

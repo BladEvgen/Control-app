@@ -18,6 +18,7 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.html import format_html
 from django_admin_geomap import ModelAdmin
+
 from monitoring_app.models import (
     AbsentReason,
     APIKey,

@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, cast
 
-from monitoring_app import models
 from rest_framework import exceptions
 from rest_framework_simplejwt.serializers import (
     TokenObtainPairSerializer,
     TokenRefreshSerializer,
 )
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
+from monitoring_app import models
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -96,14 +97,16 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
             access_token = AccessToken(access_token_str)
             access_exp_seconds = float(access_token["exp"])
             access_exp = datetime.fromtimestamp(access_exp_seconds, tz=timezone.utc)
-            data["access_token_expires"] = access_exp.isoformat(timespec="milliseconds").replace(
-                "+00:00", "Z"
-            )
+            data["access_token_expires"] = access_exp.isoformat(
+                timespec="milliseconds"
+            ).replace("+00:00", "Z")
 
             if refresh_token_str:
                 refresh_token = RefreshToken(refresh_token_str)
                 refresh_exp_seconds = float(refresh_token["exp"])
-                refresh_exp = datetime.fromtimestamp(refresh_exp_seconds, tz=timezone.utc)
+                refresh_exp = datetime.fromtimestamp(
+                    refresh_exp_seconds, tz=timezone.utc
+                )
                 data["refresh_token_expires"] = refresh_exp.isoformat(
                     timespec="milliseconds"
                 ).replace("+00:00", "Z")
@@ -113,7 +116,9 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
                     try:
                         old_refresh_token = RefreshToken(original_refresh)
                         refresh_exp_seconds = float(old_refresh_token["exp"])
-                        refresh_exp = datetime.fromtimestamp(refresh_exp_seconds, tz=timezone.utc)
+                        refresh_exp = datetime.fromtimestamp(
+                            refresh_exp_seconds, tz=timezone.utc
+                        )
                         data["refresh_token_expires"] = refresh_exp.isoformat(
                             timespec="milliseconds"
                         ).replace("+00:00", "Z")

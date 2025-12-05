@@ -1,4 +1,5 @@
 from django.urls import re_path
+
 from monitoring_app import consumers, ws_user
 
 websocket_urlpatterns = [

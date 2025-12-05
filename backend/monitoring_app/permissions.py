@@ -1,9 +1,10 @@
 import logging
 
-from monitoring_app import models
 from rest_framework.permissions import BasePermission
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import AuthenticationFailed, InvalidToken
+
+from monitoring_app import models
 
 logger = logging.getLogger(__name__)
 

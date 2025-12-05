@@ -5,6 +5,7 @@ from asgiref.sync import async_to_sync
 from channels.generic.websocket import JsonWebsocketConsumer
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import AccessToken
+
 from monitoring_app import models, serializers
 
 logger = logging.getLogger(__name__)
@@ -42,17 +43,21 @@ class UserDetail(JsonWebsocketConsumer):
             query_string = self.scope.get("query_string", b"").decode("utf-8")
             token = None
             if query_string:
-                params = dict(pair.split("=") for pair in query_string.split("&") if "=" in pair)
+                params = dict(
+                    pair.split("=") for pair in query_string.split("&") if "=" in pair
+                )
                 token = params.get("token")
 
             if token:
                 try:
                     access_token = AccessToken(token)
                     exp = access_token.get("exp", 0)
-                    if exp and datetime.fromtimestamp(exp, tz=timezone.utc) < datetime.now(
-                        timezone.utc
-                    ):
-                        logger.warning(f"Токен пользователя {user.username} истек при подключении")
+                    if exp and datetime.fromtimestamp(
+                        exp, tz=timezone.utc
+                    ) < datetime.now(timezone.utc):
+                        logger.warning(
+                            f"Токен пользователя {user.username} истек при подключении"
+                        )
                         self.close(code=WS_CLOSE_TOKEN_EXPIRED)
                         return
                 except TokenError as e:
@@ -86,7 +91,12 @@ class UserDetail(JsonWebsocketConsumer):
         """
         try:
             user = self.scope.get("user")
-            if user and user.is_authenticated and hasattr(self, "group_name") and self.group_name:
+            if (
+                user
+                and user.is_authenticated
+                and hasattr(self, "group_name")
+                and self.group_name
+            ):
                 async_to_sync(self.channel_layer.group_discard)(
                     self.group_name, self.channel_name
                 )
@@ -109,7 +119,9 @@ class UserDetail(JsonWebsocketConsumer):
             query_string = self.scope.get("query_string", b"").decode("utf-8")
             token = None
             if query_string:
-                params = dict(pair.split("=") for pair in query_string.split("&") if "=" in pair)
+                params = dict(
+                    pair.split("=") for pair in query_string.split("&") if "=" in pair
+                )
                 token = params.get("token")
 
             if not token:
@@ -139,7 +151,9 @@ class UserDetail(JsonWebsocketConsumer):
         """
         try:
             if not self._check_token_validity():
-                logger.warning("Токен невалиден, отправка сообщения о необходимости обновления")
+                logger.warning(
+                    "Токен невалиден, отправка сообщения о необходимости обновления"
+                )
                 self.send_json(
                     {
                         "error": "token_expired",
@@ -216,7 +230,9 @@ class UserDetail(JsonWebsocketConsumer):
             self.send_json({"error": "Профиль пользователя не найден", "type": "error"})
         except Exception as e:
             logger.error(f"Ошибка обновления IP для {user.username}: {str(e)}")
-            self.send_json({"error": f"Ошибка обновления IP: {str(e)}", "type": "error"})
+            self.send_json(
+                {"error": f"Ошибка обновления IP: {str(e)}", "type": "error"}
+            )
 
     def send_user_profile(self):
         try:
@@ -247,4 +263,6 @@ class UserDetail(JsonWebsocketConsumer):
             self.send_json({"error": "Профиль пользователя не найден", "type": "error"})
         except Exception as e:
             logger.error(f"Ошибка получения профиля для {user.username}: {str(e)}")
-            self.send_json({"error": f"Ошибка получения профиля: {str(e)}", "type": "error"})
+            self.send_json(
+                {"error": f"Ошибка получения профиля: {str(e)}", "type": "error"}
+            )

@@ -20,11 +20,12 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
-from monitoring_app import models
-from monitoring_app.cache_conf import get_cache
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from sklearn.neighbors import KDTree
+
+from monitoring_app import models
+from monitoring_app.cache_conf import get_cache
 
 DAYS = settings.DAYS
 

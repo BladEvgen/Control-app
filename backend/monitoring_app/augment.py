@@ -5,10 +5,11 @@ from typing import Any, Callable, Dict, cast
 import cv2
 import nvidia.dali.fn as fn
 from django.conf import settings
-from monitoring_app import ml, models
 from nvidia.dali.auto_aug import augmentations
 from nvidia.dali.auto_aug.core import signed_bin
 from nvidia.dali.pipeline import pipeline_def
+
+from monitoring_app import ml, models
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
