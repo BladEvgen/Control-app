@@ -1,6 +1,11 @@
 import { log } from "../api";
 import { useEffect, useRef, useCallback } from "react";
 
+const WS_CLOSE_TOKEN_EXPIRED = 4001;
+const WS_CLOSE_TOKEN_INVALID = 4002;
+const WS_CLOSE_REFRESH_EXPIRED = 4003;
+const WS_CLOSE_AUTH_FAILED = 4004;
+
 interface UseWebSocketOptions {
   url: string | null;
   onMessage: (event: MessageEvent) => void;
@@ -11,6 +16,8 @@ interface UseWebSocketOptions {
   reconnectInterval?: number;
   pingInterval?: number;
   pongTimeout?: number;
+  onTokenExpired?: () => void;
+  onRefreshExpired?: () => void;
 }
 
 const useWebSocket = ({
@@ -23,24 +30,24 @@ const useWebSocket = ({
   reconnectInterval = 5000,
   pingInterval = 30000,
   pongTimeout = 10000,
+  onTokenExpired,
+  onRefreshExpired,
 }: UseWebSocketOptions) => {
-  if (!url) {
-    log.warn("WebSocket URL не задан, соединение не устанавливается.");
-    return { sendMessage: () => {} };
-  }
-
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const isMountedRef = useRef<boolean>(false);
   const pingIntervalRef = useRef<number | null>(null);
   const pongTimeoutRefLocal = useRef<number | null>(null);
   const attemptRef = useRef<number>(0);
-  const urlRef = useRef<string>(url);
+  const urlRef = useRef<string | null>(url);
+  const isRefreshingTokenRef = useRef<boolean>(false);
 
   const onOpenRef = useRef<() => void>();
   const onCloseRef = useRef<(event: CloseEvent) => void>();
   const onErrorRef = useRef<(event: Event) => void>();
   const onMessageRef = useRef<(event: MessageEvent) => void>();
+  const onTokenExpiredRef = useRef<(() => void) | undefined>();
+  const onRefreshExpiredRef = useRef<(() => void) | undefined>();
 
   useEffect(() => {
     onOpenRef.current = onOpen;
@@ -57,6 +64,14 @@ const useWebSocket = ({
   useEffect(() => {
     onMessageRef.current = onMessage;
   }, [onMessage]);
+
+  useEffect(() => {
+    onTokenExpiredRef.current = onTokenExpired;
+  }, [onTokenExpired]);
+
+  useEffect(() => {
+    onRefreshExpiredRef.current = onRefreshExpired;
+  }, [onRefreshExpired]);
 
   const handlePong = useCallback(() => {
     log.info("Получен pong от сервера");
@@ -80,6 +95,10 @@ const useWebSocket = ({
   }, [pongTimeout]);
 
   const connect = useCallback(() => {
+    if (!urlRef.current) {
+      log.warn("WebSocket URL не задан, соединение не устанавливается.");
+      return;
+    }
     log.info("Пытаемся подключиться к WebSocket:", urlRef.current);
     wsRef.current = new WebSocket(urlRef.current);
 
@@ -105,16 +124,55 @@ const useWebSocket = ({
 
         if (data.type === "pong") {
           handlePong();
-        } else {
-          onMessageRef.current?.(event);
+          return;
         }
+
+        if (data.error === "token_expired" || data.action === "refresh_token") {
+          log.warn("Получено сообщение об истечении токена от WebSocket");
+          if (!isRefreshingTokenRef.current && onTokenExpiredRef.current) {
+            isRefreshingTokenRef.current = true;
+            onTokenExpiredRef.current();
+          }
+          return;
+        }
+
+        onMessageRef.current?.(event);
       } catch (error) {
         log.error("Ошибка при обработке сообщения WebSocket:", error);
       }
     };
 
     wsRef.current.onclose = (event: CloseEvent) => {
-      log.warn("WebSocket соединение закрыто:", event);
+      log.warn("WebSocket соединение закрыто:", event.code, event.reason);
+      
+      if (event.code === WS_CLOSE_TOKEN_EXPIRED || event.code === WS_CLOSE_TOKEN_INVALID) {
+        log.warn("WebSocket закрыт из-за истечения/невалидности токена. Обновляем токен...");
+        if (!isRefreshingTokenRef.current && onTokenExpiredRef.current) {
+          isRefreshingTokenRef.current = true;
+          onTokenExpiredRef.current();
+        }
+        onCloseRef.current?.(event);
+        return;
+      }
+
+      if (event.code === WS_CLOSE_REFRESH_EXPIRED) {
+        log.error("Refresh токен истек. Выполняем логаут...");
+        if (onRefreshExpiredRef.current) {
+          onRefreshExpiredRef.current();
+        }
+        onCloseRef.current?.(event);
+        return;
+      }
+
+      if (event.code === WS_CLOSE_AUTH_FAILED) {
+        log.error("Ошибка аутентификации WebSocket");
+        if (onRefreshExpiredRef.current) {
+          onRefreshExpiredRef.current();
+        }
+        onCloseRef.current?.(event);
+        return;
+      }
+
       onCloseRef.current?.(event);
 
       if (pingIntervalRef.current) {
@@ -127,7 +185,7 @@ const useWebSocket = ({
         pongTimeoutRefLocal.current = null;
       }
 
-      if (shouldReconnect && isMountedRef.current) {
+      if (shouldReconnect && isMountedRef.current && !isRefreshingTokenRef.current) {
         const nextReconnectInterval = Math.min(
           reconnectInterval * 2 ** attemptRef.current,
           60000
@@ -151,6 +209,8 @@ const useWebSocket = ({
 
   useEffect(() => {
     isMountedRef.current = true;
+    urlRef.current = url;
+    isRefreshingTokenRef.current = false;
     connect();
 
     return () => {
@@ -166,7 +226,7 @@ const useWebSocket = ({
       }
       wsRef.current?.close();
     };
-  }, [connect]);
+  }, [connect, url]);
 
   const sendMessage = useCallback((message: string) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -176,7 +236,21 @@ const useWebSocket = ({
     }
   }, []);
 
-  return { sendMessage };
+  const reconnect = useCallback(() => {
+    isRefreshingTokenRef.current = false;
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+    attemptRef.current = 0;
+    connect();
+  }, [connect]);
+
+  if (!url) {
+    log.warn("WebSocket URL не задан, соединение не устанавливается.");
+    return { sendMessage: () => {}, reconnect: () => {} };
+  }
+
+  return { sendMessage, reconnect };
 };
 
 export default useWebSocket;
