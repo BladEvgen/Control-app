@@ -3,21 +3,21 @@ import axios, { AxiosResponse } from "axios";
 import { apiUrl, isDebug } from "../apiConfig";
 
 const log = {
-  info: (...args: any[]) => {
+  info: (...args: unknown[]) => {
     if (isDebug) {
       console.log(`%cINFO:`, "color: green; font-weight: bold;", ...args);
     } else {
       log.prodWarning();
     }
   },
-  warn: (...args: any[]) => {
+  warn: (...args: unknown[]) => {
     if (isDebug) {
       console.log(`%cWARN:`, "color: orange; font-weight: bold;", ...args);
     } else {
       log.prodWarning();
     }
   },
-  error: (...args: any[]) => {
+  error: (...args: unknown[]) => {
     if (isDebug) {
       console.error(`%cERROR:`, "color: red; font-weight: bold;", ...args);
     } else {
@@ -99,7 +99,7 @@ export const removeCookie = (
 export const getCookie = (name: string): string | null => {
   try {
     const cookies = document.cookie.split("; ");
-    for (let cookie of cookies) {
+    for (const cookie of cookies) {
       try {
         const [cookieName, cookieValue] = cookie.split("=");
         if (cookieName === encodeURIComponent(name)) {
@@ -200,6 +200,11 @@ const refreshTokens = async (): Promise<string> => {
       const newAccessToken = response.data.access;
       const newRefreshToken = response.data.refresh;
 
+      if (!newAccessToken) {
+        log.error("No access token in refresh response");
+        return Promise.reject(new Error("No access token in response"));
+      }
+
       refreshAttempts = 0;
 
       setCookie("access_token", newAccessToken, {
@@ -207,21 +212,28 @@ const refreshTokens = async (): Promise<string> => {
         sameSite: isDebug ? "Lax" : "Strict",
         maxAge: 1800,
       });
-      setCookie("refresh_token", newRefreshToken, {
-        secure: !isDebug,
-        sameSite: isDebug ? "Lax" : "Strict",
-        maxAge: 7200,
-      });
+
+      if (newRefreshToken) {
+        setCookie("refresh_token", newRefreshToken, {
+          secure: !isDebug,
+          sameSite: isDebug ? "Lax" : "Strict",
+          maxAge: 7200,
+        });
+      }
 
       try {
-        localStorage.setItem(
-          "access_token_expires",
-          response.data.access_token_expires
-        );
-        localStorage.setItem(
-          "refresh_token_expires",
-          response.data.refresh_token_expires
-        );
+        if (response.data.access_token_expires) {
+          localStorage.setItem(
+            "access_token_expires",
+            response.data.access_token_expires
+          );
+        }
+        if (response.data.refresh_token_expires) {
+          localStorage.setItem(
+            "refresh_token_expires",
+            response.data.refresh_token_expires
+          );
+        }
       } catch (storageError) {
         log.error(
           "Failed to store token expiration in localStorage:",
@@ -230,6 +242,18 @@ const refreshTokens = async (): Promise<string> => {
       }
 
       log.info("Tokens refreshed successfully.");
+
+      window.dispatchEvent(
+        new CustomEvent("tokensRefreshed", {
+          detail: {
+            access: newAccessToken,
+            refresh: newRefreshToken,
+            accessTokenExpires: response.data.access_token_expires,
+            refreshTokenExpires: response.data.refresh_token_expires,
+          },
+        })
+      );
+
       refreshPromise = null;
       return newAccessToken;
     })
