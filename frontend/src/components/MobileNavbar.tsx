@@ -14,8 +14,8 @@ import { FaMapLocationDot } from "react-icons/fa6";
 import { ImCamera } from "react-icons/im";
 import { MdDashboard } from "react-icons/md";
 import { apiUrl } from "../../apiConfig";
-import { useUserContext } from "../context/UserContext";
-import { logoutUser, isAuthenticated } from "../utils/authHelpers";
+import { useAuth } from "../store/hooks";
+import { isAuthenticated } from "../utils/authHelpers";
 
 type MobileNavbarProps = {
   toggleTheme: () => void;
@@ -30,7 +30,7 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
   const panelRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
-  const { user } = useUserContext();
+  const { user, logout } = useAuth();
   const username = user ? user.username : "";
   const auth = isAuthenticated() && Boolean(user);
 
@@ -85,7 +85,9 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
   };
 
   const handleLogout = () => {
-    logoutUser(navigate, () => setIsMenuOpen(false));
+    logout();
+    setIsMenuOpen(false);
+    navigate("/login");
   };
 
   return (

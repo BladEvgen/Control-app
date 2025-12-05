@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useEffect } from "react";
-import { useUserContext } from "../context/UserContext";
+import { useAuth } from "../store/hooks";
 import { isAuthenticated } from "../utils/authHelpers";
 
 type HeaderComponentProps = {
@@ -14,7 +14,7 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
   toggleTheme,
   currentTheme,
 }) => {
-  const { isLoading, user } = useUserContext();
+  const { isLoading, user } = useAuth();
 
   useEffect(() => {
     const authStatus = isAuthenticated();

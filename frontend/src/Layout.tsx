@@ -7,6 +7,7 @@ import React, {
 } from "react";
 import HeaderComponent from "./components/HeaderComponent";
 import FooterComponent from "./components/FooterComponent";
+import AuthWebSocketInitializer from "./components/AuthWebSocketInitializer";
 
 interface LayoutProps {
   children: ReactNode;
@@ -64,6 +65,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   return (
     <div className="flex flex-col min-h-screen overflow-hidden">
+      <AuthWebSocketInitializer />
+
       <div
         className="fixed inset-0 w-full h-full z-[-1] transition-colors duration-700"
         style={{

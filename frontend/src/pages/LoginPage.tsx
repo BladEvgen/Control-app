@@ -5,7 +5,7 @@ import { FaEye, FaEyeSlash, FaSignInAlt } from "react-icons/fa";
 import { FaBug } from "react-icons/fa6";
 import { apiUrl } from "../../apiConfig";
 import { motion, AnimatePresence } from "framer-motion";
-import { useUserContext } from "../context/UserContext";
+import { useAuth } from "../store/hooks";
 
 const errorVariants = {
   hidden: { opacity: 0, y: -10 },
@@ -27,7 +27,7 @@ const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [failedAttempts, setFailedAttempts] = useState(0);
-  const { setUser } = useUserContext();
+  const { setUser, setTokens } = useAuth();
 
   const navigate = useNavigate();
 
@@ -44,20 +44,23 @@ const LoginPage = () => {
       setCookie("refresh_token", res.data.refresh, { path: "/" });
       setFailedAttempts(0);
 
+      setTokens({
+        access: res.data.access,
+        refresh: res.data.refresh,
+        accessTokenExpires: res.data.access_token_expires,
+        refreshTokenExpires: res.data.refresh_token_expires,
+      });
+
       if (res.data.user) {
         setUser(res.data.user);
       } else {
         setUser({ id: 0, username: formattedUsername, is_banned: false });
-        window.dispatchEvent(new Event("userLoggedIn"));
       }
 
-      localStorage.setItem(
-        "refresh_token_expires",
-        res.data.refresh_token_expires
-      );
+      window.dispatchEvent(new Event("userLoggedIn"));
 
       navigate("/");
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error("Login error:", error);
       setLoginError(
         "Ошибка входа. Проверьте введённые данные или попробуйте позже."
@@ -67,7 +70,7 @@ const LoginPage = () => {
         setLoginError("");
       }, 5000);
     }
-  }, [username, password, navigate, setUser]);
+  }, [username, password, navigate, setUser, setTokens]);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {

@@ -1,11 +1,11 @@
 import React, { useEffect } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { isAuthenticated } from "./utils/authHelpers";
-import { useUserContext } from "./context/UserContext";
+import { useAuth } from "./store/hooks";
 
 const RequireAuth: React.FC = () => {
   const location = useLocation();
-  const { isLoading } = useUserContext();
+  const { isLoading } = useAuth();
 
   useEffect(() => {
     let authCheckTimer: number | null = null;
