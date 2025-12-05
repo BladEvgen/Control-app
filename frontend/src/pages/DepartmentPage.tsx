@@ -27,7 +27,9 @@ class BaseAction<T> {
   }
 }
 
-class DepartmentAction extends BaseAction<any> {
+type DepartmentActionPayload = IData | boolean | string | null;
+
+class DepartmentAction extends BaseAction<DepartmentActionPayload> {
   static SET_LOADING = "SET_LOADING";
   static SET_DATA = "SET_DATA";
   static SET_ERROR = "SET_ERROR";
@@ -57,11 +59,11 @@ const reducer = (
 ): DepartmentState => {
   switch (action.type) {
     case DepartmentAction.SET_LOADING:
-      return { ...state, loading: action.payload };
+      return { ...state, loading: action.payload as boolean };
     case DepartmentAction.SET_DATA:
-      return { ...state, data: action.payload, loading: false, error: null };
+      return { ...state, data: action.payload as IData, loading: false, error: null };
     case DepartmentAction.SET_ERROR:
-      return { ...state, error: action.payload, loading: false };
+      return { ...state, error: action.payload as string | null, loading: false };
     default:
       return state;
   }
@@ -105,43 +107,46 @@ const DepartmentPage: React.FC = () => {
   const fetchRootDepartments = async () => {
     dispatch(new DepartmentAction(DepartmentAction.SET_LOADING, true));
     try {
-      const idsRes = await axiosInstance.get(
-        `${apiUrl}/api/parent_department_id/`
-      );
-      const ids: string[] = Array.from(
-        new Set((idsRes.data ?? []).map(String))
+      const response = await axiosInstance.get(
+        `${apiUrl}/api/departments/root/`
       );
 
-      const results = await Promise.all(
-        ids.map((depId) =>
-          axiosInstance.get(`${apiUrl}/api/department/${depId}/`)
-        )
-      );
+      interface RootDepartmentItem {
+        child_id: string;
+        name: string;
+        date_of_creation: string;
+        parent: string;
+        has_child_departments: boolean;
+        total_staff_count: number;
+        child_departments: Array<{
+          child_id: string;
+          name: string;
+          date_of_creation: string;
+          parent: string;
+        }>;
+      }
 
-      const virtualChildren: IChildDepartment[] = ids.map((depId, idx) => {
-        const d = results[idx].data as IData;
-        const hasKids =
-          Array.isArray(d.child_departments) && d.child_departments.length > 0;
-        const created = d.date_of_creation ?? "";
-        return {
-          child_id: depId,
-          name: d.name ?? String(depId),
-          date_of_creation: created,
-          parent: "",
-          has_child_departments: !!hasKids,
-        };
-      });
+      interface RootDepartmentResponse {
+        departments: RootDepartmentItem[];
+        total_staff_count: number;
+      }
 
-      const rootTotal = results.reduce((sum, r) => {
-        const n = Number((r.data as IData)?.total_staff_count);
-        return sum + (Number.isFinite(n) ? n : 0);
-      }, 0);
+      const batchData = response.data as RootDepartmentResponse;
+      const departments = batchData.departments || [];
+
+      const virtualChildren: IChildDepartment[] = departments.map((d: RootDepartmentItem) => ({
+        child_id: d.child_id,
+        name: d.name ?? String(d.child_id),
+        date_of_creation: d.date_of_creation ?? "",
+        parent: "",
+        has_child_departments: d.has_child_departments ?? false,
+      }));
 
       const virtualRoot: IData = {
         name: "Структура Университета",
         date_of_creation: "",
         child_departments: virtualChildren,
-        total_staff_count: rootTotal,
+        total_staff_count: batchData.total_staff_count || 0,
       };
 
       dispatch(new DepartmentAction(DepartmentAction.SET_DATA, virtualRoot));
