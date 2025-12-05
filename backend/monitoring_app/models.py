@@ -296,6 +296,10 @@ class ChildDepartment(models.Model):
     class Meta:
         verbose_name = "Подотдел"
         verbose_name_plural = "Подотделы"
+        indexes = [
+            models.Index(fields=["parent"]),
+            models.Index(fields=["name"]),
+        ]
 
 
 class Position(models.Model):
@@ -391,6 +395,10 @@ class Staff(models.Model):
     class Meta:
         verbose_name = "Сотрудник"
         verbose_name_plural = "Сотрудники"
+        indexes = [
+            models.Index(fields=["department"]),
+            models.Index(fields=["pin"]),
+        ]
 
 
 @receiver(post_delete, sender=Staff)
