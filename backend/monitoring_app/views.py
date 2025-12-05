@@ -1534,11 +1534,21 @@ def get_staff_detail(staff, start_date, end_date):
     )
 
     average_attendance = get_average_attendance_for_period(staff, start_date, end_date)
-    logger.debug(f"Средняя посещаемость за период: {average_attendance}")
+    logger.debug(f"Средняя посещаемость за период: {average_attendance}%")
 
     K_adj = 1.25
+
+    if average_attendance <= 0:
+        logger.error(
+            f"Критическая ошибка: средняя посещаемость равна нулю или отрицательна ({average_attendance}). "
+            f"Используется дефолтное значение 85.0% для расчета штрафного коэффициента."
+        )
+        average_attendance = 85.0
+
     penalty_rate = (100 / average_attendance) * K_adj
-    logger.debug(f"Расчет штрафного коэффициента: {penalty_rate}")
+    logger.debug(
+        f"Расчет штрафного коэффициента: penalty_rate = (100 / {average_attendance}) * {K_adj} = {penalty_rate:.4f}"
+    )
 
     salary_qs = models.Salary.objects.filter(staff=staff).first()
     contract_type = salary_qs.contract_type if salary_qs else "full_time"
@@ -1657,11 +1667,12 @@ def get_average_attendance_for_period(staff, start_date, end_date):
 
         if first_in and last_out:
             minutes_present = (last_out - first_in).total_seconds() / 60
-            total_minutes += minutes_present
-            total_days += 1
-            logger.debug(
-                f"Processed attendance for {attendance.date_at}: {minutes_present} minutes present"
-            )
+            if minutes_present > 0:
+                total_minutes += minutes_present
+                total_days += 1
+                logger.debug(
+                    f"Processed attendance for {attendance.date_at}: {minutes_present} minutes present"
+                )
 
     if total_days == 0:
         logger.warning(
@@ -1670,6 +1681,21 @@ def get_average_attendance_for_period(staff, start_date, end_date):
         return 85.0
 
     average_attendance = (total_minutes / (total_days * 8 * 60)) * 100
+
+    if average_attendance <= 0:
+        logger.warning(
+            f"Calculated average attendance is {average_attendance}% (invalid). "
+            f"Using default value of 85.0% for KPI calculation."
+        )
+        return 85.0
+
+    if average_attendance < 1.0:
+        logger.warning(
+            f"Calculated average attendance is very low ({average_attendance}%). "
+            f"Using minimum threshold of 1.0% for KPI calculation to prevent unrealistic penalties."
+        )
+        return 1.0
+
     logger.info(
         f"Calculated average attendance for previous period: {average_attendance}%"
     )
