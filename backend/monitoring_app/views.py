@@ -26,6 +26,15 @@ from django.utils import timezone
 from django.views.generic import View
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+from openpyxl import load_workbook
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
 from monitoring_app import (
     async_logic,
     attendance_fetcher,
@@ -37,14 +46,6 @@ from monitoring_app import (
     utils,
 )
 from monitoring_app.cache_conf import Cache, get_cache
-from openpyxl import load_workbook
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import ValidationError
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.views import APIView
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +332,7 @@ class StaffAttendanceStatsView(APIView):
             cached_data = get_cache(
                 cache_key,
                 query=lambda: self.query_data(target_date, next_date, pin_param),
-                timeout=1 * 5 * 60,
+                timeout=5 * 60,
             )
 
             logger.info("Successfully retrieved staff attendance data.")
@@ -624,16 +625,25 @@ def map_location(request):
 
         logger.info(f"Using date: {date_at}")
 
-        locations = models.ClassLocation.objects.only(
-            "address", "name", "latitude", "longitude"
+        cache_key = f"map_location_{date_at}_{employees_required}"
+
+        def generate_map_data():
+            locations = models.ClassLocation.objects.only(
+                "address", "name", "latitude", "longitude"
+            )
+            return utils.generate_map_data(
+                locations,
+                date_at,
+                search_staff_attendance=employees_required,
+                filter_empty=not employees_required,
+            )
+
+        result = get_cache(
+            cache_key,
+            query=generate_map_data,
+            timeout=5 * 60,
         )
 
-        result = utils.generate_map_data(
-            locations,
-            date_at,
-            search_staff_attendance=employees_required,
-            filter_empty=not employees_required,
-        )
         logger.info(f"Generated map data with employees: {result}")
         return Response(result, status=status.HTTP_200_OK)
 
@@ -689,13 +699,23 @@ def get_parent_id(request):
     """
     logger.info("Request received to get parent department IDs.")
 
-    try:
+    cache_key = "parent_department_ids"
+
+    def fetch_parent_ids():
         roots = (
             models.ChildDepartment.objects.filter(parent__isnull=True)
             .order_by("id")
             .values_list("id", flat=True)
         )
-        root_ids = [str(pk) for pk in roots]
+        return [str(pk) for pk in roots]
+
+    try:
+        root_ids = get_cache(
+            cache_key,
+            query=fetch_parent_ids,
+            timeout=30 * 60,
+        )
+
         if not root_ids:
             return Response(
                 {"error": "Корни не найдены"}, status=status.HTTP_404_NOT_FOUND
@@ -828,9 +848,7 @@ def department_summary(request, parent_department_id):
         }
 
         logger.debug(f"Caching department summary data with key: {cache_key}")
-        cached_data = get_cache(
-            cache_key, query=lambda: data, timeout=1 * 5, cache=Cache
-        )
+        cached_data = get_cache(cache_key, query=lambda: data, timeout=5 * 60, cache=Cache)
 
         logger.info(f"Returning summary data for department ID {parent_department_id}")
         return Response(cached_data, status=status.HTTP_200_OK)
@@ -914,54 +932,64 @@ def child_department_detail(request, child_department_id):
     logger.info(
         f"Request received for child department detail with ID {child_department_id}"
     )
-    try:
-        child_department = models.ChildDepartment.objects.get(id=child_department_id)
-        logger.info(
-            f"Found child department: {child_department.name} (ID: {child_department_id})"
+
+    cache_key = f"child_department_detail_{child_department_id}"
+
+    def fetch_child_department_data():
+        try:
+            child_department = models.ChildDepartment.objects.get(id=child_department_id)
+            logger.info(
+                f"Found child department: {child_department.name} (ID: {child_department_id})"
+            )
+        except models.ChildDepartment.DoesNotExist:
+            logger.warning(f"Child department with ID {child_department_id} not found")
+            return None
+
+        all_departments = [child_department] + child_department.get_all_child_departments()
+        staff_in_department = models.Staff.objects.filter(department__in=all_departments)
+        logger.debug(
+            f"Found {staff_in_department.count()} staff members in child department ID {child_department_id}"
         )
-    except models.ChildDepartment.DoesNotExist:
-        logger.warning(f"Child department with ID {child_department_id} not found")
-        return Response(status=status.HTTP_404_NOT_FOUND)
 
-    all_departments = [child_department] + child_department.get_all_child_departments()
-    staff_in_department = models.Staff.objects.filter(department__in=all_departments)
-    logger.debug(
-        f"Found {staff_in_department.count()} staff members in child department ID {child_department_id}"
-    )
+        staff_data = {}
+        for staff_member in staff_in_department:
+            if staff_member.surname == "Нет фамилии":
+                fio = staff_member.name
+            else:
+                fio = f"{staff_member.surname} {staff_member.name}"
 
-    staff_data = {}
-    for staff_member in staff_in_department:
-        if staff_member.surname == "Нет фамилии":
-            fio = staff_member.name
-        else:
-            fio = f"{staff_member.surname} {staff_member.name}"
+            staff_data[staff_member.pin] = {
+                "FIO": fio,
+                "date_of_creation": staff_member.date_of_creation,
+                "avatar": (staff_member.avatar.url if staff_member.avatar else None),
+                "positions": [position.name for position in staff_member.positions.all()],
+            }
+            logger.debug(f"Processed staff member: {fio} (PIN: {staff_member.pin})")
 
-        staff_data[staff_member.pin] = {
-            "FIO": fio,
-            "date_of_creation": staff_member.date_of_creation,
-            "avatar": (staff_member.avatar.url if staff_member.avatar else None),
-            "positions": [position.name for position in staff_member.positions.all()],
+        sorted_staff_data = dict(sorted(staff_data.items(), key=lambda item: item[1]["FIO"]))
+        logger.info(f"Sorted staff data for child department ID {child_department_id}")
+
+        return {
+            "child_department": serializers.ChildDepartmentSerializer(child_department).data,
+            "staff_count": staff_in_department.count(),
+            "staff_data": sorted_staff_data,
         }
-        logger.debug(f"Processed staff member: {fio} (PIN: {staff_member.pin})")
 
-    sorted_staff_data = dict(
-        sorted(staff_data.items(), key=lambda item: item[1]["FIO"])
-    )
-    logger.info(f"Sorted staff data for child department ID {child_department_id}")
+    try:
+        data = get_cache(
+            cache_key,
+            query=fetch_child_department_data,
+            timeout=10 * 60,
+        )
 
-    data = {
-        "child_department": serializers.ChildDepartmentSerializer(
-            child_department
-        ).data,
-        "staff_count": staff_in_department.count(),
-        "staff_data": sorted_staff_data,
-    }
+        if data is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
 
-    logger.info(
-        f"Returning detailed data for child department ID {child_department_id}"
-    )
-
-    return Response(data, status=status.HTTP_200_OK)
+        logger.info(f"Returning detailed data for child department ID {child_department_id}")
+        return Response(data, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Error in child_department_detail: {str(e)}")
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @swagger_auto_schema(
@@ -1144,7 +1172,9 @@ def staff_detail(request, staff_pin):
     logger.info(f"Request received for staff details with PIN {staff_pin}")
 
     staff = get_cache(
-        f"staff_{staff_pin}", query=lambda: fetch_staff_data(staff_pin), timeout=1 * 10
+        f"staff_{staff_pin}",
+        query=lambda: fetch_staff_data(staff_pin),
+        timeout=10 * 60,
     )
 
     if staff is None:
@@ -1169,7 +1199,7 @@ def staff_detail(request, staff_pin):
     data = get_cache(
         cache_key,
         query=lambda: get_staff_detail(staff, start_date, end_date),
-        timeout=1 * 1 * 30,
+        timeout=30,
     )
 
     logger.info(f"Returning staff details for PIN {staff_pin}")

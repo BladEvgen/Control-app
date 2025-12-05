@@ -1,10 +1,11 @@
 import os
 import socket
-from kombu import Queue
+from datetime import datetime, timedelta
 from pathlib import Path
-from dotenv import load_dotenv
+
 from celery.schedules import crontab
-from datetime import timedelta, datetime
+from dotenv import load_dotenv
+from kombu import Queue
 
 # Host names and DEBUG setting
 HOST_NAMES = ["RogStrix", "MacBook-Pro.local", "MacbookPro"]
@@ -446,6 +447,16 @@ CELERY_BEAT_SCHEDULE = (
         "update-lesson-attendance-last-out-every-10-minutes": {
             "task": "monitoring_app.tasks.update_lesson_attendance_last_out",
             "schedule": crontab(minute="*/5"),
+        },
+        "warmup-cache-every-hour": {
+            "task": "monitoring_app.tasks.warmup_cache_task",
+            "schedule": crontab(minute="0"),
+            "kwargs": {"force": False},
+        },
+        "warmup-cache-hot-daily": {
+            "task": "monitoring_app.tasks.warmup_cache_task",
+            "schedule": crontab(hour="6", minute="0"),
+            "kwargs": {"force": True},
         },
         # "augment-images-every-day": {
         #     "task": "monitoring_app.tasks.augment_user_images",

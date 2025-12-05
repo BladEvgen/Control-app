@@ -229,12 +229,38 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
     bind=True,
     queue="control_app_queue",
 )
-def augment_user_images(self):
-    from django.conf import settings
-
+def augment_user_images(_self):
     if not getattr(settings, "ENABLE_AUGMENT", False):
         logger.info("augment_user_images: disabled by settings")
         return "disabled"
     from monitoring_app.augment import run_dali_augmentation_for_all_staff
 
     return run_dali_augmentation_for_all_staff()
+
+
+@shared_task(name="monitoring_app.tasks.warmup_cache_task")
+def warmup_cache_task(force: bool = False, keys=None):
+    """
+    Celery задача для прогрева кэша (холодный и горячий кэш).
+
+    Args:
+        force (bool): Принудительно обновить кэш (горячий кэш).
+        keys (list, optional): Список ключей для предзагрузки. Если None, загружаются все.
+
+    Returns:
+        dict: Результаты прогрева кэша.
+    """
+    from typing import List, Optional
+    from monitoring_app.cache_conf import warmup_cache
+    from monitoring_app.management.commands.warmup_cache import Command
+
+    command = Command()
+    command.handle(force=force, keys=keys)
+
+    keys_list: Optional[List[str]] = keys if keys else None
+    results = warmup_cache(keys=keys_list, force=force)
+
+    logger.info(
+        f"Cache warmup task completed. Success: {sum(1 for r in results.values() if r.get('status') == 'success')}/{len(results)}"
+    )
+    return results
