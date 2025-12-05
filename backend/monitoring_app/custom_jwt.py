@@ -3,8 +3,11 @@ from typing import Any, Dict, cast
 
 from monitoring_app import models
 from rest_framework import exceptions
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.serializers import (
+    TokenObtainPairSerializer,
+    TokenRefreshSerializer,
+)
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -63,3 +66,68 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     """
 
     serializer_class = CustomTokenObtainPairSerializer
+
+
+class CustomTokenRefreshSerializer(TokenRefreshSerializer):
+    """
+    Custom serializer for refreshing JWT tokens with precise expiration times in UTC.
+
+    Returns:
+        dict: {
+            "access": <new access token>,
+            "refresh": <new refresh token> (if ROTATE_REFRESH_TOKENS is True),
+            "access_token_expires": ISO8601 formatted expiration datetime in UTC (millisecond precision, 'Z' suffix),
+            "refresh_token_expires": ISO8601 formatted expiration datetime in UTC (millisecond precision, 'Z' suffix),
+        }
+    """
+
+    def validate(self, attrs):
+        data = cast(Dict[str, Any], super().validate(attrs))
+
+        access_token_str = data.get("access")
+        refresh_token_str = data.get("refresh")
+
+        if not access_token_str:
+            raise exceptions.ValidationError("Access token not found in response")
+
+        try:
+            from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
+
+            access_token = AccessToken(access_token_str)
+            access_exp_seconds = float(access_token["exp"])
+            access_exp = datetime.fromtimestamp(access_exp_seconds, tz=timezone.utc)
+            data["access_token_expires"] = access_exp.isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
+            )
+
+            if refresh_token_str:
+                refresh_token = RefreshToken(refresh_token_str)
+                refresh_exp_seconds = float(refresh_token["exp"])
+                refresh_exp = datetime.fromtimestamp(refresh_exp_seconds, tz=timezone.utc)
+                data["refresh_token_expires"] = refresh_exp.isoformat(
+                    timespec="milliseconds"
+                ).replace("+00:00", "Z")
+            else:
+                original_refresh = attrs.get("refresh")
+                if original_refresh:
+                    try:
+                        old_refresh_token = RefreshToken(original_refresh)
+                        refresh_exp_seconds = float(old_refresh_token["exp"])
+                        refresh_exp = datetime.fromtimestamp(refresh_exp_seconds, tz=timezone.utc)
+                        data["refresh_token_expires"] = refresh_exp.isoformat(
+                            timespec="milliseconds"
+                        ).replace("+00:00", "Z")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        return data
+
+
+class CustomTokenRefreshView(TokenRefreshView):
+    """
+    Custom view for refreshing JWT tokens using CustomTokenRefreshSerializer.
+    """
+
+    serializer_class = CustomTokenRefreshSerializer

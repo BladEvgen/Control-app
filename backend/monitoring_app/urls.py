@@ -2,7 +2,7 @@ from django.urls import path, re_path
 from django.views.generic import RedirectView
 from monitoring_app import custom_jwt, views
 from monitoring_app.swagger import urlpatterns as doc_urls
-from rest_framework_simplejwt.views import TokenRefreshView, TokenVerifyView
+from rest_framework_simplejwt.views import TokenVerifyView
 
 urlpatterns = [
     path("", RedirectView.as_view(url="/app/")),
@@ -55,7 +55,11 @@ urlpatterns = [
         custom_jwt.CustomTokenObtainPairView.as_view(),
         name="token_obtain_pair",
     ),
-    path("api/token/refresh/", TokenRefreshView.as_view()),
+    path(
+        "api/token/refresh/",
+        custom_jwt.CustomTokenRefreshView.as_view(),
+        name="token_refresh",
+    ),
     path("api/token/verify/", TokenVerifyView.as_view()),
     path("api/user/register/", views.user_register, name="userRegister"),
     path(
