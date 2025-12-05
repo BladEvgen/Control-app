@@ -50,6 +50,11 @@ urlpatterns = [
     path("api/download/<str:department_id>/", views.sent_excel, name="sent_excel"),
     path("api/key_check/", views.APIKeyCheckView.as_view(), name="api_key_check"),
     path("api/parent_department_id/", views.get_parent_id, name="get-parent-ids"),
+    path(
+        "api/departments/root/",
+        views.root_departments_batch,
+        name="root-departments-batch",
+    ),
     path("api/staff/<str:staff_pin>/", views.staff_detail, name="staff-detail"),
     path(
         "api/token/",

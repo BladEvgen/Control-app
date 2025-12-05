@@ -19,7 +19,7 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Q
+from django.db.models import Q, Count
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -855,6 +855,216 @@ def department_summary(request, parent_department_id):
     except Exception as e:
         logger.error(f"Error while generating department summary: {str(e)}")
         return Response(data={"message": str(e)}, status=status.HTTP_404_NOT_FOUND)
+
+
+def _fetch_root_departments_data():
+    """
+    Внутренняя функция для получения данных корневых департаментов.
+    Может использоваться как в API endpoint, так и в preload.
+    """
+    all_departments = list(
+        models.ChildDepartment.objects.only(
+            "id", "parent_id", "name", "date_of_creation"
+        ).values_list("id", "parent_id", "name", "date_of_creation")
+    )
+
+    dept_by_id = {}
+    children_by_parent = {}
+    root_ids = []
+
+    for dept_id, parent_id, name, date_of_creation in all_departments:
+        dept_by_id[dept_id] = {
+            "id": dept_id,
+            "name": name,
+            "date_of_creation": date_of_creation,
+        }
+        if parent_id is None:
+            root_ids.append(dept_id)
+        else:
+            children_by_parent.setdefault(parent_id, []).append(dept_id)
+
+    if not root_ids:
+        return {
+            "departments": [],
+            "total_staff_count": 0,
+        }
+
+    root_ids.sort()
+
+    subtree_ids_by_root = {}
+    for root_id in root_ids:
+        visited = set()
+        stack = [root_id]
+        subtree_ids = []
+
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            subtree_ids.append(cur)
+            stack.extend(children_by_parent.get(cur, []))
+
+        subtree_ids_by_root[root_id] = subtree_ids
+
+    all_subtree_ids = []
+    for subtree_ids in subtree_ids_by_root.values():
+        all_subtree_ids.extend(subtree_ids)
+
+    unique_subtree_ids = list(set(all_subtree_ids))
+
+    staff_counts = (
+        models.Staff.objects.filter(department_id__in=unique_subtree_ids)
+        .values("department_id")
+        .annotate(count=Count("id", distinct=True))
+    )
+
+    staff_count_by_dept = {item["department_id"]: item["count"] for item in staff_counts}
+
+    all_child_dept_ids = []
+    for children in children_by_parent.values():
+        all_child_dept_ids.extend(children)
+
+    child_depts_by_parent = {}
+    if all_child_dept_ids:
+        child_depts = models.ChildDepartment.objects.filter(id__in=all_child_dept_ids).only(
+            "id", "name", "date_of_creation", "parent_id"
+        )
+
+        for child in child_depts:
+            parent_id = child.parent_id
+            if parent_id:
+                child_depts_by_parent.setdefault(parent_id, []).append(child)
+
+    departments_data = []
+    total_staff_count = 0
+
+    for root_id in root_ids:
+        dept = dept_by_id[root_id]
+        subtree_ids = subtree_ids_by_root[root_id]
+        dept_total = sum(staff_count_by_dept.get(dept_id, 0) for dept_id in subtree_ids)
+        total_staff_count += dept_total
+
+        has_children = bool(children_by_parent.get(root_id))
+
+        child_depts = child_depts_by_parent.get(root_id, [])
+        child_departments_serialized = [
+            {
+                "child_id": str(child.id),
+                "name": child.name,
+                "date_of_creation": child.date_of_creation,
+                "parent": str(root_id),
+            }
+            for child in child_depts
+        ]
+
+        departments_data.append(
+            {
+                "child_id": str(root_id),
+                "name": dept["name"],
+                "date_of_creation": dept["date_of_creation"],
+                "parent": "",
+                "has_child_departments": has_children,
+                "total_staff_count": dept_total,
+                "child_departments": child_departments_serialized,
+            }
+        )
+
+    return {
+        "departments": departments_data,
+        "total_staff_count": total_staff_count,
+    }
+
+
+@swagger_auto_schema(
+    method="GET",
+    operation_summary="Получить все корневые департаменты одним запросом",
+    operation_description="Оптимизированный endpoint для получения всех корневых департаментов с их сводной информацией одним запросом. Используется для быстрой загрузки главной страницы.",
+    responses={
+        200: openapi.Response(
+            description="Успешный ответ",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "departments": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "child_id": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="ID корневого департамента",
+                                ),
+                                "name": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="Название департамента",
+                                ),
+                                "date_of_creation": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format="date-time",
+                                    description="Дата создания",
+                                ),
+                                "parent": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="ID родительского департамента (всегда пусто для корневых)",
+                                ),
+                                "has_child_departments": openapi.Schema(
+                                    type=openapi.TYPE_BOOLEAN,
+                                    description="Есть ли дочерние подразделения",
+                                ),
+                                "total_staff_count": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    description="Общее количество сотрудников",
+                                ),
+                                "child_departments": openapi.Schema(
+                                    type=openapi.TYPE_ARRAY,
+                                    items=openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        properties={
+                                            "child_id": openapi.Schema(type=openapi.TYPE_STRING),
+                                            "name": openapi.Schema(type=openapi.TYPE_STRING),
+                                            "date_of_creation": openapi.Schema(
+                                                type=openapi.TYPE_STRING, format="date-time"
+                                            ),
+                                            "parent": openapi.Schema(type=openapi.TYPE_STRING),
+                                        },
+                                    ),
+                                    description="Список дочерних подразделений",
+                                ),
+                            },
+                        ),
+                    ),
+                    "total_staff_count": openapi.Schema(
+                        type=openapi.TYPE_INTEGER,
+                        description="Общее количество сотрудников во всех корневых департаментах",
+                    ),
+                },
+            ),
+        ),
+    },
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def root_departments_batch(request):
+    """
+    Получить все корневые департаменты одним оптимизированным запросом.
+    Используется для быстрой загрузки главной страницы вместо множественных запросов.
+    """
+    cache_key = "root_departments_batch"
+    logger.info("Request received for root departments batch")
+
+    try:
+        cached_data = get_cache(
+            cache_key,
+            query=_fetch_root_departments_data,
+            timeout=15 * 60,
+        )
+
+        logger.info("Returning root departments batch data")
+        return Response(cached_data, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Error while generating root departments batch: {str(e)}")
+        return Response(data={"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @swagger_auto_schema(

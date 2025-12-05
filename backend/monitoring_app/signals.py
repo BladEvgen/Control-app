@@ -62,4 +62,5 @@ def invalidate_department_cache(_sender, instance, **kwargs):
     invalidate_cache(f"child_department_detail_{dept_id}")
     invalidate_cache_pattern(f"staff_detail_{dept_id}*")
     invalidate_cache("parent_department_ids")
+    invalidate_cache("root_departments_batch")
     logger.info(f"Invalidated department cache for ID: {dept_id}")

@@ -133,6 +133,13 @@ class Command(BaseCommand):
 
         register_preload("today_attendance_stats", get_today_attendance_stats)
 
+        def get_root_departments_batch():
+            from monitoring_app.views import _fetch_root_departments_data
+
+            return _fetch_root_departments_data()
+
+        register_preload("root_departments_batch", get_root_departments_batch)
+
         results = warmup_cache(keys=keys, force=force)
 
         self.stdout.write(self.style.SUCCESS("\nРезультаты прогрева кэша:"))
