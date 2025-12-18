@@ -246,6 +246,7 @@ class StaffAttendanceStatsView(APIView):
     @swagger_auto_schema(
         operation_summary="Получить список людей об их присутствии",
         operation_description="View для получения статистики о посещаемости персонала.",
+        tags=["Attendance & Statistics"],
         responses={
             200: openapi.Response(
                 description="Successful response",
@@ -254,25 +255,17 @@ class StaffAttendanceStatsView(APIView):
                     properties={
                         "department_name": openapi.Schema(type=openapi.TYPE_STRING),
                         "total_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "present_staff_count": openapi.Schema(
-                            type=openapi.TYPE_INTEGER
-                        ),
+                        "present_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
                         "absent_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "present_between_9_to_18": openapi.Schema(
-                            type=openapi.TYPE_INTEGER
-                        ),
+                        "present_between_9_to_18": openapi.Schema(type=openapi.TYPE_INTEGER),
                         "present_data": openapi.Schema(
                             type=openapi.TYPE_ARRAY,
                             items=openapi.Schema(
                                 type=openapi.TYPE_OBJECT,
                                 properties={
-                                    "staff_pin": openapi.Schema(
-                                        type=openapi.TYPE_STRING
-                                    ),
+                                    "staff_pin": openapi.Schema(type=openapi.TYPE_STRING),
                                     "name": openapi.Schema(type=openapi.TYPE_STRING),
-                                    "minutes_present": openapi.Schema(
-                                        type=openapi.TYPE_NUMBER
-                                    ),
+                                    "minutes_present": openapi.Schema(type=openapi.TYPE_NUMBER),
                                     "individual_percentage": openapi.Schema(
                                         type=openapi.TYPE_NUMBER
                                     ),
@@ -297,6 +290,13 @@ class StaffAttendanceStatsView(APIView):
             500: "Internal Server Error",
         },
         manual_parameters=[
+            openapi.Parameter(
+                name="X-API-KEY",
+                in_=openapi.IN_HEADER,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="API ключ для аутентификации (альтернатива JWT токену).",
+            ),
             openapi.Parameter(
                 "date",
                 openapi.IN_QUERY,
@@ -542,7 +542,15 @@ class StaffAttendanceStatsView(APIView):
         "Эндпоинт для получения данных локаций с информацией о посещениях для заданной даты."
         " Опционально можно получить данные о сотрудниках, если задан параметр `employees=true`."
     ),
+    tags=["Locations"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             name="date_at",
             in_=openapi.IN_QUERY,
@@ -659,6 +667,16 @@ def map_location(request):
     method="GET",
     operation_summary="Получить ID всех корневых (root) подразделений",
     operation_description="Возвращает список ID из ChildDepartment, где parent IS NULL.",
+    tags=["Departments"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+    ],
     responses={
         200: openapi.Response(
             description="Ок",
@@ -729,6 +747,16 @@ def get_parent_id(request):
     method="GET",
     operation_summary="Сводная информация о департаменте",
     operation_description="Метод для получения сводной информации о департаменте и его дочерних подразделениях с количеством сотрудников.",
+    tags=["Departments"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+    ],
     responses={
         200: openapi.Response(
             description="Успешный запрос. Возвращается сводная информация о департаменте и его дочерних подразделениях.",
@@ -980,6 +1008,16 @@ def _fetch_root_departments_data():
     method="GET",
     operation_summary="Получить все корневые департаменты одним запросом",
     operation_description="Оптимизированный endpoint для получения всех корневых департаментов с их сводной информацией одним запросом. Используется для быстрой загрузки главной страницы.",
+    tags=["Departments"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+    ],
     responses={
         200: openapi.Response(
             description="Успешный ответ",
@@ -1071,7 +1109,15 @@ def root_departments_batch(request):
     method="get",
     operation_summary="Получить описание подотдела",
     operation_description="Получите подробную информацию о подотделе и его сотрудниках.",
+    tags=["Departments"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             name="child_department_id",
             in_=openapi.IN_PATH,
@@ -1206,7 +1252,15 @@ def child_department_detail(request, child_department_id):
     method="GET",
     operation_summary="Получить информацию о сотруднике",
     operation_description="Получение подробной информации о сотруднике, включая данные о посещаемости, заработной плате и типе контракта.",
+    tags=["Staff"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             name="staff_pin",
             in_=openapi.IN_PATH,
@@ -2229,6 +2283,87 @@ def update_percent_for_period(
     return percent_for_period
 
 
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Проверка статуса задачи создания записей посещаемости занятий",
+    operation_description=(
+        "Проверяет статус асинхронной задачи по созданию записей посещаемости занятий. "
+        "Возвращает статус задачи (Pending, Success, Failure) и при успешном выполнении - "
+        "список ID созданных записей."
+    ),
+    tags=["Lesson Attendance"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+        openapi.Parameter(
+            "task_id",
+            openapi.IN_PATH,
+            description="ID задачи, полученный при создании записей посещаемости",
+            type=openapi.TYPE_STRING,
+            required=True,
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Задача выполнена успешно или в процессе выполнения",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "status": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Статус задачи (Success, Pending, или другой)",
+                    ),
+                    "lesson_ids": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_INTEGER),
+                        description="Список ID созданных записей посещаемости (только при Success)",
+                    ),
+                    "message": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Сообщение о статусе задачи",
+                    ),
+                },
+            ),
+        ),
+        202: openapi.Response(
+            description="Задача в очереди, ожидает выполнения",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "status": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Статус задачи (Pending)",
+                    ),
+                    "message": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Сообщение о том, что задача в очереди",
+                    ),
+                },
+            ),
+        ),
+        500: openapi.Response(
+            description="Ошибка при выполнении задачи или проверке статуса",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "status": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Статус задачи (Failure)",
+                    ),
+                    "error": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Описание ошибки",
+                    ),
+                },
+            ),
+        ),
+    },
+)
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def check_lesson_task_status(request, task_id):
@@ -2281,14 +2416,30 @@ def check_lesson_task_status(request, task_id):
         "Создаёт новые записи посещаемости для сотрудников на занятия. "
         "Каждая запись должна содержать обязательные параметры: "
         "`staff_pin`, `tutor_id`, `tutor`, `first_in`, `latitude`, `longitude`. "
-        "`image` должен быть отправлен как отдельный файл в запросе."
+        "Поддерживает два формата отправки данных:\n"
+        "1. multipart/form-data: `attendance_data` как JSON строка или массив, `image` как файл\n"
+        "2. application/json: `attendance_data` как массив, `image` как Base64 строка"
     ),
+    tags=["Lesson Attendance"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+    ],
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         required=["attendance_data", "image"],
         properties={
             "attendance_data": openapi.Schema(
                 type=openapi.TYPE_ARRAY,
+                description=(
+                    "Массив данных о посещаемости. Может быть передан как массив объектов "
+                    "или как JSON строка (при multipart/form-data)."
+                ),
                 items=openapi.Schema(
                     type=openapi.TYPE_OBJECT,
                     required=[
@@ -2318,7 +2469,7 @@ def check_lesson_task_status(request, task_id):
                         "first_in": openapi.Schema(
                             type=openapi.TYPE_STRING,
                             format=openapi.FORMAT_DATETIME,
-                            description="Время начала занятия в формате ISO 8601",
+                            description="Время начала занятия в формате ISO 8601 с часовым поясом",
                             example="2024-10-06T14:24:24+05:00",
                         ),
                         "latitude": openapi.Schema(
@@ -2339,11 +2490,15 @@ def check_lesson_task_status(request, task_id):
             "image": openapi.Schema(
                 type=openapi.TYPE_STRING,
                 format=openapi.FORMAT_BINARY,
-                description="Фотография сотрудника в бинарном формате.",
+                description=(
+                    "Фотография сотрудника. Может быть отправлена как:\n"
+                    "- Файл (при multipart/form-data)\n"
+                    "- Base64 строка (при application/json)"
+                ),
             ),
         },
     ),
-    consumes=["multipart/form-data"],
+    consumes=["multipart/form-data", "application/json"],
     responses={
         202: openapi.Response(
             description="Задача по созданию записей принята в обработку",
@@ -2354,9 +2509,7 @@ def check_lesson_task_status(request, task_id):
                         type=openapi.TYPE_STRING,
                         description="Сообщение об успешном запуске задачи",
                     ),
-                    "task_id": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="ID задачи"
-                    ),
+                    "task_id": openapi.Schema(type=openapi.TYPE_STRING, description="ID задачи"),
                 },
             ),
         ),
@@ -2527,7 +2680,15 @@ def create_lesson_attendance(request):
     method="put",
     operation_summary="Обновление записи посещаемости занятия",
     operation_description="Обновляет существующую запись посещаемости занятия по её ID. Параметр `last_out` обязателен, так как он указывает время окончания занятия. Параметры `first_in`, `latitude` и `longitude` могут быть обновлены опционально.",
+    tags=["Lesson Attendance"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             "id",
             openapi.IN_PATH,
@@ -2575,6 +2736,10 @@ def create_lesson_attendance(request):
                     "message": openapi.Schema(
                         type=openapi.TYPE_STRING,
                         description="Сообщение об успешном обновлении записи",
+                    ),
+                    "lesson_id": openapi.Schema(
+                        type=openapi.TYPE_INTEGER,
+                        description="ID обновленной записи посещаемости",
                     ),
                 },
             ),
@@ -2667,116 +2832,15 @@ def update_lesson_attendance(request, attendance_id):
     method="get",
     operation_summary="Посещаемость сотрудников по отделу",
     operation_description="Получить данные о посещаемости сотрудников по ID подразделения и его дочерним подразделениям за указанный период.",
-    responses={
-        200: openapi.Response(
-            description="Успешный ответ",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "count": openapi.Schema(
-                        type=openapi.TYPE_INTEGER,
-                        description="Общее количество записей",
-                    ),
-                    "next": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="URL следующей страницы результатов",
-                        nullable=True,
-                    ),
-                    "previous": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="URL предыдущей страницы результатов",
-                        nullable=True,
-                    ),
-                    "results": openapi.Schema(
-                        type=openapi.TYPE_ARRAY,
-                        items=openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            additional_properties=openapi.Schema(
-                                type=openapi.TYPE_OBJECT,
-                                properties={
-                                    "department": openapi.Schema(
-                                        type=openapi.TYPE_STRING,
-                                        description="Название отдела сотрудника",
-                                    ),
-                                    "attendance": openapi.Schema(
-                                        type=openapi.TYPE_ARRAY,
-                                        items=openapi.Schema(
-                                            type=openapi.TYPE_OBJECT,
-                                            properties={
-                                                "staff_fio": openapi.Schema(
-                                                    type=openapi.TYPE_STRING,
-                                                    description="ФИО сотрудника",
-                                                ),
-                                                "first_in": openapi.Schema(
-                                                    type=openapi.TYPE_STRING,
-                                                    format=openapi.FORMAT_DATETIME,
-                                                    description="Время первого входа сотрудника",
-                                                    nullable=True,
-                                                ),
-                                                "last_out": openapi.Schema(
-                                                    type=openapi.TYPE_STRING,
-                                                    format=openapi.FORMAT_DATETIME,
-                                                    description="Время последнего выхода сотрудника",
-                                                    nullable=True,
-                                                ),
-                                                "area_name": openapi.Schema(
-                                                    type=openapi.TYPE_STRING,
-                                                    description="Название зоны посещения",
-                                                    nullable=True,
-                                                ),
-                                                "remote_work": openapi.Schema(
-                                                    type=openapi.TYPE_BOOLEAN,
-                                                    description="Удаленная работа",
-                                                ),
-                                                "absence_reason": openapi.Schema(
-                                                    type=openapi.TYPE_STRING,
-                                                    description="Причина отсутствия",
-                                                    enum=[
-                                                        "Командировка",
-                                                        "Болезнь",
-                                                        "Другая причина",
-                                                    ],
-                                                    nullable=True,
-                                                ),
-                                            },
-                                        ),
-                                    ),
-                                },
-                            ),
-                        ),
-                    ),
-                },
-            ),
-        ),
-        400: openapi.Response(
-            description="Ошибка в запросе",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "error": openapi.Schema(type=openapi.TYPE_STRING),
-                },
-            ),
-        ),
-        404: openapi.Response(
-            description="Не найдено",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "error": openapi.Schema(type=openapi.TYPE_STRING),
-                },
-            ),
-        ),
-        500: openapi.Response(
-            description="Ошибка сервера",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "error": openapi.Schema(type=openapi.TYPE_STRING),
-                },
-            ),
-        ),
-    },
+    tags=["Attendance & Statistics"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             "end_date",
             openapi.IN_QUERY,
@@ -3165,6 +3229,16 @@ def staff_detail_by_department_id(request, department_id):
     method="post",
     operation_summary="Зарегистрировать нового пользователя (доступно только для администратора)",
     operation_description="Регистрирует нового пользователя в системе. Разрешено только для администратора.",
+    tags=["Authentication"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+    ],
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         required=["username", "password"],
@@ -3294,13 +3368,14 @@ def login_view(request):
     method="get",
     operation_summary="Запрос на получение данных с Внешнего сервера",
     operation_description="Запрос на получение данных о посещаемости. Требует передачи заголовка X-API-KEY для аутентификации.",
+    tags=["Fetcher"],
     manual_parameters=[
         openapi.Parameter(
             name="X-API-KEY",
             in_=openapi.IN_HEADER,
             type=openapi.TYPE_STRING,
-            required=True,
-            description="API ключ для аутентификации запроса.",
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
         ),
     ],
     responses={
@@ -3397,7 +3472,15 @@ async def fetch_data_view(request):
         "query parameters formatted as YYYY-MM-DD. If the provided endDate is greater than today, it will be capped to today's date. "
         "Authentication is required by providing a valid API key in the X-API-KEY header or by using other credentials."
     ),
+    tags=["Files & Downloads"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             name="department_id",
             in_=openapi.IN_PATH,
@@ -3420,13 +3503,6 @@ async def fetch_data_view(request):
             format="date",
             required=True,
             description="The end date of the attendance report period, formatted as YYYY-MM-DD.",
-        ),
-        openapi.Parameter(
-            name="X-API-KEY",
-            in_=openapi.IN_HEADER,
-            type=openapi.TYPE_STRING,
-            required=True,
-            description="API key for authentication.",
         ),
     ],
     responses={
@@ -4223,6 +4299,7 @@ class APIKeyCheckView(APIView):
     @swagger_auto_schema(
         operation_summary="Проверка API ключа",
         operation_description="Проверяет наличие и валидность переданного API ключа в заголовке запроса.",
+        tags=["Authentication"],
         manual_parameters=[
             openapi.Parameter(
                 name="X-API-KEY",
@@ -4424,6 +4501,55 @@ def download_examples_zip(request):
         raise Http404("An error occurred while serving the file.")
 
 
+@swagger_auto_schema(
+    method="post",
+    operation_summary="Верификация лица",
+    operation_description="Верифицирует лицо сотрудника по PIN и изображению. Требует передачи заголовка X-API-KEY для просмотра в Swagger.",
+    tags=["Face Recognition - Verify"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="API ключ для доступа к этому эндпоинту. Без этого ключа эндпоинт скрыт в Swagger.",
+        ),
+        openapi.Parameter(
+            name="pin",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="PIN сотрудника для верификации.",
+        ),
+        openapi.Parameter(
+            name="image",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_FILE,
+            required=True,
+            description="Изображение лица для верификации.",
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Результат верификации",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "verified": openapi.Schema(
+                        type=openapi.TYPE_BOOLEAN,
+                        description="Результат верификации (True/False).",
+                    ),
+                    "score": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        description="Оценка схожести (0-1).",
+                    ),
+                },
+            ),
+        ),
+        400: "Bad Request: Неверные данные запроса.",
+        404: "Not Found: Сотрудник не найден.",
+    },
+)
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def verify_face(request):
@@ -4510,6 +4636,51 @@ def verify_face(request):
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+@swagger_auto_schema(
+    method="post",
+    operation_summary="Распознавание лиц",
+    operation_description="Распознает лица сотрудников на изображении. Требует передачи заголовка X-API-KEY для просмотра в Swagger.",
+    tags=["Face Recognition - Recognize"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="API ключ для доступа к этому эндпоинту. Без этого ключа эндпоинт скрыт в Swagger.",
+        ),
+        openapi.Parameter(
+            name="image",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_FILE,
+            required=True,
+            description="Изображение с лицами для распознавания (PNG, JPG, JPEG).",
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Результат распознавания",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "recognized_staff": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        description="Список распознанных сотрудников.",
+                    ),
+                    "unknown_faces": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        description="Список нераспознанных лиц.",
+                    ),
+                },
+            ),
+        ),
+        400: "Bad Request: Неверные данные запроса.",
+        404: "Not Found: Лица не распознаны.",
+        500: "Internal Server Error: Ошибка при распознавании.",
+    },
+)
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def recognize_faces(request):
@@ -4627,7 +4798,15 @@ class AbsentReasonView(APIView):
             "\nПри параметре **download=true** архив формируется с файлами, имена которых имеют формат:\n"
             "   `staff.pin_fio_absenceID.ext` (например: `001_Ivanov_Ivan_7.pdf`)."
         ),
+        tags=["Absence"],
         manual_parameters=[
+            openapi.Parameter(
+                name="X-API-KEY",
+                in_=openapi.IN_HEADER,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="API ключ для аутентификации (альтернатива JWT токену).",
+            ),
             openapi.Parameter(
                 "start_date",
                 openapi.IN_QUERY,
@@ -4778,6 +4957,7 @@ class AbsentReasonView(APIView):
             " - **approved** (bool): Статус утверждения.\n"
             " - **document** (файл, опционально): Прикрепленный документ. Разрешенные форматы: pdf, jpg, jpeg, png."
         ),
+        tags=["Absence"],
         request_body=serializers.AbsentReasonSerializer,
         responses={
             201: openapi.Response(description="Запись отсутствия успешно создана."),
