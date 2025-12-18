@@ -1,9 +1,8 @@
 from django.urls import path, re_path
 from django.views.generic import RedirectView
-from rest_framework_simplejwt.views import TokenVerifyView
-
 from monitoring_app import custom_jwt, views
 from monitoring_app.swagger import urlpatterns as doc_urls
+from monitoring_app.swagger_views import swagger_session_login, swagger_session_logout
 
 urlpatterns = [
     path("", RedirectView.as_view(url="/app/")),
@@ -66,7 +65,10 @@ urlpatterns = [
         custom_jwt.CustomTokenRefreshView.as_view(),
         name="token_refresh",
     ),
-    path("api/token/verify/", TokenVerifyView.as_view()),
+    path(
+        "api/token/verify/",
+        custom_jwt.CustomTokenVerifyView.as_view(),
+    ),
     path("api/user/register/", views.user_register, name="userRegister"),
     path(
         "password-reset/",
@@ -80,10 +82,10 @@ urlpatterns = [
     ),
     path("verify-face/", views.verify_face, name="verify-face"),
     path("recognize-faces/", views.recognize_faces, name="recognize-faces"),
-    path(
-        "download/examples/", views.download_examples_zip, name="download_examples_zip"
-    ),
+    path("download/examples/", views.download_examples_zip, name="download_examples_zip"),
     path("api/absent_staff/", views.AbsentReasonView.as_view(), name="absent_staff"),
+    path("api/swagger-login/", swagger_session_login, name="swagger_session_login"),
+    path("api/swagger-logout/", swagger_session_logout, name="swagger_session_logout"),
 ]
 
 urlpatterns += doc_urls
