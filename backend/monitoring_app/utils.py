@@ -101,12 +101,18 @@ def _fuzzy_family(n: str) -> str | None:
 
 @lru_cache(maxsize=4096)
 def resolve_area_address(area_name: str | None) -> str | None:
-    """
+    """Преобразует произвольное имя зоны к каноническому адресу.
+
     Преобразует произвольное имя зоны (любой регистр/формат) к одному из:
-      - 'Проспект Абылай хана, 51/53'
-      - 'Улица Торекулова, 71'
-      - 'Улица Карасай батыра, 75'
-    Возвращает None, если распознать нельзя.
+    - 'Проспект Абылай хана, 51/53'
+    - 'Улица Торекулова, 71'
+    - 'Улица Карасай батыра, 75'
+
+    Args:
+        area_name (str | None): Имя зоны для преобразования.
+
+    Returns:
+        str | None: Канонический адрес или None, если распознать нельзя.
     """
     if not area_name:
         return None
@@ -131,7 +137,14 @@ def resolve_area_address(area_name: str | None) -> str | None:
 
 
 def get_client_ip(request):
-    """Get the client IP address from the request, considering proxy setups."""
+    """Получает IP адрес клиента из запроса с учетом прокси.
+
+    Args:
+        request: HTTP запрос Django.
+
+    Returns:
+        str: IP адрес клиента.
+    """
     x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded_for:
         ip = x_forwarded_for.split(",")[0].strip()
@@ -141,7 +154,14 @@ def get_client_ip(request):
 
 
 def format_duration(duration_seconds):
-    """Converts a duration in seconds to a more human-readable format."""
+    """Преобразует длительность в секундах в читаемый формат.
+
+    Args:
+        duration_seconds (float): Длительность в секундах.
+
+    Returns:
+        str: Отформатированная строка с длительностью (секунды, минуты, часы).
+    """
     if duration_seconds < 60:
         return f"{duration_seconds:.2f} seconds"
     elif duration_seconds < 3600:
@@ -602,8 +622,10 @@ def generate_map_data(
             logger.info(f"Количество LessonAttendance для обработки: {lesson_count}")
 
             if lesson_count > 0:
-                lesson_coords = list(
-                    lesson_attendances_qs.values_list("latitude", "longitude")
+                lesson_attendances_list = list(
+                    lesson_attendances_qs.values_list(
+                        "id", "latitude", "longitude", flat=False
+                    )
                 )
 
                 class_locations = list(models.ClassLocation.objects.all())
@@ -614,24 +636,73 @@ def generate_map_data(
                 class_coords = [
                     (loc.latitude, loc.longitude) for loc in class_locations
                 ]
-                class_addresses = [loc.address.strip() for loc in class_locations]
 
                 kd_tree = KDTree(class_coords, metric="euclidean")
                 logger.info("KDTree успешно построен.")
 
-                _distances, indices = kd_tree.query(lesson_coords, k=1)
-                logger.info("KDTree запрос завершен.")
+                nearest_addresses = []
+                for lesson_id, lesson_lat, lesson_lon in lesson_attendances_list:
+                    if lesson_lat is None or lesson_lon is None:
+                        logger.warning(
+                            f"LessonAttendance {lesson_id} не имеет координат"
+                        )
+                        continue
 
-                if hasattr(indices, "ndim") and indices.ndim > 1:
-                    indices = indices.flatten()
-
-                try:
-                    nearest_addresses = [class_addresses[int(idx)] for idx in indices]
-                except (ValueError, TypeError) as e:
-                    logger.error(
-                        f"Ошибка при преобразовании индексов KDTree: {e}", exc_info=True
+                    k_candidates = min(5, len(class_locations))
+                    _distances_degrees, candidate_indices = kd_tree.query(
+                        [[lesson_lat, lesson_lon]], k=k_candidates
                     )
-                    raise
+
+                    candidate_list = []
+                    if hasattr(candidate_indices, "flatten"):
+                        candidate_list = candidate_indices.flatten().tolist()
+                    elif (
+                        hasattr(candidate_indices, "__len__")
+                        and len(candidate_indices) > 0
+                    ):
+                        if (
+                            hasattr(candidate_indices[0], "__len__")
+                            and len(candidate_indices[0]) > 0
+                        ):
+                            candidate_list = [int(idx) for idx in candidate_indices[0]]
+                        else:
+                            candidate_list = [int(candidate_indices[0])]
+
+                    nearest_location = None
+                    min_distance = float("inf")
+                    for idx in candidate_list:
+                        if 0 <= idx < len(class_locations):
+                            candidate_loc = class_locations[idx]
+                            distance = calculate_distance_haversine(
+                                lesson_lat,
+                                lesson_lon,
+                                candidate_loc.latitude,
+                                candidate_loc.longitude,
+                            )
+                            if distance < min_distance:
+                                min_distance = distance
+                                nearest_location = candidate_loc
+
+                    if nearest_location is None:
+                        for loc in class_locations:
+                            distance = calculate_distance_haversine(
+                                lesson_lat,
+                                lesson_lon,
+                                loc.latitude,
+                                loc.longitude,
+                            )
+                            if distance < min_distance:
+                                min_distance = distance
+                                nearest_location = loc
+
+                    if nearest_location:
+                        nearest_addresses.append(nearest_location.address.strip())
+                    else:
+                        logger.warning(
+                            f"Не найдена ближайшая локация для LessonAttendance {lesson_id}"
+                        )
+
+                logger.info("KDTree запрос с точным расчетом завершен.")
 
                 address_counts = Counter(nearest_addresses)
                 lesson_attendance_by_address = defaultdict(int, address_counts)
@@ -713,9 +784,14 @@ def generate_map_data(
 
 
 class LocationSearcher:
+    """Класс для поиска ближайших локаций с использованием KDTree.
+
+    Использует KDTree для быстрого поиска кандидатов и формулу Haversine
+    для точного расчета расстояния.
+    """
+
     def __init__(self, locations):
-        """
-        Инициализация с использованием списка локаций.
+        """Инициализирует LocationSearcher со списком локаций.
 
         Args:
             locations (list): Список словарей с ключами `latitude`, `longitude`, `name`.
@@ -728,8 +804,10 @@ class LocationSearcher:
         self.names = [loc["name"] for loc in locations]
 
     def find_nearest(self, lat, lon, radius=200):
-        """
-        Находит ближайшую локацию в заданном радиусе.
+        """Находит ближайшую локацию в заданном радиусе с точным расчетом расстояния.
+
+        Использует KDTree для быстрого поиска кандидатов, затем пересчитывает
+        точное расстояние через формулу Haversine для выбора ближайшей локации.
 
         Args:
             lat (float): Широта искомой точки.
@@ -739,16 +817,46 @@ class LocationSearcher:
         Returns:
             str: Название ближайшей локации или "Unknown Area".
         """
+        # Используем KDTree для быстрого поиска кандидатов
         meters_to_degrees = radius / 111000
-        indices = self.kd_tree.query_radius([[lat, lon]], r=meters_to_degrees)[0]
-        if len(indices) > 0:
-            return self.names[indices[0]]
-        return "Unknown Area"
+        candidate_indices = self.kd_tree.query_radius(
+            [[lat, lon]], r=meters_to_degrees
+        )[0]
+
+        if len(candidate_indices) == 0:
+            return "Unknown Area"
+
+        nearest_name = None
+        min_distance = float("inf")
+
+        for idx in candidate_indices:
+            if 0 <= idx < len(self.locations):
+                candidate = self.locations[idx]
+                distance = calculate_distance_haversine(
+                    lat, lon, candidate["latitude"], candidate["longitude"]
+                )
+                if distance < min_distance and distance <= radius:
+                    min_distance = distance
+                    nearest_name = candidate["name"]
+
+        return nearest_name if nearest_name else "Unknown Area"
 
 
-def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
+def calculate_distance_haversine(lat1, lon1, lat2, lon2):
+    """Вычисляет точное расстояние между двумя точками по формуле Haversine.
+
+    Args:
+        lat1 (float): Широта первой точки в градусах.
+        lon1 (float): Долгота первой точки в градусах.
+        lat2 (float): Широта второй точки в градусах.
+        lon2 (float): Долгота второй точки в градусах.
+
+    Returns:
+        float: Расстояние в метрах (точность до 10-15 метров).
+    """
     R = 6371000
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
     delta_phi = math.radians(lat2 - lat1)
     delta_lambda = math.radians(lon2 - lon1)
     a = (
@@ -757,6 +865,23 @@ def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
     )
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     distance = R * c
+    return distance
+
+
+def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
+    """Проверяет, находится ли точка в заданном радиусе от другой точки.
+
+    Args:
+        lat1 (float): Широта первой точки в градусах.
+        lon1 (float): Долгота первой точки в градусах.
+        lat2 (float): Широта второй точки в градусах.
+        lon2 (float): Долгота второй точки в градусах.
+        radius (float): Радиус в метрах. По умолчанию 200.
+
+    Returns:
+        bool: True если расстояние меньше или равно радиусу.
+    """
+    distance = calculate_distance_haversine(lat1, lon1, lat2, lon2)
     return distance <= radius
 
 
