@@ -16,6 +16,7 @@ urlpatterns = [
         name="staff-attendance-stats",
     ),
     path("api/locations", views.map_location, name="locations"),
+    path("api/lesson_locations/", views.lesson_locations, name="lesson_locations"),
     path(
         "api/lesson_attendance/",
         views.create_lesson_attendance,
@@ -82,7 +83,9 @@ urlpatterns = [
     ),
     path("verify-face/", views.verify_face, name="verify-face"),
     path("recognize-faces/", views.recognize_faces, name="recognize-faces"),
-    path("download/examples/", views.download_examples_zip, name="download_examples_zip"),
+    path(
+        "download/examples/", views.download_examples_zip, name="download_examples_zip"
+    ),
     path("api/absent_staff/", views.AbsentReasonView.as_view(), name="absent_staff"),
     path("api/swagger-login/", swagger_session_login, name="swagger_session_login"),
     path("api/swagger-logout/", swagger_session_logout, name="swagger_session_logout"),

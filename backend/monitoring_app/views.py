@@ -2,6 +2,7 @@ import base64
 import datetime
 import json
 import logging
+import math
 import os
 import time
 import zipfile
@@ -255,17 +256,25 @@ class StaffAttendanceStatsView(APIView):
                     properties={
                         "department_name": openapi.Schema(type=openapi.TYPE_STRING),
                         "total_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "present_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
+                        "present_staff_count": openapi.Schema(
+                            type=openapi.TYPE_INTEGER
+                        ),
                         "absent_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "present_between_9_to_18": openapi.Schema(type=openapi.TYPE_INTEGER),
+                        "present_between_9_to_18": openapi.Schema(
+                            type=openapi.TYPE_INTEGER
+                        ),
                         "present_data": openapi.Schema(
                             type=openapi.TYPE_ARRAY,
                             items=openapi.Schema(
                                 type=openapi.TYPE_OBJECT,
                                 properties={
-                                    "staff_pin": openapi.Schema(type=openapi.TYPE_STRING),
+                                    "staff_pin": openapi.Schema(
+                                        type=openapi.TYPE_STRING
+                                    ),
                                     "name": openapi.Schema(type=openapi.TYPE_STRING),
-                                    "minutes_present": openapi.Schema(type=openapi.TYPE_NUMBER),
+                                    "minutes_present": openapi.Schema(
+                                        type=openapi.TYPE_NUMBER
+                                    ),
                                     "individual_percentage": openapi.Schema(
                                         type=openapi.TYPE_NUMBER
                                     ),
@@ -665,6 +674,299 @@ def map_location(request):
 
 @swagger_auto_schema(
     method="GET",
+    operation_summary="Получить список локаций для занятий",
+    operation_description=(
+        "Возвращает список всех локаций для занятий с их координатами и адресами. "
+        "Удобен для внешних систем - можно получить все локации и самостоятельно "
+        "рассчитать расстояние на стороне клиента.\n\n"
+        "Если переданы параметры latitude и longitude, возвращает ближайшую локацию "
+        "с точным расстоянием в метрах (точность до 10-15 метров через формулу Haversine). "
+        "Всегда использует актуальные данные из базы данных, включая недавно добавленные локации. "
+        "Если в одном месте находятся несколько локаций, выбирается ближайшая по точному расстоянию."
+    ),
+    tags=["Locations"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+        openapi.Parameter(
+            name="latitude",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_NUMBER,
+            format=openapi.FORMAT_FLOAT,
+            required=False,
+            description="Широта для поиска ближайшей локации",
+            example=43.207674,
+        ),
+        openapi.Parameter(
+            name="longitude",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_NUMBER,
+            format=openapi.FORMAT_FLOAT,
+            required=False,
+            description="Долгота для поиска ближайшей локации",
+            example=76.851377,
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Список локаций или ближайшая локация",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "locations": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        description="Список всех локаций (если не указаны координаты)",
+                        items=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "id": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    description="ID локации",
+                                ),
+                                "name": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="Название локации",
+                                ),
+                                "address": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="Адрес локации",
+                                ),
+                                "latitude": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format=openapi.FORMAT_FLOAT,
+                                    description="Широта",
+                                ),
+                                "longitude": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format=openapi.FORMAT_FLOAT,
+                                    description="Долгота",
+                                ),
+                            },
+                        ),
+                    ),
+                    "nearest_location": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        description="Ближайшая локация (если указаны координаты)",
+                        properties={
+                            "id": openapi.Schema(
+                                type=openapi.TYPE_INTEGER,
+                                description="ID локации",
+                            ),
+                            "name": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                description="Название локации",
+                            ),
+                            "address": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                description="Адрес локации",
+                            ),
+                            "latitude": openapi.Schema(
+                                type=openapi.TYPE_NUMBER,
+                                format=openapi.FORMAT_FLOAT,
+                                description="Широта",
+                            ),
+                            "longitude": openapi.Schema(
+                                type=openapi.TYPE_NUMBER,
+                                format=openapi.FORMAT_FLOAT,
+                                description="Долгота",
+                            ),
+                            "distance": openapi.Schema(
+                                type=openapi.TYPE_NUMBER,
+                                format=openapi.FORMAT_FLOAT,
+                                description="Точное расстояние в метрах (Haversine формула, точность до 10-15 метров)",
+                            ),
+                        },
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(
+            description="Неверные параметры",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Описание ошибки",
+                    ),
+                },
+            ),
+        ),
+        500: openapi.Response(
+            description="Внутренняя ошибка сервера",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Описание ошибки",
+                    ),
+                },
+            ),
+        ),
+    },
+)
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def lesson_locations(request):
+    """Возвращает список локаций для занятий или ближайшую локацию по координатам.
+
+    Если переданы параметры latitude и longitude, находит ближайшую локацию
+    с точным расчетом расстояния через формулу Haversine (точность до 10-15 метров).
+    Всегда использует актуальные данные из базы данных, включая недавно добавленные локации.
+    Использует KDTree для быстрого поиска кандидатов (если доступен), но затем
+    пересчитывает точное расстояние для всех кандидатов через Haversine.
+    Если KDTree недоступен, выполняет полный перебор всех локаций из БД.
+
+    Args:
+        request: HTTP запрос с опциональными параметрами:
+            - latitude (float): Широта для поиска ближайшей локации
+            - longitude (float): Долгота для поиска ближайшей локации
+
+    Returns:
+        Response: JSON ответ с локациями или ближайшей локацией с точным расстоянием в метрах
+    """
+    try:
+        latitude_param = request.GET.get("latitude")
+        longitude_param = request.GET.get("longitude")
+
+        if latitude_param is not None and longitude_param is not None:
+            try:
+                latitude = float(latitude_param)
+                longitude = float(longitude_param)
+            except (ValueError, TypeError):
+                return Response(
+                    {
+                        "error": "Invalid latitude or longitude format. Expected numbers."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            all_locations = models.ClassLocation.objects.filter(
+                latitude__isnull=False, longitude__isnull=False
+            ).only("id", "name", "address", "latitude", "longitude")
+
+            if not all_locations.exists():
+                return Response(
+                    {"error": "No locations available in database"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            location_cache = get_class_location_cache()
+            kd_tree = location_cache.get("kd_tree")
+            searcher_payload = location_cache.get("searcher_payload", [])
+
+            nearest_location = None
+            min_distance = float("inf")
+
+            try:
+                if kd_tree and searcher_payload:
+                    k_candidates = min(5, len(searcher_payload))
+                    _distances_degrees, indices = kd_tree.query(
+                        [[latitude, longitude]], k=k_candidates
+                    )
+
+                    candidate_indices = []
+                    if hasattr(indices, "flatten"):
+                        candidate_indices = indices.flatten().tolist()
+                    elif isinstance(indices, (list, tuple)) and len(indices) > 0:
+                        if hasattr(indices[0], "__iter__") and len(indices[0]) > 0:
+                            candidate_indices = [int(idx) for idx in indices[0]]
+                        elif len(indices) > 0:
+                            candidate_indices = [int(indices[0])]
+                    elif hasattr(indices, "__len__") and len(indices) > 0:
+                        if hasattr(indices[0], "__len__") and len(indices[0]) > 0:
+                            candidate_indices = [int(idx) for idx in indices[0]]
+                        else:
+                            candidate_indices = [int(indices[0])]
+
+                    for idx in candidate_indices:
+                        if 0 <= idx < len(searcher_payload):
+                            candidate_data = searcher_payload[idx]
+                            candidate = all_locations.filter(
+                                latitude=candidate_data["latitude"],
+                                longitude=candidate_data["longitude"],
+                            ).first()
+
+                            if candidate:
+                                distance = utils.calculate_distance_haversine(
+                                    latitude,
+                                    longitude,
+                                    candidate.latitude,
+                                    candidate.longitude,
+                                )
+                                if distance < min_distance:
+                                    min_distance = distance
+                                    nearest_location = candidate
+            except Exception as e:
+                logger.warning(
+                    f"KDTree search failed, using full database scan: {str(e)}"
+                )
+
+            if nearest_location is None:
+                for location in all_locations:
+                    distance = utils.calculate_distance_haversine(
+                        latitude,
+                        longitude,
+                        location.latitude,
+                        location.longitude,
+                    )
+                    if distance < min_distance:
+                        min_distance = distance
+                        nearest_location = location
+
+            if not nearest_location:
+                return Response(
+                    {"error": "Nearest location not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            return Response(
+                {
+                    "nearest_location": {
+                        "id": nearest_location.id,
+                        "name": nearest_location.name,
+                        "address": nearest_location.address,
+                        "latitude": nearest_location.latitude,
+                        "longitude": nearest_location.longitude,
+                        "distance": round(min_distance, 2),
+                    }
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        locations = models.ClassLocation.objects.all().order_by("name")
+        locations_data = [
+            {
+                "id": loc.id,
+                "name": loc.name,
+                "address": loc.address,
+                "latitude": loc.latitude,
+                "longitude": loc.longitude,
+            }
+            for loc in locations
+        ]
+
+        return Response(
+            {"locations": locations_data},
+            status=status.HTTP_200_OK,
+        )
+
+    except Exception as e:
+        logger.error(f"Critical error in lesson_locations: {str(e)}", exc_info=True)
+        return Response(
+            {"error": "A critical error occurred. Please try again later."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@swagger_auto_schema(
+    method="GET",
     operation_summary="Получить ID всех корневых (root) подразделений",
     operation_description="Возвращает список ID из ChildDepartment, где parent IS NULL.",
     tags=["Departments"],
@@ -876,7 +1178,9 @@ def department_summary(request, parent_department_id):
         }
 
         logger.debug(f"Caching department summary data with key: {cache_key}")
-        cached_data = get_cache(cache_key, query=lambda: data, timeout=5 * 60, cache=Cache)
+        cached_data = get_cache(
+            cache_key, query=lambda: data, timeout=5 * 60, cache=Cache
+        )
 
         logger.info(f"Returning summary data for department ID {parent_department_id}")
         return Response(cached_data, status=status.HTTP_200_OK)
@@ -947,7 +1251,9 @@ def _fetch_root_departments_data():
         .annotate(count=Count("id", distinct=True))
     )
 
-    staff_count_by_dept = {item["department_id"]: item["count"] for item in staff_counts}
+    staff_count_by_dept = {
+        item["department_id"]: item["count"] for item in staff_counts
+    }
 
     all_child_dept_ids = []
     for children in children_by_parent.values():
@@ -955,9 +1261,9 @@ def _fetch_root_departments_data():
 
     child_depts_by_parent = {}
     if all_child_dept_ids:
-        child_depts = models.ChildDepartment.objects.filter(id__in=all_child_dept_ids).only(
-            "id", "name", "date_of_creation", "parent_id"
-        )
+        child_depts = models.ChildDepartment.objects.filter(
+            id__in=all_child_dept_ids
+        ).only("id", "name", "date_of_creation", "parent_id")
 
         for child in child_depts:
             parent_id = child.parent_id
@@ -1059,12 +1365,19 @@ def _fetch_root_departments_data():
                                     items=openapi.Schema(
                                         type=openapi.TYPE_OBJECT,
                                         properties={
-                                            "child_id": openapi.Schema(type=openapi.TYPE_STRING),
-                                            "name": openapi.Schema(type=openapi.TYPE_STRING),
-                                            "date_of_creation": openapi.Schema(
-                                                type=openapi.TYPE_STRING, format="date-time"
+                                            "child_id": openapi.Schema(
+                                                type=openapi.TYPE_STRING
                                             ),
-                                            "parent": openapi.Schema(type=openapi.TYPE_STRING),
+                                            "name": openapi.Schema(
+                                                type=openapi.TYPE_STRING
+                                            ),
+                                            "date_of_creation": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                format="date-time",
+                                            ),
+                                            "parent": openapi.Schema(
+                                                type=openapi.TYPE_STRING
+                                            ),
                                         },
                                     ),
                                     description="Список дочерних подразделений",
@@ -1102,7 +1415,9 @@ def root_departments_batch(request):
         return Response(cached_data, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Error while generating root departments batch: {str(e)}")
-        return Response(data={"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response(
+            data={"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 
 @swagger_auto_schema(
@@ -1193,7 +1508,9 @@ def child_department_detail(request, child_department_id):
 
     def fetch_child_department_data():
         try:
-            child_department = models.ChildDepartment.objects.get(id=child_department_id)
+            child_department = models.ChildDepartment.objects.get(
+                id=child_department_id
+            )
             logger.info(
                 f"Found child department: {child_department.name} (ID: {child_department_id})"
             )
@@ -1201,8 +1518,12 @@ def child_department_detail(request, child_department_id):
             logger.warning(f"Child department with ID {child_department_id} not found")
             return None
 
-        all_departments = [child_department] + child_department.get_all_child_departments()
-        staff_in_department = models.Staff.objects.filter(department__in=all_departments)
+        all_departments = [
+            child_department
+        ] + child_department.get_all_child_departments()
+        staff_in_department = models.Staff.objects.filter(
+            department__in=all_departments
+        )
         logger.debug(
             f"Found {staff_in_department.count()} staff members in child department ID {child_department_id}"
         )
@@ -1218,15 +1539,21 @@ def child_department_detail(request, child_department_id):
                 "FIO": fio,
                 "date_of_creation": staff_member.date_of_creation,
                 "avatar": (staff_member.avatar.url if staff_member.avatar else None),
-                "positions": [position.name for position in staff_member.positions.all()],
+                "positions": [
+                    position.name for position in staff_member.positions.all()
+                ],
             }
             logger.debug(f"Processed staff member: {fio} (PIN: {staff_member.pin})")
 
-        sorted_staff_data = dict(sorted(staff_data.items(), key=lambda item: item[1]["FIO"]))
+        sorted_staff_data = dict(
+            sorted(staff_data.items(), key=lambda item: item[1]["FIO"])
+        )
         logger.info(f"Sorted staff data for child department ID {child_department_id}")
 
         return {
-            "child_department": serializers.ChildDepartmentSerializer(child_department).data,
+            "child_department": serializers.ChildDepartmentSerializer(
+                child_department
+            ).data,
             "staff_count": staff_in_department.count(),
             "staff_data": sorted_staff_data,
         }
@@ -1241,7 +1568,9 @@ def child_department_detail(request, child_department_id):
         if data is None:
             return Response(status=status.HTTP_404_NOT_FOUND)
 
-        logger.info(f"Returning detailed data for child department ID {child_department_id}")
+        logger.info(
+            f"Returning detailed data for child department ID {child_department_id}"
+        )
         return Response(data, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Error in child_department_detail: {str(e)}")
@@ -2509,7 +2838,9 @@ def check_lesson_task_status(request, task_id):
                         type=openapi.TYPE_STRING,
                         description="Сообщение об успешном запуске задачи",
                     ),
-                    "task_id": openapi.Schema(type=openapi.TYPE_STRING, description="ID задачи"),
+                    "task_id": openapi.Schema(
+                        type=openapi.TYPE_STRING, description="ID задачи"
+                    ),
                 },
             ),
         ),
