@@ -1,23 +1,15 @@
-import { Link, useNavigate } from "../RouterUtils";
-import { useState, useEffect } from "react";
+import { useNavigate } from "../RouterUtils";
+import { useState, useEffect, useCallback, useMemo, memo } from "react";
 import { useParams } from "react-router-dom";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { IChildDepartmentData } from "../schemas/IData";
 import { formatDepartmentName } from "../utils/utils";
-import {
-  FaUserCheck,
-  FaUserTimes,
-  FaArrowLeft,
-  FaHome,
-  FaBuilding,
-  FaUsers,
-} from "react-icons/fa";
+import { cacheManager } from "../utils/cache";
+import { FaUserCheck, FaUserTimes, FaBuilding, FaUsers } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
-import FloatingButton from "../components/FloatingButton";
-
-import DesktopNavigation from "../components/DesktopNavigation";
+import Breadcrumbs from "../components/Breadcrumbs";
 import DateFilterBar from "../components/DateFilterBar";
 import SearchInput from "../components/SearchInput";
 import WaitNotification from "../components/WaitNotification";
@@ -62,7 +54,9 @@ const ChildDepartmentPage = () => {
   const { showWaitMessage, startWaitNotification, clearWaitNotification } =
     useWaitNotification();
 
-  const dispatch = (action: BaseAction<any>) => {
+  const dispatch = (
+    action: BaseAction<boolean | IChildDepartmentData | string | null>
+  ) => {
     switch (action.type) {
       case BaseAction.SET_LOADING:
         setIsLoading(action.payload as boolean);
@@ -81,12 +75,29 @@ const ChildDepartmentPage = () => {
   };
 
   useEffect(() => {
-    const fetchData = async () => {
+    const fetchData = async (forceRefresh = false) => {
+      if (!id) {
+        return;
+      }
+
+      const cacheKey = `child_department_${id}`;
+
+      if (!forceRefresh) {
+        const cachedData = cacheManager.get<IChildDepartmentData>(cacheKey);
+        if (cachedData) {
+          dispatch(new BaseAction(BaseAction.SET_DATA, cachedData));
+          return;
+        }
+      } else {
+        cacheManager.invalidate(cacheKey);
+      }
+
       dispatch(new BaseAction(BaseAction.SET_LOADING, true));
       try {
         const res = await axiosInstance.get(
           `${apiUrl}/api/child_department/${id}/`
         );
+        cacheManager.set(cacheKey, res.data);
         dispatch(new BaseAction(BaseAction.SET_DATA, res.data));
       } catch (err) {
         console.error("Error:", err);
@@ -98,7 +109,9 @@ const ChildDepartmentPage = () => {
         );
       }
     };
-    fetchData();
+    if (id) {
+      fetchData();
+    }
   }, [id]);
 
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -116,13 +129,39 @@ const ChildDepartmentPage = () => {
     }
   };
 
-  const navigateToChildDepartment = () => {
+  const navigateToParent = useCallback(() => {
     if (data?.child_department.parent) {
       navigate(`/department/${data.child_department.parent}`);
+    } else {
+      navigate("/");
     }
-  };
+  }, [data?.child_department.parent, navigate]);
 
-  const handleDownload = async () => {
+  const handleRowClick = useCallback(
+    (pin: string) => {
+      navigate(`/staffDetail/${pin}`);
+    },
+    [navigate]
+  );
+
+  const breadcrumbs = useMemo(() => {
+    const items = [];
+    if (data?.child_department.parent) {
+      items.push({
+        label: "Отделы",
+        onClick: navigateToParent,
+      });
+    }
+    if (data?.child_department?.name) {
+      items.push({
+        label: formatDepartmentName(data.child_department.name),
+      });
+    }
+    return items;
+  }, [data?.child_department, navigateToParent]);
+
+  const handleDownload = useCallback(async () => {
+    if (!id) return;
     setIsDownloading(true);
     startWaitNotification();
 
@@ -156,31 +195,48 @@ const ChildDepartmentPage = () => {
       clearWaitNotification();
       setIsDownloading(false);
     }
-  };
+  }, [
+    id,
+    startDate,
+    endDate,
+    data,
+    startWaitNotification,
+    clearWaitNotification,
+  ]);
 
   const isDownloadDisabled = !startDate || !endDate;
 
-  const filteredStaff = data?.staff_data
-    ? Object.entries(data.staff_data).filter(([, staff]) =>
-        staff.FIO.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : [];
+  const filteredStaff = useMemo(
+    () =>
+      data?.staff_data
+        ? Object.entries(data.staff_data).filter(([, staff]) =>
+            staff.FIO.toLowerCase().includes(searchQuery.toLowerCase())
+          )
+        : [],
+    [data?.staff_data, searchQuery]
+  );
 
-  const containerVariants = {
-    hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: {
-        staggerChildren: 0.1,
-        delayChildren: 0.2,
+  const containerVariants = useMemo(
+    () => ({
+      hidden: { opacity: 0 },
+      visible: {
+        opacity: 1,
+        transition: {
+          staggerChildren: 0.1,
+          delayChildren: 0.2,
+        },
       },
-    },
-  };
+    }),
+    []
+  );
 
-  const itemVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: { opacity: 1, y: 0 },
-  };
+  const itemVariants = useMemo(
+    () => ({
+      hidden: { opacity: 0, y: 20 },
+      visible: { opacity: 1, y: 0 },
+    }),
+    []
+  );
 
   return (
     <AnimatePresence mode="sync">
@@ -204,28 +260,26 @@ const ChildDepartmentPage = () => {
             <h2 className="text-2xl font-bold text-red-600 dark:text-red-400 mb-4">
               {error}
             </h2>
-            <Link to="/" className="btn-primary mt-4">
+            <motion.button
+              onClick={() => navigate("/")}
+              className="btn-primary mt-4"
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
               Вернуться на главную
-            </Link>
+            </motion.button>
           </motion.div>
         ) : (
           <>
-            <motion.div
-              className="mb-8 flex items-center"
-              variants={itemVariants}
-            >
-              <FaBuilding className="text-primary-600 dark:text-primary-400 mr-3 text-2xl md:text-3xl" />
-              <h1 className="section-title mb-0">
-                {data?.child_department?.name &&
-                  formatDepartmentName(data.child_department.name)}
-              </h1>
-            </motion.div>
-
-            <motion.div variants={itemVariants}>
-              <DesktopNavigation
-                onHomeClick={() => navigate("/")}
-                onBackClick={navigateToChildDepartment}
-              />
+            <motion.div className="mb-6 space-y-4" variants={itemVariants}>
+              <div className="flex items-center">
+                <FaBuilding className="text-primary-600 dark:text-primary-400 mr-3 text-2xl md:text-3xl" />
+                <h1 className="section-title mb-0">
+                  {data?.child_department?.name &&
+                    formatDepartmentName(data.child_department.name)}
+                </h1>
+              </div>
+              <Breadcrumbs items={breadcrumbs} />
             </motion.div>
 
             <motion.div variants={itemVariants} className="mt-6 mb-6">
@@ -295,15 +349,13 @@ const ChildDepartmentPage = () => {
                     variants={itemVariants}
                     whileHover={{ scale: 1.02 }}
                     transition={{ duration: 0.2 }}
-                    className="card p-5"
+                    className="card p-5 cursor-pointer"
+                    onClick={() => handleRowClick(pin)}
                   >
                     <div className="flex justify-between items-start">
-                      <Link
-                        to={`/staffDetail/${pin}`}
-                        className="text-primary-700 hover:text-primary-900 dark:text-primary-400 dark:hover:text-primary-300 font-semibold text-lg transition-colors"
-                      >
+                      <span className="text-primary-700 hover:text-primary-900 dark:text-primary-400 dark:hover:text-primary-300 font-semibold text-lg transition-colors">
                         {staff.FIO}
-                      </Link>
+                      </span>
                       <div className="p-1">
                         {staff.avatar ? (
                           <FaUserCheck
@@ -400,15 +452,13 @@ const ChildDepartmentPage = () => {
                     filteredStaff.map(([pin, staff]) => (
                       <tr
                         key={pin}
-                        className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors duration-150"
+                        className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors duration-150 cursor-pointer"
+                        onClick={() => handleRowClick(pin)}
                       >
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <Link
-                            to={`/staffDetail/${pin}`}
-                            className="text-primary-700 hover:text-primary-900 dark:text-primary-400 dark:hover:text-primary-300 font-medium transition-colors"
-                          >
+                          <span className="text-primary-700 hover:text-primary-900 dark:text-primary-400 dark:hover:text-primary-300 font-medium transition-colors">
                             {staff.FIO}
-                          </Link>
+                          </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           {staff.positions.length > 2 ? (
@@ -439,12 +489,9 @@ const ChildDepartmentPage = () => {
                           )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
-                          <Link
-                            to={`/staffDetail/${pin}`}
-                            className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-lg bg-primary-100 text-primary-700 hover:bg-primary-200 dark:bg-primary-900/30 dark:text-primary-400 dark:hover:bg-primary-800/50"
-                          >
+                          <span className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-lg bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400">
                             Показать детали
-                          </Link>
+                          </span>
                         </td>
                       </tr>
                     ))
@@ -455,26 +502,8 @@ const ChildDepartmentPage = () => {
           </>
         )}
       </motion.div>
-
-      {/* Floating buttons for mobile */}
-      {!isLoading && !error && (
-        <div className="block md:hidden">
-          <FloatingButton
-            variant="back"
-            icon={<FaArrowLeft size={20} />}
-            onClick={navigateToChildDepartment}
-            position="left"
-          />
-          <FloatingButton
-            variant="home"
-            icon={<FaHome size={20} />}
-            to="/"
-            position="right"
-          />
-        </div>
-      )}
     </AnimatePresence>
   );
 };
 
-export default ChildDepartmentPage;
+export default memo(ChildDepartmentPage);
