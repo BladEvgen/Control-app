@@ -90,6 +90,8 @@ export const useAuth = () => {
         }
       }
       dispatch(setLoading(false));
+    } else if (token && user) {
+      dispatch(setLoading(false));
     } else if (!token) {
       dispatch(setLoading(false));
     }
@@ -108,6 +110,7 @@ export const useAuth = () => {
       accessTokenExpires?: string;
       refreshTokenExpires?: string;
     }) => dispatch(setTokens(tokens)),
+    setLoading: (loading: boolean) => dispatch(setLoading(loading)),
   };
 };
 

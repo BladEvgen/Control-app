@@ -87,7 +87,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
     }
 
     try {
-      const params: any = { date: selectedDate };
+      const params: { date: string; pin?: string } = { date: selectedDate };
       if (pin) params.pin = pin;
 
       const response = await axiosInstance.get(
@@ -165,7 +165,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
     for (let i = 5; i <= maxPct; i += 10) ranges.push(i);
     ranges.push(maxPct);
 
-    let counts = ranges.map((start, i) => {
+    const counts = ranges.map((start, i) => {
       const end = ranges[i + 1] || maxPct + 1;
       return filtered.filter(
         (s) => s.individual_percentage >= start && s.individual_percentage < end
