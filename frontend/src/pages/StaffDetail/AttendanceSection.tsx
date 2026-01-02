@@ -26,8 +26,8 @@ const AttendanceSection: React.FC<AttendanceSectionProps> = ({
   legendItems,
 }) => {
   return (
-    <div className="px-8 pb-8 border-t border-gray-200 dark:border-gray-700">
-      <div className="flex flex-col lg:flex-row items-center justify-between mb-6 gap-6">
+    <div className="px-4 sm:px-6 lg:px-8 pb-6 sm:pb-8 border-t border-gray-200 dark:border-gray-700">
+      <div className="flex flex-col lg:flex-row items-center justify-between mb-4 sm:mb-6 gap-4 sm:gap-6">
         <div className="w-full max-w-md">
           <DateForm
             startDate={startDate}
@@ -37,12 +37,12 @@ const AttendanceSection: React.FC<AttendanceSectionProps> = ({
             error=""
           />
         </div>
-        <div className="flex flex-col items-center lg:items-end">
-          <span className="inline-flex items-center text-lg text-gray-600 dark:text-gray-400">
+        <div className="flex flex-col items-center lg:items-end w-full lg:w-auto">
+          <span className="inline-flex items-center text-sm sm:text-lg text-gray-600 dark:text-gray-400">
             <FiInfo className="mr-2" />
             {formatDateRu(startDate)} - {formatDateRu(endDate)}
           </span>
-          <span className="mt-1 text-xl font-semibold text-gray-800 dark:text-gray-100">
+          <span className="mt-1 text-lg sm:text-xl font-semibold text-gray-800 dark:text-gray-100">
             Найдено {Object.keys(staffData.attendance).length}{" "}
             {declensionDays(Object.keys(staffData.attendance).length)}
           </span>

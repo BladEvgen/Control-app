@@ -13,6 +13,8 @@ import { apiUrl } from "../../../apiConfig";
 import { StaffData, AttendanceData } from "../../schemas/IData";
 import Notification from "../../components/Notification";
 import LoaderComponent from "../../components/LoaderComponent";
+import Breadcrumbs, { BreadcrumbItem } from "../../components/Breadcrumbs";
+import { formatDepartmentName } from "../../utils/utils";
 
 import MobileActionButtons from "./MobileActionButtons";
 import StaffHeader from "./StaffHeader";
@@ -66,8 +68,16 @@ const StaffDetail: React.FC = () => {
         });
         setStaffData(res.data);
         setAttendance(res.data.attendance);
-      } catch (error: any) {
-        if (error.response && error.response.status === 404) {
+      } catch (error: unknown) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "response" in error &&
+          error.response &&
+          typeof error.response === "object" &&
+          "status" in error.response &&
+          error.response.status === 404
+        ) {
           setNotificationMessage("Сотрудник не найден");
           setNotificationType("error");
           setShowNotification(true);
@@ -102,12 +112,6 @@ const StaffDetail: React.FC = () => {
       setStartDate(newEndDate);
     }
   };
-
-  const navigateToChildDepartment = useCallback(() => {
-    if (staffData) {
-      navigate(`/childDepartment/${staffData.department_id}`);
-    }
-  }, [navigate, staffData]);
 
   const generateLegendItems = useCallback(
     (attendanceData: Record<string, AttendanceData>) => {
@@ -200,9 +204,47 @@ const StaffDetail: React.FC = () => {
     );
   }, [attendance]);
 
+  const breadcrumbs = useMemo((): BreadcrumbItem[] => {
+    const items: BreadcrumbItem[] = [];
+
+    if (staffData?.department_id) {
+      items.push({
+        label: "Отделы",
+        onClick: () => navigate("/"),
+      });
+
+      items.push({
+        label: formatDepartmentName(staffData.department || ""),
+        onClick: () => navigate(`/childDepartment/${staffData.department_id}`),
+      });
+    }
+
+    if (staffData) {
+      items.push({
+        label: `${staffData.surname} ${staffData.name}`,
+      });
+    }
+
+    return items;
+  }, [staffData, navigate]);
+
+  useEffect(() => {
+    const scrollButton = document.querySelector(
+      '[aria-label="Прокрутить наверх"]'
+    ) as HTMLElement;
+    if (scrollButton) {
+      scrollButton.style.display = "none";
+    }
+    return () => {
+      if (scrollButton) {
+        scrollButton.style.display = "";
+      }
+    };
+  }, []);
+
   return (
     <motion.div
-      className="min-h-screen py-8 px-4 sm:px-8 lg:px-24"
+      className="min-h-screen py-4 sm:py-8 px-4 sm:px-8 lg:px-24"
       variants={containerVariants}
       initial="hidden"
       animate="visible"
@@ -221,7 +263,6 @@ const StaffDetail: React.FC = () => {
 
           {/* Мобильные кнопки */}
           <MobileActionButtons
-            navigateToChildDepartment={navigateToChildDepartment}
             setShowAbsenceModal={setShowAbsenceModal}
             handleDownloadExcel={handleDownloadExcel}
             handleDownloadZip={handleDownloadZip}
@@ -240,30 +281,41 @@ const StaffDetail: React.FC = () => {
           )}
 
           {staffData && (
-            <div className="w-full max-w-7xl lg:max-w-screen-2xl mx-auto bg-white dark:bg-gray-900 shadow-2xl rounded-xl overflow-hidden">
-              {/* Хедер */}
-              <StaffHeader
-                staffData={staffData}
-                navigateToChildDepartment={navigateToChildDepartment}
-                handleDownloadExcel={handleDownloadExcel}
-                handleDownloadZip={handleDownloadZip}
-                setShowAbsenceModal={setShowAbsenceModal}
-                hasAbsenceWithReason={hasAbsenceWithReason}
-              />
+            <div className="w-full max-w-7xl lg:max-w-screen-2xl mx-auto">
+              {/* Breadcrumbs */}
+              <motion.div
+                className="mb-4 sm:mb-6"
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+              >
+                <Breadcrumbs items={breadcrumbs} />
+              </motion.div>
 
-              {/* Информация о сотруднике */}
-              <EmployeeInfo staffData={staffData} />
+              <div className="bg-white dark:bg-gray-900 shadow-lg sm:shadow-2xl rounded-lg sm:rounded-xl overflow-hidden">
+                {/* Хедер */}
+                <StaffHeader
+                  staffData={staffData}
+                  handleDownloadExcel={handleDownloadExcel}
+                  handleDownloadZip={handleDownloadZip}
+                  setShowAbsenceModal={setShowAbsenceModal}
+                  hasAbsenceWithReason={hasAbsenceWithReason}
+                />
 
-              {/* Секция с дополнительной информацией и таблицей посещаемости */}
-              <AttendanceSection
-                staffData={staffData}
-                attendance={attendance}
-                startDate={startDate}
-                endDate={endDate}
-                handleStartDateChange={handleStartDateChange}
-                handleEndDateChange={handleEndDateChange}
-                legendItems={legendItems}
-              />
+                {/* Информация о сотруднике */}
+                <EmployeeInfo staffData={staffData} />
+
+                {/* Секция с дополнительной информацией и таблицей посещаемости */}
+                <AttendanceSection
+                  staffData={staffData}
+                  attendance={attendance}
+                  startDate={startDate}
+                  endDate={endDate}
+                  handleStartDateChange={handleStartDateChange}
+                  handleEndDateChange={handleEndDateChange}
+                  legendItems={legendItems}
+                />
+              </div>
             </div>
           )}
         </>
