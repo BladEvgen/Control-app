@@ -8,6 +8,7 @@ import React, {
 import HeaderComponent from "./components/HeaderComponent";
 import FooterComponent from "./components/FooterComponent";
 import AuthWebSocketInitializer from "./components/AuthWebSocketInitializer";
+import ScrollToTopButton from "./components/ScrollToTopButton";
 
 interface LayoutProps {
   children: ReactNode;
@@ -92,6 +93,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       </main>
 
       <FooterComponent />
+      <ScrollToTopButton />
     </div>
   );
 };
