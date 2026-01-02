@@ -151,9 +151,6 @@ export const clearAuthData = () => {
 const axiosInstance = axios.create({
   baseURL: `${apiUrl}/api`,
   timeout: 10000,
-  headers: {
-    "Content-Type": "application/json;charset=utf-8",
-  },
 });
 
 let refreshPromise: Promise<string> | null = null;
@@ -271,6 +268,16 @@ axiosInstance.interceptors.request.use(
   async (config) => {
     if (config.skipAuthInterceptor) {
       return config;
+    }
+
+    if (config.data instanceof FormData) {
+      delete config.headers["Content-Type"];
+    } else if (
+      config.data &&
+      typeof config.data === "object" &&
+      !config.headers["Content-Type"]
+    ) {
+      config.headers["Content-Type"] = "application/json;charset=utf-8";
     }
 
     try {
