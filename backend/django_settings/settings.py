@@ -356,6 +356,9 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+    ],
 }
 
 # JWT configurations
@@ -493,6 +496,11 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {name} {module} {funcName} {lineno} {message}",
+            "style": "{",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
         "standard": {
             "format": "{levelname} {asctime} {name} {module} {message}",
             "style": "{",
@@ -501,26 +509,61 @@ LOGGING = {
     },
     "handlers": {
         "file": {
-            "level": "INFO" if DEBUG else "WARNING",
+            "level": "DEBUG" if DEBUG else "INFO",
             "class": "logging.handlers.RotatingFileHandler",
             "filename": get_log_filename("log"),
             "maxBytes": 10 * 1024 * 1024,  # 10 MB
             "backupCount": 24,  # Keep logs for 24 hours
             "encoding": "utf-8",
-            "formatter": "standard",
-            "delay": True,
+            "formatter": "verbose",
+            "delay": False,
+        },
+        "console": {
+            "level": "INFO" if DEBUG else "WARNING",
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
         },
     },
     "loggers": {
         "": {
-            "handlers": ["file"],
+            "handlers": ["file", "console"] if DEBUG else ["file"],
             "level": "INFO" if DEBUG else "WARNING",
             "propagate": True,
         },
         "django": {
-            "handlers": ["file"],
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "django.request": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "monitoring_app": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "monitoring_app.views": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
             "level": "INFO" if DEBUG else "WARNING",
             "propagate": True,
+        },
+        "monitoring_app.serializers": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": True,
+        },
+        "monitoring_app.permissions": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": True,
+        },
+        "monitoring_app.middleware": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
         },
     },
 }

@@ -43,9 +43,20 @@ def invalidate_attendance_cache(_sender, instance, **kwargs):
         logger.info(f"Invalidated attendance cache for date: {date_str}")
 
 
-@receiver([post_save, post_delete], sender=Staff)
-def invalidate_staff_cache(_sender, instance, **kwargs):
-    """Инвалидирует кэш при изменении данных сотрудника."""
+@receiver(post_save, sender=Staff)
+def invalidate_staff_cache_on_save(sender, instance, created, **kwargs):
+    _ = sender
+    _ = created
+    if hasattr(instance, "pin") and instance.pin:
+        invalidate_cache(f"staff_{instance.pin}")
+        invalidate_cache_pattern(f"staff_detail_{instance.pin}*")
+        if hasattr(instance, "department") and instance.department:
+            invalidate_cache(f"child_department_detail_{instance.department.id}")
+        logger.info(f"Invalidated staff cache for PIN: {instance.pin}")
+
+
+@receiver(post_delete, sender=Staff)
+def invalidate_staff_cache_on_delete(_sender, instance, **kwargs):
     if hasattr(instance, "pin") and instance.pin:
         invalidate_cache(f"staff_{instance.pin}")
         invalidate_cache_pattern(f"staff_detail_{instance.pin}*")

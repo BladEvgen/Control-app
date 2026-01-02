@@ -39,7 +39,7 @@ class EnhancedSecurityMiddleware:
         self.allowed_origins = getattr(settings, "CORS_ALLOWED_ORIGINS", [])
         self.api_token = getattr(settings, "API_TOKEN", None)
         self.rate_limit = getattr(settings, "RATE_LIMIT", 20)
-        self.rate_period = getattr(settings, "RATE_PERIOD", 600)  # in seconds
+        self.rate_period = getattr(settings, "RATE_PERIOD", 600)
         self.exempt_paths = getattr(settings, "SECURITY_MIDDLEWARE_EXEMPT_PATHS", [])
 
     def __call__(self, request):
@@ -58,20 +58,19 @@ class EnhancedSecurityMiddleware:
         if self.is_exempt_path(current_path):
             return self.get_response(request)
 
-        # Check for Bearer token in Authorization header
         authorization = request.headers.get("Authorization", "")
         if authorization.startswith("Bearer "):
-            # Allow request to proceed; authentication handled by DRF
             return self.get_response(request)
 
-        # Check for x-api-token
         api_token = request.headers.get("x-api-token")
         if self.is_valid_api_token(api_token):
             return self.get_response(request)
 
-        # If neither Bearer token nor x-api-token is present, block the request
         client_ip = self.get_client_ip(request)
-        logger.warning(f"Invalid or missing API token from IP: {client_ip}")
+        logger.warning(
+            f"Invalid or missing API token from IP: {client_ip} for {request.method} {current_path}. "
+            f"Authorization header: {bool(authorization)}, x-api-token: {bool(api_token)}"
+        )
         return self.too_many_requests_response()
 
     def is_exempt_path(self, path):
@@ -117,7 +116,6 @@ class EnhancedSecurityMiddleware:
         window_start = current_time - self.rate_period
 
         request_times = cache.get(identifier, [])
-        # Remove timestamps outside the current window
         request_times = [
             timestamp for timestamp in request_times if timestamp > window_start
         ]
@@ -156,7 +154,6 @@ class EnhancedSecurityMiddleware:
         """
         x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
         if x_forwarded_for:
-            # X-Forwarded-For may contain multiple IPs, the first one is the client's IP
             ip = x_forwarded_for.split(",")[0].strip()
         else:
             ip = request.META.get("REMOTE_ADDR", "unknown")
@@ -178,7 +175,7 @@ class EnhancedSecurityMiddleware:
             "Content-Type, Authorization, x-api-token, X-API-KEY, X-Api-Key, Accept, Origin, X-Requested-With"
         )
         response["Access-Control-Allow-Credentials"] = "true"
-        response["Access-Control-Max-Age"] = "86400"  # 24 hours
+        response["Access-Control-Max-Age"] = "86400"
 
     def too_many_requests_response(self):
         """

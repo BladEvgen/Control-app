@@ -2,9 +2,13 @@ import datetime
 from typing import Any
 
 from django.contrib.auth.models import User
+import logging
+
 from rest_framework import serializers
 
 from monitoring_app import models
+
+logger = logging.getLogger(__name__)
 
 
 class UserSerializer(serializers.ModelSerializer):

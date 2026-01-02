@@ -2,7 +2,6 @@ import base64
 import datetime
 import json
 import logging
-import math
 import os
 import time
 import zipfile
@@ -35,6 +34,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from monitoring_app import (
     async_logic,
@@ -5070,6 +5070,9 @@ def recognize_faces(request):
 
 class AbsentReasonView(APIView):
     permission_classes = [permissions.IsAuthenticatedOrAPIKey]
+    # Используем только JWT authentication, чтобы избежать CSRF проверки
+    # SessionAuthentication требует CSRF токен, поэтому используем только JWT
+    authentication_classes = [JWTAuthentication]
 
     def get_date_interval(self, request):
         """
@@ -5311,13 +5314,34 @@ class AbsentReasonView(APIView):
           - **HTTP 201 CREATED**: Сообщение об успешном создании записи.
           - **HTTP 400 BAD REQUEST**: Если входные данные неверны.
         """
-        serializer = serializers.AbsentReasonSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            logger.info("Запись отсутствия успешно создана.")
+        # Проверяем права доступа перед валидацией
+        if not request.user.is_authenticated:
+            logger.warning("Пользователь не аутентифицирован для POST /api/absent_staff/")
             return Response(
-                {"message": "Запись отсутствия успешно создана."},
-                status=status.HTTP_201_CREATED,
+                {"error": "Требуется аутентификация"},
+                status=status.HTTP_403_FORBIDDEN,
             )
-        logger.error(f"Ошибка при создании записи отсутствия: {serializer.errors}")
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = serializers.AbsentReasonSerializer(data=request.data)
+
+        if serializer.is_valid():
+            try:
+                instance = serializer.save()
+                logger.info(
+                    f"Запись отсутствия создана. ID: {instance.id}, "
+                    f"Сотрудник: {instance.staff.pin if hasattr(instance, 'staff') and hasattr(instance.staff, 'pin') else 'N/A'}, "
+                    f"Период: {instance.start_date} - {instance.end_date}"
+                )
+                return Response(
+                    {"message": "Запись отсутствия успешно создана."},
+                    status=status.HTTP_201_CREATED,
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при сохранении записи отсутствия: {str(e)}", exc_info=True)
+                return Response(
+                    {"error": f"Ошибка при сохранении: {str(e)}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+        else:
+            logger.warning(f"Ошибка валидации данных: {serializer.errors}")
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
