@@ -1,4 +1,5 @@
 import os
+from calendar import month_abbr
 from collections import defaultdict
 from datetime import timedelta
 
@@ -9,8 +10,7 @@ from django.contrib.admin.models import LogEntry
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
-from django.db.models import Avg, Count, F, Func, Q, Value
-from django.db.models.functions import Power, Sqrt
+from django.db.models import Avg, Count, F, Q
 from django.http import JsonResponse
 from django.template.response import TemplateResponse
 from django.urls import path
@@ -18,7 +18,6 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.html import format_html
 from django_admin_geomap import ModelAdmin
-
 from monitoring_app.models import (
     AbsentReason,
     APIKey,
@@ -102,13 +101,21 @@ class MonitoringAdminSite(admin.AdminSite):
         }
 
         grouped_apps = []
+        all_models = {}
+        for app_label, app_data in app_dict.items():
+            models_list = app_data.get("models", [])
+            if not models_list:
+                continue
+            for model_data in models_list:
+                model_name = model_data.get("object_name")
+                if model_name:
+                    all_models[model_name] = model_data
+
         for group_id, group_info in groups.items():
             group_models = []
             for model_name in group_info["models"]:
-                for app_name, app_data in app_dict.items():
-                    for model_data in app_data["models"]:
-                        if model_data["object_name"] == model_name:
-                            group_models.append(model_data)
+                if model_name in all_models:
+                    group_models.append(all_models[model_name])
 
             if group_models:
                 grouped_apps.append(
@@ -117,10 +124,35 @@ class MonitoringAdminSite(admin.AdminSite):
                         "app_label": group_id,
                         "app_url": "#",
                         "has_module_perms": True,
-                        "models": sorted(group_models, key=lambda x: x["name"]),
+                        "models": sorted(group_models, key=lambda x: x.get("name", "")),
                         "icon": group_info["icon"],
                     }
                 )
+
+        used_models = set()
+        for group_info in groups.values():
+            used_models.update(group_info["models"])
+
+        unused_models = [
+            model_data
+            for model_name, model_data in all_models.items()
+            if model_name not in used_models
+        ]
+
+        if unused_models:
+            grouped_apps.append(
+                {
+                    "name": "Другие",
+                    "app_label": "other",
+                    "app_url": "#",
+                    "has_module_perms": True,
+                    "models": sorted(unused_models, key=lambda x: x.get("name", "")),
+                    "icon": "fa fa-list",
+                }
+            )
+
+        if not grouped_apps:
+            return super().get_app_list(request, app_label)
 
         return sorted(grouped_apps, key=lambda x: x["name"])
 
@@ -529,16 +561,20 @@ class PasswordResetRequestLogAdmin(admin.ModelAdmin):
         time_left = next_time - timezone.now()
 
         if time_left.total_seconds() <= 0:
-            return format_html('<span style="color: green;">Доступно</span>')
+            return format_html(
+                '<span style="color: green;">Доступно (можно запросить новый сброс пароля)</span>'
+            )
 
         minutes = int(time_left.total_seconds() // 60)
         seconds = int(time_left.total_seconds() % 60)
 
         return format_html(
-            '<span style="color: orange;">{} мин. {} сек.</span>', minutes, seconds
+            '<span style="color: orange;">Ожидание {} мин. {} сек. до следующего запроса</span>',
+            minutes,
+            seconds,
         )
 
-    time_until_next.short_description = "Время до разблокировки"
+    time_until_next.short_description = "Статус доступности запроса"
 
     fieldsets = (
         (
@@ -769,17 +805,23 @@ class ChildDepartmentAdmin(admin.ModelAdmin):
     )
 
     def staff_count(self, obj):
-        return Staff.objects.filter(department=obj).count()
+        return getattr(obj, "_staff_count", 0)
 
     staff_count.short_description = "Количество сотрудников"
 
     def avg_salary(self, obj):
-        avg = Salary.objects.filter(staff__department=obj).aggregate(
-            avg=Avg("net_salary")
-        )["avg"]
+        avg = getattr(obj, "_avg_salary", None)
         return f"{int(avg)} руб." if avg else "Н/Д"
 
     avg_salary.short_description = "Средняя зарплата"
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        qs = qs.annotate(
+            _staff_count=Count("staff", distinct=True),
+            _avg_salary=Avg("staff__salaries__net_salary"),
+        )
+        return qs
 
 
 @admin.register(Position, site=admin_site)
@@ -800,7 +842,7 @@ class PositionAdmin(admin.ModelAdmin):
     )
 
     def staff_count(self, obj):
-        return obj.staff_set.count()
+        return getattr(obj, "_staff_count", 0)
 
     staff_count.short_description = "Количество сотрудников"
 
@@ -836,9 +878,8 @@ class StaffAdmin(admin.ModelAdmin):
         "department",
         "display_positions",
         "needs_training_status",
-        "avatar_thumbnail",
-        "attendance_today",
     )
+    list_per_page = 50
     list_filter = (
         DepartmentHierarchyFilter,
         "positions",
@@ -927,77 +968,179 @@ class StaffAdmin(admin.ModelAdmin):
     def needs_training_status(self, obj):
         if obj.needs_training:
             return format_html(
-                '<span style="color: red;">⚠️ Нуждается в тренировке</span>'
+                '<span style="color: red;">Требуется обучение модели</span>'
             )
-        return format_html(
-            '<span style="color: green;">✓ Тренировка не требуется</span>'
-        )
+        return format_html('<span style="color: green;">Модель обучена</span>')
 
-    needs_training_status.short_description = "Статус тренировки ML"
+    needs_training_status.short_description = "Статус обучения модели"
 
     def display_positions(self, obj):
-        return ", ".join(position.name for position in obj.positions.all())
+        positions = obj.positions.all()
+        return ", ".join(position.name for position in positions[:5])
 
     def attendance_today(self, obj):
         today = timezone.now().date()
-        attendance = StaffAttendance.objects.filter(staff=obj, date_at=today).first()
+        cache_key = f"attendance_today_{obj.pin}_{today}"
+        cached_result = cache.get(cache_key)
+        if cached_result is not None:
+            return format_html(cached_result)
 
-        if not attendance:
-            remote = (
-                RemoteWork.objects.filter(staff=obj, permanent_remote=True).exists()
-                or RemoteWork.objects.filter(
-                    staff=obj, start_date__lte=today, end_date__gte=today
-                ).exists()
-            )
-
-            if remote:
-                return format_html('<span style="color: blue;">🏠 Удаленно</span>')
-
-            absence = AbsentReason.objects.filter(
-                staff=obj, start_date__lte=today, end_date__gte=today, approved=True
+        attendance = None
+        if hasattr(obj, "attendance_today_list") and obj.attendance_today_list:
+            attendance = obj.attendance_today_list[0]
+        else:
+            attendance = StaffAttendance.objects.filter(
+                staff=obj, date_at=today
             ).first()
 
-            if absence:
-                return format_html(
-                    '<span style="color: orange;">⚠️ Отсутствует: {}</span>',
-                    absence.reason,
+        if not attendance:
+            remote = False
+            if hasattr(obj, "remote_work"):
+                remote_works = list(obj.remote_work.all())
+                remote = any(
+                    rw.permanent_remote
+                    or (
+                        rw.start_date
+                        and rw.end_date
+                        and rw.start_date <= today <= rw.end_date
+                    )
+                    for rw in remote_works
+                )
+            else:
+                remote = (
+                    RemoteWork.objects.filter(staff=obj, permanent_remote=True).exists()
+                    or RemoteWork.objects.filter(
+                        staff=obj, start_date__lte=today, end_date__gte=today
+                    ).exists()
                 )
 
-            return format_html('<span style="color: red;">❌ Отсутствует</span>')
+            if remote:
+                result = '<span style="color: blue;">🏠 Удаленно</span>'
+                cache.set(cache_key, result, 300)
+                return format_html(result)
+
+            absence = None
+            if hasattr(obj, "absences"):
+                absences = list(obj.absences.all())
+                absence = next(
+                    (
+                        a
+                        for a in absences
+                        if a.start_date <= today <= a.end_date and a.approved
+                    ),
+                    None,
+                )
+            else:
+                absence = AbsentReason.objects.filter(
+                    staff=obj, start_date__lte=today, end_date__gte=today, approved=True
+                ).first()
+
+            if absence:
+                result = f'<span style="color: orange;">⚠️ Отсутствует: {absence.get_reason_display()}</span>'
+                cache.set(cache_key, result, 300)
+                return format_html(result)
+
+            result = '<span style="color: red;">❌ Отсутствует</span>'
+            cache.set(cache_key, result, 300)
+            return format_html(result)
 
         if attendance.first_in and not attendance.last_out:
-            return format_html('<span style="color: green;">✓ Присутствует</span>')
+            result = '<span style="color: green;">✓ Присутствует</span>'
+            cache.set(cache_key, result, 300)
+            return format_html(result)
 
         if attendance.first_in and attendance.last_out:
-            return format_html('<span style="color: purple;">↩️ Ушел</span>')
+            result = '<span style="color: purple;">↩️ Ушел</span>'
+            cache.set(cache_key, result, 300)
+            return format_html(result)
 
-        return format_html('<span style="color: gray;">? Неизвестно</span>')
+        result = '<span style="color: gray;">? Неизвестно</span>'
+        cache.set(cache_key, result, 300)
+        return format_html(result)
 
     attendance_today.short_description = "Присутсвие сегодня/вчера"
 
     def attendance_history(self, obj):
+        cache_key = f"attendance_history_{obj.pin}_{timezone.now().date()}"
+        cached_html = cache.get(cache_key)
+        if cached_html:
+            return format_html(cached_html)
+
         end_date = timezone.now().date()
         start_date = end_date - timedelta(days=6)
 
-        attendance_records = StaffAttendance.objects.filter(
+        attendance_records = (
+            StaffAttendance.objects.filter(
+                staff=obj, date_at__range=(start_date, end_date)
+            )
+            .select_related("absence_reason")
+            .order_by("date_at")
+        )
+        records_dict = {rec.date_at: rec for rec in attendance_records}
+
+        lesson_records = LessonAttendance.objects.filter(
             staff=obj, date_at__range=(start_date, end_date)
-        ).order_by("date_at")
+        ).order_by("date_at", "first_in")
+        lessons_dict = defaultdict(list)
+        for lesson in lesson_records:
+            lessons_dict[lesson.date_at].append(lesson)
+
+        remote_works = RemoteWork.objects.filter(staff=obj).order_by("start_date")
+        remote_periods = []
+        for rw in remote_works:
+            if rw.permanent_remote:
+                remote_periods.append((None, None))
+            elif rw.start_date and rw.end_date:
+                remote_periods.append((rw.start_date, rw.end_date))
+
+        holidays = PublicHoliday.objects.filter(date__range=(start_date, end_date))
+        holidays_dict = {hol.date: hol for hol in holidays}
 
         html = '<div style="display: flex; gap: 10px; flex-wrap: wrap;">'
 
         current_date = start_date
         while current_date <= end_date:
-            record = next(
-                (a for a in attendance_records if a.date_at == current_date), None
+            record = records_dict.get(current_date)
+            lessons = lessons_dict.get(current_date, [])
+            is_remote = any(
+                (start is None and end is None)
+                or (start and end and start <= current_date <= end)
+                for start, end in remote_periods
             )
 
             is_weekend = current_date.weekday() >= 5
-            bg_color = "#f5f5f5" if is_weekend else "white"
+            holiday = holidays_dict.get(current_date)
+            is_holiday_or_weekend = is_weekend or holiday
+            bg_color = "#f5f5f5" if is_holiday_or_weekend else "white"
 
-            html += f'<div style="border: 1px solid #ddd; padding: 10px; background: {bg_color}; width: 120px;">'
+            html += f'<div style="border: 1px solid #ddd; padding: 10px; background: {bg_color}; width: 140px;">'
             html += f'<div style="font-weight: bold;">{current_date.strftime("%d.%m.%Y")}</div>'
 
-            if record:
+            if holiday:
+                html += f'<div style="color: purple; font-weight: bold;">{holiday.name}</div>'
+                if record:
+                    if record.first_in:
+                        in_time = timezone.localtime(record.first_in).strftime("%H:%M")
+                        html += f'<div style="color: green; font-size: 0.9em;">Вход: {in_time}</div>'
+                    if record.last_out:
+                        out_time = timezone.localtime(record.last_out).strftime("%H:%M")
+                        html += f'<div style="color: blue; font-size: 0.9em;">Выход: {out_time}</div>'
+                    if record.absence_reason:
+                        html += f'<div style="color: orange; font-size: 0.9em;">{record.absence_reason.get_reason_display()}</div>'
+            elif is_weekend:
+                html += '<div style="color: gray; font-weight: bold;">Выходной</div>'
+                if record:
+                    if record.first_in:
+                        in_time = timezone.localtime(record.first_in).strftime("%H:%M")
+                        html += f'<div style="color: green; font-size: 0.9em;">Вход: {in_time}</div>'
+                    if record.last_out:
+                        out_time = timezone.localtime(record.last_out).strftime("%H:%M")
+                        html += f'<div style="color: blue; font-size: 0.9em;">Выход: {out_time}</div>'
+                    if record.absence_reason:
+                        html += f'<div style="color: orange; font-size: 0.9em;">{record.absence_reason.get_reason_display()}</div>'
+            elif is_remote:
+                html += '<div style="color: blue; font-weight: bold;">Удаленно</div>'
+            elif record:
                 if record.first_in:
                     in_time = timezone.localtime(record.first_in).strftime("%H:%M")
                     html += f'<div style="color: green;">Вход: {in_time}</div>'
@@ -1011,27 +1154,31 @@ class StaffAdmin(admin.ModelAdmin):
                     html += '<div style="color: gray;">Нет выхода</div>'
 
                 if record.absence_reason:
-                    html += f'<div style="color: orange;">{record.absence_reason}</div>'
+                    html += f'<div style="color: orange;">{record.absence_reason.get_reason_display()}</div>'
+            elif lessons:
+                html += f'<div style="color: purple; font-weight: bold;">Занятий: {len(lessons)}</div>'
+                for lesson in lessons[:2]:
+                    in_time = timezone.localtime(lesson.first_in).strftime("%H:%M")
+                    html += f'<div style="color: purple; font-size: 0.9em;">{lesson.subject_name[:15]} {in_time}</div>'
+                if len(lessons) > 2:
+                    html += f'<div style="color: purple; font-size: 0.9em;">...и еще {len(lessons) - 2}</div>'
             else:
-                holiday = PublicHoliday.objects.filter(date=current_date).first()
-                if holiday:
-                    html += f'<div style="color: purple;">{holiday.name}</div>'
-                elif is_weekend:
-                    html += '<div style="color: gray;">Выходной</div>'
-                else:
-                    html += '<div style="color: red;">Нет данных</div>'
+                html += '<div style="color: red;">Нет данных</div>'
 
             html += "</div>"
             current_date += timedelta(days=1)
 
         html += "</div>"
+        cache.set(cache_key, html, 3600)
         return format_html(html)
 
     attendance_history.short_description = "История посещаемости за 7 дней"
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = qs.select_related("department").prefetch_related("positions")
+        qs = qs.select_related("department").prefetch_related(
+            "positions", "attendance", "remote_work", "absences"
+        )
         return qs
 
     display_positions.short_description = "Должности"
@@ -1048,11 +1195,11 @@ class StaffAdmin(admin.ModelAdmin):
         queryset.update(needs_training=True)
         self.message_user(
             request,
-            "Статус 'Нуждается в тренировке' был изменён на 'True' для выбранных сотрудников.",
+            "Статус 'Требуется обучение модели' был изменён на 'True' для выбранных сотрудников.",
         )
 
     mark_needs_training_true.short_description = (
-        "Установить 'Нуждается в тренировке' для выбранных сотрудников"
+        "Установить 'Требуется обучение модели' для выбранных сотрудников"
     )
 
     def export_staff_data(self, request, queryset):
@@ -1126,15 +1273,15 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
                     count += 1
 
         if count == 0:
-            return format_html('<span style="color: red;">❌ Нет аугментаций</span>')
+            return format_html('<span style="color: red;">Нет аугментаций</span>')
         elif count < 10:
             return format_html(
-                '<span style="color: orange;">⚠️ Недостаточно аугментаций ({}/10)</span>',
+                '<span style="color: orange;">Недостаточно аугментаций ({}/10)</span>',
                 count,
             )
         else:
             return format_html(
-                '<span style="color: green;">✓ Аугментировано ({} изображений)</span>',
+                '<span style="color: green;">Аугментировано ({} изображений)</span>',
                 count,
             )
 
@@ -1189,7 +1336,12 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
     staff_department.admin_order_field = "staff__department"
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related("staff__department")
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("staff", "staff__department")
+            .prefetch_related("staff__positions")
+        )
 
     fieldsets = (
         (
@@ -1275,6 +1427,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
     search_fields = ("staff__surname", "staff__name", "staff__pin")
     date_hierarchy = "date_at"
     ordering = ("-date_at", "staff")
+    list_per_page = 50
     actions = ["export_attendance_data", "mark_as_absent"]
 
     readonly_fields = (
@@ -1283,7 +1436,6 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         "first_in",
         "last_out",
         "duration",
-        "staff_info",
         "area_name_out",
         "area_name_in",
     )
@@ -1293,7 +1445,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
             "Основная информация",
             {
                 "fields": (
-                    "staff_info",
+                    "staff",
                     "date_at",
                     "first_in",
                     "last_out",
@@ -1340,12 +1492,16 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
     def duration(self, obj):
         if obj.first_in and obj.last_out:
             delta = obj.last_out - obj.first_in
-            total_seconds = delta.total_seconds()
-            hours, remainder = divmod(int(total_seconds), 3600)
-            minutes, seconds = divmod(remainder, 60)
+            total_seconds = int(delta.total_seconds())
 
-            if hours > 24:
-                hours = hours % 24
+            if total_seconds < 0:
+                return format_html('<span style="color: red;">Ошибка времени</span>')
+
+            if total_seconds > 86400:
+                total_seconds = 86400
+
+            hours, remainder = divmod(total_seconds, 3600)
+            minutes = remainder // 60
 
             time_str = f"{hours:02d}:{minutes:02d}"
 
@@ -1363,28 +1519,58 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         if not obj.staff:
             return "Нет данных о сотруднике"
 
+        cache_key = f"staff_info_{obj.staff.pin}_{obj.id}"
+        cached_html = cache.get(cache_key)
+        if cached_html:
+            return format_html(cached_html)
+
+        positions = list(obj.staff.positions.all()[:3])
+        positions_str = (
+            ", ".join(p.name for p in positions) if positions else "Не указаны"
+        )
+
+        avatar_html = self.staff_avatar(obj)
+
         html = f"""
         <div style="display: flex; align-items: center; gap: 20px;">
             <div style="flex-shrink: 0;">
-                {self.staff_avatar(obj)}
+                {avatar_html}
             </div>
             <div>
                 <h3 style="margin: 0;">{obj.staff.surname} {obj.staff.name}</h3>
                 <p style="margin: 5px 0;">PIN: {obj.staff.pin}</p>
                 <p style="margin: 5px 0;">Отдел: {obj.staff.department.name if obj.staff.department else "Не указан"}</p>
-                <p style="margin: 5px 0;">Должности: {", ".join(p.name for p in obj.staff.positions.all())}</p>
+                <p style="margin: 5px 0;">Должности: {positions_str}</p>
             </div>
         </div>
         """
+        cache.set(cache_key, html, 3600)
         return format_html(html)
 
     staff_info.short_description = "Информация о сотруднике"
 
     def staff_avatar(self, obj):
-        if obj.staff.avatar:
+        if not obj.staff:
+            return format_html(
+                '<div style="width: 100px; height: 100px; border-radius: 50%; background-color: #f0f0f0; display: flex; justify-content: center; align-items: center;">'
+                '<span style="color: #999;">Нет фото</span>'
+                "</div>"
+            )
+
+        cache_key = f"staff_avatar_url_{obj.staff.pin}"
+        avatar_url = cache.get(cache_key)
+
+        if avatar_url is None:
+            if obj.staff.avatar:
+                avatar_url = obj.staff.avatar.url
+            else:
+                avatar_url = ""
+            cache.set(cache_key, avatar_url, 86400)
+
+        if avatar_url:
             return format_html(
                 '<img src="{}" width="100" height="100" style="border-radius: 50%; object-fit: cover;" />',
-                obj.staff.avatar.url,
+                avatar_url,
             )
         return format_html(
             '<div style="width: 100px; height: 100px; border-radius: 50%; background-color: #f0f0f0; display: flex; justify-content: center; align-items: center;">'
@@ -1400,14 +1586,34 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = qs.select_related("staff__department").prefetch_related("staff__positions")
+        qs = (
+            qs.select_related("staff__department", "absence_reason")
+            .prefetch_related("staff__positions")
+            .only(
+                "id",
+                "staff__id",
+                "staff__surname",
+                "staff__name",
+                "staff__pin",
+                "staff__avatar",
+                "staff__department__name",
+                "date_at",
+                "first_in",
+                "last_out",
+                "area_name_in",
+                "area_name_out",
+                "absence_reason__reason",
+            )
+        )
 
         excluded = request.GET.get("exclude_unknown", "yes")
         if excluded == "yes":
-            qs = qs.exclude(area_name_in__isnull=True)
-            qs = qs.exclude(area_name_out__isnull=True)
-            qs = qs.exclude(area_name_in="Unknown")
-            qs = qs.exclude(area_name_out="Unknown")
+            qs = (
+                qs.exclude(area_name_in__isnull=True)
+                .exclude(area_name_out__isnull=True)
+                .exclude(area_name_in="Unknown")
+                .exclude(area_name_out="Unknown")
+            )
 
         return qs
 
@@ -1422,6 +1628,14 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         if not value or value == "Unknown":
             return format_html('<span style="color: #999;">N/A</span>')
         return value
+
+    def get_object(self, request, object_id, from_field=None):
+        obj = super().get_object(request, object_id, from_field)
+        if obj:
+            if hasattr(obj, "staff"):
+                if not hasattr(obj.staff, "_prefetched_objects_cache"):
+                    obj.staff.positions.all()
+        return obj
 
     def changelist_view(self, request, extra_context=None):
         response = super().changelist_view(request, extra_context=extra_context)
@@ -1518,8 +1732,8 @@ class LessonAttendanceAdmin(ModelAdmin):
         "lesson_duration",
         "date_at",
         "has_photo",
-        "closest_location",
     )
+    list_per_page = 50
 
     list_filter = (
         DateRangeFilter,
@@ -1542,25 +1756,25 @@ class LessonAttendanceAdmin(ModelAdmin):
     def lesson_duration(self, obj):
         if obj.first_in and obj.last_out:
             delta = obj.last_out - obj.first_in
-            total_seconds = delta.total_seconds()
-            hours, remainder = divmod(int(total_seconds), 3600)
-            minutes, seconds = divmod(remainder, 60)
+            total_seconds = int(delta.total_seconds())
 
-            if hours > 24:
-                hours = hours % 24
+            if total_seconds < 0:
+                return format_html('<span style="color: red;">Ошибка времени</span>')
+
+            if total_seconds > 86400:
+                total_seconds = 86400
+
+            hours, remainder = divmod(total_seconds, 3600)
+            minutes = remainder // 60
+
+            time_str = f"{hours:02d}:{minutes:02d}"
 
             if hours < 1:
-                return format_html(
-                    '<span style="color: red;">{:02}:{:02}</span>', hours, minutes
-                )
+                return format_html('<span style="color: red;">{}</span>', time_str)
             elif hours < 2:
-                return format_html(
-                    '<span style="color: orange;">{:02}:{:02}</span>', hours, minutes
-                )
+                return format_html('<span style="color: orange;">{}</span>', time_str)
             else:
-                return format_html(
-                    '<span style="color: green;">{:02}:{:02}</span>', hours, minutes
-                )
+                return format_html('<span style="color: green;">{}</span>', time_str)
         return "-"
 
     lesson_duration.short_description = "Продолжительность"
@@ -1600,9 +1814,37 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     location_map.short_description = "Карта местоположения"
 
+    def get_object(self, request, object_id, from_field=None):
+        obj = super().get_object(request, object_id, from_field)
+        if obj and hasattr(obj, "staff"):
+            if not hasattr(obj.staff, "_prefetched_objects_cache"):
+                obj.staff.positions.all()
+        return obj
+
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = qs.select_related("staff")
+        qs = (
+            qs.select_related("staff", "staff__department")
+            .prefetch_related("staff__positions")
+            .only(
+                "id",
+                "staff__id",
+                "staff__surname",
+                "staff__name",
+                "staff__pin",
+                "staff__avatar",
+                "staff__department__name",
+                "subject_name",
+                "tutor_id",
+                "tutor",
+                "first_in",
+                "last_out",
+                "date_at",
+                "staff_image_path",
+                "latitude",
+                "longitude",
+            )
+        )
 
         photo_expired = request.GET.get("photo_expired")
         if photo_expired == "yes":
@@ -1626,51 +1868,38 @@ class LessonAttendanceAdmin(ModelAdmin):
         if obj.latitude is None or obj.longitude is None:
             return "N/A"
 
-        # Try to get from cache first
-        cache_key = f"closest_location_{obj.id}"
+        cache_key = f"closest_location_{obj.id}_{obj.latitude:.4f}_{obj.longitude:.4f}"
         cached_result = cache.get(cache_key)
         if cached_result:
             return format_html(cached_result)
 
-        radius = 300  # в метрах
+        radius = 300
         obj_lat, obj_lon = obj.latitude, obj.longitude
 
-        class Radians(Func):
-            function = "RADIANS"
-            template = "%(function)s(%(expressions)s)"
+        locations = ClassLocation.objects.all()
+        closest = None
+        min_distance = float("inf")
 
-        class Cos(Func):
-            function = "COS"
-            template = "%(function)s(%(expressions)s)"
+        for loc in locations:
+            lat_diff = abs(loc.latitude - obj_lat) * 111320
+            lon_diff = abs(loc.longitude - obj_lon) * 111320 * abs(obj_lat / 90)
+            distance = (lat_diff**2 + lon_diff**2) ** 0.5
 
-        K = 111320
+            if distance < min_distance and distance <= radius:
+                min_distance = distance
+                closest = loc
 
-        delta_lat = F("latitude") - obj_lat
-        delta_lon = F("longitude") - obj_lon
-
-        delta_lat_m = delta_lat * K
-        delta_lon_m = delta_lon * K * Cos(Radians(Value(obj_lat)))
-
-        distance_expr = Sqrt(Power(delta_lat_m, 2) + Power(delta_lon_m, 2))
-
-        locations = (
-            ClassLocation.objects.annotate(distance=distance_expr)
-            .filter(distance__lte=radius)
-            .order_by("distance")
-        )
-
-        if locations.exists():
-            location = locations.first()
+        if closest:
             result = format_html(
                 '<span style="color: green;">{}</span><br><small>{}</small>',
-                location.name,
-                location.address,
+                closest.name,
+                closest.address,
             )
-            cache.set(cache_key, result, 3600)
+            cache.set(cache_key, result, 86400)  # Кэш на 24 часа
             return result
         else:
             result = format_html('<span style="color: red;">Неизвестно</span>')
-            cache.set(cache_key, result, 3600)
+            cache.set(cache_key, result, 86400)
             return result
 
     closest_location.short_description = "Ближайшая локация"
@@ -1743,6 +1972,14 @@ class ClassLocationAdmin(ModelAdmin):
             },
         ),
         (
+            "Координаты",
+            {
+                "fields": (("latitude", "longitude"),),
+                "classes": ("wide",),
+                "description": "Введите координаты вручную или выберите на карте ниже. Можно перевыбрать координаты на карте.",
+            },
+        ),
+        (
             "Статистика",
             {
                 "fields": ("attendance_stats",),
@@ -1769,37 +2006,52 @@ class ClassLocationAdmin(ModelAdmin):
     search_fields = ("name", "address")
 
     def attendance_stats(self, obj):
-        html = """
-        <div style="width: 100%; height: 300px; background-color: #f9f9f9; padding: 20px; border-radius: 5px;">
-            <h3>Статистика посещаемости по месяцам</h3>
-            <div style="display: flex; height: 200px; align-items: flex-end;">
-                <div style="flex: 1; margin: 0 5px;">
-                    <div style="background-color: #4CAF50; height: 80%; width: 100%;"></div>
-                    <div style="text-align: center; padding-top: 5px;">Янв</div>
-                </div>
-                <div style="flex: 1; margin: 0 5px;">
-                    <div style="background-color: #4CAF50; height: 65%; width: 100%;"></div>
-                    <div style="text-align: center; padding-top: 5px;">Фев</div>
-                </div>
-                <div style="flex: 1; margin: 0 5px;">
-                    <div style="background-color: #4CAF50; height: 75%; width: 100%;"></div>
-                    <div style="text-align: center; padding-top: 5px;">Мар</div>
-                </div>
-                <div style="flex: 1; margin: 0 5px;">
-                    <div style="background-color: #4CAF50; height: 90%; width: 100%;"></div>
-                    <div style="text-align: center; padding-top: 5px;">Апр</div>
-                </div>
-                <div style="flex: 1; margin: 0 5px;">
-                    <div style="background-color: #4CAF50; height: 60%; width: 100%;"></div>
-                    <div style="text-align: center; padding-top: 5px;">Май</div>
-                </div>
-                <div style="flex: 1; margin: 0 5px;">
-                    <div style="background-color: #4CAF50; height: 45%; width: 100%;"></div>
-                    <div style="text-align: center; padding-top: 5px;">Июн</div>
-                </div>
-            </div>
-        </div>
-        """
+        now = timezone.now()
+        months_data = []
+        month_names = []
+
+        for i in range(6):
+            month_date = now - timedelta(days=30 * i)
+            month_start = month_date.replace(
+                day=1, hour=0, minute=0, second=0, microsecond=0
+            )
+            if i == 0:
+                month_end = now
+            else:
+                next_month = month_start + timedelta(days=32)
+                month_end = next_month.replace(day=1) - timedelta(seconds=1)
+
+            radius = 0.0027
+            lessons_count = LessonAttendance.objects.filter(
+                latitude__gte=obj.latitude - radius,
+                latitude__lte=obj.latitude + radius,
+                longitude__gte=obj.longitude - radius,
+                longitude__lte=obj.longitude + radius,
+                first_in__gte=month_start,
+                first_in__lte=month_end,
+            ).count()
+
+            months_data.append(lessons_count)
+            month_names.append(month_abbr[month_start.month])
+
+        months_data.reverse()
+        month_names.reverse()
+
+        max_count = max(months_data) if months_data else 1
+
+        html = '<div style="width: 100%; height: 300px; background-color: #f9f9f9; padding: 20px; border-radius: 5px;">'
+        html += "<h3>Статистика посещаемости по месяцам (последние 6 месяцев)</h3>"
+        html += '<div style="display: flex; height: 200px; align-items: flex-end; justify-content: space-around;">'
+
+        for month_name, count in zip(month_names, months_data):
+            height_percent = (count / max_count * 100) if max_count > 0 else 0
+            html += '<div style="flex: 1; margin: 0 5px; display: flex; flex-direction: column; align-items: center;">'
+            html += f'<div style="background-color: #4CAF50; height: {height_percent}%; width: 100%; min-height: 5px;"></div>'
+            html += f'<div style="text-align: center; padding-top: 5px; font-size: 0.9em;">{month_name}</div>'
+            html += f'<div style="text-align: center; font-size: 0.8em; color: #666;">{count}</div>'
+            html += "</div>"
+
+        html += "</div></div>"
         return format_html(html)
 
     attendance_stats.short_description = "Статистика посещаемости"
@@ -1864,7 +2116,12 @@ class SalaryAdmin(admin.ModelAdmin):
     tax_amount.short_description = "Сумма налога"
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related("staff__department")
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("staff", "staff__department")
+            .prefetch_related("staff__positions")
+        )
 
     def calculate_bonuses(self, request, queryset):
         count = queryset.count()
@@ -2001,7 +2258,12 @@ class AbsentReasonAdmin(admin.ModelAdmin):
     document_preview.short_description = "Предпросмотр документа"
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related("staff")
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("staff", "staff__department")
+            .prefetch_related("staff__positions")
+        )
 
     def approve_selected(self, request, queryset):
         updated = queryset.update(approved=True)
@@ -2068,7 +2330,12 @@ class RemoteWorkAdmin(admin.ModelAdmin):
     get_remote_status.short_description = "Статус удаленной работы"
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related("staff")
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("staff", "staff__department")
+            .prefetch_related("staff__positions")
+        )
 
     def save_model(self, request, obj, form, change):
         try:
@@ -2134,8 +2401,10 @@ class PerformanceBonusRuleAdmin(admin.ModelAdmin):
     rule_description.short_description = "Описание правила"
 
 
-for model, admin_class in admin.site._registry.items():
-    if model not in admin_site._registry:
+standard_registry = getattr(admin.site, "_registry", {})
+custom_registry = getattr(admin_site, "_registry", {})
+for model, admin_class in standard_registry.items():
+    if model not in custom_registry:
         admin_site.register(model, type(admin_class))
 
 admin.site = admin_site
