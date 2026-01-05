@@ -316,3 +316,4 @@ backend/static/media/examples.zip
 *.conf
 backend/media/examples.zip
 backend/media/
+DB/

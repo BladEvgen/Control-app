@@ -331,6 +331,8 @@ STATICFILES_DIRS = [
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+BACKUP_DB_DIR = BASE_DIR.parent / "DB"
+
 # Attendance and augment paths
 ATTENDANCE_URL = "/attendance_media/"
 ATTENDANCE_ROOT = MEDIA_ROOT / "control_image" if DEBUG else "/mnt/disk/control_image/"
