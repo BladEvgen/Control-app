@@ -354,7 +354,9 @@ class Staff(models.Model):
         verbose_name="Фото Пользователя",
         validators=[FileExtensionValidator(allowed_extensions=["jpg", "jpeg", "png"])],
     )
-    needs_training = boolean_field(True, verbose_name="Тренировка модели")
+    needs_training = boolean_field(
+        True, verbose_name="Требуется обучение модели распознавания лиц"
+    )
 
     def __str__(self):
         return f"{self.surname} {self.name}"
@@ -485,6 +487,10 @@ class AbsentReason(models.Model):
         return f"{self.staff} - {self.get_reason_display()} ({self.start_date} - {self.end_date})"
 
     class Meta:
+        indexes = [
+            models.Index(fields=["staff", "start_date", "end_date"]),
+            models.Index(fields=["approved"]),
+        ]
         verbose_name = "Уважительная причина отсутствия"
         verbose_name_plural = "Уважительные причины отсутствия"
 
@@ -521,6 +527,10 @@ class RemoteWork(models.Model):
         )
 
     class Meta:
+        indexes = [
+            models.Index(fields=["staff", "start_date", "end_date"]),
+            models.Index(fields=["permanent_remote"]),
+        ]
         verbose_name = "Дистанционная работа"
         verbose_name_plural = "Дистанционная работа"
 
@@ -593,7 +603,12 @@ class StaffAttendance(models.Model):
 
     class Meta:
         unique_together = [["staff", "date_at"]]
-
+        indexes = [
+            models.Index(fields=["staff", "date_at"]),
+            models.Index(fields=["date_at"]),
+            models.Index(fields=["first_in"]),
+            models.Index(fields=["last_out"]),
+        ]
         verbose_name = "Посещаемость сотрудника"
         verbose_name_plural = "Посещаемость сотрудников"
 
@@ -676,6 +691,13 @@ class LessonAttendance(models.Model, GeoItem):
         return f"{self.subject_name} ({self.staff}) [{self.date_at}]"
 
     class Meta:
+        indexes = [
+            models.Index(fields=["staff", "date_at"]),
+            models.Index(fields=["date_at"]),
+            models.Index(fields=["first_in"]),
+            models.Index(fields=["last_out"]),
+            models.Index(fields=["tutor_id"]),
+        ]
         verbose_name = "Посещаемость занятия"
         verbose_name_plural = "Посещаемость занятий"
 
@@ -754,6 +776,10 @@ class Salary(models.Model):
     )
 
     class Meta:
+        indexes = [
+            models.Index(fields=["staff"]),
+            models.Index(fields=["contract_type"]),
+        ]
         verbose_name = "Зарплата"
         verbose_name_plural = "Зарплаты"
 
