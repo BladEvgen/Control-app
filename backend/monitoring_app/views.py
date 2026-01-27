@@ -19,23 +19,13 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Q, Count
+from django.db.models import Count, Q
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.generic import View
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from openpyxl import load_workbook
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import ValidationError
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.views import APIView
-from rest_framework_simplejwt.authentication import JWTAuthentication
-
 from monitoring_app import (
     async_logic,
     attendance_fetcher,
@@ -47,6 +37,25 @@ from monitoring_app import (
     utils,
 )
 from monitoring_app.cache_conf import Cache, get_cache
+from monitoring_app.lesson_locations_conf import (
+    ACCEPTANCE_R_CLUSTER,
+    ACCEPTANCE_R_SAME_POINT,
+    ACCEPTANCE_R_STANDALONE,
+    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+    CLUSTER_THRESHOLD_M,
+    DEFAULT_ACCEPTANCE_RADIUS_M,
+    SAME_POINT_THRESHOLD_M,
+)
+from openpyxl import load_workbook
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +72,7 @@ def atomic_block() -> Generator[None, None, None]:
 LUNCH_BREAK_START = datetime.time(hour=13, minute=0)
 LUNCH_BREAK_END = datetime.time(hour=14, minute=0)
 
-CLASS_LOCATION_CACHE_TTL = datetime.timedelta(minutes=5)
+CLASS_LOCATION_CACHE_TTL = datetime.timedelta(minutes=60)
 CLASS_LOCATION_CACHE = {
     "expires_at": None,
     "kd_tree": None,
@@ -75,8 +84,9 @@ CLASS_LOCATION_CACHE = {
 
 def get_class_location_cache():
     """
-    Возвращает кэшированные данные по локациям, включая KDTree и экземпляр LocationSearcher.
-    Кэш инвалидации – 5 минут.
+    Кэш локаций: KDTree, LocationSearcher, location_acceptance_radius_m.
+    R_loc (60–80 м по умолчанию или acceptance_radius_m из БД) — в Redis и in-memory;
+    Celery Beat / warmup_class_location_buffers обновляют.
     """
     now = timezone.now()
     cache_expired = (
@@ -86,7 +96,9 @@ def get_class_location_cache():
 
     if cache_expired:
         locations = list(
-            models.ClassLocation.objects.only("name", "latitude", "longitude")
+            models.ClassLocation.objects.only(
+                "id", "name", "latitude", "longitude", "acceptance_radius_m"
+            )
         )
         payload = [
             {
@@ -119,6 +131,31 @@ def get_class_location_cache():
             except Exception as exc:
                 logger.warning(f"LocationSearcher initialization failed: {exc}")
 
+        locs_with_coords = [
+            loc
+            for loc in locations
+            if loc.latitude is not None and loc.longitude is not None
+        ]
+        location_acceptance_radius_m = Cache.get(
+            CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY
+        )
+        if location_acceptance_radius_m is None:
+            location_acceptance_radius_m = (
+                utils.compute_class_location_acceptance_radii(
+                    locs_with_coords,
+                    r_same_point=ACCEPTANCE_R_SAME_POINT,
+                    r_cluster=ACCEPTANCE_R_CLUSTER,
+                    r_standalone=ACCEPTANCE_R_STANDALONE,
+                    same_point_threshold=SAME_POINT_THRESHOLD_M,
+                    cluster_threshold=CLUSTER_THRESHOLD_M,
+                )
+            )
+            Cache.set(
+                CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+                location_acceptance_radius_m,
+                CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+            )
+
         CLASS_LOCATION_CACHE.update(
             {
                 "expires_at": now + CLASS_LOCATION_CACHE_TTL,
@@ -126,6 +163,7 @@ def get_class_location_cache():
                 "class_names": class_names,
                 "searcher_payload": payload,
                 "searcher": searcher,
+                "location_acceptance_radius_m": location_acceptance_radius_m,
             }
         )
 
@@ -674,15 +712,13 @@ def map_location(request):
 
 @swagger_auto_schema(
     method="GET",
-    operation_summary="Получить список локаций для занятий",
+    operation_summary="Список локаций для занятий",
     operation_description=(
-        "Возвращает список всех локаций для занятий с их координатами и адресами. "
-        "Удобен для внешних систем - можно получить все локации и самостоятельно "
-        "рассчитать расстояние на стороне клиента.\n\n"
-        "Если переданы параметры latitude и longitude, возвращает ближайшую локацию "
-        "с точным расстоянием в метрах (точность до 10-15 метров через формулу Haversine). "
-        "Всегда использует актуальные данные из базы данных, включая недавно добавленные локации. "
-        "Если в одном месте находятся несколько локаций, выбирается ближайшая по точному расстоянию."
+        "**Без latitude/longitude:** все локации (id, name, address, latitude, longitude). "
+        "Поле distance отсутствует.\n\n"
+        "**С latitude и longitude:** фронт шлёт координаты, ответ — «в локации или нет». "
+        "Только локации, где d ≤ R_loc: d — Haversine (user, pin) в м, R_loc из кэша/БД. "
+        "Сортировка по d. В элементе: distance = d (м, 2 знака). Если ни одна не подходит → 404."
     ),
     tags=["Locations"],
     manual_parameters=[
@@ -691,7 +727,7 @@ def map_location(request):
             in_=openapi.IN_HEADER,
             type=openapi.TYPE_STRING,
             required=False,
-            description="API ключ для аутентификации (альтернатива JWT токену).",
+            description="API ключ (альтернатива JWT).",
         ),
         openapi.Parameter(
             name="latitude",
@@ -699,8 +735,8 @@ def map_location(request):
             type=openapi.TYPE_NUMBER,
             format=openapi.FORMAT_FLOAT,
             required=False,
-            description="Широта для поиска ближайшей локации",
-            example=43.207674,
+            description="Широта пользователя (WGS84). Для поиска по радиусу нужны оба: latitude и longitude.",
+            example=43.246871,
         ),
         openapi.Parameter(
             name="longitude",
@@ -708,21 +744,23 @@ def map_location(request):
             type=openapi.TYPE_NUMBER,
             format=openapi.FORMAT_FLOAT,
             required=False,
-            description="Долгота для поиска ближайшей локации",
-            example=76.851377,
+            description="Долгота пользователя (WGS84). Для поиска по радиусу нужны оба: latitude и longitude.",
+            example=76.944923,
         ),
     ],
     responses={
         200: openapi.Response(
-            description="Список локаций или ближайшая локация",
+            description="locations. Без lat/lon: все, без distance. С lat/lon: d ≤ R_loc, distance = Haversine (м).",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
+                required=["locations"],
                 properties={
                     "locations": openapi.Schema(
                         type=openapi.TYPE_ARRAY,
-                        description="Список всех локаций (если не указаны координаты)",
+                        description="При lat/lon: в радиусе (d ≤ R_loc), distance — Haversine в м. Без lat/lon: все локации.",
                         items=openapi.Schema(
                             type=openapi.TYPE_OBJECT,
+                            required=["id", "name", "address", "latitude", "longitude"],
                             properties={
                                 "id": openapi.Schema(
                                     type=openapi.TYPE_INTEGER,
@@ -730,69 +768,67 @@ def map_location(request):
                                 ),
                                 "name": openapi.Schema(
                                     type=openapi.TYPE_STRING,
-                                    description="Название локации",
+                                    description="Название",
                                 ),
                                 "address": openapi.Schema(
                                     type=openapi.TYPE_STRING,
-                                    description="Адрес локации",
+                                    description="Адрес",
                                 ),
                                 "latitude": openapi.Schema(
                                     type=openapi.TYPE_NUMBER,
                                     format=openapi.FORMAT_FLOAT,
-                                    description="Широта",
+                                    description="Широта точки локации",
                                 ),
                                 "longitude": openapi.Schema(
                                     type=openapi.TYPE_NUMBER,
                                     format=openapi.FORMAT_FLOAT,
-                                    description="Долгота",
+                                    description="Долгота точки локации",
+                                ),
+                                "distance": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format=openapi.FORMAT_FLOAT,
+                                    description=(
+                                        "Только при lat/lon. Haversine(пользователь, pin) в метрах, 2 знака. "
+                                        "Погрешность на практике — точность GPS (5–15 м у смартфона)."
+                                    ),
                                 ),
                             },
                         ),
                     ),
-                    "nearest_location": openapi.Schema(
-                        type=openapi.TYPE_OBJECT,
-                        description="Ближайшая локация (если указаны координаты)",
-                        properties={
-                            "id": openapi.Schema(
-                                type=openapi.TYPE_INTEGER,
-                                description="ID локации",
-                            ),
-                            "name": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                description="Название локации",
-                            ),
-                            "address": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                description="Адрес локации",
-                            ),
-                            "latitude": openapi.Schema(
-                                type=openapi.TYPE_NUMBER,
-                                format=openapi.FORMAT_FLOAT,
-                                description="Широта",
-                            ),
-                            "longitude": openapi.Schema(
-                                type=openapi.TYPE_NUMBER,
-                                format=openapi.FORMAT_FLOAT,
-                                description="Долгота",
-                            ),
-                            "distance": openapi.Schema(
-                                type=openapi.TYPE_NUMBER,
-                                format=openapi.FORMAT_FLOAT,
-                                description="Точное расстояние в метрах (Haversine формула, точность до 10-15 метров)",
-                            ),
-                        },
+                },
+            ),
+        ),
+        404: openapi.Response(
+            description=(
+                "При lat/lon: нет локаций с d ≤ R_loc — {message, detail}. "
+                'Пустая БД по локациям — {error: "No locations available in database"}.'
+            ),
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "message": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Системное: напр. «Ближайшая локация 85.2 м, превышен лимит 70 м».",
+                    ),
+                    "detail": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Для фронта: «Ничего не найдено».",
+                    ),
+                    "error": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="При пустой БД: «No locations available in database».",
                     ),
                 },
             ),
         ),
         400: openapi.Response(
-            description="Неверные параметры",
+            description="Неверный формат latitude или longitude (ожидаются числа).",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
                     "error": openapi.Schema(
                         type=openapi.TYPE_STRING,
-                        description="Описание ошибки",
+                        description="Напр. «Invalid latitude or longitude format. Expected numbers.»",
                     ),
                 },
             ),
@@ -814,23 +850,28 @@ def map_location(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def lesson_locations(request):
-    """Возвращает список локаций для занятий или ближайшую локацию по координатам.
+    """Список локаций: все либо только в приёмном радиусе R_loc.
 
-    Если переданы параметры latitude и longitude, находит ближайшую локацию
-    с точным расчетом расстояния через формулу Haversine (точность до 10-15 метров).
-    Всегда использует актуальные данные из базы данных, включая недавно добавленные локации.
-    Использует KDTree для быстрого поиска кандидатов (если доступен), но затем
-    пересчитывает точное расстояние для всех кандидатов через Haversine.
-    Если KDTree недоступен, выполняет полный перебор всех локаций из БД.
+    Без lat/lon: все локации (id, name, address, latitude, longitude).
+    Поле distance не возвращается.
+
+    С lat/lon: только локации, где d ≤ R_loc. d — Haversine (user, pin) в м,
+    R_loc из кэша или ClassLocation.acceptance_radius_m. Сортировка по d.
+    В ответе: distance = round(d, 2) (м). Погрешность — точность GPS (5–15 м).
 
     Args:
-        request: HTTP запрос с опциональными параметрами:
-            - latitude (float): Широта для поиска ближайшей локации
-            - longitude (float): Долгота для поиска ближайшей локации
+        request: GET; опционально latitude, longitude (WGS84, числа).
 
     Returns:
-        Response: JSON ответ с локациями или ближайшей локацией с точным расстоянием в метрах
+        Response: {locations: [...]}; при lat/lon и отсутствии подходящих — 404.
     """
+
+    def _not_found(system_message: str):
+        return Response(
+            {"message": system_message, "detail": "Ничего не найдено"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
     try:
         latitude_param = request.GET.get("latitude")
         longitude_param = request.GET.get("longitude")
@@ -857,86 +898,48 @@ def lesson_locations(request):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            location_cache = get_class_location_cache()
-            kd_tree = location_cache.get("kd_tree")
-            searcher_payload = location_cache.get("searcher_payload", [])
+            radii = get_class_location_cache().get("location_acceptance_radius_m", {})
+            within = []
+            min_overall = float("inf")
+            nearest_loc = None
 
-            nearest_location = None
-            min_distance = float("inf")
+            for loc in all_locations:
+                d = utils.calculate_distance_haversine(
+                    latitude, longitude, loc.latitude, loc.longitude
+                )
+                if d < min_overall:
+                    min_overall = d
+                    nearest_loc = loc
+                R = radii.get(loc.id, DEFAULT_ACCEPTANCE_RADIUS_M)
+                if d <= R:
+                    within.append((d, loc, R))
 
-            try:
-                if kd_tree and searcher_payload:
-                    k_candidates = min(5, len(searcher_payload))
-                    _distances_degrees, indices = kd_tree.query(
-                        [[latitude, longitude]], k=k_candidates
-                    )
+            within.sort(key=lambda x: x[0])
 
-                    candidate_indices = []
-                    if hasattr(indices, "flatten"):
-                        candidate_indices = indices.flatten().tolist()
-                    elif isinstance(indices, (list, tuple)) and len(indices) > 0:
-                        if hasattr(indices[0], "__iter__") and len(indices[0]) > 0:
-                            candidate_indices = [int(idx) for idx in indices[0]]
-                        elif len(indices) > 0:
-                            candidate_indices = [int(indices[0])]
-                    elif hasattr(indices, "__len__") and len(indices) > 0:
-                        if hasattr(indices[0], "__len__") and len(indices[0]) > 0:
-                            candidate_indices = [int(idx) for idx in indices[0]]
-                        else:
-                            candidate_indices = [int(indices[0])]
-
-                    for idx in candidate_indices:
-                        if 0 <= idx < len(searcher_payload):
-                            candidate_data = searcher_payload[idx]
-                            candidate = all_locations.filter(
-                                latitude=candidate_data["latitude"],
-                                longitude=candidate_data["longitude"],
-                            ).first()
-
-                            if candidate:
-                                distance = utils.calculate_distance_haversine(
-                                    latitude,
-                                    longitude,
-                                    candidate.latitude,
-                                    candidate.longitude,
-                                )
-                                if distance < min_distance:
-                                    min_distance = distance
-                                    nearest_location = candidate
-            except Exception as e:
-                logger.warning(
-                    f"KDTree search failed, using full database scan: {str(e)}"
+            if not within:
+                R_n = (
+                    radii.get(nearest_loc.id, DEFAULT_ACCEPTANCE_RADIUS_M)
+                    if nearest_loc is not None
+                    else DEFAULT_ACCEPTANCE_RADIUS_M
+                )
+                return _not_found(
+                    f"Ближайшая локация {min_overall:.1f} м, превышен лимит {R_n} м"
                 )
 
-            if nearest_location is None:
-                for location in all_locations:
-                    distance = utils.calculate_distance_haversine(
-                        latitude,
-                        longitude,
-                        location.latitude,
-                        location.longitude,
-                    )
-                    if distance < min_distance:
-                        min_distance = distance
-                        nearest_location = location
-
-            if not nearest_location:
-                return Response(
-                    {"error": "Nearest location not found"},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
+            locations_data = [
+                {
+                    "id": loc.id,
+                    "name": loc.name,
+                    "address": loc.address,
+                    "latitude": loc.latitude,
+                    "longitude": loc.longitude,
+                    "distance": round(d, 2),
+                }
+                for d, loc, R in within
+            ]
 
             return Response(
-                {
-                    "nearest_location": {
-                        "id": nearest_location.id,
-                        "name": nearest_location.name,
-                        "address": nearest_location.address,
-                        "latitude": nearest_location.latitude,
-                        "longitude": nearest_location.longitude,
-                        "distance": round(min_distance, 2),
-                    }
-                },
+                {"locations": locations_data},
                 status=status.HTTP_200_OK,
             )
 
@@ -5070,8 +5073,6 @@ def recognize_faces(request):
 
 class AbsentReasonView(APIView):
     permission_classes = [permissions.IsAuthenticatedOrAPIKey]
-    # Используем только JWT authentication, чтобы избежать CSRF проверки
-    # SessionAuthentication требует CSRF токен, поэтому используем только JWT
     authentication_classes = [JWTAuthentication]
 
     def get_date_interval(self, request):
@@ -5314,9 +5315,10 @@ class AbsentReasonView(APIView):
           - **HTTP 201 CREATED**: Сообщение об успешном создании записи.
           - **HTTP 400 BAD REQUEST**: Если входные данные неверны.
         """
-        # Проверяем права доступа перед валидацией
         if not request.user.is_authenticated:
-            logger.warning("Пользователь не аутентифицирован для POST /api/absent_staff/")
+            logger.warning(
+                "Пользователь не аутентифицирован для POST /api/absent_staff/"
+            )
             return Response(
                 {"error": "Требуется аутентификация"},
                 status=status.HTTP_403_FORBIDDEN,
@@ -5337,7 +5339,9 @@ class AbsentReasonView(APIView):
                     status=status.HTTP_201_CREATED,
                 )
             except Exception as e:
-                logger.error(f"Ошибка при сохранении записи отсутствия: {str(e)}", exc_info=True)
+                logger.error(
+                    f"Ошибка при сохранении записи отсутствия: {str(e)}", exc_info=True
+                )
                 return Response(
                     {"error": f"Ошибка при сохранении: {str(e)}"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,

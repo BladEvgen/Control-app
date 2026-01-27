@@ -1,0 +1,259 @@
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/openlayers/openlayers.github.io@master/en/v6.15.1/css/ol.css" type="text/css" />
+<script src="https://cdn.jsdelivr.net/gh/openlayers/openlayers.github.io@master/en/v6.15.1/build/ol.js"></script>
+
+<script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+<script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.0/js/bootstrap.bundle.min.js"></script>
+
+<div id="map" class="map" style="height: {{ geomap_height }};">
+  <div id="popup"></div>
+</div>
+
+<script type="text/javascript">
+var vectorSource = new ol.source.Vector({});
+var vectorLayer = new ol.layer.Vector({
+  source: vectorSource
+});
+
+var circleVectorSource = new ol.source.Vector({});
+var circleVectorLayer = new ol.layer.Vector({
+  source: circleVectorSource
+});
+
+var _radii = {};
+var _colors = {};
+{% if geomap_radius_by_id %}
+{% for k, v in geomap_radius_by_id.items %}
+_radii[{{ k }}] = {{ v }};
+{% endfor %}
+{% endif %}
+{% if geomap_color_by_id %}
+{% for k, v in geomap_color_by_id.items %}
+_colors[{{ k }}] = {{ v }};
+{% endfor %}
+{% endif %}
+
+var RADIUS_PALETTE_FILL = ['rgba(66,133,244,0.25)', 'rgba(234,67,53,0.25)', 'rgba(251,188,5,0.25)', 'rgba(52,168,83,0.25)', 'rgba(155,81,224,0.25)'];
+var RADIUS_PALETTE_STROKE = ['#4285f4', '#ea4335', '#fbbc05', '#34a853', '#9b51e0'];
+
+function addRadiusCircle(lon, lat, radiusM, colorIndex) {
+  if (!(radiusM > 0)) return;
+  var coslat = Math.cos(lat * Math.PI / 180);
+  var dlat = radiusM / 111320;
+  var dlon = radiusM / (111320 * coslat);
+  var pts = [];
+  for (var i = 0; i <= 64; i++) {
+    var a = (i / 64) * 2 * Math.PI;
+    pts.push([lon + dlon * Math.cos(a), lat + dlat * Math.sin(a)]);
+  }
+  var poly = new ol.geom.Polygon([pts]);
+  poly.transform('EPSG:4326', 'EPSG:3857');
+  var ci = (colorIndex || 0) % 5;
+  var fill = RADIUS_PALETTE_FILL[ci];
+  var stroke = RADIUS_PALETTE_STROKE[ci];
+  var f = new ol.Feature({ geometry: poly });
+  f.setStyle(new ol.style.Style({
+    fill: new ol.style.Fill({ color: fill }),
+    stroke: new ol.style.Stroke({ color: stroke, width: 2 })
+  }));
+  circleVectorSource.addFeature(f);
+}
+
+var styles = new Map();
+
+function setMarker(coordinate, info_html, icon) {
+  var marker = new ol.Feature({
+    geometry: new ol.geom.Point(ol.proj.fromLonLat(coordinate)),
+    name: info_html,
+  });
+  marker.setStyle(styles.get(icon));
+  vectorSource.addFeature(marker);
+  return marker;
+}
+
+function setIconPointer() {
+  map.on("pointermove", function (evt) {
+    var hit = this.forEachFeatureAtPixel(evt.pixel, function(feature, layer) {
+        return true;
+    });
+    this.getTargetElement().style.cursor = (hit) ? 'pointer' : '';
+  });
+}
+
+function get_extents(map_zoom, center, vector_layer) {
+  var lon_center=center[0], lat_center=center[1];
+  var view = new ol.View({
+    center: ol.proj.fromLonLat([lon_center, lat_center]),
+    maxZoom: 19,
+    minZoom: 1,
+    zoom: map_zoom
+  });
+  var map = new ol.Map({
+    layers: [new ol.layer.Tile({
+      source: new ol.source.OSM()
+    }), vector_layer, ],
+    target: 'map',
+    controls: ol.control.defaults(),
+    view: view
+  });
+  extents = ol.proj.transformExtent(
+    map.getView().calculateExtent(map.getSize()),
+    'EPSG:3857',
+    'EPSG:4326'
+  );
+  map.setTarget(null);
+  map = null;
+  return extents;
+}
+
+function is_inside(box, ext) {
+  var lon_box_min=box[0], lon_box_max=box[1], lat_box_min=box[2], lat_box_max=box[3];
+  var lon_ext_min=ext[0], lon_ext_max=ext[2], lat_ext_min=ext[1], lat_ext_max=ext[3];
+  return (lon_box_min > lon_ext_min) && (lon_box_max < lon_ext_max) && (lat_box_min > lat_ext_min) && (lat_box_max < lat_ext_max);
+}
+
+function calc_zoom(autozoom, center, box, vector_layer) {
+  for(i = autozoom; i > 1; i--) {
+    var extents = get_extents(i, center, vector_layer);
+    if (is_inside(box, extents)) {
+      return i - 1;
+    }
+  }
+  return 1;
+}
+
+var lon_min=180.0, lon_max=-180.0, lat_min=180.0, lat_max=-180.0;
+
+{% for geoitem in geomap_items %}
+{% if geoitem.geomap_longitude and geoitem.geomap_latitude %}
+
+{% if geomap_draw_radius_circles %}
+(function(){
+  var _r = (typeof _radii[{{ geoitem.pk }}] !== 'undefined') ? _radii[{{ geoitem.pk }}] : 70;
+  var _c = (typeof _colors[{{ geoitem.pk }}] !== 'undefined') ? _colors[{{ geoitem.pk }}] : 0;
+  addRadiusCircle({{ geoitem.geomap_longitude }}, {{ geoitem.geomap_latitude }}, _r, _c);
+})();
+{% endif %}
+
+if (!styles.has("{{ geoitem.geomap_icon }}")) {
+  var style = new ol.style.Style({
+    image: new ol.style.Icon({
+      anchor: [0.5, 0.9],
+      anchorXUnits: 'fraction',
+      anchorYUnits: 'fraction',
+      opacity: 0.8,
+      src: "{{ geoitem.geomap_icon }}"
+    })
+  });
+  styles.set("{{ geoitem.geomap_icon }}", style);
+}
+
+if (lon_min > {{ geoitem.geomap_longitude }}) {lon_min = {{ geoitem.geomap_longitude }};}
+if (lon_max < {{ geoitem.geomap_longitude }}) {lon_max = {{ geoitem.geomap_longitude }};}
+if (lat_min > {{ geoitem.geomap_latitude }}) {lat_min = {{ geoitem.geomap_latitude }};}
+if (lat_max < {{ geoitem.geomap_latitude }}) {lat_max = {{ geoitem.geomap_latitude }};}
+
+geoitem_edit = setMarker(
+  [{{ geoitem.geomap_longitude }}, {{ geoitem.geomap_latitude }}],
+  {% if geomap_common %}
+    "{{ geoitem.geomap_popup_common|safe }}",
+  {% else %}
+    {% if geomap_edit %}
+      "{{ geoitem.geomap_popup_edit|safe }}",
+    {% else %}
+      "{{ geoitem.geomap_popup_view|safe }}",
+    {% endif %}
+  {% endif %}
+  "{{ geoitem.geomap_icon }}"
+);
+
+{% endif %}
+{% endfor %}
+
+var lon_center = lon_min + (lon_max - lon_min) / 2.0;
+var lat_center = lat_min + (lat_max - lat_min) / 2.0;
+var map_zoom;
+
+if ({{ geomap_autozoom }} > 0) {
+  {% if geomap_items %}
+    {% if geomap_items|length == 1 %}
+      map_zoom = {{ geomap_autozoom }};
+    {% else %}
+      map_zoom = calc_zoom({{ geomap_autozoom }}, [lon_center, lat_center], [lon_min, lon_max, lat_min, lat_max], vectorLayer);
+    {% endif %}
+  {% else %}
+    lon_center = {{ geomap_longitude }};
+    lat_center = {{ geomap_latitude }};
+    map_zoom = {{ geomap_zoom }};
+  {% endif %}
+} else {
+  lon_center = {{ geomap_longitude }};
+  lat_center = {{ geomap_latitude }};
+  map_zoom = {{ geomap_zoom }};
+}
+
+var view = new ol.View({
+  center: ol.proj.fromLonLat([lon_center, lat_center]),
+  maxZoom: 19,
+  minZoom: 1,
+  zoom: map_zoom
+});
+
+const map = new ol.Map({
+  layers: [
+    new ol.layer.Tile({ source: new ol.source.OSM() }),
+    circleVectorLayer,
+    vectorLayer
+  ],
+  target: 'map',
+  controls: ol.control.defaults(),
+  view: view
+});
+
+const longitude_field = {% if geomap_form %}document.getElementById("{{ geomap_field_longitude }}"){% else %}undefined{% endif %};
+const latitude_field = {% if geomap_form %}document.getElementById("{{ geomap_field_latitude }}"){% else %}undefined{% endif %};
+{% if geomap_form %}
+(function(){
+  if (!longitude_field || !latitude_field) return;
+  var modify = new ol.interaction.Modify({ source: vectorSource, hitDetection: vectorLayer });
+  map.addInteraction(modify);
+  modify.on('modifyend', function(evt) {
+    var arr = evt.features.getArray();
+    if (!arr.length) return;
+    var f = arr[0];
+    if (!f || !f.getGeometry()) return;
+    var coord = f.getGeometry().getCoordinates();
+    var lonLat = ol.proj.transform(coord, 'EPSG:3857', 'EPSG:4326');
+    var lon = lonLat[0].toFixed(6);
+    var lat = lonLat[1].toFixed(6);
+    longitude_field.value = lon;
+    latitude_field.value = lat;
+    var inR = document.getElementById("id_acceptance_radius_m");
+    if (inR) {
+      var r = parseInt(inR.value, 10) || 70;
+      circleVectorSource.clear();
+      addRadiusCircle(parseFloat(lon), parseFloat(lat), r, 0);
+    }
+  });
+})();
+{% endif %}
+{% if geomap_form and geomap_draw_radius_circles %}
+(function(){
+  var inR = document.getElementById("id_acceptance_radius_m");
+  var inLat = document.getElementById("id_{{ geomap_field_latitude }}") || document.getElementById("{{ geomap_field_latitude }}");
+  var inLon = document.getElementById("id_{{ geomap_field_longitude }}") || document.getElementById("{{ geomap_field_longitude }}");
+  if (!inR || !inLat || !inLon) return;
+  function redrawRadiusCircle() {
+    var r = parseInt(inR.value, 10) || 70;
+    var lat = parseFloat(inLat.value), lon = parseFloat(inLon.value);
+    if (!(lat && lon) || isNaN(lat) || isNaN(lon)) return;
+    circleVectorSource.clear();
+    addRadiusCircle(lon, lat, r, 0);
+  }
+  inR.addEventListener("input", redrawRadiusCircle);
+  inR.addEventListener("change", redrawRadiusCircle);
+  inLat.addEventListener("change", redrawRadiusCircle);
+  inLon.addEventListener("change", redrawRadiusCircle);
+})();
+{% endif %}
+
+</script>

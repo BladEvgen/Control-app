@@ -18,6 +18,15 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.html import format_html
 from django_admin_geomap import ModelAdmin
+from monitoring_app import utils as monitoring_utils
+from monitoring_app.lesson_locations_conf import (
+    ACCEPTANCE_R_CLUSTER,
+    ACCEPTANCE_R_SAME_POINT,
+    ACCEPTANCE_R_STANDALONE,
+    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+    CLUSTER_THRESHOLD_M,
+    SAME_POINT_THRESHOLD_M,
+)
 from monitoring_app.models import (
     AbsentReason,
     APIKey,
@@ -38,6 +47,8 @@ from monitoring_app.models import (
     StaffFaceMask,
     UserProfile,
 )
+
+_MARKER = object()
 
 
 # ===== Admin Site Configuration =====
@@ -1216,8 +1227,6 @@ class StaffAdmin(admin.ModelAdmin):
 
 @admin.register(StaffFaceMask, site=admin_site)
 class StaffFaceMaskAdmin(admin.ModelAdmin):
-    from monitoring_app import utils
-
     list_display = (
         "staff",
         "staff_department",
@@ -1238,7 +1247,7 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
     list_filter = (
         "created_at",
         "updated_at",
-        utils.HierarchicalDepartmentFilter,
+        monitoring_utils.HierarchicalDepartmentFilter,
     )
     ordering = (
         "staff__department",
@@ -1401,8 +1410,6 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
 
 @admin.register(StaffAttendance, site=admin_site)
 class StaffAttendanceAdmin(admin.ModelAdmin):
-    from monitoring_app import utils
-
     list_display = (
         "staff",
         "staff_department",
@@ -1415,7 +1422,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         "absence_reason",
     )
     list_filter = (
-        utils.HierarchicalDepartmentFilter,
+        monitoring_utils.HierarchicalDepartmentFilter,
         DateRangeFilter,
         "staff__pin",
         "staff__surname",
@@ -1895,7 +1902,7 @@ class LessonAttendanceAdmin(ModelAdmin):
                 closest.name,
                 closest.address,
             )
-            cache.set(cache_key, result, 86400)  # Кэш на 24 часа
+            cache.set(cache_key, result, 86400)
             return result
         else:
             result = format_html('<span style="color: red;">Неизвестно</span>')
@@ -1922,7 +1929,7 @@ class LessonAttendanceAdmin(ModelAdmin):
         return format_html(
             """
             <div style="text-align: center;">
-                <div style="display: inline-block; width: 200px; height: 200px; border-radius: 5px; 
+                <div style="display: inline-block; width: 200px; height: 200px; border-radius: 5px;
                       background-color: #f0f0f0; display: flex; justify-content: center; align-items: center;">
                     <span style="color: #999; font-style: italic;">Нет фото</span>
                 </div>
@@ -1974,9 +1981,9 @@ class ClassLocationAdmin(ModelAdmin):
         (
             "Координаты",
             {
-                "fields": (("latitude", "longitude"),),
+                "fields": (("latitude", "longitude"), "acceptance_radius_m"),
                 "classes": ("wide",),
-                "description": "Введите координаты вручную или выберите на карте ниже. Можно перевыбрать координаты на карте.",
+                "description": "Введите координаты вручную или выберите на карте ниже. Приёмный радиус (м): если задан — используется вместо вычисленного по соседям. Подберите по карте: круг должен охватывать здание/двор. 20–30 м — кабинет, 50–100 м — здание/двор. Пусто = по умолчанию (60–80 по соседям).",
             },
         ),
         (
@@ -2000,6 +2007,7 @@ class ClassLocationAdmin(ModelAdmin):
         "address",
         "formatted_latitude",
         "formatted_longitude",
+        "acceptance_radius_m",
         "created_at",
     )
     list_filter = ("created_at",)
@@ -2065,6 +2073,99 @@ class ClassLocationAdmin(ModelAdmin):
         return f"{obj.longitude:.6f}"
 
     formatted_longitude.short_description = "Долгота"
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        response = super().change_view(request, object_id, form_url, extra_context)
+        item = self.get_queryset(request).filter(pk=object_id).first()
+        if (
+            item
+            and getattr(item, "geomap_longitude", None)
+            and getattr(item, "geomap_latitude", None)
+        ):
+            radii = cache.get(CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY)
+            if radii is None:
+                locs = list(
+                    ClassLocation.objects.filter(
+                        latitude__isnull=False, longitude__isnull=False
+                    )
+                )
+                radii = monitoring_utils.compute_class_location_acceptance_radii(
+                    locs,
+                    r_same_point=ACCEPTANCE_R_SAME_POINT,
+                    r_cluster=ACCEPTANCE_R_CLUSTER,
+                    r_standalone=ACCEPTANCE_R_STANDALONE,
+                    same_point_threshold=SAME_POINT_THRESHOLD_M,
+                    cluster_threshold=CLUSTER_THRESHOLD_M,
+                )
+            if getattr(response, "context_data", None) is not None:
+                response.context_data["geomap_draw_radius_circles"] = True
+                response.context_data["geomap_radius_by_id"] = {
+                    item.pk: monitoring_utils.get_location_radius(item, radii)
+                }
+                response.context_data["geomap_color_by_id"] = {item.pk: 0}
+        return response
+
+    def changelist_view(self, request, extra_context=None):
+        response = super().changelist_view(request, extra_context=extra_context)
+        if not self.geomap_show_map_on_list:
+            return response
+        ctx = getattr(response, "context_data", None)
+        if ctx is None or not isinstance(ctx, dict):
+            return response
+        cl = ctx.get("cl")
+
+        if ctx.get("geomap_items", _MARKER) is _MARKER:
+            ctx.update(self.set_common(request, {}))
+            ctx.update(
+                {
+                    "geomap_items": (
+                        cl.queryset
+                        if cl
+                        else ClassLocation.objects.filter(
+                            latitude__isnull=False, longitude__isnull=False
+                        )
+                    )
+                }
+            )
+        qs = (
+            cl.queryset
+            if cl
+            else ClassLocation.objects.filter(
+                latitude__isnull=False, longitude__isnull=False
+            )
+        )
+        locs = [
+            o
+            for o in qs
+            if getattr(o, "latitude", None) is not None
+            and getattr(o, "longitude", None) is not None
+        ]
+        if not locs:
+            ctx.setdefault("geomap_radius_by_id", {})
+            ctx.setdefault("geomap_color_by_id", {})
+            return response
+        radii = cache.get(CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY)
+        if radii is None:
+            radii = monitoring_utils.compute_class_location_acceptance_radii(
+                locs,
+                r_same_point=ACCEPTANCE_R_SAME_POINT,
+                r_cluster=ACCEPTANCE_R_CLUSTER,
+                r_standalone=ACCEPTANCE_R_STANDALONE,
+                same_point_threshold=SAME_POINT_THRESHOLD_M,
+                cluster_threshold=CLUSTER_THRESHOLD_M,
+            )
+        ctx.update(
+            {
+                "geomap_draw_radius_circles": True,
+                "geomap_radius_by_id": {
+                    o.id: monitoring_utils.get_location_radius(o, radii) for o in locs
+                },
+                "geomap_color_by_id": monitoring_utils.compute_neighbor_color_index(
+                    locs, 30
+                ),
+            }
+        )
+        return response
 
     class Media:
         css = {"all": ("admin/css/custom_admin.css",)}

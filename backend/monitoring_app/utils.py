@@ -20,12 +20,11 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
+from monitoring_app import models
+from monitoring_app.cache_conf import get_cache
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from sklearn.neighbors import KDTree
-
-from monitoring_app import models
-from monitoring_app.cache_conf import get_cache
 
 DAYS = settings.DAYS
 
@@ -336,7 +335,7 @@ def send_password_reset_email(user, request):
                         <h1 style="color: #2563EB; font-size: 24px; margin: 0 0 5px 0;">Сброс пароля</h1>
                         <p style="color: #6B7280; font-size: 16px; margin: 0;">Инструкция по восстановлению доступа</p>
                     </div>
-                    
+
                     <div style="padding: 20px; background-color: #F3F4F6; border-radius: 8px; margin-bottom: 25px;">
                         <p style="color: #4B5563; line-height: 1.6; margin: 0 0 15px 0;">
                             Здравствуйте, <strong>{user_name}</strong>!
@@ -345,20 +344,20 @@ def send_password_reset_email(user, request):
                             Мы получили запрос на сброс пароля для вашего аккаунта. Если это были вы, используйте кнопку ниже для создания нового пароля.
                         </p>
                     </div>
-                    
+
                     <div style="text-align: center; margin-bottom: 30px;">
                         <a href="{reset_link}" style="display: inline-block; padding: 14px 32px; color: #ffffff; background-color: #2563EB; text-decoration: none; border-radius: 6px; font-size: 16px; font-weight: 600; transition: background-color 0.2s ease;">
                             Сбросить пароль
                         </a>
                     </div>
-                    
+
                     <div style="border-left: 4px solid #FCD34D; padding: 12px 15px; background-color: #FFFBEB; margin-bottom: 25px; border-radius: 0 6px 6px 0;">
                         <p style="color: #92400E; font-size: 14px; line-height: 1.5; margin: 0;">
                             <strong>Важно:</strong> Ссылка действительна до <strong>{expiry_time}</strong>.<br>
                             Если вы не запрашивали сброс пароля, пожалуйста, игнорируйте это письмо или обратитесь в службу поддержки.
                         </p>
                     </div>
-                    
+
                     <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #E5E7EB; text-align: center;">
                         <div style="display: inline-block; margin: 0 15px 15px 0;">
                             <a href="{site_url}" style="color: #4B5563; text-decoration: none; font-size: 14px;">
@@ -817,7 +816,6 @@ class LocationSearcher:
         Returns:
             str: Название ближайшей локации или "Unknown Area".
         """
-        # Используем KDTree для быстрого поиска кандидатов
         meters_to_degrees = radius / 111000
         candidate_indices = self.kd_tree.query_radius(
             [[lat, lon]], r=meters_to_degrees
@@ -842,19 +840,22 @@ class LocationSearcher:
         return nearest_name if nearest_name else "Unknown Area"
 
 
+R_EARTH_M = 6_371_000
+
+
 def calculate_distance_haversine(lat1, lon1, lat2, lon2):
-    """Вычисляет точное расстояние между двумя точками по формуле Haversine.
+    """Расстояние между двумя точками по формуле Haversine (большой круг на сфере).
+
+    Подходит для WGS84 (lat/lon) при d < 1 км. Точность для смартфона (5–15 м) достаточна.
 
     Args:
-        lat1 (float): Широта первой точки в градусах.
-        lon1 (float): Долгота первой точки в градусах.
-        lat2 (float): Широта второй точки в градусах.
-        lon2 (float): Долгота второй точки в градусах.
+        lat1, lon1: широта и долгота первой точки, градусы.
+        lat2, lon2: широта и долгота второй точки, градусы.
 
     Returns:
-        float: Расстояние в метрах (точность до 10-15 метров).
+        float: расстояние в метрах.
     """
-    R = 6371000
+    R = R_EARTH_M
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
     delta_phi = math.radians(lat2 - lat1)
@@ -866,6 +867,111 @@ def calculate_distance_haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     distance = R * c
     return distance
+
+
+def compute_class_location_acceptance_radii(
+    locations,
+    r_same_point=60,
+    r_cluster=80,
+    r_standalone=65,
+    same_point_threshold=5,
+    cluster_threshold=30,
+):
+    """Приёмный радиус R_loc (м) для каждой локации. Логика:
+
+    1) Если у объекта задано acceptance_radius_m (БД) и > 0 — использовать его.
+    2) Иначе — по соседству (min_d до ближайшей другой локации, Haversine):
+       — min_d < same_point_threshold: одна точка, несколько организаций → r_same_point
+       — same_point_threshold ≤ min_d < cluster_threshold: кластер/двор → r_cluster
+       — min_d ≥ cluster_threshold: отдельно стоящая → r_standalone
+
+    Кэшируется в Redis. Классификация по соседям учитывает двор/несколько пинов.
+
+    Args:
+        locations: объекты с .id, .latitude, .longitude; опционально .acceptance_radius_m
+        r_same_point, r_cluster, r_standalone: радиусы в метрах
+        same_point_threshold, cluster_threshold: пороги до ближайшей локации (м)
+
+    Returns:
+        dict[int, int]: {location_id: R в метрах}
+    """
+    locs = [
+        o
+        for o in locations
+        if getattr(o, "latitude", None) is not None
+        and getattr(o, "longitude", None) is not None
+    ]
+    out = {}
+    for loc in locs:
+        override = getattr(loc, "acceptance_radius_m", None)
+        if override is not None and override > 0:
+            out[loc.id] = int(override)
+            continue
+        min_d = float("inf")
+        for other in locs:
+            if getattr(other, "id", None) == getattr(loc, "id", None):
+                continue
+            d = calculate_distance_haversine(
+                loc.latitude, loc.longitude, other.latitude, other.longitude
+            )
+            if d < min_d:
+                min_d = d
+        if min_d < same_point_threshold:
+            R = r_same_point
+        elif min_d < cluster_threshold:
+            R = r_cluster
+        else:
+            R = r_standalone
+        out[loc.id] = R
+    return out
+
+
+def get_location_radius(loc, radii_dict=None):
+    """Радиус R (м) для локации: acceptance_radius_m или radii_dict или DEFAULT."""
+    override = getattr(loc, "acceptance_radius_m", None)
+    if override is not None and override > 0:
+        return int(override)
+    if radii_dict and getattr(loc, "id", None) in radii_dict:
+        return int(radii_dict[loc.id])
+    from monitoring_app.lesson_locations_conf import DEFAULT_ACCEPTANCE_RADIUS_M
+
+    return DEFAULT_ACCEPTANCE_RADIUS_M
+
+
+def compute_neighbor_color_index(locations, neighbor_threshold_m=30):
+    """Индексы цветов для различения соседних локаций на карте.
+
+    Сосед = расстояние < neighbor_threshold_m. В каждом кластере соседей
+    раздаёт 0,1,2,... чтобы отличать друг от друга. Одинокие — 0.
+
+    Returns:
+        dict[int, int]: {location_id: 0..4}
+    """
+    thr = neighbor_threshold_m
+    locs = [
+        o
+        for o in locations
+        if getattr(o, "latitude", None) is not None
+        and getattr(o, "longitude", None) is not None
+    ]
+    neighbors = {o.id: [] for o in locs}
+    for i, a in enumerate(locs):
+        for b in locs[i + 1 :]:
+            d = calculate_distance_haversine(
+                a.latitude, a.longitude, b.latitude, b.longitude
+            )
+            if d < thr:
+                neighbors[a.id].append(b.id)
+                neighbors[b.id].append(a.id)
+    PALETTE_SIZE = 5
+    out = {}
+    for loc in locs:
+        used = {out[n] for n in neighbors[loc.id] if n in out}
+        c = 0
+        while c in used:
+            c += 1
+        out[loc.id] = c % PALETTE_SIZE
+    return out
 
 
 def is_within_radius(lat1, lon1, lat2, lon2, radius=200):

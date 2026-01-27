@@ -5,7 +5,7 @@ import os
 from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
-from monitoring_app import models
+from monitoring_app import models, utils
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +238,48 @@ def augment_user_images(_self):
     return run_dali_augmentation_for_all_staff()
 
 
+@shared_task(name="monitoring_app.tasks.warmup_class_location_buffers")
+def warmup_class_location_buffers():
+    """
+    Прогревает кэш приёмных радиусов R_loc по локациям (Redis). Celery Beat раз в 30 мин.
+    При первом запуске: manage.py warmup_class_location_buffers
+    """
+    from django.core.cache import caches
+    from monitoring_app.lesson_locations_conf import (
+        ACCEPTANCE_R_CLUSTER,
+        ACCEPTANCE_R_SAME_POINT,
+        ACCEPTANCE_R_STANDALONE,
+        CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+        CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+        CLUSTER_THRESHOLD_M,
+        SAME_POINT_THRESHOLD_M,
+    )
+
+    locations = list(
+        models.ClassLocation.objects.filter(
+            latitude__isnull=False, longitude__isnull=False
+        )
+    )
+    radii = utils.compute_class_location_acceptance_radii(
+        locations,
+        r_same_point=ACCEPTANCE_R_SAME_POINT,
+        r_cluster=ACCEPTANCE_R_CLUSTER,
+        r_standalone=ACCEPTANCE_R_STANDALONE,
+        same_point_threshold=SAME_POINT_THRESHOLD_M,
+        cluster_threshold=CLUSTER_THRESHOLD_M,
+    )
+    caches["default"].set(
+        CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+        radii,
+        CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+    )
+    logger.info(
+        "warmup_class_location_buffers: записано %s приёмных радиусов в кэш",
+        len(radii),
+    )
+    return {"count": len(radii)}
+
+
 @shared_task(name="monitoring_app.tasks.warmup_cache_task")
 def warmup_cache_task(force: bool = False, keys=None):
     """
@@ -251,6 +293,7 @@ def warmup_cache_task(force: bool = False, keys=None):
         dict: Результаты прогрева кэша.
     """
     from typing import List, Optional
+
     from monitoring_app.cache_conf import warmup_cache
     from monitoring_app.management.commands.warmup_cache import Command
 

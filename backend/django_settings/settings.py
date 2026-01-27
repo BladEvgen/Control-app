@@ -463,6 +463,10 @@ CELERY_BEAT_SCHEDULE = (
             "schedule": crontab(hour="6", minute="0"),
             "kwargs": {"force": True},
         },
+        "warmup-class-location-buffers-every-30-min": {
+            "task": "monitoring_app.tasks.warmup_class_location_buffers",
+            "schedule": crontab(minute="*/30"),
+        },
         # "augment-images-every-day": {
         #     "task": "monitoring_app.tasks.augment_user_images",
         #     "schedule": crontab(day_of_month="*/3", hour=1, minute=0), #! Disabled no CUDA driver

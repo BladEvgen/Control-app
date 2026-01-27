@@ -717,6 +717,12 @@ class ClassLocation(models.Model, GeoItem):
         help_text="Введите долготу для отображения на карте",
         editable=True,
     )
+    acceptance_radius_m = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name="Приёмный радиус (м)",
+        help_text="Переопределение: если задано, используется вместо вычисленного по соседям. 20–30 м — кабинет, 50–100 м — здание/двор. Подберите по кругу на карте в админке.",
+    )
     created_at = models.DateTimeField(
         auto_now_add=True, verbose_name="Дата создания", editable=False
     )
@@ -727,6 +733,10 @@ class ClassLocation(models.Model, GeoItem):
     class Meta:
         verbose_name = "Локация для занятий"
         verbose_name_plural = "Локации для занятий"
+        indexes = [
+            models.Index(fields=["latitude", "longitude"], name="cloc_lat_lon_idx"),
+            models.Index(fields=["acceptance_radius_m"], name="cloc_accept_r_idx"),
+        ]
 
     def __str__(self):
         return f"{self.name}, {self.address} ({self.latitude}, {self.longitude})"
