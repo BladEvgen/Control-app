@@ -17,7 +17,7 @@ def sanitize_group_name(name):
 
 
 @receiver(post_save, sender=LessonAttendance)
-def send_new_photo(_sender, instance, created, **kwargs):
+def send_new_photo(sender, instance, created, **kwargs):
     if created:
         channel_layer = get_channel_layer()
         group_name = sanitize_group_name(f"photos_{instance.date_at.isoformat()}")
@@ -32,7 +32,7 @@ def send_new_photo(_sender, instance, created, **kwargs):
 
 
 @receiver([post_save, post_delete], sender=StaffAttendance)
-def invalidate_attendance_cache(_sender, instance, **kwargs):
+def invalidate_attendance_cache(sender, instance, **kwargs):
     """Инвалидирует кэш при изменении посещаемости сотрудников."""
     if hasattr(instance, "date_at") and instance.date_at:
         date_str = instance.date_at.strftime("%Y-%m-%d")
@@ -56,7 +56,7 @@ def invalidate_staff_cache_on_save(sender, instance, created, **kwargs):
 
 
 @receiver(post_delete, sender=Staff)
-def invalidate_staff_cache_on_delete(_sender, instance, **kwargs):
+def invalidate_staff_cache_on_delete(sender, instance, **kwargs):
     if hasattr(instance, "pin") and instance.pin:
         invalidate_cache(f"staff_{instance.pin}")
         invalidate_cache_pattern(f"staff_detail_{instance.pin}*")
@@ -66,7 +66,7 @@ def invalidate_staff_cache_on_delete(_sender, instance, **kwargs):
 
 
 @receiver([post_save, post_delete], sender=ChildDepartment)
-def invalidate_department_cache(_sender, instance, **kwargs):
+def invalidate_department_cache(sender, instance, **kwargs):
     """Инвалидирует кэш при изменении департаментов."""
     dept_id = str(instance.id)
     invalidate_cache(f"department_summary_{dept_id}")
