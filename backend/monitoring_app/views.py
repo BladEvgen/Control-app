@@ -5,18 +5,18 @@ import logging
 import os
 import time
 import zipfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, List, Tuple
 
-from asgiref.sync import sync_to_async
 from celery.result import AsyncResult
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import authenticate, get_user_model, login, logout
+from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, connection, transaction
 from django.db.models import Count, Q
@@ -26,6 +26,7 @@ from django.utils import timezone
 from django.views.generic import View
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+import monitoring_app.tasks as tasks
 from monitoring_app import (
     async_logic,
     attendance_fetcher,
@@ -33,7 +34,6 @@ from monitoring_app import (
     models,
     permissions,
     serializers,
-    tasks,
     utils,
 )
 from monitoring_app.cache_conf import Cache, get_cache
@@ -3700,8 +3700,11 @@ def login_view(request):
 
 @swagger_auto_schema(
     method="get",
-    operation_summary="Запрос на получение данных с Внешнего сервера",
-    operation_description="Запрос на получение данных о посещаемости. Требует передачи заголовка X-API-KEY для аутентификации.",
+    operation_summary="Запуск синхронизации посещаемости с внешним СКУД",
+    operation_description=(
+        "Запускает загрузку посещаемости сотрудников с внешнего сервера и сохранение в базу. "
+        "Аутентификация: `X-API-KEY` или `Authorization: Bearer <access_token>`."
+    ),
     tags=["Fetcher"],
     manual_parameters=[
         openapi.Parameter(
@@ -3711,22 +3714,110 @@ def login_view(request):
             required=False,
             description="API ключ для аутентификации (альтернатива JWT токену).",
         ),
+        token_param_config,
+        openapi.Parameter(
+            name="days",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_INTEGER,
+            required=False,
+            description=(
+                "На сколько дней назад брать данные (0..365). "
+                "Если не передан, используется значение из settings.DAYS."
+            ),
+        ),
+        openapi.Parameter(
+            name="max_concurrent_requests",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_INTEGER,
+            required=False,
+            description=(
+                "Максимум одновременных запросов к внешнему API (1..30, по умолчанию 6)."
+            ),
+        ),
     ],
     responses={
         200: openapi.Response(
-            description="Запуск процесса получения данных.",
+            description="Синхронизация завершена без ошибок.",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
                     "message": openapi.Schema(
                         type=openapi.TYPE_STRING,
-                        description="Статус сообщения.",
+                        description="Статус выполнения.",
+                    ),
+                    "days": openapi.Schema(
+                        type=openapi.TYPE_INTEGER,
+                        description="Фактически использованное значение days.",
+                    ),
+                    "duration_seconds": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        format=openapi.FORMAT_FLOAT,
+                        description="Время выполнения в секундах.",
+                    ),
+                    "duration_human_readable": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Человекочитаемая длительность.",
+                    ),
+                    "status": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Статус выполнения: success/partial_error/failed.",
+                    ),
+                    "fetch_summary": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        properties={
+                            "source_date": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                description="Дата источника (день, который запрашивали во внешнем API).",
+                            ),
+                            "save_date": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                description="Дата, в которую сохранялись записи.",
+                            ),
+                            "total_pins": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "successful_requests": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "failed_requests": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "pins_with_events": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "pins_without_events": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "created_records": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "updated_records": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "event_time_parse_errors": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "error_statuses": openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                description="Сводка кодов ошибок внешнего API, например {'401': 12, 'network_or_unknown': 2}.",
+                            ),
+                        },
                     ),
                 },
             ),
         ),
-        403: "Forbidden: Если доступ запрещен или отсутствует API ключ.",
-        500: "Internal Server Error: В случае ошибки сервера.",
+        207: openapi.Response(
+            description="Синхронизация завершена частично: были ошибки по части PIN-ов.",
+        ),
+        400: openapi.Response(
+            description="Некорректные query-параметры.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            ),
+        ),
+        403: "Forbidden: Если доступ запрещен (нет валидной авторизации).",
+        429: "Too Many Requests: Fetcher уже выполняется.",
+        500: "Internal Server Error: Внутренняя ошибка сервера.",
+        502: "Bad Gateway: Все обращения к внешнему API завершились ошибкой.",
     },
 )
 @async_logic.async_drf_view(["GET"])
@@ -3737,64 +3828,187 @@ async def fetch_data_view(request):
     """
     function_name = "fetch_data_view"
     start_time = time.perf_counter()
-    logger.info(f"{function_name}: Request received")
+    logger.info("%s: Request received", function_name)
+    lock_key = "attendance_fetcher_run_lock"
+    lock_ttl_seconds = int(getattr(settings, "FETCHER_LOCK_TTL_SECONDS", 30 * 60))
+    lock_acquired = cache.add(lock_key, "running", timeout=lock_ttl_seconds)
+
+    if not lock_acquired:
+        logger.warning("%s: rejected because another fetcher run is in progress", function_name)
+        return Response(
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+            data={
+                "status": "busy",
+                "message": "Fetcher is already running. Try again later.",
+            },
+        )
+
+    def parse_int_query_param(
+        name: str,
+        *,
+        default: int | None,
+        min_value: int | None = None,
+        max_value: int | None = None,
+    ) -> tuple[int | None, str | None]:
+        raw_value = request.query_params.get(name)
+        if raw_value in (None, ""):
+            return default, None
+        try:
+            parsed_value = int(raw_value)
+        except (TypeError, ValueError):
+            return None, f"Параметр '{name}' должен быть целым числом."
+
+        if min_value is not None and parsed_value < min_value:
+            return (
+                None,
+                f"Параметр '{name}' должен быть не меньше {min_value}.",
+            )
+        if max_value is not None and parsed_value > max_value:
+            return (
+                None,
+                f"Параметр '{name}' должен быть не больше {max_value}.",
+            )
+        return parsed_value, None
 
     try:
-        api_key = request.headers.get("X-API-KEY")
-        if api_key is None:
-            logger.warning(f"{function_name}: API key not provided in request headers")
+        has_api_key_header = bool(
+            request.headers.get("X-API-KEY") or request.headers.get("x-api-key")
+        )
+        if (
+            request.user.is_authenticated
+            and not request.user.is_staff
+            and not has_api_key_header
+        ):
+            logger.warning(
+                "%s: forbidden for non-staff authenticated user id=%s",
+                function_name,
+                request.user.id,
+            )
             return Response(
                 status=status.HTTP_403_FORBIDDEN,
-                data={"error": "Доступ запрещен. Не указан API ключ."},
+                data={"error": "Недостаточно прав для запуска fetcher."},
             )
 
-        get_api_key = sync_to_async(models.APIKey.objects.get)
-        try:
-            key_obj = await get_api_key(key=api_key)
-            if not key_obj.is_active:
-                logger.warning(f"{function_name}: API key {api_key} is inactive")
-                return Response(
-                    status=status.HTTP_403_FORBIDDEN,
-                    data={"error": "Доступ запрещен. Недействительный API ключ."},
-                )
-        except models.APIKey.DoesNotExist:
-            logger.warning(f"{function_name}: API key {api_key} does not exist")
+        days, days_error = parse_int_query_param(
+            "days",
+            default=None,
+            min_value=0,
+            max_value=365,
+        )
+        if days_error:
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"error": days_error})
+
+        max_concurrent_requests, concurrency_error = parse_int_query_param(
+            "max_concurrent_requests",
+            default=6,
+            min_value=1,
+            max_value=30,
+        )
+        if concurrency_error:
             return Response(
-                status=status.HTTP_403_FORBIDDEN,
-                data={"error": "Доступ запрещен. Недействительный API ключ."},
+                status=status.HTTP_400_BAD_REQUEST,
+                data={"error": concurrency_error},
             )
+        if max_concurrent_requests is None:
+            max_concurrent_requests = 6
 
-        days = request.query_params.get("days")
-        if days is not None:
-            try:
-                days = int(days)
-            except ValueError:
-                return Response(
-                    status=status.HTTP_400_BAD_REQUEST,
-                    data={"error": "Неверное значение параметра 'days'"},
-                )
+        logger.info(
+            "%s: Starting attendance fetch with params days=%s, max_concurrent_requests=%s",
+            function_name,
+            days,
+            max_concurrent_requests,
+        )
 
-        fetcher = attendance_fetcher.AsyncAttendanceFetcher()
-        await fetcher.get_all_attendance(days=days)
+        fetcher = attendance_fetcher.AsyncAttendanceFetcher(
+            max_concurrent_requests=max_concurrent_requests,
+        )
+        fetch_summary = await fetcher.get_all_attendance(days=days)
+        raw_errors = fetch_summary.get("errors", [])
 
-        logger.info(f"{function_name}: Attendance data fetched successfully")
-        return Response(status=status.HTTP_200_OK, data={"message": "Done"})
+        error_statuses_counter: Counter[str] = Counter()
+        if isinstance(raw_errors, list):
+            for error in raw_errors:
+                if not isinstance(error, dict):
+                    error_statuses_counter["network_or_unknown"] += 1
+                    continue
+                status_value = error.get("status")
+                if status_value is None:
+                    error_statuses_counter["network_or_unknown"] += 1
+                else:
+                    error_statuses_counter[str(status_value)] += 1
+
+        failed_requests = int(fetch_summary.get("failed_requests", 0))
+        total_pins = int(fetch_summary.get("total_pins", 0))
+        elapsed_seconds = time.perf_counter() - start_time
+        duration_human_readable = utils.format_duration(elapsed_seconds)
+        response_summary = {
+            "source_date": fetch_summary.get("source_date"),
+            "save_date": fetch_summary.get("save_date"),
+            "total_pins": total_pins,
+            "successful_requests": int(fetch_summary.get("successful_requests", 0)),
+            "failed_requests": failed_requests,
+            "pins_with_events": int(fetch_summary.get("pins_with_events", 0)),
+            "pins_without_events": int(fetch_summary.get("pins_without_events", 0)),
+            "created_records": int(fetch_summary.get("created_records", 0)),
+            "updated_records": int(fetch_summary.get("updated_records", 0)),
+            "event_time_parse_errors": int(
+                fetch_summary.get("event_time_parse_errors", 0)
+            ),
+        }
+        if error_statuses_counter:
+            response_summary["error_statuses"] = dict(error_statuses_counter)
+
+        response_data = {
+            "message": "Done",
+            "status": "success",
+            "days": fetch_summary.get("days", days),
+            "duration_seconds": round(elapsed_seconds, 2),
+            "duration_human_readable": duration_human_readable,
+            "fetch_summary": response_summary,
+        }
+
+        if failed_requests == 0:
+            response_status = status.HTTP_200_OK
+            response_data["message"] = "Done"
+        elif failed_requests < total_pins:
+            response_status = status.HTTP_207_MULTI_STATUS
+            response_data["status"] = "partial_error"
+            response_data["message"] = "Done with errors."
+        else:
+            response_status = status.HTTP_502_BAD_GATEWAY
+            response_data["status"] = "failed"
+            response_data["message"] = "Fetcher failed."
+
+        logger.info(
+            "%s: Completed with status=%s in %.2f seconds (total_pins=%s, failed_requests=%s)",
+            function_name,
+            response_status,
+            elapsed_seconds,
+            total_pins,
+            failed_requests,
+        )
+
+        return Response(status=response_status, data=response_data)
 
     except Exception as e:
+        elapsed_seconds = time.perf_counter() - start_time
+        duration_human_readable = utils.format_duration(elapsed_seconds)
         logger.error(
             f"{function_name}: Error occurred while fetching attendance data: {str(e)}",
             exc_info=True,
         )
         return Response(
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR, data={"error": str(e)}
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            data={
+                "status": "failed",
+                "error": "Ошибка при выполнении fetcher.",
+                "duration_seconds": round(elapsed_seconds, 2),
+                "duration_human_readable": duration_human_readable,
+            },
         )
     finally:
-        end_time = time.perf_counter()
-        duration_seconds = end_time - start_time
-        duration_human_readable = utils.format_duration(duration_seconds)
-        logger.info(
-            f"{function_name} completed in {duration_human_readable} ({duration_seconds:.2f} seconds)"
-        )
+        if lock_acquired:
+            cache.delete(lock_key)
 
 
 @swagger_auto_schema(

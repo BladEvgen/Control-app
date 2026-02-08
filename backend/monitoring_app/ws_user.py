@@ -1,10 +1,11 @@
 import logging
 from datetime import datetime, timezone
+from urllib.parse import parse_qs
 
 from asgiref.sync import async_to_sync
 from channels.generic.websocket import JsonWebsocketConsumer
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import TokenError
-from rest_framework_simplejwt.tokens import AccessToken
 
 from monitoring_app import models, serializers
 
@@ -32,29 +33,54 @@ class UserDetail(JsonWebsocketConsumer):
         super().__init__(*args, **kwargs)
         self.group_name = None
 
+    def _get_authenticated_user(self):
+        user = self.scope.get("user")
+        if user and user.is_authenticated:
+            return user
+        return None
+
+    def _get_query_token(self):
+        raw_query_string = self.scope.get("query_string", b"")
+        if not raw_query_string:
+            return None
+
+        query_string = raw_query_string.decode("utf-8")
+        token_values = parse_qs(query_string).get("token")
+        if not token_values:
+            return None
+
+        token = token_values[0].strip()
+        return token or None
+
+    def _is_token_expired(self, exp_value):
+        if not exp_value:
+            return False
+
+        try:
+            exp_timestamp = int(exp_value)
+        except (TypeError, ValueError):
+            return True
+
+        return datetime.fromtimestamp(exp_timestamp, tz=timezone.utc) < datetime.now(
+            timezone.utc
+        )
+
     def connect(self):
         try:
-            user = self.scope.get("user")
-            if not user or not user.is_authenticated:
+            user = self._get_authenticated_user()
+            if not user:
                 logger.warning("Попытка подключения неавторизованного пользователя")
                 self.close(code=WS_CLOSE_AUTH_FAILED)
                 return
 
-            query_string = self.scope.get("query_string", b"").decode("utf-8")
-            token = None
-            if query_string:
-                params = dict(
-                    pair.split("=") for pair in query_string.split("&") if "=" in pair
-                )
-                token = params.get("token")
+            token = self._get_query_token()
 
             if token:
                 try:
-                    access_token = AccessToken(token)
-                    exp = access_token.get("exp", 0)
-                    if exp and datetime.fromtimestamp(
-                        exp, tz=timezone.utc
-                    ) < datetime.now(timezone.utc):
+                    validated_token = JWTAuthentication().get_validated_token(
+                        token.encode("utf-8")
+                    )
+                    if self._is_token_expired(validated_token.get("exp", 0)):
                         logger.warning(
                             f"Токен пользователя {user.username} истек при подключении"
                         )
@@ -90,13 +116,8 @@ class UserDetail(JsonWebsocketConsumer):
             close_code: Код закрытия соединения (не используется, но требуется для переопределения метода)
         """
         try:
-            user = self.scope.get("user")
-            if (
-                user
-                and user.is_authenticated
-                and hasattr(self, "group_name")
-                and self.group_name
-            ):
+            user = self._get_authenticated_user()
+            if user and hasattr(self, "group_name") and self.group_name:
                 async_to_sync(self.channel_layer.group_discard)(
                     self.group_name, self.channel_name
                 )
@@ -112,27 +133,19 @@ class UserDetail(JsonWebsocketConsumer):
         Возвращает True если токен валиден, False если нужно обновить.
         """
         try:
-            user = self.scope.get("user")
-            if not user or not user.is_authenticated:
+            user = self._get_authenticated_user()
+            if not user:
                 return False
 
-            query_string = self.scope.get("query_string", b"").decode("utf-8")
-            token = None
-            if query_string:
-                params = dict(
-                    pair.split("=") for pair in query_string.split("&") if "=" in pair
-                )
-                token = params.get("token")
-
+            token = self._get_query_token()
             if not token:
                 return False
 
             try:
-                access_token = AccessToken(token)
-                exp = access_token.get("exp", 0)
-                if exp and datetime.fromtimestamp(exp, tz=timezone.utc) < datetime.now(
-                    timezone.utc
-                ):
+                validated_token = JWTAuthentication().get_validated_token(
+                    token.encode("utf-8")
+                )
+                if self._is_token_expired(validated_token.get("exp", 0)):
                     logger.warning(f"Токен пользователя {user.username} истек")
                     return False
                 return True
@@ -197,6 +210,13 @@ class UserDetail(JsonWebsocketConsumer):
             self.send_json({"error": f"Ошибка обработки сообщения: {str(e)}"})
 
     def update_ip(self, ip):
+        user = self._get_authenticated_user()
+        if not user:
+            logger.warning("Неавторизованный пользователь попытался обновить IP")
+            self.send_json({"error": "Пользователь не авторизован", "type": "error"})
+            self.close(code=WS_CLOSE_AUTH_FAILED)
+            return
+
         try:
             if not self._check_token_validity():
                 logger.warning("Токен невалиден при обновлении IP")
@@ -210,7 +230,6 @@ class UserDetail(JsonWebsocketConsumer):
                 self.close(code=WS_CLOSE_TOKEN_EXPIRED)
                 return
 
-            user = self.scope["user"]
             logger.info(
                 f"Пользователь {user.username} инициирует обновление IP на {ip}"
             )
@@ -235,6 +254,13 @@ class UserDetail(JsonWebsocketConsumer):
             )
 
     def send_user_profile(self):
+        user = self._get_authenticated_user()
+        if not user:
+            logger.warning("Неавторизованный пользователь попытался получить профиль")
+            self.send_json({"error": "Пользователь не авторизован", "type": "error"})
+            self.close(code=WS_CLOSE_AUTH_FAILED)
+            return
+
         try:
             if not self._check_token_validity():
                 logger.warning("Токен невалиден при отправке профиля")
@@ -248,7 +274,6 @@ class UserDetail(JsonWebsocketConsumer):
                 self.close(code=WS_CLOSE_TOKEN_EXPIRED)
                 return
 
-            user = self.scope["user"]
             logger.info(f"Отправка профиля для пользователя {user.username}")
             profile = models.UserProfile.objects.get(user=user)
             serializer = serializers.UserProfileSerializer(profile)

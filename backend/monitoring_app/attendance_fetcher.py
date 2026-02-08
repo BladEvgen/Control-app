@@ -2,7 +2,8 @@ import asyncio
 import logging
 from contextlib import AbstractContextManager
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiohttp
 import backoff
@@ -42,15 +43,53 @@ BROWSER_HEADERS = {
     "sec-ch-ua-platform": '"Windows"',
 }
 
+SENSITIVE_QUERY_KEYS = {"access_token", "token", "api_key", "apikey"}
+MAX_RESPONSE_BODY_PREVIEW_LEN = 300
+
+
+def _sanitize_url(raw_url: str) -> str:
+    try:
+        parsed_url = urlsplit(raw_url)
+        redacted_query = urlencode(
+            [
+                (
+                    key,
+                    "***" if key.lower() in SENSITIVE_QUERY_KEYS else value,
+                )
+                for key, value in parse_qsl(parsed_url.query, keep_blank_values=True)
+            ],
+            doseq=True,
+        )
+        return urlunsplit(
+            (
+                parsed_url.scheme,
+                parsed_url.netloc,
+                parsed_url.path,
+                redacted_query,
+                parsed_url.fragment,
+            )
+        )
+    except Exception:
+        return raw_url
+
+
+def _shorten_payload(payload: str, max_len: int = MAX_RESPONSE_BODY_PREVIEW_LEN) -> str:
+    if not payload:
+        return ""
+    one_line_payload = " ".join(payload.split())
+    if len(one_line_payload) <= max_len:
+        return one_line_payload
+    return f"{one_line_payload[:max_len]}..."
+
 
 class AsyncAttendanceFetcher:
-    def __init__(self, chunk_size: int = 50, max_concurrent_requests: int = 6):
-        self.chunk_size = chunk_size
+    def __init__(self, max_concurrent_requests: int = 6):
+        if max_concurrent_requests < 1:
+            raise ValueError("max_concurrent_requests must be greater than 0")
         self.max_concurrent_requests = max_concurrent_requests
         self.session = None
         logger.info(
-            "AsyncAttendanceFetcher initialized with chunk_size=%s and max_concurrent_requests=%s",
-            self.chunk_size,
+            "AsyncAttendanceFetcher initialized with max_concurrent_requests=%s",
             self.max_concurrent_requests,
         )
 
@@ -70,12 +109,15 @@ class AsyncAttendanceFetcher:
 
     @backoff.on_exception(
         backoff.expo,
-        (aiohttp.ClientError, asyncio.TimeoutError),
+        (aiohttp.ClientConnectionError, asyncio.TimeoutError),
         max_tries=3,
     )
     async def fetch_attendance(
         self, pin: str, start_date: datetime, end_date: datetime
-    ) -> List[Dict]:
+    ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        if self.session is None:
+            raise RuntimeError("aiohttp session is not initialized")
+
         params = {
             "endDate": end_date.strftime("%Y-%m-%d %H:%M:%S"),
             "pageNo": "1",
@@ -84,30 +126,134 @@ class AsyncAttendanceFetcher:
             "startDate": start_date.strftime("%Y-%m-%d %H:%M:%S"),
             "access_token": settings.API_KEY,
         }
-        logger.info("Fetching attendance for PIN %s", pin)
+        request_url = f"{settings.API_URL.rstrip('/')}/api/transaction/listAttTransaction"
+        logger.debug("Fetching attendance for PIN %s", pin)
 
         try:
             async with self.session.get(
-                settings.API_URL + "/api/transaction/listAttTransaction",
+                request_url,
                 params=params,
                 headers=BROWSER_HEADERS,
                 ssl=True,
             ) as response:
-                logger.info(
-                    "Received response for PIN %s with status %s", pin, response.status
-                )
-                response.raise_for_status()
-                data = await response.json()
-                result = data.get("data", [])
-                logger.info("Fetched attendance for PIN %s", pin)
-                return result
-        except Exception as e:
-            logger.error(
-                "Error fetching attendance for PIN %s: %s", pin, str(e), exc_info=True
-            )
-            return []
+                response_body = await response.text()
+                sanitized_response_url = _sanitize_url(str(response.url))
+                shortened_response_body = _shorten_payload(response_body)
 
-    async def get_all_attendance(self, days: Optional[int] = None) -> None:
+                if response.status != 200:
+                    error_data = {
+                        "pin": pin,
+                        "status": response.status,
+                        "url": sanitized_response_url,
+                        "error": "External API responded with non-200 status",
+                        "response_body_preview": shortened_response_body,
+                    }
+                    logger.error(
+                        "Attendance API error for PIN %s: status=%s, url=%s, response_body=%s",
+                        pin,
+                        response.status,
+                        sanitized_response_url,
+                        shortened_response_body,
+                    )
+                    return [], error_data
+
+                try:
+                    data = await response.json(content_type=None)
+                except Exception as decode_error:
+                    logger.error(
+                        "Attendance API returned non-JSON payload for PIN %s: url=%s, error=%s, response_body=%s",
+                        pin,
+                        sanitized_response_url,
+                        str(decode_error),
+                        shortened_response_body,
+                    )
+                    return (
+                        [],
+                        {
+                            "pin": pin,
+                            "status": response.status,
+                            "url": sanitized_response_url,
+                            "error": f"Invalid JSON payload: {decode_error}",
+                            "response_body_preview": shortened_response_body,
+                        },
+                    )
+
+                if not isinstance(data, dict):
+                    logger.error(
+                        "Attendance API returned unexpected payload type for PIN %s: %s",
+                        pin,
+                        type(data).__name__,
+                    )
+                    return (
+                        [],
+                        {
+                            "pin": pin,
+                            "status": response.status,
+                            "url": sanitized_response_url,
+                            "error": "Unexpected payload format",
+                        },
+                    )
+
+                raw_records = data.get("data", [])
+                if not isinstance(raw_records, list):
+                    logger.error(
+                        "Attendance API returned invalid 'data' field for PIN %s: %s",
+                        pin,
+                        type(raw_records).__name__,
+                    )
+                    return (
+                        [],
+                        {
+                            "pin": pin,
+                            "status": response.status,
+                            "url": sanitized_response_url,
+                            "error": "Invalid payload: field 'data' must be a list",
+                        },
+                    )
+
+                logger.debug(
+                    "Fetched %d attendance records for PIN %s",
+                    len(raw_records),
+                    pin,
+                )
+                return raw_records, None
+        except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
+            logger.warning(
+                "Temporary network error while fetching attendance for PIN %s. Will retry if attempts remain.",
+                pin,
+                exc_info=True,
+            )
+            raise
+        except aiohttp.ClientError as client_error:
+            logger.error(
+                "Client error while fetching attendance for PIN %s: %s",
+                pin,
+                str(client_error),
+                exc_info=True,
+            )
+            return (
+                [],
+                {
+                    "pin": pin,
+                    "error": f"Client error: {client_error}",
+                },
+            )
+        except Exception as unknown_error:
+            logger.error(
+                "Unexpected error while fetching attendance for PIN %s: %s",
+                pin,
+                str(unknown_error),
+                exc_info=True,
+            )
+            return (
+                [],
+                {
+                    "pin": pin,
+                    "error": f"Unexpected error: {unknown_error}",
+                },
+            )
+
+    async def get_all_attendance(self, days: Optional[int] = None) -> Dict[str, Any]:
         """
         Получает данные о посещаемости всех сотрудников за выбранный день.
         Логика:
@@ -131,44 +277,168 @@ class AsyncAttendanceFetcher:
         pins = await database_sync_to_async(list)(
             models.Staff.objects.values_list("pin", flat=True)
         )
-        logger.info("Found %d active staff pins", len(pins))
+        total_pins = len(pins)
+        logger.info("Found %d active staff pins", total_pins)
+
+        if total_pins == 0:
+            logger.warning("No staff pins found. Nothing to fetch.")
+            return {
+                "days": days_to_subtract,
+                "source_date": start_date.date().isoformat(),
+                "save_date": next_day.date().isoformat(),
+                "total_pins": 0,
+                "successful_requests": 0,
+                "failed_requests": 0,
+                "pins_with_events": 0,
+                "pins_without_events": 0,
+                "created_records": 0,
+                "updated_records": 0,
+                "event_time_parse_errors": 0,
+                "failed_pins": [],
+                "errors": [],
+            }
 
         async with self as fetcher:
-            sem = asyncio.Semaphore(self.max_concurrent_requests)
             logger.info(
-                "Using semaphore with max_concurrent_requests=%s",
+                "Using worker pool with max_concurrent_requests=%s",
                 self.max_concurrent_requests,
             )
+            queue: asyncio.Queue[str] = asyncio.Queue()
+            for pin in pins:
+                queue.put_nowait(pin)
 
-            async def process_pin(pin):
-                async with sem:
-                    logger.info("Processing PIN: %s", pin)
-                    data = await fetcher.fetch_attendance(pin, start_date, end_date)
-                    if not data:
-                        logger.error("No attendance data returned for PIN %s", pin)
-                    else:
-                        logger.info(
-                            "Retrieved %d attendance records for PIN %s", len(data), pin
-                        )
-                    return pin, data
+            results: list[dict[str, Any]] = []
+            results_lock = asyncio.Lock()
+            processed_counter = 0
 
-            tasks = [process_pin(pin) for pin in pins]
-            results = await asyncio.gather(*tasks)
-            attendance_data = dict(results)
+            async def process_pin(pin: str) -> dict[str, Any]:
+                try:
+                    data, error = await fetcher.fetch_attendance(pin, start_date, end_date)
+                except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as exc:
+                    logger.error(
+                        "Attendance fetch failed after retries for PIN %s: %s",
+                        pin,
+                        str(exc),
+                    )
+                    return {
+                        "pin": pin,
+                        "data": [],
+                        "error": {
+                            "pin": pin,
+                            "error": f"Network error after retries: {exc}",
+                        },
+                    }
+
+                if error:
+                    return {"pin": pin, "data": [], "error": error}
+
+                if data:
+                    logger.debug("Retrieved %d attendance records for PIN %s", len(data), pin)
+                else:
+                    logger.info("No attendance events for PIN %s in requested period", pin)
+
+                return {"pin": pin, "data": data, "error": None}
+
+            async def worker() -> None:
+                nonlocal processed_counter
+                while True:
+                    try:
+                        pin = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return
+
+                    result = await process_pin(pin)
+                    async with results_lock:
+                        results.append(result)
+                        processed_counter += 1
+                        if processed_counter % 100 == 0 or processed_counter == total_pins:
+                            logger.info(
+                                "Attendance fetch progress: %d/%d pins processed",
+                                processed_counter,
+                                total_pins,
+                            )
+                    queue.task_done()
+
+            workers = [
+                asyncio.create_task(worker())
+                for _ in range(self.max_concurrent_requests)
+            ]
+            await asyncio.gather(*workers)
             logger.info("Completed fetching attendance data for all pins")
 
-        await database_sync_to_async(update_attendance_records)(
-            attendance_data, next_day
+        successful_results = [result for result in results if result["error"] is None]
+        failed_results = [result for result in results if result["error"] is not None]
+
+        attendance_data = {
+            result["pin"]: result["data"] for result in successful_results
+        }
+
+        db_update_result = {
+            "created_records": 0,
+            "updated_records": 0,
+            "event_time_parse_errors": 0,
+        }
+        if attendance_data:
+            db_update_result = await database_sync_to_async(update_attendance_records)(
+                attendance_data, next_day
+            )
+        else:
+            logger.warning(
+                "Skipping DB update because no successful responses were received from external API."
+            )
+
+        pins_with_events = sum(
+            1 for result in successful_results if bool(result["data"])
+        )
+        pins_without_events = len(successful_results) - pins_with_events
+        errors = [result["error"] for result in failed_results if result["error"]]
+        failed_pins = [result["pin"] for result in failed_results]
+
+        logger.info(
+            "Attendance fetch summary: total=%d, successful=%d, failed=%d, with_events=%d, without_events=%d, created=%d, updated=%d, parse_errors=%d",
+            total_pins,
+            len(successful_results),
+            len(failed_results),
+            pins_with_events,
+            pins_without_events,
+            db_update_result["created_records"],
+            db_update_result["updated_records"],
+            db_update_result["event_time_parse_errors"],
         )
 
+        if errors:
+            logger.warning(
+                "Fetcher completed with errors for %d PIN(s). Check logs for full details.",
+                len(errors),
+            )
 
-def update_attendance_records(attendance_data: Dict, next_day: datetime) -> None:
+        return {
+            "days": days_to_subtract,
+            "source_date": start_date.date().isoformat(),
+            "save_date": next_day.date().isoformat(),
+            "total_pins": total_pins,
+            "successful_requests": len(successful_results),
+            "failed_requests": len(failed_results),
+            "pins_with_events": pins_with_events,
+            "pins_without_events": pins_without_events,
+            "created_records": db_update_result["created_records"],
+            "updated_records": db_update_result["updated_records"],
+            "event_time_parse_errors": db_update_result["event_time_parse_errors"],
+            "failed_pins": failed_pins,
+            "errors": errors,
+        }
+
+
+def update_attendance_records(
+    attendance_data: Dict[str, List[Dict[str, Any]]], next_day: datetime
+) -> Dict[str, int]:
     """
     Синхронная функция для обновления базы данных в атомарной транзакции.
     В качестве ключа для записи используется next_day.date(), как в оригинальной версии.
     """
     updates = []
     creates = []
+    event_time_parse_errors = 0
 
     logger.info("Beginning atomic transaction for database updates")
     with atomic_block():
@@ -205,13 +475,14 @@ def update_attendance_records(attendance_data: Dict, next_day: datetime) -> None
                         str(e),
                         exc_info=True,
                     )
+                    event_time_parse_errors += 1
                     first_event_time = None
                     last_event_time = None
 
                 area_name_in = first_event.get("areaName") or "Unknown"
                 area_name_out = last_event.get("areaName") or "Unknown"
             else:
-                logger.warning(
+                logger.debug(
                     "No data available for staff PIN %s; using default values.",
                     staff.pin,
                 )
@@ -228,7 +499,7 @@ def update_attendance_records(attendance_data: Dict, next_day: datetime) -> None
                 att_obj.area_name_in = area_name_in
                 att_obj.area_name_out = area_name_out
                 updates.append(att_obj)
-                logger.info(
+                logger.debug(
                     "Scheduled update for attendance record of staff id %s on %s",
                     staff.id,
                     next_day.date(),
@@ -243,7 +514,7 @@ def update_attendance_records(attendance_data: Dict, next_day: datetime) -> None
                     area_name_out=area_name_out,
                 )
                 creates.append(new_att)
-                logger.info(
+                logger.debug(
                     "Scheduled creation for attendance record of staff id %s on %s",
                     staff.id,
                     next_day.date(),
@@ -259,3 +530,9 @@ def update_attendance_records(attendance_data: Dict, next_day: datetime) -> None
                 ["first_in", "last_out", "area_name_in", "area_name_out"],
             )
         logger.info("Completed atomic transaction for attendance records update")
+
+    return {
+        "created_records": len(creates),
+        "updated_records": len(updates),
+        "event_time_parse_errors": event_time_parse_errors,
+    }

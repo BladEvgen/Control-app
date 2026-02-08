@@ -4,6 +4,7 @@ import logging
 import subprocess
 import time
 from collections import defaultdict
+from importlib import import_module
 from pathlib import Path
 
 from django.apps import apps
@@ -128,7 +129,7 @@ class Command(BaseCommand):
                 )
 
         self.stdout.write(
-            f"Восстановление из {backup_path} " f"(формат: {file_format.upper()})..."
+            f"Восстановление из {backup_path} (формат: {file_format.upper()})..."
         )
 
         self.stdout.write(
@@ -188,7 +189,7 @@ class Command(BaseCommand):
         if dry_run:
             self.stdout.write(
                 self.style.SUCCESS(
-                    "Dry-run: JSON файл валиден, " "восстановление не выполнено"
+                    "Dry-run: JSON файл валиден, восстановление не выполнено"
                 )
             )
             return
@@ -202,9 +203,7 @@ class Command(BaseCommand):
         try:
             self._restore_json_optimized(data)
         except Exception as e:
-            logger.warning(
-                f"Оптимизированная загрузка не удалась: {e}, " "пробуем loaddata..."
-            )
+            logger.warning(f"Оптимизированная загрузка не удалась: {e}, пробуем loaddata...")
             temp_file = (
                 backup_path.parent
                 / f"temp_restore_{backup_path.stem.replace('.json', '')}.json"
@@ -407,9 +406,7 @@ class Command(BaseCommand):
                         ]
                     ):
                         continue
-                    logger.warning(
-                        f"Ошибка выполнения SQL команды: " f"{cmd[:100]}... - {e}"
-                    )
+                    logger.warning(f"Ошибка выполнения SQL команды: {cmd[:100]}... - {e}")
 
             self.stdout.write(
                 self.style.SUCCESS(
@@ -450,9 +447,7 @@ class Command(BaseCommand):
                 pass
 
             self.stdout.write(
-                self.style.SUCCESS(
-                    f"MySQL настроен для восстановления " f"(таймаут: {timeout}с)"
-                )
+                self.style.SUCCESS(f"MySQL настроен для восстановления (таймаут: {timeout}с)")
             )
         except Exception as e:
             logger.warning(f"Не удалось настроить MySQL: {e}")
@@ -566,6 +561,51 @@ class Command(BaseCommand):
                 )
             )
 
+    def _get_certs_signal_bindings(self):
+        """Возвращает список привязок сигналов certs, если app доступен.
+
+        Формат элемента: (signal, receiver, sender).
+        Если приложение certs не установлено или не импортируется, возвращает пустой список.
+        """
+        if not apps.is_installed("certs"):
+            logger.info("Приложение certs не установлено; операции с его сигналами пропущены.")
+            return []
+
+        try:
+            signals_module = import_module("certs.signals")
+            models_module = import_module("certs.models")
+        except ImportError as exc:
+            logger.info("Не удалось импортировать certs.signals/certs.models: %s", exc)
+            return []
+
+        definitions = [
+            (post_save, "request_saved", "Request"),
+            (post_save, "request_status_changed", "Request"),
+            (post_delete, "request_deleted", "Request"),
+            (pre_save, "request_pre_save", "Request"),
+            (post_save, "request_step_saved", "RequestStep"),
+            (post_delete, "request_step_deleted", "RequestStep"),
+            (post_save, "assignment_saved", "Assignment"),
+            (post_delete, "assignment_deleted", "Assignment"),
+            (post_save, "request_file_saved", "RequestFile"),
+            (post_delete, "request_file_deleted", "RequestFile"),
+        ]
+
+        bindings = []
+        for signal, receiver_name, sender_name in definitions:
+            receiver = getattr(signals_module, receiver_name, None)
+            sender = getattr(models_module, sender_name, None)
+            if receiver is None or sender is None:
+                logger.warning(
+                    "Пропуск привязки certs signal: receiver=%s, sender=%s",
+                    receiver_name,
+                    sender_name,
+                )
+                continue
+            bindings.append((signal, receiver, sender))
+
+        return bindings
+
     def _disconnect_signals(self):
         """Отключает Django signals во время восстановления БД.
 
@@ -573,48 +613,28 @@ class Command(BaseCommand):
         что позволяет избежать ошибок подключения к Redis.
         """
         try:
-            from certs import signals
-            from certs.models import Assignment, Request, RequestFile, RequestStep
+            bindings = self._get_certs_signal_bindings()
+            if not bindings:
+                return
 
-            post_save.disconnect(signals.request_saved, sender=Request)
-            post_save.disconnect(signals.request_status_changed, sender=Request)
-            post_delete.disconnect(signals.request_deleted, sender=Request)
-            pre_save.disconnect(signals.request_pre_save, sender=Request)
+            for signal, receiver, sender in bindings:
+                signal.disconnect(receiver, sender=sender)
 
-            post_save.disconnect(signals.request_step_saved, sender=RequestStep)
-            post_delete.disconnect(signals.request_step_deleted, sender=RequestStep)
-
-            post_save.disconnect(signals.assignment_saved, sender=Assignment)
-            post_delete.disconnect(signals.assignment_deleted, sender=Assignment)
-
-            post_save.disconnect(signals.request_file_saved, sender=RequestFile)
-            post_delete.disconnect(signals.request_file_deleted, sender=RequestFile)
-
-            self.stdout.write("Сигналы Django отключены для восстановления")
+            self.stdout.write("Сигналы Django отключены для восстановления (certs)")
         except Exception as e:
             logger.warning(f"Не удалось отключить сигналы: {e}")
 
     def _reconnect_signals(self):
         """Включает Django signals обратно после восстановления БД."""
         try:
-            from certs import signals
-            from certs.models import Assignment, Request, RequestFile, RequestStep
+            bindings = self._get_certs_signal_bindings()
+            if not bindings:
+                return
 
-            post_save.connect(signals.request_saved, sender=Request)
-            post_save.connect(signals.request_status_changed, sender=Request)
-            post_delete.connect(signals.request_deleted, sender=Request)
-            pre_save.connect(signals.request_pre_save, sender=Request)
+            for signal, receiver, sender in bindings:
+                signal.connect(receiver, sender=sender)
 
-            post_save.connect(signals.request_step_saved, sender=RequestStep)
-            post_delete.connect(signals.request_step_deleted, sender=RequestStep)
-
-            post_save.connect(signals.assignment_saved, sender=Assignment)
-            post_delete.connect(signals.assignment_deleted, sender=Assignment)
-
-            post_save.connect(signals.request_file_saved, sender=RequestFile)
-            post_delete.connect(signals.request_file_deleted, sender=RequestFile)
-
-            self.stdout.write("Сигналы Django включены обратно")
+            self.stdout.write("Сигналы Django включены обратно (certs)")
         except Exception as e:
             logger.warning(f"Не удалось включить сигналы: {e}")
 
@@ -655,7 +675,7 @@ class Command(BaseCommand):
                         deserialized_objects.extend(list(obj))
                     except Exception as e:
                         logger.warning(
-                            f"Ошибка десериализации объекта " f"{model_label}: {e}"
+                            f"Ошибка десериализации объекта {model_label}: {e}"
                         )
                         continue
 
@@ -677,7 +697,7 @@ class Command(BaseCommand):
                                         and "unique" not in error_str
                                     ):
                                         logger.warning(
-                                            f"Ошибка сохранения " f"{model_label}: {e}"
+                                            f"Ошибка сохранения {model_label}: {e}"
                                         )
 
                         if saved_count % 1000 == 0:

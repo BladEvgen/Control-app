@@ -62,7 +62,7 @@ class MonitoringAdminSite(admin.AdminSite):
         Override to organize models into custom groups
         """
         if app_label:
-            return super().get_app_list(request, app_label)
+            return super().get_app_list(request)
 
         app_dict = self._build_app_dict(request)
 
@@ -163,7 +163,7 @@ class MonitoringAdminSite(admin.AdminSite):
             )
 
         if not grouped_apps:
-            return super().get_app_list(request, app_label)
+            return super().get_app_list(request)
 
         return sorted(grouped_apps, key=lambda x: x["name"])
 
@@ -1187,9 +1187,7 @@ class StaffAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = qs.select_related("department").prefetch_related(
-            "positions", "attendance", "remote_work", "absences"
-        )
+        qs = qs.select_related("department").prefetch_related("positions")
         return qs
 
     display_positions.short_description = "Должности"
@@ -1424,17 +1422,21 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
     list_filter = (
         monitoring_utils.HierarchicalDepartmentFilter,
         DateRangeFilter,
-        "staff__pin",
+        "absence_reason",
+    )
+    search_fields = (
         "staff__surname",
         "staff__name",
-        "absence_reason",
+        "staff__pin",
         "area_name_in",
         "area_name_out",
     )
-    search_fields = ("staff__surname", "staff__name", "staff__pin")
     date_hierarchy = "date_at"
     ordering = ("-date_at", "staff")
     list_per_page = 50
+    show_full_result_count = False
+    list_select_related = ("staff", "staff__department", "absence_reason")
+    autocomplete_fields = ("absence_reason",)
     actions = ["export_attendance_data", "mark_as_absent"]
 
     readonly_fields = (
@@ -1595,7 +1597,6 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         qs = super().get_queryset(request)
         qs = (
             qs.select_related("staff__department", "absence_reason")
-            .prefetch_related("staff__positions")
             .only(
                 "id",
                 "staff__id",
@@ -1635,14 +1636,6 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         if not value or value == "Unknown":
             return format_html('<span style="color: #999;">N/A</span>')
         return value
-
-    def get_object(self, request, object_id, from_field=None):
-        obj = super().get_object(request, object_id, from_field)
-        if obj:
-            if hasattr(obj, "staff"):
-                if not hasattr(obj.staff, "_prefetched_objects_cache"):
-                    obj.staff.positions.all()
-        return obj
 
     def changelist_view(self, request, extra_context=None):
         response = super().changelist_view(request, extra_context=extra_context)
@@ -1693,6 +1686,8 @@ class LessonAttendanceAdmin(ModelAdmin):
     )
     date_hierarchy = "date_at"
     actions = ["export_lesson_data", "cleanup_old_photos"]
+    show_full_result_count = False
+    list_select_related = ("staff", "staff__department")
 
     fieldsets = (
         (
@@ -1744,13 +1739,14 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     list_filter = (
         DateRangeFilter,
-        "staff",
+        monitoring_utils.HierarchicalDepartmentFilter,
         "subject_name",
         ("first_in", admin.DateFieldListFilter),
         ("last_out", admin.DateFieldListFilter),
     )
 
     search_fields = (
+        "staff__pin",
         "staff__name",
         "staff__surname",
         "subject_name",
@@ -1821,19 +1817,10 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     location_map.short_description = "Карта местоположения"
 
-    def get_object(self, request, object_id, from_field=None):
-        obj = super().get_object(request, object_id, from_field)
-        if obj and hasattr(obj, "staff"):
-            if not hasattr(obj.staff, "_prefetched_objects_cache"):
-                obj.staff.positions.all()
-        return obj
-
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         qs = (
-            qs.select_related("staff", "staff__department")
-            .prefetch_related("staff__positions")
-            .only(
+            qs.select_related("staff", "staff__department").only(
                 "id",
                 "staff__id",
                 "staff__surname",

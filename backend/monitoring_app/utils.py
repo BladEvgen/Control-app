@@ -1307,8 +1307,22 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
     for rw in remote_work_qs:
         staff_id = rw.staff_id
 
-        rw_start = start_date if rw.permanent_remote else max(rw.start_date, start_date)
-        rw_end = end_date if rw.permanent_remote else min(rw.end_date, end_date)
+        if rw.permanent_remote:
+            rw_start = start_date
+            rw_end = end_date
+        else:
+            if rw.start_date is None or rw.end_date is None:
+                logger.warning(
+                    "RemoteWork id=%s for staff_id=%s skipped because start/end dates are missing",
+                    rw.id,
+                    staff_id,
+                )
+                continue
+            rw_start = max(rw.start_date, start_date)
+            rw_end = min(rw.end_date, end_date)
+
+        if rw_start > rw_end:
+            continue
 
         date_keys = [
             (rw_start + datetime.timedelta(days=i)).strftime("%Y-%m-%d")

@@ -18,9 +18,19 @@ def get_all_attendance_task():
 
     async def main():
         fetcher = AsyncAttendanceFetcher()
-        await fetcher.get_all_attendance()
+        summary = await fetcher.get_all_attendance()
+        return summary
 
-    asyncio.run(main())
+    summary = asyncio.run(main())
+    logger.info(
+        "get_all_attendance_task summary: total_pins=%s, successful=%s, failed=%s, created=%s, updated=%s",
+        summary.get("total_pins"),
+        summary.get("successful_requests"),
+        summary.get("failed_requests"),
+        summary.get("created_records"),
+        summary.get("updated_records"),
+    )
+    return summary
 
 
 @shared_task

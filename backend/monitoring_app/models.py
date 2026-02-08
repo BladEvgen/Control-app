@@ -1,6 +1,7 @@
 import os
 import shutil
 from contextlib import AbstractContextManager
+from decimal import Decimal
 from datetime import date, datetime
 from typing import Any, Optional, cast
 
@@ -311,7 +312,7 @@ class Position(models.Model):
         default="Сотрудник",
     )
     rate = models.DecimalField(
-        max_digits=4, decimal_places=2, verbose_name="Ставка", default=1
+        max_digits=4, decimal_places=2, verbose_name="Ставка", default=Decimal("1")
     )
 
     def __str__(self):
@@ -605,6 +606,7 @@ class StaffAttendance(models.Model):
         unique_together = [["staff", "date_at"]]
         indexes = [
             models.Index(fields=["staff", "date_at"]),
+            models.Index(fields=["date_at", "staff"], name="stfatt_date_staff_idx"),
             models.Index(fields=["date_at"]),
             models.Index(fields=["first_in"]),
             models.Index(fields=["last_out"]),
@@ -693,6 +695,8 @@ class LessonAttendance(models.Model, GeoItem):
     class Meta:
         indexes = [
             models.Index(fields=["staff", "date_at"]),
+            models.Index(fields=["date_at", "first_in"], name="lsnatt_date_first_idx"),
+            models.Index(fields=["staff", "first_in"], name="lsnatt_staff_first_idx"),
             models.Index(fields=["date_at"]),
             models.Index(fields=["first_in"]),
             models.Index(fields=["last_out"]),
