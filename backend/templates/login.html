@@ -1,147 +1,81 @@
 {% extends "components/base.html" %}
 {% load django_app_filters_and_tags %}
-{% block title %}Login - Staff App{% endblock %}
+{% block title %}Вход — Staff App{% endblock %}
 {% load static %}
 
 {% block extra_css %}
 <style>
-  
   .login-card {
-    backdrop-filter: blur(5px);
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    transform: translateY(0);
+    box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1);
     transition: transform 0.3s ease, box-shadow 0.3s ease;
   }
-  
-  .login-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  .login-card:hover { box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15); }
+  .input-field {
+    transition: all 0.2s ease;
   }
-  
-  .input-icon {
-    top: 50%;
-    transform: translateY(-50%);
+  .input-field {
+    border: 1px solid #d1d5db;
+    background: #fff;
   }
-  
-  .form-input {
-    transition: all 0.3s ease;
-  }
-  
-  .form-input:focus {
-    border-color: #3b82f6;
+  .input-field:focus {
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
-  }
-  
-  .btn-primary {
-    background-image: linear-gradient(to right, #1e40af, #3b82f6);
-    transition: all 0.3s ease;
-  }
-  
-  .btn-primary:hover {
-    background-image: linear-gradient(to right, #1e3a8a, #2563eb);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  }
-  
-  .password-toggle:focus {
-    outline: none;
-  }
-  
-  .pulse-animation {
-    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  }
-  
-  @keyframes pulse {
-    0%, 100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.7;
-    }
+    border-color: #3b82f6;
   }
 </style>
 {% endblock %}
 
 {% block main %}
-<div class="login-container flex items-center justify-center p-4">
-  <div class="login-card bg-white/90 w-full max-w-md rounded-xl overflow-hidden">
-    <!-- Top colored header -->
-    <div class="bg-gradient-to-r from-blue-800 to-blue-600 px-6 py-8  text-center">
-      <div class="inline-block rounded-full bg-white/20 p-4 mb-4">
-        <i class="fas fa-user-shield text-4xl"></i>
+<div class="flex items-center justify-center min-h-[calc(100vh-280px)] py-12 px-4 sm:px-6 lg:px-8">
+  <div class="login-card form-card bg-white w-full max-w-md rounded-2xl overflow-hidden border border-gray-200" style="max-width: 28rem;">
+    <div class="bg-gradient-to-r from-blue-800 to-blue-600 px-6 py-10 text-center">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-white/20 backdrop-blur-sm mb-5">
+        <i class="fas fa-user-shield text-3xl text-white"></i>
       </div>
-      <h1 class="text-2xl font-bold text-blask">Добро пожаловать</h1>
-      <p class="text-blue-100 mt-2">Войдите в ваш аккаунт</p>
+      <h1 class="text-2xl sm:text-3xl font-bold text-white">Добро пожаловать</h1>
+      <p class="text-blue-100 mt-2 text-sm sm:text-base">Войдите в свой аккаунт</p>
     </div>
-    
-    <!-- Login form -->
+
     <div class="p-6 sm:p-8">
       <form method="post" action="{% url 'login_view' %}" class="space-y-6">
         {% csrf_token %}
-        
-        <!-- Username field -->
+
         <div>
-          <label for="username" class="block text-sm font-medium text-gray-700 mb-1">Имя пользователя</label>
+          <label for="username" class="block text-sm font-medium text-gray-700 mb-2">Имя пользователя</label>
           <div class="relative">
-            <div class="absolute left-0 inset-y-0 pl-3 flex items-center pointer-events-none">
-              <i class="fas fa-user text-gray-400"></i>
+            <div class="form-icon-wrap">
+              <i class="fas fa-user text-lg"></i>
             </div>
-            <input 
-              type="text" 
-              id="username" 
-              name="username" 
-              class="form-input block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Enter your username" 
-              required
-              autocomplete="username"
-            />
+            <input type="text" id="username" name="username" class="input-field form-input-with-icon block w-full py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 placeholder-gray-400"
+              placeholder="Введите логин" required autocomplete="username" autofocus />
           </div>
         </div>
-        
-        <!-- Password field -->
+
         <div>
-          <div class="flex items-center justify-between mb-1">
+          <div class="flex items-center justify-between mb-2">
             <label for="password" class="block text-sm font-medium text-gray-700">Пароль</label>
-            <a href="{% url 'password_reset_request' %}" class="text-sm text-blue-600 hover:text-blue-800 transition duration-200">
+            <a href="{% url 'password_reset_request' %}" 
+              class="text-sm text-blue-600 hover:text-blue-800 font-medium transition-colors duration-200 hover:underline">
               Забыли пароль?
             </a>
           </div>
           <div class="relative">
-            <div class="absolute left-0 inset-y-0 pl-3 flex items-center pointer-events-none">
-              <i class="fas fa-lock text-gray-400"></i>
+            <div class="form-icon-wrap">
+              <i class="fas fa-lock text-lg"></i>
             </div>
-            <input 
-              type="password" 
-              id="password" 
-              name="password" 
-              class="form-input block w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Введите ваш пароль" 
-              required
-              autocomplete="current-password"
-            />
-            <button 
-              type="button"
-              class="password-toggle absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400"
-              aria-label="Toggle password visibility"
-            >
-              <i class="fas fa-eye" id="password-toggle-icon"></i>
+            <input type="password" id="password" name="password" class="input-field form-input-with-icon form-input-with-right-icon block w-full py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 placeholder-gray-400"
+              placeholder="Введите пароль" required autocomplete="current-password" />
+            <button type="button" class="password-toggle form-icon-wrap form-icon-right text-gray-400 hover:text-gray-600 transition-colors p-1 rounded-lg hover:bg-gray-100"
+              aria-label="Показать/скрыть пароль">
+              <i class="fas fa-eye text-lg" id="password-toggle-icon"></i>
             </button>
           </div>
         </div>
-        
-        
-        <!-- Sign in button -->
-        <div>
-          <button 
-            type="submit" 
-            class="btn-primary w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-white font-medium"
-          >
-            <i class="fas fa-sign-in-alt mr-2"></i> Войти
-          </button>
-        </div>
+
+        <button type="submit" class="btn-primary-solid btn-block">
+          <i class="fas fa-sign-in-alt"></i>
+          <span>Войти</span>
+        </button>
       </form>
-      
     </div>
   </div>
 </div>
@@ -153,25 +87,13 @@
     const passwordInput = document.getElementById('password');
     const passwordToggle = document.querySelector('.password-toggle');
     const passwordToggleIcon = document.getElementById('password-toggle-icon');
-    
-    passwordToggle.addEventListener('click', function() {
-      if (passwordInput.type === 'password') {
-        passwordInput.type = 'text';
-        passwordToggleIcon.classList.remove('fa-eye');
-        passwordToggleIcon.classList.add('fa-eye-slash');
-      } else {
-        passwordInput.type = 'password';
-        passwordToggleIcon.classList.remove('fa-eye-slash');
-        passwordToggleIcon.classList.add('fa-eye');
-      }
+
+    passwordToggle?.addEventListener('click', function() {
+      const isPassword = passwordInput.type === 'password';
+      passwordInput.type = isPassword ? 'text' : 'password';
+      passwordToggleIcon.classList.toggle('fa-eye', !isPassword);
+      passwordToggleIcon.classList.toggle('fa-eye-slash', isPassword);
     });
-    
-    const usernameInput = document.getElementById('username');
-    if (usernameInput) {
-      setTimeout(() => {
-        usernameInput.focus();
-      }, 500);
-    }
   });
 </script>
 {% endblock %}

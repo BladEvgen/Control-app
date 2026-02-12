@@ -19,12 +19,14 @@
       background-color: #f5f7fa;
     }
 
-    main{
-          min-height: calc(100vh - 180px);
-    background-image: url('data:image/svg+xml;charset=utf8,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 320"%3E%3Cpath fill="%230b2563" fill-opacity="0.05" d="M0,288L48,272C96,256,192,224,288,197.3C384,171,480,149,576,165.3C672,181,768,235,864,250.7C960,267,1056,245,1152,224C1248,203,1344,181,1392,170.7L1440,160L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z"%3E%3C/path%3E%3C/svg%3E');
-    background-position: bottom;
-    background-repeat: no-repeat;
-    background-size: 100% 50%;
+    main {
+      background-image: url('data:image/svg+xml;charset=utf8,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 320" preserveAspectRatio="none"%3E%3Cpath fill="%230b2563" fill-opacity="0.06" d="M0,288L48,272C96,256,192,224,288,197.3C384,171,480,149,576,165.3C672,181,768,235,864,250.7C960,267,1056,245,1152,224C1248,203,1344,181,1392,170.7L1440,160L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z"%3E%3C/path%3E%3C/svg%3E');
+      background-position: bottom center;
+      background-repeat: no-repeat;
+      background-size: 100% 280px;
+    }
+    @media (max-width: 640px) {
+      main { background-size: 100% 180px; }
     }
     .notification {
       position: fixed;
@@ -33,30 +35,30 @@
       z-index: 9999;
       animation: slideIn 0.3s forwards;
     }
-    
+
     @keyframes slideIn {
       from { transform: translateX(100%); opacity: 0; }
       to { transform: translateX(0); opacity: 1; }
     }
-    
+
     @keyframes slideOut {
       from { transform: translateX(0); opacity: 1; }
       to { transform: translateX(100%); opacity: 0; }
     }
-    
+
     .slide-out {
       animation: slideOut 0.3s forwards;
     }
-    
+
     .page-transition {
       animation: fadeIn 0.3s ease-in-out;
     }
-    
+
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
     }
-    
+
     .mobile-menu-container {
       position: fixed;
       top: 0;
@@ -69,12 +71,12 @@
       visibility: hidden;
       transition: opacity 0.3s ease, visibility 0.3s ease;
     }
-    
+
     .mobile-menu-container.active {
       opacity: 1;
       visibility: visible;
     }
-    
+
     .mobile-menu {
       position: fixed;
       bottom: 0;
@@ -90,11 +92,11 @@
       max-height: 80vh;
       overflow-y: auto;
     }
-    
+
     .mobile-menu-container.active .mobile-menu {
       transform: translateY(0);
     }
-    
+
     .drag-indicator {
       width: 40px;
       height: 5px;
@@ -102,14 +104,90 @@
       border-radius: 5px;
       margin: 0 auto 20px auto;
     }
+    .form-icon-wrap {
+      position: absolute;
+      left: 12px;
+      top: 0;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      z-index: 10;
+      pointer-events: none;
+      color: #6b7280;
+    }
+    .form-icon-wrap.form-icon-right {
+      left: auto;
+      right: 12px;
+      pointer-events: auto;
+    }
+    .form-input-with-icon {
+      padding-left: 42px !important;
+    }
+    .form-input-with-icon.form-input-with-right-icon {
+      padding-right: 42px !important;
+    }
+    .btn-primary-solid,
+    .btn-success-solid,
+    .btn-secondary-outline {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      min-height: 48px;
+      padding: 12px 20px;
+      font-size: 16px;
+      font-weight: 600;
+      transition: all 0.2s ease;
+      cursor: pointer;
+      text-decoration: none;
+      border-radius: 12px;
+    }
+    .btn-primary-solid {
+      background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+      color: #ffffff !important;
+      border: none;
+      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+    }
+    .btn-primary-solid:hover {
+      background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.45);
+    }
+    .btn-success-solid {
+      background: linear-gradient(135deg, #047857 0%, #059669 100%);
+      color: #ffffff !important;
+      border: none;
+      box-shadow: 0 2px 8px rgba(5, 150, 105, 0.35);
+    }
+    .btn-success-solid:hover {
+      background: linear-gradient(135deg, #065f46 0%, #047857 100%);
+      box-shadow: 0 4px 12px rgba(5, 150, 105, 0.45);
+    }
+    .btn-secondary-outline {
+      background: #ffffff;
+      border: 2px solid #6b7280;
+      color: #374151 !important;
+    }
+    .btn-secondary-outline:hover {
+      background: #f3f4f6;
+      border-color: #4b5563;
+      color: #111827 !important;
+    }
+    .btn-block { width: 100%; }
+    .btn-primary-solid:disabled, .btn-primary-solid.disabled { opacity: 0.7; cursor: not-allowed; }
+    .form-card {
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
+    }
+    @media (min-width: 640px) {
+      .form-card { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1); }
+    }
   </style>
   {% block extra_css %}{% endblock %}
 </head>
 
 <body>
   {% include "components/header.html" %}
-  
-  <div class="container mx-auto page-transition">
+
+  <div class="container mx-auto page-transition" style="position:relative;z-index:1;">
     <main class="py-8 px-4 sm:px-6 md:px-8 lg:px-10">
       {% if messages %}
       <div class="notification space-y-2">
@@ -137,11 +215,11 @@
         {% endfor %}
       </div>
       {% endif %}
-      
+
       {% block main %}{% endblock %}
     </main>
   </div>
-  
+
   {% include "components/footer.html" %}
 
   <script>
@@ -149,22 +227,17 @@
       // Handle notifications
       const notifications = document.querySelectorAll('.message-item');
       notifications.forEach(notification => {
-        setTimeout(() => {
-          notification.classList.add('slide-out');
-          setTimeout(() => {
-            notification.remove();
-          }, 300);
-        }, 5000);
-        
         const closeBtn = notification.querySelector('.close-notification');
         if (closeBtn) {
           closeBtn.addEventListener('click', () => {
             notification.classList.add('slide-out');
-            setTimeout(() => {
-              notification.remove();
-            }, 300);
+            setTimeout(() => notification.remove(), 300);
           });
         }
+        setTimeout(() => {
+          notification.classList.add('slide-out');
+          setTimeout(() => notification.remove(), 300);
+        }, 5000);
       });
     });
   </script>
