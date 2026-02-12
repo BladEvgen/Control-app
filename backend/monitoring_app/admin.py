@@ -13,7 +13,9 @@ from django.contrib.admin.models import LogEntry
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import Avg, Count, F, Q
+from django.db.models.functions import TruncMonth
 from django.http import JsonResponse
 from django.template.response import TemplateResponse
 from django.urls import path
@@ -21,12 +23,14 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.html import format_html
 from django_admin_geomap import ModelAdmin
+
 from monitoring_app import utils as monitoring_utils
 from monitoring_app.lesson_locations_conf import (
     ACCEPTANCE_R_CLUSTER,
     ACCEPTANCE_R_SAME_POINT,
     ACCEPTANCE_R_STANDALONE,
     CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
     CLUSTER_THRESHOLD_M,
     SAME_POINT_THRESHOLD_M,
 )
@@ -1873,7 +1877,9 @@ class LessonAttendanceAdmin(ModelAdmin):
         radius = 300
         obj_lat, obj_lon = obj.latitude, obj.longitude
 
-        locations = ClassLocation.objects.all()
+        locations = ClassLocation.objects.filter(
+            latitude__isnull=False, longitude__isnull=False
+        ).only("id", "name", "address", "latitude", "longitude")
         closest = None
         min_distance = float("inf")
 
@@ -2003,6 +2009,22 @@ class ClassLocationAdmin(ModelAdmin):
     list_filter = ("created_at",)
     search_fields = ("name", "address")
 
+    def get_queryset(self, request):
+        return (
+            super()
+            .get_queryset(request)
+            .only(
+                "id",
+                "name",
+                "address",
+                "latitude",
+                "longitude",
+                "acceptance_radius_m",
+                "created_at",
+                "updated_at",
+            )
+        )
+
     def attendance_stats(self, obj):
         if (
             obj is None
@@ -2015,36 +2037,46 @@ class ClassLocationAdmin(ModelAdmin):
                 "Сохраните локацию с координатами для отображения статистики посещаемости."
                 "</div>"
             )
+        cache_key = f"attendance_stats_{obj.pk}_{timezone.now().date().isoformat()}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return format_html(cached)
+
         now = timezone.now()
-        months_data = []
-        month_names = []
+        six_months_ago = (now - timedelta(days=30 * 6)).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        radius = 0.0027
 
-        for i in range(6):
-            month_date = now - timedelta(days=30 * i)
-            month_start = month_date.replace(
-                day=1, hour=0, minute=0, second=0, microsecond=0
-            )
-            if i == 0:
-                month_end = now
-            else:
-                next_month = month_start + timedelta(days=32)
-                month_end = next_month.replace(day=1) - timedelta(seconds=1)
-
-            radius = 0.0027
-            lessons_count = LessonAttendance.objects.filter(
+        qs = (
+            LessonAttendance.objects.filter(
                 latitude__gte=obj.latitude - radius,
                 latitude__lte=obj.latitude + radius,
                 longitude__gte=obj.longitude - radius,
                 longitude__lte=obj.longitude + radius,
-                first_in__gte=month_start,
-                first_in__lte=month_end,
-            ).count()
+                first_in__gte=six_months_ago,
+                first_in__lte=now,
+            )
+            .annotate(month=TruncMonth("first_in"))
+            .values("month")
+            .annotate(count=Count("id"))
+        )
+        counts_by_ym = {
+            (row["month"].year, row["month"].month): row["count"]
+            for row in qs
+            if row["month"]
+        }
 
-            months_data.append(lessons_count)
-            month_names.append(month_abbr[month_start.month])
+        months_order = []
+        for i in range(5, -1, -1):
+            month_date = now - timedelta(days=30 * i)
+            month_start = month_date.replace(
+                day=1, hour=0, minute=0, second=0, microsecond=0
+            )
+            months_order.append(month_start)
 
-        months_data.reverse()
-        month_names.reverse()
+        months_data = [counts_by_ym.get((m.year, m.month), 0) for m in months_order]
+        month_names = [month_abbr[m.month] for m in months_order]
 
         max_count = max(months_data) if months_data else 1
 
@@ -2061,6 +2093,7 @@ class ClassLocationAdmin(ModelAdmin):
             html += "</div>"
 
         html += "</div></div>"
+        cache.set(cache_key, html, timeout=3600)
         return format_html(html)
 
     attendance_stats.short_description = "Статистика посещаемости"
@@ -2100,7 +2133,18 @@ class ClassLocationAdmin(ModelAdmin):
             change,
         )
         try:
-            super().save_model(request, obj, form, change)
+            with transaction.atomic():
+                super().save_model(request, obj, form, change)
+                try:
+                    from monitoring_app.signals import (
+                        invalidate_class_location_cache_impl,
+                    )
+
+                    invalidate_class_location_cache_impl()
+                except Exception as inv_err:
+                    logger.warning(
+                        "ClassLocationAdmin.save_model cache invalidation: %s", inv_err
+                    )
             logger.info(
                 "ClassLocationAdmin.save_model OK id=%s name=%s",
                 obj.pk,
@@ -2128,7 +2172,7 @@ class ClassLocationAdmin(ModelAdmin):
                 locs = list(
                     ClassLocation.objects.filter(
                         latitude__isnull=False, longitude__isnull=False
-                    )
+                    ).only("id", "latitude", "longitude", "acceptance_radius_m")
                 )
                 radii = monitoring_utils.compute_class_location_acceptance_radii(
                     locs,
@@ -2137,6 +2181,11 @@ class ClassLocationAdmin(ModelAdmin):
                     r_standalone=ACCEPTANCE_R_STANDALONE,
                     same_point_threshold=SAME_POINT_THRESHOLD_M,
                     cluster_threshold=CLUSTER_THRESHOLD_M,
+                )
+                cache.set(
+                    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+                    radii,
+                    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
                 )
             if getattr(response, "context_data", None) is not None:
                 response.context_data["geomap_draw_radius_circles"] = True
@@ -2200,15 +2249,24 @@ class ClassLocationAdmin(ModelAdmin):
                 same_point_threshold=SAME_POINT_THRESHOLD_M,
                 cluster_threshold=CLUSTER_THRESHOLD_M,
             )
+            cache.set(
+                CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+                radii,
+                CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+            )
+        loc_ids_str = "_".join(str(o.id) for o in sorted(locs, key=lambda x: x.id))
+        colors_cache_key = f"class_location_neighbor_colors_{loc_ids_str}"
+        geomap_color_by_id = cache.get(colors_cache_key)
+        if geomap_color_by_id is None:
+            geomap_color_by_id = monitoring_utils.compute_neighbor_color_index(locs, 30)
+            cache.set(colors_cache_key, geomap_color_by_id, timeout=300)
         ctx.update(
             {
                 "geomap_draw_radius_circles": True,
                 "geomap_radius_by_id": {
                     o.id: monitoring_utils.get_location_radius(o, radii) for o in locs
                 },
-                "geomap_color_by_id": monitoring_utils.compute_neighbor_color_index(
-                    locs, 30
-                ),
+                "geomap_color_by_id": geomap_color_by_id,
             }
         )
         return response

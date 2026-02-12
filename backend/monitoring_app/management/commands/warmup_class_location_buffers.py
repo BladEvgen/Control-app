@@ -23,7 +23,7 @@ class Command(BaseCommand):
         locations = list(
             models.ClassLocation.objects.filter(
                 latitude__isnull=False, longitude__isnull=False
-            )
+            ).only("id", "latitude", "longitude", "acceptance_radius_m")
         )
         radii = utils.compute_class_location_acceptance_radii(
             locations,

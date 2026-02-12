@@ -6,8 +6,9 @@ from channels.layers import get_channel_layer
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 
-from .models import LessonAttendance, StaffAttendance, Staff, ChildDepartment
+from .models import LessonAttendance, StaffAttendance, Staff, ChildDepartment, ClassLocation
 from .cache_conf import invalidate_cache, invalidate_cache_pattern
+from .lesson_locations_conf import CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -75,3 +76,22 @@ def invalidate_department_cache(sender, instance, **kwargs):
     invalidate_cache("parent_department_ids")
     invalidate_cache("root_departments_batch")
     logger.info(f"Invalidated department cache for ID: {dept_id}")
+
+
+def invalidate_class_location_cache_impl():
+    """Инвалидирует кэш ClassLocation (радиусы, цвета соседей, attendance_stats)."""
+    invalidate_cache(CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY)
+    invalidate_cache_pattern("class_location_neighbor_colors_*")
+    invalidate_cache_pattern("attendance_stats_*")
+    try:
+        from monitoring_app.views import CLASS_LOCATION_CACHE
+        CLASS_LOCATION_CACHE["expires_at"] = None
+    except Exception:
+        pass
+    logger.info("Invalidated ClassLocation cache (radii, colors, attendance_stats)")
+
+
+@receiver([post_save, post_delete], sender=ClassLocation)
+def invalidate_class_location_cache(sender, instance, **kwargs):
+    """Сигнал: инвалидирует кэш при изменении ClassLocation."""
+    invalidate_class_location_cache_impl()

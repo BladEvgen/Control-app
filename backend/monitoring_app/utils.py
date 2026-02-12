@@ -627,7 +627,11 @@ def generate_map_data(
                     )
                 )
 
-                class_locations = list(models.ClassLocation.objects.all())
+                class_locations = list(
+                    models.ClassLocation.objects.only(
+                        "id", "name", "latitude", "longitude"
+                    )
+                )
                 if not class_locations:
                     logger.warning("Нет записей ClassLocation.")
                     return []
@@ -1137,7 +1141,9 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         or {}
     )
 
-    class_locations = list(models.ClassLocation.objects.all())
+    class_locations = list(
+        models.ClassLocation.objects.only("id", "name", "latitude", "longitude")
+    )
     location_searcher = None
     if class_locations:
         location_data = [

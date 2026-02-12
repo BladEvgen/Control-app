@@ -95,77 +95,82 @@ def get_class_location_cache():
     )
 
     if cache_expired:
-        locations = list(
-            models.ClassLocation.objects.only(
-                "id", "name", "latitude", "longitude", "acceptance_radius_m"
-            )
-        )
-        payload = [
-            {
-                "name": loc.name,
-                "latitude": loc.latitude,
-                "longitude": loc.longitude,
-            }
-            for loc in locations
-            if loc.latitude is not None and loc.longitude is not None
-        ]
-
-        kd_tree = None
-        class_names = []
-        if payload:
-            try:
-                from sklearn.neighbors import KDTree
-
-                coords = [(item["latitude"], item["longitude"]) for item in payload]
-                kd_tree = KDTree(coords, metric="euclidean")
-                class_names = [item["name"] for item in payload]
-            except Exception as exc:
-                logger.warning(f"KDTree initialization failed: {exc}")
-                kd_tree = None
-                class_names = []
-
-        searcher = None
-        if payload:
-            try:
-                searcher = utils.LocationSearcher(payload)
-            except Exception as exc:
-                logger.warning(f"LocationSearcher initialization failed: {exc}")
-
-        locs_with_coords = [
-            loc
-            for loc in locations
-            if loc.latitude is not None and loc.longitude is not None
-        ]
-        location_acceptance_radius_m = Cache.get(
-            CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY
-        )
-        if location_acceptance_radius_m is None:
-            location_acceptance_radius_m = (
-                utils.compute_class_location_acceptance_radii(
-                    locs_with_coords,
-                    r_same_point=ACCEPTANCE_R_SAME_POINT,
-                    r_cluster=ACCEPTANCE_R_CLUSTER,
-                    r_standalone=ACCEPTANCE_R_STANDALONE,
-                    same_point_threshold=SAME_POINT_THRESHOLD_M,
-                    cluster_threshold=CLUSTER_THRESHOLD_M,
+        try:
+            locations = list(
+                models.ClassLocation.objects.only(
+                    "id", "name", "latitude", "longitude", "acceptance_radius_m"
                 )
             )
-            Cache.set(
-                CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
-                location_acceptance_radius_m,
-                CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
-            )
+            payload = [
+                {
+                    "name": loc.name,
+                    "latitude": loc.latitude,
+                    "longitude": loc.longitude,
+                }
+                for loc in locations
+                if loc.latitude is not None and loc.longitude is not None
+            ]
 
-        CLASS_LOCATION_CACHE.update(
-            {
-                "expires_at": now + CLASS_LOCATION_CACHE_TTL,
-                "kd_tree": kd_tree,
-                "class_names": class_names,
-                "searcher_payload": payload,
-                "searcher": searcher,
-                "location_acceptance_radius_m": location_acceptance_radius_m,
-            }
-        )
+            kd_tree = None
+            class_names = []
+            if payload:
+                try:
+                    from sklearn.neighbors import KDTree
+
+                    coords = [(item["latitude"], item["longitude"]) for item in payload]
+                    kd_tree = KDTree(coords, metric="euclidean")
+                    class_names = [item["name"] for item in payload]
+                except Exception as exc:
+                    logger.warning(f"KDTree initialization failed: {exc}")
+                    kd_tree = None
+                    class_names = []
+
+            searcher = None
+            if payload:
+                try:
+                    searcher = utils.LocationSearcher(payload)
+                except Exception as exc:
+                    logger.warning(f"LocationSearcher initialization failed: {exc}")
+
+            locs_with_coords = [
+                loc
+                for loc in locations
+                if loc.latitude is not None and loc.longitude is not None
+            ]
+            location_acceptance_radius_m = Cache.get(
+                CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY
+            )
+            if location_acceptance_radius_m is None:
+                location_acceptance_radius_m = (
+                    utils.compute_class_location_acceptance_radii(
+                        locs_with_coords,
+                        r_same_point=ACCEPTANCE_R_SAME_POINT,
+                        r_cluster=ACCEPTANCE_R_CLUSTER,
+                        r_standalone=ACCEPTANCE_R_STANDALONE,
+                        same_point_threshold=SAME_POINT_THRESHOLD_M,
+                        cluster_threshold=CLUSTER_THRESHOLD_M,
+                    )
+                )
+                Cache.set(
+                    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+                    location_acceptance_radius_m,
+                    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+                )
+
+            CLASS_LOCATION_CACHE.update(
+                {
+                    "expires_at": now + CLASS_LOCATION_CACHE_TTL,
+                    "kd_tree": kd_tree,
+                    "class_names": class_names,
+                    "searcher_payload": payload,
+                    "searcher": searcher,
+                    "location_acceptance_radius_m": location_acceptance_radius_m,
+                }
+            )
+        except Exception as exc:
+            logger.exception("get_class_location_cache failed: %s", exc)
+            CLASS_LOCATION_CACHE["expires_at"] = None
+            raise
 
     return CLASS_LOCATION_CACHE
 
@@ -822,13 +827,21 @@ def map_location(request):
             ),
         ),
         400: openapi.Response(
-            description="Неверный формат latitude или longitude (ожидаются числа).",
+            description=(
+                "Параметры отсутствуют или неверный формат. "
+                "error, detail: «Широта обязательна», «Долгота обязательна», "
+                "«Широта и долгота обязательны», «Invalid latitude or longitude format. Expected numbers.»"
+            ),
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
                     "error": openapi.Schema(
                         type=openapi.TYPE_STRING,
-                        description="Напр. «Invalid latitude or longitude format. Expected numbers.»",
+                        description="Код/текст ошибки",
+                    ),
+                    "detail": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Сообщение для пользователя",
                     ),
                 },
             ),
@@ -879,6 +892,33 @@ def lesson_locations(request):
         latitude_param = request.GET.get("latitude")
         longitude_param = request.GET.get("longitude")
 
+        def _is_empty(val):
+            return val is None or (isinstance(val, str) and val.strip() == "")
+
+        lat_empty = _is_empty(latitude_param)
+        lon_empty = _is_empty(longitude_param)
+
+        if latitude_param is None and longitude_param is None:
+            pass
+        elif lat_empty and lon_empty:
+            log_ll.warning("MISSING both lat and lon")
+            return Response(
+                {"error": "Широта и долгота обязательны", "detail": "Широта и долгота обязательны"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        elif lat_empty:
+            log_ll.warning("MISSING latitude lon=%s", longitude_param)
+            return Response(
+                {"error": "Широта обязательна", "detail": "Широта обязательна"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        elif lon_empty:
+            log_ll.warning("MISSING longitude lat=%s", latitude_param)
+            return Response(
+                {"error": "Долгота обязательна", "detail": "Долгота обязательна"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if latitude_param is not None and longitude_param is not None:
             log_ll.info("request lat=%s lon=%s", latitude_param, longitude_param)
             try:
@@ -888,7 +928,8 @@ def lesson_locations(request):
                 log_ll.warning("INVALID lat=%s lon=%s", latitude_param, longitude_param)
                 return Response(
                     {
-                        "error": "Invalid latitude or longitude format. Expected numbers."
+                        "error": "Invalid latitude or longitude format. Expected numbers.",
+                        "detail": "Неверный формат. Ожидаются числа.",
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
@@ -967,7 +1008,9 @@ def lesson_locations(request):
             )
 
         log_ll.info("request all locations")
-        locations = models.ClassLocation.objects.all().order_by("name")
+        locations = models.ClassLocation.objects.only(
+            "id", "name", "address", "latitude", "longitude"
+        ).order_by("name")
         locations_data = [
             {
                 "id": loc.id,
@@ -4352,110 +4395,119 @@ class UploadFileView(View):
             Logs details of processed rows, including created, updated, and skipped rows. If errors
             occur, they are logged and the user is notified.
         """
-        with atomic_block():
+        with transaction.atomic():
             to_create = []
             to_update = []
             existing_locations = {
                 (loc.name, loc.address): loc
-                for loc in models.ClassLocation.objects.all()
+                for loc in models.ClassLocation.objects.only(
+                    "id", "name", "address", "latitude", "longitude"
+                )
             }
 
-        error_count = 0
-        error_details = []
-        MAX_ERROR_DETAILS = 10
+            error_count = 0
+            error_details = []
+            MAX_ERROR_DETAILS = 10
 
-        for index, row in enumerate(rows):
-            try:
-                name = str(row[0].value).strip()
-                address = str(row[1].value).strip()
-                geo_data = str(row[2].value)
-
-                if not geo_data or geo_data.lower() == "none":
-                    raise ValueError("Отсутствует значение в столбце 'geo'.")
-
-                latitude, longitude = utils.extract_coordinates(geo_data)
-
-                if not all([name, address, latitude, longitude]):
-                    raise ValueError("Отсутствуют необходимые данные.")
-
+            for index, row in enumerate(rows):
                 try:
-                    if latitude is None or str(latitude).strip() == "":
-                        raise ValueError("Latitude is missing or empty")
-                    if longitude is None or str(longitude).strip() == "":
-                        raise ValueError("Longitude is missing or empty")
+                    name = str(row[0].value).strip()
+                    address = str(row[1].value).strip()
+                    geo_data = str(row[2].value)
 
-                    lat_str = (
-                        latitude
-                        if isinstance(latitude, (int, float))
-                        else str(latitude).strip().replace(",", ".")
-                    )
-                    lon_str = (
-                        longitude
-                        if isinstance(longitude, (int, float))
-                        else str(longitude).strip().replace(",", ".")
-                    )
+                    if not geo_data or geo_data.lower() == "none":
+                        raise ValueError("Отсутствует значение в столбце 'geo'.")
 
-                    latitude = float(lat_str)
-                    longitude = float(lon_str)
-                except (TypeError, ValueError) as e:
-                    raise ValueError(f"Invalid coordinates: {e}")
+                    latitude, longitude = utils.extract_coordinates(geo_data)
 
-                if (name, address) in existing_locations:
-                    location = existing_locations[(name, address)]
-                    location.latitude = latitude
-                    location.longitude = longitude
-                    to_update.append(location)
-                else:
-                    to_create.append(
-                        models.ClassLocation(
-                            name=name,
-                            address=address,
-                            latitude=latitude,
-                            longitude=longitude,
+                    if not all([name, address, latitude, longitude]):
+                        raise ValueError("Отсутствуют необходимые данные.")
+
+                    try:
+                        if latitude is None or str(latitude).strip() == "":
+                            raise ValueError("Latitude is missing or empty")
+                        if longitude is None or str(longitude).strip() == "":
+                            raise ValueError("Longitude is missing or empty")
+
+                        lat_str = (
+                            latitude
+                            if isinstance(latitude, (int, float))
+                            else str(latitude).strip().replace(",", ".")
                         )
+                        lon_str = (
+                            longitude
+                            if isinstance(longitude, (int, float))
+                            else str(longitude).strip().replace(",", ".")
+                        )
+
+                        latitude = float(lat_str)
+                        longitude = float(lon_str)
+                    except (TypeError, ValueError) as e:
+                        raise ValueError(f"Invalid coordinates: {e}")
+
+                    if (name, address) in existing_locations:
+                        location = existing_locations[(name, address)]
+                        location.latitude = latitude
+                        location.longitude = longitude
+                        to_update.append(location)
+                    else:
+                        to_create.append(
+                            models.ClassLocation(
+                                name=name,
+                                address=address,
+                                latitude=latitude,
+                                longitude=longitude,
+                            )
+                        )
+                except Exception as e:
+                    logger.error(f"Error processing row {index} for ClassLocation: {e}")
+                    error_count += 1
+                    if len(error_details) < MAX_ERROR_DETAILS:
+                        error_details.append(f"Строка {index + 2}: {e}")
+                    continue
+
+            if to_create:
+                try:
+                    models.ClassLocation.objects.bulk_create(to_create)
+                    logger.info(f"Создано новых записей: {len(to_create)}")
+                except Exception as e:
+                    logger.error(f"Error during bulk_create: {e}")
+                    messages.error(
+                        request, "Не удалось создать новые записи ClassLocation."
                     )
-            except Exception as e:
-                logger.error(f"Error processing row {index} for ClassLocation: {e}")
-                error_count += 1
-                if len(error_details) < MAX_ERROR_DETAILS:
-                    error_details.append(f"Строка {index + 2}: {e}")
-                continue
 
-        if to_create:
-            try:
-                models.ClassLocation.objects.bulk_create(to_create)
-                logger.info(f"Создано новых записей: {len(to_create)}")
-            except Exception as e:
-                logger.error(f"Error during bulk_create: {e}")
-                messages.error(
-                    request, "Не удалось создать новые записи ClassLocation."
+            if to_update:
+                try:
+                    models.ClassLocation.objects.bulk_update(
+                        to_update, ["latitude", "longitude"]
+                    )
+                    logger.info(f"Обновлено существующих записей: {len(to_update)}")
+                except Exception as e:
+                    logger.error(f"Error during bulk_update: {e}")
+                    messages.error(
+                        request, "Не удалось обновить существующие записи ClassLocation."
+                    )
+
+            if to_create or to_update:
+                try:
+                    from monitoring_app.signals import invalidate_class_location_cache_impl
+                    invalidate_class_location_cache_impl()
+                except Exception as inv_err:
+                    logger.warning(f"Cache invalidation after bulk ops: {inv_err}")
+
+            success_message = f"Успешно добавлено {len(to_create)} новых записей и обновлено {len(to_update)} записей."
+            if error_count > 0:
+                success_message += f" Пропущено {error_count} записей из-за ошибок."
+            messages.success(request, success_message)
+
+            if error_details:
+                error_message = (
+                    "Некоторые записи были пропущены из-за ошибок:\n"
+                    + "\n".join(error_details)
                 )
-
-        if to_update:
-            try:
-                models.ClassLocation.objects.bulk_update(
-                    to_update, ["latitude", "longitude"]
-                )
-                logger.info(f"Обновлено существующих записей: {len(to_update)}")
-            except Exception as e:
-                logger.error(f"Error during bulk_update: {e}")
-                messages.error(
-                    request, "Не удалось обновить существующие записи ClassLocation."
-                )
-
-        success_message = f"Успешно добавлено {len(to_create)} новых записей и обновлено {len(to_update)} записей."
-        if error_count > 0:
-            success_message += f" Пропущено {error_count} записей из-за ошибок."
-        messages.success(request, success_message)
-
-        if error_details:
-            error_message = (
-                "Некоторые записи были пропущены из-за ошибок:\n"
-                + "\n".join(error_details)
-            )
-            if error_count > MAX_ERROR_DETAILS:
-                error_message += f"\n...и ещё {error_count - MAX_ERROR_DETAILS} ошибок."
-            messages.warning(request, error_message)
+                if error_count > MAX_ERROR_DETAILS:
+                    error_message += f"\n...и ещё {error_count - MAX_ERROR_DETAILS} ошибок."
+                messages.warning(request, error_message)
 
     def delete_staff(self, request, rows, parent_department_id):
         """
