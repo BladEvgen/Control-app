@@ -12,9 +12,11 @@ from django.contrib.admin import SimpleListFilter
 from django.contrib.admin.models import LogEntry
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.cache import cache
+from django.core.paginator import Paginator
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Avg, Count, F, Q
+from django.db.utils import DatabaseError, OperationalError
 from django.db.models.functions import TruncMonth
 from django.http import HttpResponse, JsonResponse
 from django.template.response import TemplateResponse
@@ -247,7 +249,8 @@ class MonitoringAdminSite(admin.AdminSite):
     def department_stats_api(self, request):
         """API endpoint for department statistics"""
         departments = ChildDepartment.objects.annotate(
-            staff_count=Count("staff"), avg_salary=Avg("staff__salary__net_salary")
+            staff_count=Count("staff", distinct=True),
+            avg_salary=Avg("staff__salary__net_salary"),
         ).values("name", "staff_count", "avg_salary")
 
         return JsonResponse(
@@ -643,7 +646,7 @@ class APIKeyAdmin(admin.ModelAdmin):
             "Дополнительная информация",
             {
                 "fields": ("created_by", "created_at"),
-                "classes": ("collapse",),
+                "classes": ("grp-collapse grp-closed",),
             },
         ),
     )
@@ -720,7 +723,7 @@ class UserProfileAdmin(admin.ModelAdmin):
             "Информация о входе",
             {
                 "fields": ("last_login_ip",),
-                "classes": ("collapse",),
+                "classes": ("grp-collapse grp-closed",),
             },
         ),
     )
@@ -822,7 +825,7 @@ class ChildDepartmentAdmin(admin.ModelAdmin):
             "Статистика",
             {
                 "fields": ("staff_count", "avg_salary"),
-                "classes": ("collapse",),
+                "classes": ("grp-collapse grp-closed",),
             },
         ),
     )
@@ -895,6 +898,7 @@ class RemoteWorkInline(admin.TabularInline):
 
 @admin.register(Staff, site=admin_site)
 class StaffAdmin(admin.ModelAdmin):
+    change_list_template = "admin/change_list_filter_sidebar.html"
     list_display = (
         "pin",
         "full_name",
@@ -940,14 +944,14 @@ class StaffAdmin(admin.ModelAdmin):
             "Машинное обучение",
             {
                 "fields": ("needs_training",),
-                "classes": ("collapse",),
+                "classes": ("grp-collapse grp-closed",),
             },
         ),
         (
             "История посещаемости",
             {
                 "fields": ("attendance_history",),
-                "classes": ("collapse",),
+                "classes": ("grp-collapse grp-closed",),
             },
         ),
     )
@@ -1384,14 +1388,14 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
             "Временные метки",
             {
                 "fields": ("created_at", "updated_at"),
-                "classes": ("collapse",),
+                "classes": ("grp-collapse grp-closed",),
             },
         ),
         (
             "Технические данные",
             {
                 "fields": ("mask_encoding",),
-                "classes": ("collapse",),
+                "classes": ("grp-collapse grp-closed",),
             },
         ),
     )
@@ -1418,8 +1422,58 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
 # ===== ATTENDANCE MODELS =====
 
 
+class FastStaffAttendancePaginator(Paginator):
+    """Paginator с кэшированным count для StaffAttendance (ключ по query)."""
+
+    def __init__(self, object_list, per_page, orphans=0, allow_empty_first_page=True):
+        super().__init__(
+            object_list, per_page, orphans=orphans, allow_empty_first_page=allow_empty_first_page
+        )
+        self._count = None
+
+    @property
+    def count(self):
+        if self._count is not None:
+            return self._count
+        try:
+            import hashlib
+            q = self.object_list.query
+            qstr = str(q.where) + str(q.order_by)
+            h = hashlib.md5(qstr.encode()).hexdigest()[:16]
+            cache_key = f"staffatt_count_{h}"
+            self._count = cache.get(cache_key)
+            if self._count is None:
+                self._count = self.object_list.count()
+                cache.set(cache_key, self._count, 300)  # 5 мин — count не критичен
+        except (ValueError, TypeError):
+            self._count = 0
+        except (DatabaseError, OperationalError) as e:
+            logger.warning(
+                "FastStaffAttendancePaginator: database error on count: %s",
+                e,
+                exc_info=True,
+            )
+            try:
+                self._count = self.object_list.count()
+            except Exception:
+                self._count = 0
+        except Exception as e:
+            logger.warning(
+                "FastStaffAttendancePaginator: unexpected error on count: %s",
+                e,
+                exc_info=True,
+            )
+            try:
+                self._count = self.object_list.count()
+            except Exception:
+                self._count = 0
+        return self._count
+
+
 @admin.register(StaffAttendance, site=admin_site)
 class StaffAttendanceAdmin(admin.ModelAdmin):
+    change_list_template = "admin/change_list_filter_sidebar.html"
+    # date_hierarchy убран — Min/Max на 235k+ записей тормозят страницу
     list_display = (
         "staff",
         "staff_department",
@@ -1432,8 +1486,8 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         "absence_reason",
     )
     list_filter = (
+        DateRangeFilter,  # Первым — всегда фильтр по дате (обязателен)
         monitoring_utils.HierarchicalDepartmentFilter,
-        DateRangeFilter,
         "absence_reason",
     )
     search_fields = (
@@ -1443,13 +1497,14 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         "area_name_in",
         "area_name_out",
     )
-    date_hierarchy = "date_at"
     ordering = ("-date_at", "staff")
-    list_per_page = 50
+    list_per_page = 25
     show_full_result_count = False
+    paginator = FastStaffAttendancePaginator
     list_select_related = ("staff", "staff__department", "absence_reason")
     autocomplete_fields = ("absence_reason",)
     actions = ["export_attendance_data", "mark_as_absent"]
+    list_max_show_all = 50  # Ограничить «Показать все» для тяжёлой таблицы
 
     readonly_fields = (
         "staff",
@@ -1607,29 +1662,16 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = qs.select_related("staff__department", "absence_reason").only(
-            "id",
-            "staff__id",
-            "staff__surname",
-            "staff__name",
-            "staff__pin",
-            "staff__avatar",
-            "staff__department__name",
-            "date_at",
-            "first_in",
-            "last_out",
-            "area_name_in",
-            "area_name_out",
-            "absence_reason__reason",
-        )
+        qs = qs.select_related("staff", "staff__department", "absence_reason")
+        qs = qs.defer("staff__avatar")
 
         excluded = request.GET.get("exclude_unknown", "yes")
         if excluded == "yes":
-            qs = (
-                qs.exclude(area_name_in__isnull=True)
-                .exclude(area_name_out__isnull=True)
-                .exclude(area_name_in="Unknown")
-                .exclude(area_name_out="Unknown")
+            qs = qs.exclude(
+                Q(area_name_in__isnull=True)
+                | Q(area_name_out__isnull=True)
+                | Q(area_name_in="Unknown")
+                | Q(area_name_out="Unknown")
             )
 
         return qs
@@ -1648,7 +1690,8 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
     def changelist_view(self, request, extra_context=None):
         response = super().changelist_view(request, extra_context=extra_context)
-        response["Cache-Control"] = "max-age=60, public"
+        if self.model == StaffAttendance:
+            response["Cache-Control"] = "max-age=60, public"
         return response
 
     def export_attendance_data(self, request, queryset):
@@ -1671,6 +1714,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
 
 class LessonAttendanceAdmin(ModelAdmin):
+    change_list_template = "admin/change_list_filter_sidebar.html"
     geomap_field_longitude = "id_longitude"
     geomap_field_latitude = "id_latitude"
     geomap_show_map_on_list = False
@@ -1729,7 +1773,7 @@ class LessonAttendanceAdmin(ModelAdmin):
                     "tutor_id",
                     "tutor",
                 ),
-                "classes": ("collapse",),
+                "classes": ("grp-collapse grp-closed",),
             },
         ),
     )
@@ -1874,12 +1918,17 @@ class LessonAttendanceAdmin(ModelAdmin):
         if cached_result:
             return format_html(cached_result)
 
+        locations = cache.get("lesson_admin_closest_locations")
+        if locations is None:
+            locations = list(
+                ClassLocation.objects.filter(
+                    latitude__isnull=False, longitude__isnull=False
+                ).only("id", "name", "address", "latitude", "longitude")
+            )
+            cache.set("lesson_admin_closest_locations", locations, 300)
+
         radius = 300
         obj_lat, obj_lon = obj.latitude, obj.longitude
-
-        locations = ClassLocation.objects.filter(
-            latitude__isnull=False, longitude__isnull=False
-        ).only("id", "name", "address", "latitude", "longitude")
         closest = None
         min_distance = float("inf")
 
@@ -1993,7 +2042,7 @@ class ClassLocationAdmin(ModelAdmin):
             "Системная информация",
             {
                 "fields": ("created_at", "updated_at"),
-                "classes": ("collapse",),
+                "classes": ("grp-collapse grp-closed",),
             },
         ),
     )

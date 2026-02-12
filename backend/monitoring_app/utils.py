@@ -177,34 +177,52 @@ def format_duration(duration_seconds):
 class HierarchicalDepartmentFilter(SimpleListFilter):
     title = _("Department")
     parameter_name = "staff_department"
+    _lookups_cache_key = "hierarchical_dept_filter_lookups"
+    _lookups_cache_ttl = 600
 
     def lookups(self, request, model_admin):
-        departments = models.ChildDepartment.objects.all().select_related("parent")
-        return [(dept.id, dept.name) for dept in departments]
+        from django.core.cache import cache
+
+        lookup_list = cache.get(self._lookups_cache_key)
+        if lookup_list is not None:
+            return lookup_list
+        departments = list(
+            models.ChildDepartment.objects.only("id", "name").order_by("name")
+        )
+        lookup_list = [(dept.id, dept.name) for dept in departments]
+        cache.set(self._lookups_cache_key, lookup_list, self._lookups_cache_ttl)
+        return lookup_list
 
     def queryset(self, request, queryset):
         if self.value():
-            try:
-                department = models.ChildDepartment.objects.get(pk=self.value())
-            except models.ChildDepartment.DoesNotExist:
-                return queryset
+            cache_key = f"dept_descendants_{self.value()}"
+            from django.core.cache import cache
 
-            descendant_ids = self.get_all_descendant_ids(department)
+            descendant_ids = cache.get(cache_key)
+            if descendant_ids is None:
+                try:
+                    department = models.ChildDepartment.objects.only("id").get(
+                        pk=self.value()
+                    )
+                except models.ChildDepartment.DoesNotExist:
+                    return queryset
+                descendant_ids = self.get_all_descendant_ids(department.id)
+                cache.set(cache_key, descendant_ids, self._lookups_cache_ttl)
             return queryset.filter(staff__department__in=descendant_ids)
         return queryset
 
-    def get_all_descendant_ids(self, department):
-        descendant_ids = set([department.id])
-        queue = [department.id]
-
+    def get_all_descendant_ids(self, department_id):
+        descendant_ids = {department_id}
+        queue = [department_id]
         while queue:
             current_id = queue.pop(0)
-            children = models.ChildDepartment.objects.filter(
-                parent_id=current_id
-            ).values_list("id", flat=True)
+            children = list(
+                models.ChildDepartment.objects.filter(
+                    parent_id=current_id
+                ).values_list("id", flat=True)
+            )
             queue.extend(children)
             descendant_ids.update(children)
-
         return descendant_ids
 
 

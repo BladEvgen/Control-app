@@ -35,6 +35,7 @@ def send_new_photo(sender, instance, created, **kwargs):
 @receiver([post_save, post_delete], sender=StaffAttendance)
 def invalidate_attendance_cache(sender, instance, **kwargs):
     """Инвалидирует кэш при изменении посещаемости сотрудников."""
+    invalidate_cache_pattern("staffatt_count_*")
     if hasattr(instance, "date_at") and instance.date_at:
         date_str = instance.date_at.strftime("%Y-%m-%d")
         invalidate_cache_pattern(f"staff_attendance_stats_{date_str}*")
@@ -75,12 +76,17 @@ def invalidate_department_cache(sender, instance, **kwargs):
     invalidate_cache_pattern(f"staff_detail_{dept_id}*")
     invalidate_cache("parent_department_ids")
     invalidate_cache("root_departments_batch")
+    invalidate_cache("department_hierarchy_lookups")
+    invalidate_cache("hierarchical_dept_filter_lookups")
+    invalidate_cache_pattern("department_descendants_*")
+    invalidate_cache_pattern("dept_descendants_*")
     logger.info(f"Invalidated department cache for ID: {dept_id}")
 
 
 def invalidate_class_location_cache_impl():
     """Инвалидирует кэш ClassLocation (радиусы, цвета соседей, attendance_stats)."""
     invalidate_cache(CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY)
+    invalidate_cache("lesson_admin_closest_locations")
     invalidate_cache_pattern("class_location_neighbor_colors_*")
     invalidate_cache_pattern("attendance_stats_*")
     try:

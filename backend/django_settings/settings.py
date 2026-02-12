@@ -114,10 +114,18 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  # 50 MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  # 50 MB
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 100000
 
+# Grappelli Admin Settings
+GRAPPELLI_ADMIN_TITLE = "Панель управления мониторинга"
+GRAPPELLI_AUTOCOMPLETE_LIMIT = 15
+GRAPPELLI_SWITCH_USER = True
+GRAPPELLI_CLEAN_INPUT_TYPES = True
+GRAPPELLI_INDEX_DASHBOARD = "django_settings.dashboard.CustomIndexDashboard"
+
 # Application definition
 INSTALLED_APPS = [
     "daphne",
     "channels",
+    "grappelli.dashboard",
     "grappelli",
     "django.contrib.admin",
     "django.contrib.auth",
@@ -675,12 +683,12 @@ LOGGING = {
 
 _django_request_handlers = ["file", "console"] if DEBUG else ["file"]
 LOGGING["loggers"]["django.request"] = {
-    "handlers": _django_request_handlers + ["admin_errors_file_no_filter"],
+    "handlers": _django_request_handlers,
     "level": "INFO" if DEBUG else "WARNING",
     "propagate": False,
 }
 LOGGING["loggers"]["django.security.csrf"] = {
-    "handlers": _django_request_handlers + ["admin_errors_file_no_filter"],
+    "handlers": _django_request_handlers,
     "level": "WARNING",
     "propagate": False,
 }

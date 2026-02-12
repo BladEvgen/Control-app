@@ -608,6 +608,10 @@ class StaffAttendance(models.Model):
             models.Index(fields=["staff", "date_at"]),
             models.Index(fields=["date_at", "staff"], name="stfatt_date_staff_idx"),
             models.Index(fields=["date_at"]),
+            models.Index(
+                fields=["date_at", "area_name_in", "area_name_out"],
+                name="stfatt_date_area_idx",
+            ),
             models.Index(fields=["first_in"]),
             models.Index(fields=["last_out"]),
         ]
