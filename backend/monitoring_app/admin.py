@@ -16,7 +16,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Avg, Count, F, Q
 from django.db.models.functions import TruncMonth
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.template.response import TemplateResponse
 from django.urls import path
 from django.utils import timezone
@@ -2008,6 +2008,24 @@ class ClassLocationAdmin(ModelAdmin):
     )
     list_filter = ("created_at",)
     search_fields = ("name", "address")
+    actions = ["export_for_upload"]
+
+    def export_for_upload(self, request, queryset):
+        """Экспорт в Excel (формат загрузки). Выберите записи или нажмите «Выбрать все»."""
+        from urllib.parse import quote
+
+        from monitoring_app import utils as monitoring_utils
+
+        content = monitoring_utils.export_class_locations_to_excel(queryset)
+        filename = "class_locations_export.xlsx"
+        response = HttpResponse(
+            content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{quote(filename)}"'
+        return response
+
+    export_for_upload.short_description = "Экспорт в Excel для загрузки"
 
     def get_queryset(self, request):
         return (

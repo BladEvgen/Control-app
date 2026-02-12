@@ -997,28 +997,76 @@ def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
 
 def extract_coordinates(geo_data):
     """
-    Extracts latitude and longitude from a geo data string formatted as 'longitude%2Clatitude'.
+    Extracts latitude and longitude from a geo data string.
 
-    This function searches the input string `geo_data` for a latitude-longitude pair in the
-    format `longitude%2Clatitude` (e.g., "76.929225%2C43.254926"). The latitude and longitude
-    values are extracted, converted to floats, and returned in the order (latitude, longitude).
-
-    Args:
-        geo_data (str): A string containing latitude and longitude data in the
-            format 'longitude%2Clatitude'.
+    Supports formats:
+    - latitude,longitude (e.g. "43.254926,76.929225") — для ручного редактирования
+    - longitude%2Clatitude (e.g. "76.929225%2C43.254926")
 
     Returns:
-        tuple: A tuple (latitude, longitude) if the coordinates are successfully extracted,
-        or (None, None) if the input string is invalid or does not contain recognizable coordinates.
-
-    Example:
-        >>> extract_coordinates("76.929225%2C43.254926")
-        (43.254926, 76.929225)
+        tuple: (latitude, longitude) or (None, None) if invalid.
     """
-    match = re.search(r"(\d{2}\.\d+)%2C(\d{2}\.\d+)", geo_data)
+    if not geo_data or not isinstance(geo_data, str):
+        return (None, None)
+    geo_data = geo_data.strip()
+    # Формат lat,lon (широта,долгота)
+    match = re.search(r"(-?\d+\.?\d*)\s*[,;]\s*(-?\d+\.?\d*)", geo_data)
     if match:
-        return match.group(2), match.group(1)
+        a, b = float(match.group(1)), float(match.group(2))
+        # Широта -90..90, долгота -180..180
+        if -90 <= a <= 90 and -180 <= b <= 180:
+            return (a, b)
+        if -90 <= b <= 90 and -180 <= a <= 180:
+            return (b, a)
+        return (a, b)
+    # Формат lon%2Clat
+    match = re.search(r"(-?\d+\.?\d*)%2C(-?\d+\.?\d*)", geo_data)
+    if match:
+        lon, lat = float(match.group(1)), float(match.group(2))
+        return (lat, lon)
     return (None, None)
+
+
+def export_class_locations_to_excel(queryset=None) -> bytes:
+    """
+    Экспортирует ClassLocation в Excel в формате загрузки (load_geo).
+    Столбцы: name, address, geo (latitude,longitude), acceptance_radius_m.
+    Можно отредактировать и загрузить обратно через upload_file.
+    queryset: если передан — экспортируются только выбранные, иначе все.
+    """
+    import io
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Локации"
+
+    # Строки 1–2 удаляются handle_excel
+    ws.append(["Экспорт локаций для редактирования"])
+    ws.append(["Формат: name, address, latitude,longitude, acceptance_radius_m (м)"])
+    ws.append(["name", "address", "geo", "acceptance_radius_m"])
+
+    if queryset is not None and queryset.exists():
+        locs = queryset.only(
+            "name", "address", "latitude", "longitude", "acceptance_radius_m"
+        ).order_by("name")
+    else:
+        locs = models.ClassLocation.objects.only(
+            "name", "address", "latitude", "longitude", "acceptance_radius_m"
+        ).order_by("name")
+
+    for loc in locs:
+        geo = ""
+        if loc.latitude is not None and loc.longitude is not None:
+            geo = f"{loc.latitude},{loc.longitude}"
+        radius = loc.acceptance_radius_m if loc.acceptance_radius_m is not None else ""
+        ws.append([loc.name or "", loc.address or "", geo, radius])
+
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out.getvalue()
 
 
 def get_bonus_percentage(num_days, percent_for_period):

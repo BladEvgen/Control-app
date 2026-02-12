@@ -4401,7 +4401,7 @@ class UploadFileView(View):
             existing_locations = {
                 (loc.name, loc.address): loc
                 for loc in models.ClassLocation.objects.only(
-                    "id", "name", "address", "latitude", "longitude"
+                    "id", "name", "address", "latitude", "longitude", "acceptance_radius_m"
                 )
             }
 
@@ -4411,9 +4411,10 @@ class UploadFileView(View):
 
             for index, row in enumerate(rows):
                 try:
-                    name = str(row[0].value).strip()
-                    address = str(row[1].value).strip()
-                    geo_data = str(row[2].value)
+                    name = str(row[0].value or "").strip()
+                    address = str(row[1].value or "").strip()
+                    geo_data = str(row[2].value or "") if len(row) > 2 else ""
+                    radius_val = row[3].value if len(row) > 3 else None
 
                     if not geo_data or geo_data.lower() == "none":
                         raise ValueError("Отсутствует значение в столбце 'geo'.")
@@ -4445,20 +4446,32 @@ class UploadFileView(View):
                     except (TypeError, ValueError) as e:
                         raise ValueError(f"Invalid coordinates: {e}")
 
+                    acceptance_radius_m = None
+                    if radius_val is not None and str(radius_val).strip() != "":
+                        try:
+                            acceptance_radius_m = int(float(str(radius_val).strip()))
+                            if acceptance_radius_m <= 0:
+                                acceptance_radius_m = None
+                        except (TypeError, ValueError):
+                            pass
+
                     if (name, address) in existing_locations:
                         location = existing_locations[(name, address)]
                         location.latitude = latitude
                         location.longitude = longitude
+                        if acceptance_radius_m is not None:
+                            location.acceptance_radius_m = acceptance_radius_m
                         to_update.append(location)
                     else:
-                        to_create.append(
-                            models.ClassLocation(
-                                name=name,
-                                address=address,
-                                latitude=latitude,
-                                longitude=longitude,
-                            )
+                        loc_kw = dict(
+                            name=name,
+                            address=address,
+                            latitude=latitude,
+                            longitude=longitude,
                         )
+                        if acceptance_radius_m is not None:
+                            loc_kw["acceptance_radius_m"] = acceptance_radius_m
+                        to_create.append(models.ClassLocation(**loc_kw))
                 except Exception as e:
                     logger.error(f"Error processing row {index} for ClassLocation: {e}")
                     error_count += 1
@@ -4479,7 +4492,7 @@ class UploadFileView(View):
             if to_update:
                 try:
                     models.ClassLocation.objects.bulk_update(
-                        to_update, ["latitude", "longitude"]
+                        to_update, ["latitude", "longitude", "acceptance_radius_m"]
                     )
                     logger.info(f"Обновлено существующих записей: {len(to_update)}")
                 except Exception as e:
