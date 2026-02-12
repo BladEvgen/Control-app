@@ -1,9 +1,12 @@
+import logging
 import os
 from calendar import month_abbr
 from collections import defaultdict
 from datetime import timedelta
 
 from django.conf import settings
+
+logger = logging.getLogger("monitoring_app.admin")
 from django.contrib import admin
 from django.contrib.admin import SimpleListFilter
 from django.contrib.admin.models import LogEntry
@@ -195,6 +198,7 @@ class MonitoringAdminSite(admin.AdminSite):
 
     @method_decorator(staff_member_required)
     def dashboard_view(self, request):
+        logger.debug("MonitoringAdminSite.dashboard_view")
         context = {
             **self.each_context(request),
             "title": "Панель мониторинга",
@@ -653,9 +657,13 @@ class APIKeyAdmin(admin.ModelAdmin):
     short_key.short_description = "Ключ API"
 
     def save_model(self, request, obj, form, change):
+        logger.debug(
+            "APIKeyAdmin.save_model key_name=%s change=%s", obj.key_name, change
+        )
         if not change:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
+        logger.info("APIKeyAdmin.save_model OK key_name=%s", obj.key_name)
 
     def deactivate_keys(self, request, queryset):
         updated = queryset.update(is_active=False)
@@ -1595,23 +1603,20 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = (
-            qs.select_related("staff__department", "absence_reason")
-            .only(
-                "id",
-                "staff__id",
-                "staff__surname",
-                "staff__name",
-                "staff__pin",
-                "staff__avatar",
-                "staff__department__name",
-                "date_at",
-                "first_in",
-                "last_out",
-                "area_name_in",
-                "area_name_out",
-                "absence_reason__reason",
-            )
+        qs = qs.select_related("staff__department", "absence_reason").only(
+            "id",
+            "staff__id",
+            "staff__surname",
+            "staff__name",
+            "staff__pin",
+            "staff__avatar",
+            "staff__department__name",
+            "date_at",
+            "first_in",
+            "last_out",
+            "area_name_in",
+            "area_name_out",
+            "absence_reason__reason",
         )
 
         excluded = request.GET.get("exclude_unknown", "yes")
@@ -1819,25 +1824,23 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = (
-            qs.select_related("staff", "staff__department").only(
-                "id",
-                "staff__id",
-                "staff__surname",
-                "staff__name",
-                "staff__pin",
-                "staff__avatar",
-                "staff__department__name",
-                "subject_name",
-                "tutor_id",
-                "tutor",
-                "first_in",
-                "last_out",
-                "date_at",
-                "staff_image_path",
-                "latitude",
-                "longitude",
-            )
+        qs = qs.select_related("staff", "staff__department").only(
+            "id",
+            "staff__id",
+            "staff__surname",
+            "staff__name",
+            "staff__pin",
+            "staff__avatar",
+            "staff__department__name",
+            "subject_name",
+            "tutor_id",
+            "tutor",
+            "first_in",
+            "last_out",
+            "date_at",
+            "staff_image_path",
+            "latitude",
+            "longitude",
         )
 
         photo_expired = request.GET.get("photo_expired")
@@ -2001,6 +2004,17 @@ class ClassLocationAdmin(ModelAdmin):
     search_fields = ("name", "address")
 
     def attendance_stats(self, obj):
+        if (
+            obj is None
+            or obj.pk is None
+            or obj.latitude is None
+            or obj.longitude is None
+        ):
+            return format_html(
+                '<div style="padding: 20px; color: #666;">'
+                "Сохраните локацию с координатами для отображения статистики посещаемости."
+                "</div>"
+            )
         now = timezone.now()
         months_data = []
         month_names = []
@@ -2061,7 +2075,47 @@ class ClassLocationAdmin(ModelAdmin):
 
     formatted_longitude.short_description = "Долгота"
 
+    def add_view(self, request, form_url="", extra_context=None):
+        logger.debug("ClassLocationAdmin.add_view GET path=%s", request.path)
+        try:
+            response = super().add_view(request, form_url, extra_context)
+            logger.info(
+                "ClassLocationAdmin.add_view OK path=%s status=%s",
+                request.path,
+                getattr(response, "status_code", "N/A"),
+            )
+            return response
+        except Exception as e:
+            logger.exception(
+                "ClassLocationAdmin.add_view ERROR path=%s error=%s",
+                request.path,
+                e,
+            )
+            raise
+
+    def save_model(self, request, obj, form, change):
+        logger.debug(
+            "ClassLocationAdmin.save_model obj=%s change=%s",
+            getattr(obj, "name", obj.pk),
+            change,
+        )
+        try:
+            super().save_model(request, obj, form, change)
+            logger.info(
+                "ClassLocationAdmin.save_model OK id=%s name=%s",
+                obj.pk,
+                getattr(obj, "name", ""),
+            )
+        except Exception as e:
+            logger.exception(
+                "ClassLocationAdmin.save_model ERROR name=%s error=%s",
+                getattr(obj, "name", "?"),
+                e,
+            )
+            raise
+
     def change_view(self, request, object_id, form_url="", extra_context=None):
+        logger.debug("ClassLocationAdmin.change_view object_id=%s", object_id)
         response = super().change_view(request, object_id, form_url, extra_context)
         item = self.get_queryset(request).filter(pk=object_id).first()
         if (
@@ -2093,7 +2147,12 @@ class ClassLocationAdmin(ModelAdmin):
         return response
 
     def changelist_view(self, request, extra_context=None):
-        response = super().changelist_view(request, extra_context=extra_context)
+        logger.debug("ClassLocationAdmin.changelist_view")
+        try:
+            response = super().changelist_view(request, extra_context=extra_context)
+        except Exception as e:
+            logger.exception("ClassLocationAdmin.changelist_view ERROR error=%s", e)
+            raise
         if not self.geomap_show_map_on_list:
             return response
         ctx = getattr(response, "context_data", None)

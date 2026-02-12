@@ -872,15 +872,20 @@ def lesson_locations(request):
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    log_ll = logging.getLogger("monitoring_app.lesson_locations")
+    log_ll_nf = logging.getLogger("monitoring_app.lesson_locations.not_found")
+
     try:
         latitude_param = request.GET.get("latitude")
         longitude_param = request.GET.get("longitude")
 
         if latitude_param is not None and longitude_param is not None:
+            log_ll.info("request lat=%s lon=%s", latitude_param, longitude_param)
             try:
                 latitude = float(latitude_param)
                 longitude = float(longitude_param)
             except (ValueError, TypeError):
+                log_ll.warning("INVALID lat=%s lon=%s", latitude_param, longitude_param)
                 return Response(
                     {
                         "error": "Invalid latitude or longitude format. Expected numbers."
@@ -893,6 +898,7 @@ def lesson_locations(request):
             ).only("id", "name", "address", "latitude", "longitude")
 
             if not all_locations.exists():
+                log_ll.warning("NO_LOCATIONS_IN_DB")
                 return Response(
                     {"error": "No locations available in database"},
                     status=status.HTTP_404_NOT_FOUND,
@@ -907,10 +913,10 @@ def lesson_locations(request):
                 d = utils.calculate_distance_haversine(
                     latitude, longitude, loc.latitude, loc.longitude
                 )
+                R = radii.get(loc.id, DEFAULT_ACCEPTANCE_RADIUS_M)
                 if d < min_overall:
                     min_overall = d
                     nearest_loc = loc
-                R = radii.get(loc.id, DEFAULT_ACCEPTANCE_RADIUS_M)
                 if d <= R:
                     within.append((d, loc, R))
 
@@ -922,9 +928,26 @@ def lesson_locations(request):
                     if nearest_loc is not None
                     else DEFAULT_ACCEPTANCE_RADIUS_M
                 )
+                nearest_name = nearest_loc.name if nearest_loc else "N/A"
+                loc_lat = nearest_loc.latitude if nearest_loc else 0
+                loc_lon = nearest_loc.longitude if nearest_loc else 0
+                loc_id = nearest_loc.id if nearest_loc else 0
+                log_ll.warning(
+                    "NOT_FOUND user(%.6f,%.6f) nearest_id=%d d=%.1fm R=%dm",
+                    latitude, longitude, loc_id, min_overall, R_n,
+                )
+                log_ll_nf.warning(
+                    "Haversine: d(user,loc)<=R => in_radius | "
+                    "user(lat=%.6f,lon=%.6f) nearest=%s[id=%d](lat=%.6f,lon=%.6f) "
+                    "d=%.1fm R=%dm => d>R NOT_FOUND",
+                    latitude, longitude, nearest_name, loc_id, loc_lat, loc_lon,
+                    min_overall, R_n,
+                )
                 return _not_found(
                     f"Ближайшая локация {min_overall:.1f} м, превышен лимит {R_n} м"
                 )
+
+            log_ll.info("FOUND %d | %s", len(within), ", ".join(f"{loc.name}({d:.1f}m)" for d, loc, _ in within))
 
             locations_data = [
                 {
@@ -943,6 +966,7 @@ def lesson_locations(request):
                 status=status.HTTP_200_OK,
             )
 
+        log_ll.info("request all locations")
         locations = models.ClassLocation.objects.all().order_by("name")
         locations_data = [
             {
@@ -954,6 +978,7 @@ def lesson_locations(request):
             }
             for loc in locations
         ]
+        log_ll.info("returned %d locations", len(locations_data))
 
         return Response(
             {"locations": locations_data},
@@ -961,7 +986,7 @@ def lesson_locations(request):
         )
 
     except Exception as e:
-        logger.error(f"Critical error in lesson_locations: {str(e)}", exc_info=True)
+        log_ll.error(f"Critical error in lesson_locations: {str(e)}", exc_info=True)
         return Response(
             {"error": "A critical error occurred. Please try again later."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -209,38 +209,68 @@ const map = new ol.Map({
   view: view
 });
 
-const longitude_field = {% if geomap_form %}document.getElementById("{{ geomap_field_longitude }}"){% else %}undefined{% endif %};
-const latitude_field = {% if geomap_form %}document.getElementById("{{ geomap_field_latitude }}"){% else %}undefined{% endif %};
+function getCoordField(idOrName) {
+  var base = (idOrName || '').replace(/^id_/, '');
+  return document.getElementById('id_' + base) || document.getElementById(base) || document.getElementById(idOrName);
+}
+const longitude_field = {% if geomap_form %}getCoordField("{{ geomap_field_longitude }}"){% else %}undefined{% endif %};
+const latitude_field = {% if geomap_form %}getCoordField("{{ geomap_field_latitude }}"){% else %}undefined{% endif %};
 {% if geomap_form %}
 (function(){
   if (!longitude_field || !latitude_field) return;
   var modify = new ol.interaction.Modify({ source: vectorSource, hitDetection: vectorLayer });
   map.addInteraction(modify);
+
+  function updateFieldsFromCoord(lon, lat) {
+    var lonStr = Number(lon).toFixed(6);
+    var latStr = Number(lat).toFixed(6);
+    longitude_field.value = lonStr;
+    latitude_field.value = latStr;
+    longitude_field.dispatchEvent(new Event('input', { bubbles: true }));
+    latitude_field.dispatchEvent(new Event('input', { bubbles: true }));
+    var inR = document.getElementById("id_acceptance_radius_m");
+    if (inR) {
+      var r = parseInt(inR.value, 10) || 70;
+      circleVectorSource.clear();
+      addRadiusCircle(Number(lon), Number(lat), r, 0);
+    }
+  }
+
+  var geometryChangeKeys = [];
+
+  modify.on('modifystart', function(evt) {
+    evt.features.forEach(function(f) {
+      var geom = f.getGeometry();
+      if (!geom) return;
+      var key = geom.on('change', function() {
+        var coord = geom.getCoordinates();
+        var lonLat = ol.proj.transform(coord, 'EPSG:3857', 'EPSG:4326');
+        updateFieldsFromCoord(lonLat[0], lonLat[1]);
+      });
+      geometryChangeKeys.push(key);
+    });
+  });
+
   modify.on('modifyend', function(evt) {
+    geometryChangeKeys.forEach(function(key) {
+      try { (ol.Observable && ol.Observable.unByKey) ? ol.Observable.unByKey(key) : (ol.events && ol.events.unByKey && ol.events.unByKey(key)); } catch(e) {}
+    });
+    geometryChangeKeys = [];
     var arr = evt.features.getArray();
     if (!arr.length) return;
     var f = arr[0];
     if (!f || !f.getGeometry()) return;
     var coord = f.getGeometry().getCoordinates();
     var lonLat = ol.proj.transform(coord, 'EPSG:3857', 'EPSG:4326');
-    var lon = lonLat[0].toFixed(6);
-    var lat = lonLat[1].toFixed(6);
-    longitude_field.value = lon;
-    latitude_field.value = lat;
-    var inR = document.getElementById("id_acceptance_radius_m");
-    if (inR) {
-      var r = parseInt(inR.value, 10) || 70;
-      circleVectorSource.clear();
-      addRadiusCircle(parseFloat(lon), parseFloat(lat), r, 0);
-    }
+    updateFieldsFromCoord(lonLat[0], lonLat[1]);
   });
 })();
 {% endif %}
 {% if geomap_form and geomap_draw_radius_circles %}
 (function(){
   var inR = document.getElementById("id_acceptance_radius_m");
-  var inLat = document.getElementById("id_{{ geomap_field_latitude }}") || document.getElementById("{{ geomap_field_latitude }}");
-  var inLon = document.getElementById("id_{{ geomap_field_longitude }}") || document.getElementById("{{ geomap_field_longitude }}");
+  var inLat = getCoordField("{{ geomap_field_latitude }}");
+  var inLon = getCoordField("{{ geomap_field_longitude }}");
   if (!inR || !inLat || !inLon) return;
   function redrawRadiusCircle() {
     var r = parseInt(inR.value, 10) || 70;
@@ -248,11 +278,16 @@ const latitude_field = {% if geomap_form %}document.getElementById("{{ geomap_fi
     if (!(lat && lon) || isNaN(lat) || isNaN(lon)) return;
     circleVectorSource.clear();
     addRadiusCircle(lon, lat, r, 0);
+    if (typeof geoitem_edit !== 'undefined' && geoitem_edit && geoitem_edit.getGeometry()) {
+      geoitem_edit.getGeometry().setCoordinates(ol.proj.fromLonLat([lon, lat]));
+    }
   }
   inR.addEventListener("input", redrawRadiusCircle);
   inR.addEventListener("change", redrawRadiusCircle);
   inLat.addEventListener("change", redrawRadiusCircle);
+  inLat.addEventListener("input", redrawRadiusCircle);
   inLon.addEventListener("change", redrawRadiusCircle);
+  inLon.addEventListener("input", redrawRadiusCircle);
 })();
 {% endif %}
 
