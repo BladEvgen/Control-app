@@ -476,7 +476,28 @@ CELERY_BEAT_SCHEDULE = (
 
 # Logging configurations
 LOG_DIR = BASE_DIR / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _normalize_log_level(value, default):
+    if not value:
+        return default
+    cleaned = str(value).strip().upper()
+    allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+    return cleaned if cleaned in allowed else default
+
+
+def get_log_level(prefix, default=None, override=None):
+    """Уровень логирования: по умолчанию зависит от DEBUG, можно override через env."""
+    base_default = default or ("DEBUG" if DEBUG else "WARNING")
+    if override:
+        return _normalize_log_level(override, base_default)
+    env_value = os.getenv(f"{prefix}_LOG_LEVEL") or os.getenv("LOG_LEVEL")
+    return _normalize_log_level(env_value, base_default)
+
+
+ADMIN_ERRORS_LEVEL = get_log_level("ADMIN_ERRORS", default="DEBUG")
+MONITORING_ADMIN_LEVEL = get_log_level("MONITORING_ADMIN", default=("DEBUG" if DEBUG else "WARNING"))
 
 
 # Custom function to generate log filenames
@@ -513,7 +534,44 @@ LOGGING = {
             "datefmt": "%Y-%m-%d %H:%M:%S",
         },
     },
+    "filters": {
+        "ignore_shutdown": {
+            "()": "django_settings.logging_filters.IgnoreShutdownErrorsFilter",
+        },
+        "ignore_pylint": {
+            "()": "django_settings.logging_filters.IgnorePylintFilter",
+        },
+        "admin_request_only": {
+            "()": "django_settings.logging_filters.AdminRequestFilter",
+        },
+    },
     "handlers": {
+        "admin_errors_file": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "admin_errors.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 14,
+            "utc": True,
+            "encoding": "utf-8",
+            "delay": True,
+            "formatter": "standard",
+            "level": ADMIN_ERRORS_LEVEL,
+            "filters": ["ignore_shutdown", "ignore_pylint", "admin_request_only"],
+        },
+        "admin_errors_file_no_filter": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "admin_errors.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 14,
+            "utc": True,
+            "encoding": "utf-8",
+            "delay": True,
+            "formatter": "standard",
+            "level": ADMIN_ERRORS_LEVEL,
+            "filters": ["ignore_shutdown", "ignore_pylint"],
+        },
         "file": {
             "level": "DEBUG" if DEBUG else "INFO",
             "class": "logging.handlers.RotatingFileHandler",
@@ -528,6 +586,32 @@ LOGGING = {
             "level": "INFO" if DEBUG else "WARNING",
             "class": "logging.StreamHandler",
             "formatter": "verbose",
+        },
+        "lesson_locations_file": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "lesson_locations.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 7,
+            "utc": True,
+            "encoding": "utf-8",
+            "delay": True,
+            "formatter": "standard",
+            "level": "INFO",
+            "filters": ["ignore_shutdown", "ignore_pylint"],
+        },
+        "lesson_locations_not_found_file": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "lesson_locations_not_found.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 14,
+            "utc": True,
+            "encoding": "utf-8",
+            "delay": True,
+            "formatter": "standard",
+            "level": "INFO",
+            "filters": ["ignore_shutdown", "ignore_pylint"],
         },
     },
     "loggers": {
@@ -556,6 +640,16 @@ LOGGING = {
             "level": "INFO" if DEBUG else "WARNING",
             "propagate": True,
         },
+        "monitoring_app.lesson_locations": {
+            "handlers": ["lesson_locations_file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "monitoring_app.lesson_locations.not_found": {
+            "handlers": ["lesson_locations_not_found_file"],
+            "level": "INFO",
+            "propagate": False,
+        },
         "monitoring_app.serializers": {
             "handlers": ["file", "console"] if DEBUG else ["file"],
             "level": "INFO" if DEBUG else "WARNING",
@@ -571,5 +665,22 @@ LOGGING = {
             "level": "INFO" if DEBUG else "WARNING",
             "propagate": False,
         },
+        "monitoring_app.admin": {
+            "handlers": ["admin_errors_file_no_filter", "console"],
+            "level": MONITORING_ADMIN_LEVEL,
+            "propagate": False,
+        },
     },
+}
+
+_django_request_handlers = ["file", "console"] if DEBUG else ["file"]
+LOGGING["loggers"]["django.request"] = {
+    "handlers": _django_request_handlers + ["admin_errors_file_no_filter"],
+    "level": "INFO" if DEBUG else "WARNING",
+    "propagate": False,
+}
+LOGGING["loggers"]["django.security.csrf"] = {
+    "handlers": _django_request_handlers + ["admin_errors_file_no_filter"],
+    "level": "WARNING",
+    "propagate": False,
 }
