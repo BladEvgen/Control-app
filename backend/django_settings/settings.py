@@ -589,11 +589,13 @@ LOGGING = {
             "encoding": "utf-8",
             "formatter": "verbose",
             "delay": False,
+            "filters": ["ignore_shutdown", "ignore_pylint"],
         },
         "console": {
             "level": "INFO" if DEBUG else "WARNING",
             "class": "logging.StreamHandler",
             "formatter": "verbose",
+            "filters": ["ignore_shutdown", "ignore_pylint"],
         },
         "lesson_locations_file": {
             "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",

@@ -44,6 +44,7 @@ class IgnorePylintFilter(logging.Filter):
             keyword in logger_name
             for keyword in [
                 "pylint",
+                "pygls",
                 "lint",
                 "linter",
                 "flake8",
@@ -58,7 +59,7 @@ class IgnorePylintFilter(logging.Filter):
             pathname = str(record.pathname).lower()
             if any(
                 keyword in pathname
-                for keyword in ["pylint", ".pylint", "lint", "linter"]
+                for keyword in ["pylint", "pygls", ".pylint", "lint", "linter"]
             ):
                 return False
 
