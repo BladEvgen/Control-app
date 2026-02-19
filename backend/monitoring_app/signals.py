@@ -1,14 +1,25 @@
 import logging
 import re
+from typing import Any, cast
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.db.models.signals import post_save, post_delete
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from .models import LessonAttendance, StaffAttendance, Staff, ChildDepartment, ClassLocation
 from .cache_conf import invalidate_cache, invalidate_cache_pattern
-from .lesson_locations_conf import CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY
+from .lesson_locations_conf import (
+    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+    CLASS_LOCATION_LIST_CACHE_KEY,
+    CLASS_LOCATION_LIST_CACHE_TTL,
+)
+from .models import (
+    ChildDepartment,
+    ClassLocation,
+    LessonAttendance,
+    Staff,
+    StaffAttendance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,17 +95,45 @@ def invalidate_department_cache(sender, instance, **kwargs):
 
 
 def invalidate_class_location_cache_impl():
-    """Инвалидирует кэш ClassLocation (радиусы, цвета соседей, attendance_stats)."""
+    """Инвалидирует кэш ClassLocation, сразу прогревает список и шлёт задачу прогрева радиусов. TTL списка 1 ч."""
+    from monitoring_app.cache_conf import Cache
+
     invalidate_cache(CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY)
     invalidate_cache("lesson_admin_closest_locations")
-    invalidate_cache_pattern("class_location_neighbor_colors_*")
-    invalidate_cache_pattern("attendance_stats_*")
+    invalidate_cache(CLASS_LOCATION_LIST_CACHE_KEY)
     try:
         from monitoring_app.views import CLASS_LOCATION_CACHE
+
         CLASS_LOCATION_CACHE["expires_at"] = None
     except Exception:
         pass
-    logger.info("Invalidated ClassLocation cache (radii, colors, attendance_stats)")
+    try:
+        list_data = list(
+            ClassLocation.objects.order_by("id").values(
+                "id",
+                "name",
+                "address",
+                "latitude",
+                "longitude",
+                "acceptance_radius_m",
+            )
+        )
+        Cache.set(
+            CLASS_LOCATION_LIST_CACHE_KEY,
+            list_data,
+            CLASS_LOCATION_LIST_CACHE_TTL,
+        )
+    except Exception as e:
+        logger.warning("ClassLocation list cache warmup failed: %s", e)
+    try:
+        from celery import current_app
+
+        send_task = cast(Any, getattr(current_app, "send_task"))
+        send_task("monitoring_app.tasks.invalidate_class_location_patterns")
+        send_task("monitoring_app.tasks.warmup_class_location_buffers")
+    except Exception as e:
+        logger.warning("ClassLocation cache tasks send_task failed: %s", e)
+    logger.info("Invalidated ClassLocation cache and warmed list + buffers task")
 
 
 @receiver([post_save, post_delete], sender=ClassLocation)

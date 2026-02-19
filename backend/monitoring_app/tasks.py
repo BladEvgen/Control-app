@@ -376,11 +376,26 @@ def clean_old_attendance_photos(days_old=31):
         }
 
 
+def _class_location_row_to_obj(row):
+    """Минимальный объект с .id, .latitude, .longitude, .acceptance_radius_m для compute_class_location_acceptance_radii."""
+    return type(
+        "Loc",
+        (),
+        {
+            "id": row["id"],
+            "latitude": row["latitude"],
+            "longitude": row["longitude"],
+            "acceptance_radius_m": row.get("acceptance_radius_m"),
+        },
+    )()
+
+
 @shared_task(name="monitoring_app.tasks.warmup_class_location_buffers")
 def warmup_class_location_buffers():
     """
-    Прогревает кэш приёмных радиусов R_loc по локациям (Redis). Celery Beat раз в 30 мин.
-    При первом запуске: manage.py warmup_class_location_buffers
+    Прогревает кэш локаций в фоне: список (API GET) + приёмные радиусы R_loc.
+    Celery Beat раз в 30 мин — первый юзер не создаёт кэш, он уже прогрет.
+    Один запрос к БД для списка, радиусы считаются из тех же данных.
     """
     from django.core.cache import caches
     from monitoring_app.lesson_locations_conf import (
@@ -389,33 +404,74 @@ def warmup_class_location_buffers():
         ACCEPTANCE_R_STANDALONE,
         CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
         CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+        CLASS_LOCATION_LIST_CACHE_KEY,
+        CLASS_LOCATION_LIST_CACHE_TTL,
         CLUSTER_THRESHOLD_M,
         SAME_POINT_THRESHOLD_M,
     )
 
-    locations = list(
-        models.ClassLocation.objects.filter(
-            latitude__isnull=False, longitude__isnull=False
-        ).only("id", "latitude", "longitude", "acceptance_radius_m")
+    cache = caches["default"]
+    list_data = list(
+        models.ClassLocation.objects.order_by("id").values(
+            "id",
+            "name",
+            "address",
+            "latitude",
+            "longitude",
+            "acceptance_radius_m",
+        )
     )
-    radii = utils.compute_class_location_acceptance_radii(
-        locations,
-        r_same_point=ACCEPTANCE_R_SAME_POINT,
-        r_cluster=ACCEPTANCE_R_CLUSTER,
-        r_standalone=ACCEPTANCE_R_STANDALONE,
-        same_point_threshold=SAME_POINT_THRESHOLD_M,
-        cluster_threshold=CLUSTER_THRESHOLD_M,
+    cache.set(
+        CLASS_LOCATION_LIST_CACHE_KEY,
+        list_data,
+        CLASS_LOCATION_LIST_CACHE_TTL,
     )
-    caches["default"].set(
+    locs_with_coords = [
+        _class_location_row_to_obj(row)
+        for row in list_data
+        if row.get("latitude") is not None and row.get("longitude") is not None
+    ]
+    radii = (
+        utils.compute_class_location_acceptance_radii(
+            locs_with_coords,
+            r_same_point=ACCEPTANCE_R_SAME_POINT,
+            r_cluster=ACCEPTANCE_R_CLUSTER,
+            r_standalone=ACCEPTANCE_R_STANDALONE,
+            same_point_threshold=SAME_POINT_THRESHOLD_M,
+            cluster_threshold=CLUSTER_THRESHOLD_M,
+        )
+        if locs_with_coords
+        else {}
+    )
+    cache.set(
         CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
         radii,
         CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
     )
     logger.info(
-        "warmup_class_location_buffers: записано %s приёмных радиусов в кэш",
+        "warmup_class_location_buffers: список=%s, радиусов=%s",
+        len(list_data),
         len(radii),
     )
-    return {"count": len(radii)}
+    return {"list_count": len(list_data), "radii_count": len(radii)}
+
+
+@shared_task(name="monitoring_app.tasks.invalidate_class_location_patterns")
+def invalidate_class_location_patterns():
+    """
+    Асинхронная инвалидация ключей по паттернам (Redis KEYS может быть медленной).
+    Вызывается из invalidate_class_location_cache_impl после синхронной инвалидации.
+    """
+    from monitoring_app.cache_conf import invalidate_cache_pattern
+
+    n1 = invalidate_cache_pattern("class_location_neighbor_colors_*")
+    n2 = invalidate_cache_pattern("attendance_stats_*")
+    logger.info(
+        "invalidate_class_location_patterns: neighbor_colors=%s attendance_stats=%s",
+        n1,
+        n2,
+    )
+    return {"class_location_neighbor_colors": n1, "attendance_stats": n2}
 
 
 @shared_task(name="monitoring_app.tasks.warmup_cache_task")
