@@ -2,7 +2,11 @@ import logging
 import os
 from calendar import month_abbr
 from collections import defaultdict
+from contextlib import AbstractContextManager
 from datetime import timedelta
+from functools import reduce
+from operator import or_
+from typing import cast
 
 from django.conf import settings
 
@@ -12,12 +16,19 @@ from django.contrib.admin import SimpleListFilter
 from django.contrib.admin.models import LogEntry
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.cache import cache
-from django.core.paginator import Paginator
 from django.core.exceptions import ValidationError
+from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Avg, Count, F, Q
-from django.db.utils import DatabaseError, OperationalError
+
+
+def _db_atomic() -> AbstractContextManager[None]:
+    """Типизированная обёртка над transaction.atomic() для статического анализа."""
+    return cast(AbstractContextManager[None], transaction.atomic())
+
+
 from django.db.models.functions import TruncMonth
+from django.db.utils import DatabaseError, OperationalError
 from django.http import HttpResponse, JsonResponse
 from django.template.response import TemplateResponse
 from django.urls import path
@@ -25,7 +36,6 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.html import format_html
 from django_admin_geomap import ModelAdmin
-
 from monitoring_app import utils as monitoring_utils
 from monitoring_app.lesson_locations_conf import (
     ACCEPTANCE_R_CLUSTER,
@@ -1427,7 +1437,10 @@ class FastStaffAttendancePaginator(Paginator):
 
     def __init__(self, object_list, per_page, orphans=0, allow_empty_first_page=True):
         super().__init__(
-            object_list, per_page, orphans=orphans, allow_empty_first_page=allow_empty_first_page
+            object_list,
+            per_page,
+            orphans=orphans,
+            allow_empty_first_page=allow_empty_first_page,
         )
         self._count = None
 
@@ -1437,6 +1450,7 @@ class FastStaffAttendancePaginator(Paginator):
             return self._count
         try:
             import hashlib
+
             q = self.object_list.query
             qstr = str(q.where) + str(q.order_by)
             h = hashlib.md5(qstr.encode()).hexdigest()[:16]
@@ -1444,7 +1458,7 @@ class FastStaffAttendancePaginator(Paginator):
             self._count = cache.get(cache_key)
             if self._count is None:
                 self._count = self.object_list.count()
-                cache.set(cache_key, self._count, 300)  # 5 мин — count не критичен
+                cache.set(cache_key, self._count, 300)
         except (ValueError, TypeError):
             self._count = 0
         except (DatabaseError, OperationalError) as e:
@@ -1667,12 +1681,13 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
         excluded = request.GET.get("exclude_unknown", "yes")
         if excluded == "yes":
-            qs = qs.exclude(
-                Q(area_name_in__isnull=True)
-                | Q(area_name_out__isnull=True)
-                | Q(area_name_in="Unknown")
-                | Q(area_name_out="Unknown")
-            )
+            q_conditions = [
+                Q(area_name_in__isnull=True),
+                Q(area_name_out__isnull=True),
+                Q(area_name_in="Unknown"),
+                Q(area_name_out="Unknown"),
+            ]
+            qs = qs.exclude(reduce(or_, q_conditions))
 
         return qs
 
@@ -2200,7 +2215,7 @@ class ClassLocationAdmin(ModelAdmin):
             change,
         )
         try:
-            with transaction.atomic():
+            with _db_atomic():
                 super().save_model(request, obj, form, change)
                 try:
                     from monitoring_app.signals import (
@@ -2254,12 +2269,13 @@ class ClassLocationAdmin(ModelAdmin):
                     radii,
                     CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
                 )
-            if getattr(response, "context_data", None) is not None:
-                response.context_data["geomap_draw_radius_circles"] = True
-                response.context_data["geomap_radius_by_id"] = {
+            ctx = getattr(response, "context_data", None)
+            if ctx is not None:
+                ctx["geomap_draw_radius_circles"] = True
+                ctx["geomap_radius_by_id"] = {
                     item.pk: monitoring_utils.get_location_radius(item, radii)
                 }
-                response.context_data["geomap_color_by_id"] = {item.pk: 0}
+                ctx["geomap_color_by_id"] = {item.pk: 0}
         return response
 
     def changelist_view(self, request, extra_context=None):

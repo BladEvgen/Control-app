@@ -4,8 +4,10 @@ import logging
 import subprocess
 import time
 from collections import defaultdict
+from contextlib import AbstractContextManager
 from importlib import import_module
 from pathlib import Path
+from typing import cast
 
 from django.apps import apps
 from django.conf import settings
@@ -16,6 +18,11 @@ from django.db import connection, transaction
 from django.db.models.signals import post_delete, post_save, pre_save
 
 logger = logging.getLogger(__name__)
+
+
+def _db_atomic() -> AbstractContextManager[None]:
+    """Типизированная обёртка над transaction.atomic() для статического анализа."""
+    return cast(AbstractContextManager[None], transaction.atomic())
 
 
 class Command(BaseCommand):
@@ -203,7 +210,9 @@ class Command(BaseCommand):
         try:
             self._restore_json_optimized(data)
         except Exception as e:
-            logger.warning(f"Оптимизированная загрузка не удалась: {e}, пробуем loaddata...")
+            logger.warning(
+                f"Оптимизированная загрузка не удалась: {e}, пробуем loaddata..."
+            )
             temp_file = (
                 backup_path.parent
                 / f"temp_restore_{backup_path.stem.replace('.json', '')}.json"
@@ -376,7 +385,7 @@ class Command(BaseCommand):
 
         self.stdout.write("Выполнение SQL команд через Django connection...")
 
-        with transaction.atomic():
+        with _db_atomic():
             cursor = connection.cursor()
 
             commands = [
@@ -406,7 +415,9 @@ class Command(BaseCommand):
                         ]
                     ):
                         continue
-                    logger.warning(f"Ошибка выполнения SQL команды: {cmd[:100]}... - {e}")
+                    logger.warning(
+                        f"Ошибка выполнения SQL команды: {cmd[:100]}... - {e}"
+                    )
 
             self.stdout.write(
                 self.style.SUCCESS(
@@ -447,7 +458,9 @@ class Command(BaseCommand):
                 pass
 
             self.stdout.write(
-                self.style.SUCCESS(f"MySQL настроен для восстановления (таймаут: {timeout}с)")
+                self.style.SUCCESS(
+                    f"MySQL настроен для восстановления (таймаут: {timeout}с)"
+                )
             )
         except Exception as e:
             logger.warning(f"Не удалось настроить MySQL: {e}")
@@ -568,7 +581,9 @@ class Command(BaseCommand):
         Если приложение certs не установлено или не импортируется, возвращает пустой список.
         """
         if not apps.is_installed("certs"):
-            logger.info("Приложение certs не установлено; операции с его сигналами пропущены.")
+            logger.info(
+                "Приложение certs не установлено; операции с его сигналами пропущены."
+            )
             return []
 
         try:
@@ -685,7 +700,7 @@ class Command(BaseCommand):
                 for i in range(0, len(deserialized_objects), batch_size):
                     batch = deserialized_objects[i : i + batch_size]
                     try:
-                        with transaction.atomic():
+                        with _db_atomic():
                             for deserialized_obj in batch:
                                 try:
                                     deserialized_obj.save()
