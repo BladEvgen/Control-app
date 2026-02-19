@@ -1,3 +1,5 @@
+import logging
+import traceback
 from pathlib import Path
 
 from django.conf import settings
@@ -5,6 +7,7 @@ from django.contrib.auth import authenticate, get_user, login
 from django.http import HttpResponse, JsonResponse
 from django.template.loader import render_to_string
 from django.views.decorators.csrf import csrf_exempt
+from monitoring_app.permissions import IsAuthenticatedOrAPIKey
 from rest_framework import status
 from rest_framework.decorators import (
     api_view,
@@ -15,7 +18,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from monitoring_app.permissions import IsAuthenticatedOrAPIKey
+logger = logging.getLogger(__name__)
 
 
 def _load_login_html():
@@ -106,13 +109,8 @@ def swagger_ui_with_login(request, schema_view, ui="swagger"):
     Показывает форму логина для неаутентифицированных пользователей
     и Swagger UI для аутентифицированных. Использует сессионную аутентификацию.
 
-    Args:
-        request: HTTP запрос.
-        schema_view: Экземпляр SchemaView для генерации схемы.
-        ui (str): Тип UI интерфейса ('swagger' или 'redoc'). По умолчанию 'swagger'.
-
-    Returns:
-        HttpResponse: HTML ответ с формой логина или Swagger/ReDoc UI.
+    При запросе с ?format=openapi возвращает схему в JSON (как /swagger.json),
+    чтобы Swagger UI мог загрузить определение API без Internal Server Error.
     """
 
     if not isinstance(request, Request):
@@ -122,6 +120,10 @@ def swagger_ui_with_login(request, schema_view, ui="swagger"):
 
     permission = IsAuthenticatedOrAPIKey()
     has_permission = permission.has_permission(request, None)
+
+    # Запрос схемы в формате openapi (Swagger UI запрашивает /swagger/?format=openapi)
+    if request.GET.get("format") == "openapi":
+        return swagger_json_with_login(request, schema_view, format_param=".json")
 
     if not has_permission:
         return HttpResponse(
@@ -281,7 +283,16 @@ def swagger_json_with_login(request, schema_view, format_param=None):
                 pass
         return JsonResponse(empty_schema)
 
-    without_ui_view = schema_view.without_ui()
-    if format_param:
-        return without_ui_view(request, **{"format": format_param})
-    return without_ui_view(request)
+    try:
+        without_ui_view = schema_view.without_ui()
+        if format_param:
+            return without_ui_view(request, **{"format": format_param})
+        return without_ui_view(request)
+    except Exception as e:
+        logger.exception(
+            "Swagger schema generation failed (format=%s): %s\n%s",
+            format_param,
+            e,
+            traceback.format_exc(),
+        )
+        raise

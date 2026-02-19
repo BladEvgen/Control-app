@@ -23,6 +23,11 @@ urlpatterns = [
         name="create_lesson_attendance",
     ),
     path(
+        "api/lesson_attendance/json/",
+        views.create_lesson_attendance_json,
+        name="create_lesson_attendance_json",
+    ),
+    path(
         "api/lesson_attendance/<int:id>/",
         views.update_lesson_attendance,
         name="update_lesson_attendance",

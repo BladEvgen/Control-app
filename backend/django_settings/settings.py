@@ -343,7 +343,12 @@ BACKUP_DB_DIR = BASE_DIR.parent / "DB"
 
 # Attendance and augment paths
 ATTENDANCE_URL = "/attendance_media/"
-ATTENDANCE_ROOT = MEDIA_ROOT / "control_image" if DEBUG else "/mnt/disk/control_image/"
+_attendance_root_env = os.getenv("ATTENDANCE_ROOT")
+ATTENDANCE_ROOT = (
+    Path(_attendance_root_env).resolve()
+    if _attendance_root_env
+    else (MEDIA_ROOT / "control_image" if DEBUG else Path("/mnt/disk/control_image/"))
+)
 
 AUGMENT_URL = "/augment_media/"
 AUGMENT_ROOT = (
@@ -412,6 +417,7 @@ SIMPLE_JWT.update(
 SWAGGER_SETTINGS = {
     "LOGIN_URL": "login_view",
     "LOGOUT_URL": "logout",
+    "VALIDATOR_URL": None,
     "SECURITY_DEFINITIONS": {
         "Bearer": {
             "type": "apiKey",
@@ -427,7 +433,7 @@ SWAGGER_SETTINGS = {
         },
     },
     "USE_SESSION_AUTH": True,
-    "DEFAULT_AUTO_SCHEMA_CLASS": "drf_yasg.inspectors.SwaggerAutoSchema",
+    "DEFAULT_AUTO_SCHEMA_CLASS": "monitoring_app.views.FormOnlySwaggerAutoSchema",
 }
 
 # ReDoc settings
@@ -475,6 +481,11 @@ CELERY_BEAT_SCHEDULE = (
             "task": "monitoring_app.tasks.warmup_class_location_buffers",
             "schedule": crontab(minute="*/30"),
         },
+        "clean-old-attendance-photos-daily": {
+            "task": "monitoring_app.tasks.clean_old_attendance_photos",
+            "schedule": crontab(hour="4", minute="30"),
+            "kwargs": {"days_old": 62},
+        },
         # "augment-images-every-day": {
         #     "task": "monitoring_app.tasks.augment_user_images",
         #     "schedule": crontab(day_of_month="*/3", hour=1, minute=0), #! Disabled no CUDA driver
@@ -505,7 +516,9 @@ def get_log_level(prefix, default=None, override=None):
 
 
 ADMIN_ERRORS_LEVEL = get_log_level("ADMIN_ERRORS", default="DEBUG")
-MONITORING_ADMIN_LEVEL = get_log_level("MONITORING_ADMIN", default=("DEBUG" if DEBUG else "WARNING"))
+MONITORING_ADMIN_LEVEL = get_log_level(
+    "MONITORING_ADMIN", default=("DEBUG" if DEBUG else "WARNING")
+)
 
 
 # Custom function to generate log filenames
@@ -649,6 +662,11 @@ LOGGING = {
             "handlers": ["file", "console"] if DEBUG else ["file"],
             "level": "INFO" if DEBUG else "WARNING",
             "propagate": True,
+        },
+        "monitoring_app.lesson_attendance": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO",
+            "propagate": False,
         },
         "monitoring_app.lesson_locations": {
             "handlers": ["lesson_locations_file"],

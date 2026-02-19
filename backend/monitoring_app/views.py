@@ -12,6 +12,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, List, Tuple
 
+import monitoring_app.tasks as tasks
 from celery.result import AsyncResult
 from django.conf import settings
 from django.contrib import messages
@@ -25,8 +26,41 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.generic import View
 from drf_yasg import openapi
-from drf_yasg.utils import swagger_auto_schema
-import monitoring_app.tasks as tasks
+from drf_yasg.inspectors import SwaggerAutoSchema
+from drf_yasg.utils import merge_params, no_body, swagger_auto_schema
+
+
+def _get_manual_parameters_for_inspector(view, method, overrides):
+    """manual_parameters из overrides или из _swagger_auto_schema исходной функции (для @api_view)."""
+    manual = overrides.get("manual_parameters") or []
+    if not manual and method:
+        action_method = getattr(view, method.lower(), None)
+        if action_method:
+            func = getattr(action_method, "__func__", action_method)
+            schema = getattr(func, "_swagger_auto_schema", None)
+            if isinstance(schema, dict):
+                method_data = schema.get(method.lower()) or schema.get(method.upper())
+                if isinstance(method_data, dict):
+                    manual = method_data.get("manual_parameters") or []
+    return manual
+
+
+class FormOnlySwaggerAutoSchema(SwaggerAutoSchema):
+    """Инспектор: при наличии form-параметров в manual_parameters не допускает body (исправляет 500 при генерации схемы)."""
+
+    def add_manual_parameters(self, parameters):
+        manual = _get_manual_parameters_for_inspector(
+            self.view, self.method, self.overrides
+        )
+        has_form = any(getattr(p, "in_", None) == openapi.IN_FORM for p in manual)
+        if has_form:
+            parameters = [
+                p for p in parameters if getattr(p, "in_", None) != openapi.IN_BODY
+            ]
+            return merge_params(parameters, manual)
+        return super().add_manual_parameters(parameters)
+
+
 from monitoring_app import (
     async_logic,
     attendance_fetcher,
@@ -58,6 +92,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 logger = logging.getLogger(__name__)
+lesson_attendance_logger = logging.getLogger("monitoring_app.lesson_attendance")
 
 ExcelRow = Tuple[Any, ...]
 User = get_user_model()
@@ -903,7 +938,10 @@ def lesson_locations(request):
         elif lat_empty and lon_empty:
             log_ll.warning("MISSING both lat and lon")
             return Response(
-                {"error": "Широта и долгота обязательны", "detail": "Широта и долгота обязательны"},
+                {
+                    "error": "Широта и долгота обязательны",
+                    "detail": "Широта и долгота обязательны",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         elif lat_empty:
@@ -975,20 +1013,34 @@ def lesson_locations(request):
                 loc_id = nearest_loc.id if nearest_loc else 0
                 log_ll.warning(
                     "NOT_FOUND user(%.6f,%.6f) nearest_id=%d d=%.1fm R=%dm",
-                    latitude, longitude, loc_id, min_overall, R_n,
+                    latitude,
+                    longitude,
+                    loc_id,
+                    min_overall,
+                    R_n,
                 )
                 log_ll_nf.warning(
                     "Haversine: d(user,loc)<=R => in_radius | "
                     "user(lat=%.6f,lon=%.6f) nearest=%s[id=%d](lat=%.6f,lon=%.6f) "
                     "d=%.1fm R=%dm => d>R NOT_FOUND",
-                    latitude, longitude, nearest_name, loc_id, loc_lat, loc_lon,
-                    min_overall, R_n,
+                    latitude,
+                    longitude,
+                    nearest_name,
+                    loc_id,
+                    loc_lat,
+                    loc_lon,
+                    min_overall,
+                    R_n,
                 )
                 return _not_found(
                     f"Ближайшая локация {min_overall:.1f} м, превышен лимит {R_n} м"
                 )
 
-            log_ll.info("FOUND %d | %s", len(within), ", ".join(f"{loc.name}({d:.1f}m)" for d, loc, _ in within))
+            log_ll.info(
+                "FOUND %d | %s",
+                len(within),
+                ", ".join(f"{loc.name}({d:.1f}m)" for d, loc, _ in within),
+            )
 
             locations_data = [
                 {
@@ -2685,11 +2737,11 @@ def update_percent_for_period(
 
 @swagger_auto_schema(
     method="get",
-    operation_summary="Проверка статуса задачи создания записей посещаемости занятий",
+    operation_summary="Проверка статуса задачи создания записей посещаемости",
     operation_description=(
-        "Проверяет статус асинхронной задачи по созданию записей посещаемости занятий. "
-        "Возвращает статус задачи (Pending, Success, Failure) и при успешном выполнении - "
-        "список ID созданных записей."
+        "Проверяет статус задачи, созданной POST /api/lesson_attendance/ (task_id из ответа 202). "
+        "Возвращает: Pending (202) — задача в очереди; Success (200) — lesson_ids созданных записей; "
+        "Failure (500) — error с текстом ошибки. Остальные состояния — 200 с полем status."
     ),
     tags=["Lesson Attendance"],
     manual_parameters=[
@@ -2770,10 +2822,19 @@ def check_lesson_task_status(request, task_id):
     """
     Проверка статуса задачи и получение lesson_id.
     """
+    log_prefix = "[lesson_attendance]"
+    ip_address = request.META.get("REMOTE_ADDR", "Неизвестный IP")
+
     try:
         task_result = AsyncResult(task_id)
 
         if task_result.state == "PENDING":
+            lesson_attendance_logger.debug(
+                "%s task_status PENDING task_id=%s ip=%s",
+                log_prefix,
+                task_id,
+                ip_address,
+            )
             return Response(
                 {
                     "status": "Pending",
@@ -2783,19 +2844,50 @@ def check_lesson_task_status(request, task_id):
             )
 
         elif task_result.state == "SUCCESS":
-            result = task_result.result
+            result = task_result.result or {}
+            success_records = result.get("success_records", [])
+            error_records = result.get("error_records", [])
+            lesson_attendance_logger.info(
+                "%s task_status SUCCESS task_id=%s ip=%s created=%s failed=%s",
+                log_prefix,
+                task_id,
+                ip_address,
+                len(success_records),
+                len(error_records),
+            )
+            if error_records:
+                lesson_attendance_logger.warning(
+                    "%s task_status partial_failures task_id=%s error_records=%s",
+                    log_prefix,
+                    task_id,
+                    error_records,
+                )
             return Response(
-                {"status": "Success", "lesson_ids": result.get("success_records", [])},
+                {"status": "Success", "lesson_ids": success_records},
                 status=status.HTTP_200_OK,
             )
 
         elif task_result.state == "FAILURE":
+            lesson_attendance_logger.warning(
+                "%s task_status FAILURE task_id=%s ip=%s error=%s",
+                log_prefix,
+                task_id,
+                ip_address,
+                str(task_result.info),
+            )
             return Response(
                 {"status": "Failure", "error": str(task_result.info)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
         else:
+            lesson_attendance_logger.info(
+                "%s task_status state=%s task_id=%s ip=%s",
+                log_prefix,
+                task_result.state,
+                task_id,
+                ip_address,
+            )
             return Response(
                 {
                     "status": task_result.state,
@@ -2805,20 +2897,79 @@ def check_lesson_task_status(request, task_id):
             )
 
     except Exception as e:
-        logger.error(f"Ошибка при проверке задачи: {str(e)}")
+        lesson_attendance_logger.exception(
+            "%s task_status EXCEPTION task_id=%s ip=%s error=%s",
+            log_prefix,
+            task_id,
+            ip_address,
+            str(e),
+        )
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _lesson_attendance_responses():
+    """Общие ответы для создания записей посещаемости (multipart и JSON)."""
+    return {
+        202: openapi.Response(
+            description="Задача принята в очередь. Идентификатор задачи — в task_id.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "message": openapi.Schema(type=openapi.TYPE_STRING),
+                    "task_id": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Проверка: GET /api/lesson_attendance/task_status/{task_id}/",
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(
+            description="Ошибка валидации.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                    "missing": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_STRING),
+                    ),
+                },
+            ),
+        ),
+        500: openapi.Response(
+            description="Ошибка сервера.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={"error": openapi.Schema(type=openapi.TYPE_STRING)},
+            ),
+        ),
+    }
 
 
 @swagger_auto_schema(
     method="post",
-    operation_summary="Создание записей посещаемости занятий",
+    auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
+    operation_summary="Создание записей посещаемости (multipart/form-data)",
     operation_description=(
-        "Создаёт новые записи посещаемости для сотрудников на занятия. "
-        "Каждая запись должна содержать обязательные параметры: "
-        "`staff_pin`, `tutor_id`, `tutor`, `first_in`, `latitude`, `longitude`. "
-        "Поддерживает два формата отправки данных:\n"
-        "1. multipart/form-data: `attendance_data` как JSON строка или массив, `image` как файл\n"
-        "2. application/json: `attendance_data` как массив, `image` как Base64 строка"
+        "**Как заполнять запрос**\n\n"
+        "1. В поле **attendance_data** вставьте одну строку — JSON-массив с записями посещаемости. "
+        "Одна запись — один объект с полями ниже. Несколько записей — несколько объектов в массиве.\n\n"
+        "2. В поле **image** нажмите «Choose File» и выберите файл фотографии (JPG или PNG).\n\n"
+        "**Формат одной записи в attendance_data** (все поля обязательны, кроме subject_name):\n"
+        "- **staff_pin** (строка) — PIN сотрудника из справочника, например `s00260s`\n"
+        "- **tutor_id** (число) — ID преподавателя, можно 0\n"
+        "- **tutor** (строка) — ФИО преподавателя, например `Иванов И.И.`\n"
+        "- **first_in** (строка) — дата и время начала занятия в формате ISO 8601 с таймзоной, например `2024-10-06T14:24:24+05:00`\n"
+        "- **latitude** (число) — широта, можно 0\n"
+        "- **longitude** (число) — долгота, можно 0\n"
+        "- **subject_name** (строка, необязательно) — название предмета\n\n"
+        "**Пример значения для attendance_data** (скопируйте и при необходимости отредактируйте):\n"
+        "```\n"
+        '[{"staff_pin":"s00260s","tutor_id":1,"tutor":"Иванов И.И.",'
+        '"first_in":"2024-10-06T14:24:24+05:00","latitude":43.21,"longitude":76.85,"subject_name":"Математика"}]\n'
+        "```\n\n"
+        "**Ответ:** 202 Accepted, в теле — `task_id`. Результат создания записей смотрите в **GET** `/api/lesson_attendance/task_status/{task_id}/`.\n\n"
+        "Вариант с JSON в теле и фото в Base64: **POST** `/api/lesson_attendance/json/`."
     ),
     tags=["Lesson Attendance"],
     manual_parameters=[
@@ -2827,173 +2978,99 @@ def check_lesson_task_status(request, task_id):
             in_=openapi.IN_HEADER,
             type=openapi.TYPE_STRING,
             required=False,
-            description="API ключ для аутентификации (альтернатива JWT токену).",
+            description="API-ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            name="attendance_data",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="Строка JSON: массив объектов. В каждом объекте: staff_pin, tutor_id, tutor, first_in, latitude, longitude; по желанию subject_name. Пример см. в описании операции.",
+        ),
+        openapi.Parameter(
+            name="image",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_FILE,
+            required=True,
+            description="Файл фотографии (JPG, PNG). Нажмите «Choose File» и выберите файл.",
         ),
     ],
-    request_body=openapi.Schema(
-        type=openapi.TYPE_OBJECT,
-        required=["attendance_data", "image"],
-        properties={
-            "attendance_data": openapi.Schema(
-                type=openapi.TYPE_ARRAY,
-                description=(
-                    "Массив данных о посещаемости. Может быть передан как массив объектов "
-                    "или как JSON строка (при multipart/form-data)."
-                ),
-                items=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    required=[
-                        "staff_pin",
-                        "tutor_id",
-                        "tutor",
-                        "first_in",
-                        "latitude",
-                        "longitude",
-                    ],
-                    properties={
-                        "staff_pin": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            description="PIN сотрудника",
-                            example="s00260",
-                        ),
-                        "tutor_id": openapi.Schema(
-                            type=openapi.TYPE_INTEGER,
-                            description="ID преподавателя",
-                            example=1,
-                        ),
-                        "tutor": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            description="ФИО преподавателя",
-                            example="Иванов И.И.",
-                        ),
-                        "first_in": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            format=openapi.FORMAT_DATETIME,
-                            description="Время начала занятия в формате ISO 8601 с часовым поясом",
-                            example="2024-10-06T14:24:24+05:00",
-                        ),
-                        "latitude": openapi.Schema(
-                            type=openapi.TYPE_NUMBER,
-                            format=openapi.FORMAT_FLOAT,
-                            description="Широта места проведения",
-                            example=43.207674,
-                        ),
-                        "longitude": openapi.Schema(
-                            type=openapi.TYPE_NUMBER,
-                            format=openapi.FORMAT_FLOAT,
-                            description="Долгота места проведения",
-                            example=76.851377,
-                        ),
-                    },
-                ),
-            ),
-            "image": openapi.Schema(
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_BINARY,
-                description=(
-                    "Фотография сотрудника. Может быть отправлена как:\n"
-                    "- Файл (при multipart/form-data)\n"
-                    "- Base64 строка (при application/json)"
-                ),
-            ),
-        },
-    ),
-    consumes=["multipart/form-data", "application/json"],
-    responses={
-        202: openapi.Response(
-            description="Задача по созданию записей принята в обработку",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "message": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="Сообщение об успешном запуске задачи",
-                    ),
-                    "task_id": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="ID задачи"
-                    ),
-                },
-            ),
-        ),
-        400: openapi.Response(
-            description="Неверные данные",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "error": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="Описание ошибки"
-                    ),
-                },
-            ),
-        ),
-        500: openapi.Response(
-            description="Ошибка сервера",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "error": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="Описание ошибки"
-                    ),
-                },
-            ),
-        ),
-    },
+    request_body=no_body,
+    consumes=["multipart/form-data"],
+    responses=_lesson_attendance_responses(),
 )
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def create_lesson_attendance(request):
     """
-    Обрабатывает POST-запрос для создания записей посещаемости сотрудников на занятия.
+    POST /api/lesson_attendance/ — создание записей посещаемости занятий (с фото).
 
-    Функция принимает JSON-данные о посещаемости и файл с фотографией сотрудника, проверяет
-    корректность данных и запускает асинхронную задачу Celery для сохранения данных и фотографии.
+    Как заполнять запрос
+    --------------------
+    Поддерживаются два типа запроса.
 
-    Args:
-        request (Request): Объект запроса, содержащий:
-            - attendance_data (list): Список объектов с данными о посещаемости, каждый объект содержит:
-                - staff_pin (str): PIN сотрудника.
-                - tutor_id (int): ID преподавателя.
-                - tutor (str): ФИО преподавателя.
-                - first_in (str): Время начала занятия в формате ISO 8601.
-                - latitude (float): Широта места проведения занятия.
-                - longitude (float): Долгота места проведения занятия.
-            - image (File): Файл с фотографией сотрудника.
+    **1. multipart/form-data** (форма с файлом, в т.ч. в Swagger «Try it out»):
+    - Поле **attendance_data**: строка, содержащая JSON-массив объектов. Каждый объект — одна запись посещаемости.
+    - Поле **image**: файл изображения (JPG/PNG).
 
-    Returns:
-        Response:
-            - 202 Accepted: Задача по созданию записей принята в обработку.
-            - 400 Bad Request: Если переданы некорректные данные или отсутствуют обязательные параметры.
-            - 500 Internal Server Error: В случае возникновения ошибки на сервере.
+    Обязательные поля в каждом объекте массива attendance_data:
+    - staff_pin (str): PIN сотрудника из справочника Staff.
+    - tutor_id (int): ID преподавателя (допускается 0).
+    - tutor (str): ФИО преподавателя.
+    - first_in (str): Время начала занятия, ISO 8601 с таймзоной, напр. "2024-10-06T14:24:24+05:00".
+    - latitude (float): Широта (допускается 0).
+    - longitude (float): Долгота (допускается 0).
 
-    Raises:
-        Exception: Любые исключения логируются, и сервер возвращает ответ с кодом 500.
+    Необязательное поле: subject_name (str).
+
+    Пример значения для attendance_data (одна запись):
+        [{"staff_pin":"s00260","tutor_id":1,"tutor":"Иванов И.И.","first_in":"2024-10-06T14:24:24+05:00","latitude":43.21,"longitude":76.85}]
+
+    **2. application/json** (предпочтительно отправлять на POST /api/lesson_attendance/json/):
+    - Тело: {"attendance_data": [ {...}, ... ], "image": "<base64-строка>"}.
+    - Структура объектов в attendance_data — та же, image — фото в Base64 без префикса data:...
+
+    Ответ
+    -----
+    - 202: в теле {"message": "Task accepted", "task_id": "<uuid>"}. Результат проверять в GET /api/lesson_attendance/task_status/<task_id>/.
+    - 400: ошибка валидации (нет полей, неверный JSON, нет фото и т.п.).
+    - 500: ошибка сервера при постановке задачи в очередь.
     """
     ip_address = request.META.get("REMOTE_ADDR", "Неизвестный IP")
     domain = request.get_host()
+    log_prefix = "[lesson_attendance]"
 
-    logger.info(
-        f"Запрос получен от IP: {ip_address}, домен: {domain} Получен запрос: {request.method} {request.path} {request}"
+    lesson_attendance_logger.info(
+        "%s POST create ip=%s host=%s content_type=%s",
+        log_prefix,
+        ip_address,
+        domain,
+        getattr(request, "content_type", None),
     )
-    logger.info(f"Заголовки запроса: {request.headers}")
-
-    if request.body:
-        try:
-            if request.content_type == "application/json":
-                logger.info("Тело запроса: содержит JSON данные")
-            else:
-                logger.info("Тело запроса содержит бинарные данные")
-        except Exception as e:
-            logger.error(
-                f"Ошибка при декодировании тела запроса: {str(e)}, IP: {ip_address}, домен: {domain}"
-            )
 
     try:
-        attendance_data_raw = request.data.get("attendance_data")
-        image_base64 = request.data.get("image")
+        ct = (getattr(request, "content_type") or "") or ""
+        if "multipart" in ct or "form-data" in ct:
+            attendance_data_raw = request.POST.get(
+                "attendance_data"
+            ) or request.data.get("attendance_data")
+            image_base64 = request.POST.get("image") or request.data.get("image")
+        else:
+            attendance_data_raw = request.data.get("attendance_data")
+            image_base64 = request.data.get("image")
+        has_file = bool(request.FILES.get("image"))
 
         if not attendance_data_raw:
-            logger.error(
-                f"Отсутствуют данные о посещаемости, IP: {ip_address}, домен: {domain}"
+            _data_keys = (
+                list(request.data.keys()) if getattr(request, "data", None) else []
+            )
+            _post_keys = list(request.POST.keys()) if hasattr(request, "POST") else []
+            lesson_attendance_logger.warning(
+                "%s BAD_REQUEST attendance_data_missing ip=%s data_keys=%s post_keys=%s",
+                log_prefix,
+                ip_address,
+                _data_keys,
+                _post_keys,
             )
             return Response(
                 {"error": "Attendance data is missing"},
@@ -3008,49 +3085,106 @@ def create_lesson_attendance(request):
                 if isinstance(attendance_data_raw, bytes)
                 else attendance_data_raw
             )
-            attendance_data = json.loads(attendance_data_raw)
+            try:
+                attendance_data = json.loads(attendance_data_raw)
+            except json.JSONDecodeError as e:
+                lesson_attendance_logger.warning(
+                    "%s BAD_REQUEST attendance_data_not_json ip=%s error=%s",
+                    log_prefix,
+                    ip_address,
+                    str(e),
+                )
+                return Response(
+                    {"error": "Invalid JSON in attendance_data"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         else:
             attendance_data = []
 
-        for record in attendance_data:
-            required_fields = [
-                "staff_pin",
-                "tutor_id",
-                "tutor",
-                "first_in",
-                "latitude",
-                "longitude",
-            ]
-            if not all(record.get(field) for field in required_fields):
-                logger.error(
-                    f"Отсутствуют обязательные поля в записи: {record} IP: {ip_address}, домен: {domain}"
+        if not isinstance(attendance_data, list):
+            lesson_attendance_logger.warning(
+                "%s BAD_REQUEST attendance_data_not_list ip=%s type=%s",
+                log_prefix,
+                ip_address,
+                type(attendance_data).__name__,
+            )
+            return Response(
+                {"error": "attendance_data must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        def _missing_required(rec):
+            missing = []
+            if not rec.get("staff_pin"):
+                missing.append("staff_pin")
+            if "tutor_id" not in rec:
+                missing.append("tutor_id")
+            if not rec.get("tutor"):
+                missing.append("tutor")
+            if not rec.get("first_in"):
+                missing.append("first_in")
+            if "latitude" not in rec:
+                missing.append("latitude")
+            if "longitude" not in rec:
+                missing.append("longitude")
+            return missing
+
+        for idx, record in enumerate(attendance_data):
+            if not isinstance(record, dict):
+                lesson_attendance_logger.warning(
+                    "%s BAD_REQUEST record_not_dict ip=%s record_index=%s",
+                    log_prefix,
+                    ip_address,
+                    idx,
                 )
                 return Response(
-                    {"error": "Missing required fields in record"},
+                    {"error": "Each attendance record must be an object"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            missing = _missing_required(record)
+            if missing:
+                lesson_attendance_logger.warning(
+                    "%s BAD_REQUEST missing_required_fields ip=%s record_index=%s missing=%s staff_pin=%s tutor_id=%s",
+                    log_prefix,
+                    ip_address,
+                    idx,
+                    missing,
+                    record.get("staff_pin"),
+                    record.get("tutor_id"),
+                )
+                return Response(
+                    {"error": "Missing required fields in record", "missing": missing},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
         image_content = None
         image_name = None
 
-        if image_base64:
-            logger.info("Получено изображение в формате Base64")
+        if has_file:
+            staff_image = request.FILES["image"]
+            image_content = staff_image.read()
+        elif image_base64:
             try:
                 image_content = base64.b64decode(image_base64)
-                logger.info("Изображение успешно декодировано в байты")
             except Exception as e:
-                logger.error("Ошибка декодирования Base64 изображения: %s", e)
+                lesson_attendance_logger.warning(
+                    "%s BAD_REQUEST image_base64_decode_failed ip=%s error=%s",
+                    log_prefix,
+                    ip_address,
+                    str(e),
+                )
                 return Response(
                     {"error": "Invalid Base64 image format"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-        elif request.FILES.get("image"):
-            staff_image = request.FILES["image"]
-            image_content = staff_image.read()
-            logger.info("Изображение прочитано как бинарные данные")
 
         if not image_content:
-            logger.error(f"Изображение отсутствует, IP: {ip_address}, домен: {domain}")
+            lesson_attendance_logger.warning(
+                "%s BAD_REQUEST image_missing ip=%s records_count=%s (expected multipart image or JSON image base64)",
+                log_prefix,
+                ip_address,
+                len(attendance_data),
+            )
             return Response(
                 {"error": "Image is missing"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -3059,8 +3193,13 @@ def create_lesson_attendance(request):
         task = tasks.process_lesson_attendance_batch.apply_async(
             args=[attendance_data, image_name, image_content]
         )
-        logger.info(
-            f"Задача успешно принята: ID задачи {task.id}, IP: {ip_address}, домен: {domain}"
+        lesson_attendance_logger.info(
+            "%s ACCEPTED task_id=%s ip=%s records_count=%s image_size_bytes=%s",
+            log_prefix,
+            task.id,
+            ip_address,
+            len(attendance_data),
+            len(image_content),
         )
 
         return Response(
@@ -3069,13 +3208,97 @@ def create_lesson_attendance(request):
         )
 
     except Exception as e:
-        logger.error(
-            f"Ошибка при запуске задачи: {str(e)}, IP: {ip_address}, домен: {domain}"
+        lesson_attendance_logger.exception(
+            "%s EXCEPTION create ip=%s error=%s",
+            log_prefix,
+            ip_address,
+            str(e),
         )
         return Response(
             {"error": "Error with creating job"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+
+
+_lesson_attendance_json_schema = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=["attendance_data", "image"],
+    description="Тело запроса: массив записей и фото в Base64.",
+    properties={
+        "attendance_data": openapi.Schema(
+            type=openapi.TYPE_ARRAY,
+            description="Массив записей посещаемости.",
+            items=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                required=[
+                    "staff_pin",
+                    "tutor_id",
+                    "tutor",
+                    "first_in",
+                    "latitude",
+                    "longitude",
+                ],
+                properties={
+                    "staff_pin": openapi.Schema(
+                        type=openapi.TYPE_STRING, example="s00260"
+                    ),
+                    "tutor_id": openapi.Schema(type=openapi.TYPE_INTEGER, example=1),
+                    "tutor": openapi.Schema(
+                        type=openapi.TYPE_STRING, example="Иванов И.И."
+                    ),
+                    "first_in": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        format=openapi.FORMAT_DATETIME,
+                        example="2024-10-06T14:24:24+05:00",
+                    ),
+                    "latitude": openapi.Schema(
+                        type=openapi.TYPE_NUMBER, example=43.207674
+                    ),
+                    "longitude": openapi.Schema(
+                        type=openapi.TYPE_NUMBER, example=76.851377
+                    ),
+                    "subject_name": openapi.Schema(
+                        type=openapi.TYPE_STRING, example="Математика"
+                    ),
+                },
+            ),
+        ),
+        "image": openapi.Schema(
+            type=openapi.TYPE_STRING,
+            description="Фото в Base64 (без префикса data:image/...;base64,).",
+        ),
+    },
+)
+
+
+@swagger_auto_schema(
+    method="post",
+    operation_summary="Создание записей посещаемости (application/json)",
+    operation_description=(
+        "Вариант с JSON в теле запроса и фото в Base64. Ответ 202 + task_id; "
+        "результат: GET /api/lesson_attendance/task_status/{task_id}/.\n\n"
+        'Тело: { "attendance_data": [ {...}, ... ], "image": "<base64>" }. '
+        "Обязательные поля в каждой записи: staff_pin, tutor_id, tutor, first_in, latitude, longitude; "
+        "опционально subject_name. Для загрузки файла используйте операцию **POST .../lesson_attendance/** (multipart) выше."
+    ),
+    tags=["Lesson Attendance"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API-ключ (альтернатива JWT).",
+        ),
+    ],
+    request_body=_lesson_attendance_json_schema,
+    consumes=["application/json"],
+    responses=_lesson_attendance_responses(),
+)
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def create_lesson_attendance_json(request):
+    return create_lesson_attendance(request)
 
 
 @swagger_auto_schema(
@@ -3194,6 +3417,9 @@ def update_lesson_attendance(request, attendance_id):
     Returns:
         Response: Возвращает сообщение об успешном обновлении записи.
     """
+    ip_address = request.META.get("REMOTE_ADDR", "Неизвестный IP")
+    log_prefix = "[lesson_attendance]"
+
     try:
         lesson_attendance = get_object_or_404(models.LessonAttendance, id=attendance_id)
 
@@ -3203,6 +3429,12 @@ def update_lesson_attendance(request, attendance_id):
         longitude = request.data.get("longitude", lesson_attendance.longitude)
 
         if not last_out:
+            lesson_attendance_logger.warning(
+                "%s PUT BAD_REQUEST last_out_required id=%s ip=%s",
+                log_prefix,
+                attendance_id,
+                ip_address,
+            )
             return Response(
                 {"error": "'last_out' is required for updating."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -3214,6 +3446,13 @@ def update_lesson_attendance(request, attendance_id):
         lesson_attendance.longitude = longitude
         lesson_attendance.save()
 
+        lesson_attendance_logger.info(
+            "%s PUT OK lesson_id=%s ip=%s last_out=%s",
+            log_prefix,
+            lesson_attendance.id,
+            ip_address,
+            last_out,
+        )
         return Response(
             {
                 "message": "LessonAttendance updated successfully",
@@ -3223,10 +3462,23 @@ def update_lesson_attendance(request, attendance_id):
         )
 
     except models.LessonAttendance.DoesNotExist:
+        lesson_attendance_logger.warning(
+            "%s PUT NOT_FOUND id=%s ip=%s",
+            log_prefix,
+            attendance_id,
+            ip_address,
+        )
         return Response(
             {"error": "LessonAttendance not found."}, status=status.HTTP_404_NOT_FOUND
         )
     except Exception as e:
+        lesson_attendance_logger.exception(
+            "%s PUT EXCEPTION id=%s ip=%s error=%s",
+            log_prefix,
+            attendance_id,
+            ip_address,
+            str(e),
+        )
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -3845,7 +4097,9 @@ def login_view(request):
                             "successful_requests": openapi.Schema(
                                 type=openapi.TYPE_INTEGER
                             ),
-                            "failed_requests": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "failed_requests": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
                             "pins_with_events": openapi.Schema(
                                 type=openapi.TYPE_INTEGER
                             ),
@@ -3902,7 +4156,9 @@ async def fetch_data_view(request):
     lock_acquired = cache.add(lock_key, "running", timeout=lock_ttl_seconds)
 
     if not lock_acquired:
-        logger.warning("%s: rejected because another fetcher run is in progress", function_name)
+        logger.warning(
+            "%s: rejected because another fetcher run is in progress", function_name
+        )
         return Response(
             status=status.HTTP_429_TOO_MANY_REQUESTS,
             data={
@@ -3964,7 +4220,9 @@ async def fetch_data_view(request):
             max_value=365,
         )
         if days_error:
-            return Response(status=status.HTTP_400_BAD_REQUEST, data={"error": days_error})
+            return Response(
+                status=status.HTTP_400_BAD_REQUEST, data={"error": days_error}
+            )
 
         max_concurrent_requests, concurrency_error = parse_int_query_param(
             "max_concurrent_requests",
@@ -4395,13 +4653,18 @@ class UploadFileView(View):
             Logs details of processed rows, including created, updated, and skipped rows. If errors
             occur, they are logged and the user is notified.
         """
-        with transaction.atomic():
+        with transaction.atomic():  # type: ignore[reportGeneralTypeIssues]
             to_create = []
             to_update = []
             existing_locations = {
                 (loc.name, loc.address): loc
                 for loc in models.ClassLocation.objects.only(
-                    "id", "name", "address", "latitude", "longitude", "acceptance_radius_m"
+                    "id",
+                    "name",
+                    "address",
+                    "latitude",
+                    "longitude",
+                    "acceptance_radius_m",
                 )
             }
 
@@ -4498,12 +4761,16 @@ class UploadFileView(View):
                 except Exception as e:
                     logger.error(f"Error during bulk_update: {e}")
                     messages.error(
-                        request, "Не удалось обновить существующие записи ClassLocation."
+                        request,
+                        "Не удалось обновить существующие записи ClassLocation.",
                     )
 
             if to_create or to_update:
                 try:
-                    from monitoring_app.signals import invalidate_class_location_cache_impl
+                    from monitoring_app.signals import (
+                        invalidate_class_location_cache_impl,
+                    )
+
                     invalidate_class_location_cache_impl()
                 except Exception as inv_err:
                     logger.warning(f"Cache invalidation after bulk ops: {inv_err}")
@@ -4519,7 +4786,9 @@ class UploadFileView(View):
                     + "\n".join(error_details)
                 )
                 if error_count > MAX_ERROR_DETAILS:
-                    error_message += f"\n...и ещё {error_count - MAX_ERROR_DETAILS} ошибок."
+                    error_message += (
+                        f"\n...и ещё {error_count - MAX_ERROR_DETAILS} ошибок."
+                    )
                 messages.warning(request, error_message)
 
     def delete_staff(self, request, rows, parent_department_id):
@@ -5141,6 +5410,7 @@ def download_examples_zip(request):
 
 @swagger_auto_schema(
     method="post",
+    auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
     operation_summary="Верификация лица",
     operation_description="Верифицирует лицо сотрудника по PIN и изображению. Требует передачи заголовка X-API-KEY для просмотра в Swagger.",
     tags=["Face Recognition - Verify"],
@@ -5167,6 +5437,7 @@ def download_examples_zip(request):
             description="Изображение лица для верификации.",
         ),
     ],
+    request_body=no_body,
     responses={
         200: openapi.Response(
             description="Результат верификации",
@@ -5276,6 +5547,7 @@ def verify_face(request):
 
 @swagger_auto_schema(
     method="post",
+    auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
     operation_summary="Распознавание лиц",
     operation_description="Распознает лица сотрудников на изображении. Требует передачи заголовка X-API-KEY для просмотра в Swagger.",
     tags=["Face Recognition - Recognize"],
@@ -5295,6 +5567,7 @@ def verify_face(request):
             description="Изображение с лицами для распознавания (PNG, JPG, JPEG).",
         ),
     ],
+    request_body=no_body,
     responses={
         200: openapi.Response(
             description="Результат распознавания",

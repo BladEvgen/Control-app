@@ -1,6 +1,7 @@
 import datetime
 import logging
 import os
+from pathlib import Path
 
 from celery import shared_task
 from django.conf import settings
@@ -33,44 +34,22 @@ def get_all_attendance_task():
     return summary
 
 
-@shared_task
+@shared_task(name="monitoring_app.tasks.update_lesson_attendance_last_out")
 def update_lesson_attendance_last_out():
-    """Updates the last_out field for lesson attendance records that have been open for more than 3 hours.
+    """Автоматически проставляет last_out для занятий без отметки об окончании.
 
-    This task handles the automatic closure of lesson attendance records by setting the last_out time
-    based on the following rules:
-    1. Finds all lessons without last_out time that started more than 3 hours ago
-    2. For each lesson:
-        - If the target time (first_in + 3 hours) is on the same day, sets last_out to that time
-        - If the target time crosses midnight, sets last_out to 23:59:59.999999 of the start day
+    Студенты не ставят отметку «занятие закончилось», поэтому last_out выставляется
+    автоматически: first_in + 3 часа, но НЕ ПОЗЖЕ конца дня занятия (date_at).
 
-    The processing is done in batches to optimize memory usage and database performance.
+    Правила:
+    1. Берём занятия без last_out, у которых first_in был более 3 часов назад
+    2. last_out = min(first_in + 3ч, 23:59:59.999999 дня date_at)
+    3. Гарантия: last_out никогда не выходит за пределы date_at (защита от 22:00→01:00)
 
-    Note:
-        - Uses Django's timezone-aware datetime handling
-        - Processes records in batches of 1000
-        - Performs bulk updates to minimize database calls
-
-    Returns:
-        None
-
-    Raises:
-        Exception: If any error occurs during processing. All exceptions are logged and re-raised.
-
-    Example:
-        >>> update_lesson_attendance_last_out.delay()  # When called as Celery task
-        >>> update_lesson_attendance_last_out()  # When called directly
-
-    Performance Considerations:
-        - Uses batch processing with configurable BATCH_SIZE (default: 1000)
-        - Implements chunked iteration (chunk_size=100) for memory efficiency
-        - Uses bulk_update for optimal database performance
-
-    Logging:
-        - INFO: Processing progress and successful updates
-        - ERROR: Any exceptions during execution
-        - INFO: No records found message when applicable
+    Используется date_at (дата занятия), а не first_in.date(), чтобы избежать
+    косяков с часовыми поясами и корректно считать выгрузки по дням.
     """
+    log_prefix = "[update_lesson_attendance_last_out]"
     try:
         now = timezone.now()
         three_hours_ago = now - datetime.timedelta(hours=3)
@@ -80,40 +59,37 @@ def update_lesson_attendance_last_out():
         )
 
         if not lessons_to_update.exists():
-            logger.info("No LessonAttendance records found for updating `last_out`.")
+            logger.info("%s no records to update", log_prefix)
             return
 
         BATCH_SIZE = 1000
         total_updated = 0
-
         total_records = lessons_to_update.count()
+        current_tz = timezone.get_current_timezone()
 
         for offset in range(0, total_records, BATCH_SIZE):
             batch = lessons_to_update[offset : offset + BATCH_SIZE]
-
             updates = []
 
             for lesson in batch.iterator(chunk_size=100):
                 first_in = lesson.first_in
-
                 if not timezone.is_aware(first_in):
-                    first_in = timezone.make_aware(
-                        first_in, timezone.get_current_timezone()
-                    )
+                    first_in = timezone.make_aware(first_in, current_tz)
 
-                end_of_day = timezone.make_aware(
+                lesson_date = lesson.date_at
+                end_of_lesson_day = timezone.make_aware(
                     datetime.datetime.combine(
-                        first_in.date(), datetime.time(23, 59, 59, 999999)
+                        lesson_date, datetime.time(23, 59, 59, 999999)
                     ),
-                    first_in.tzinfo,
+                    current_tz,
                 )
 
                 target_time = first_in + datetime.timedelta(hours=3)
-
-                if target_time.date() > first_in.date():
-                    last_out = end_of_day
-                else:
-                    last_out = target_time
+                last_out = (
+                    end_of_lesson_day
+                    if target_time > end_of_lesson_day
+                    else target_time
+                )
 
                 lesson.last_out = last_out
                 updates.append(lesson)
@@ -126,15 +102,21 @@ def update_lesson_attendance_last_out():
 
             if total_records > BATCH_SIZE:
                 logger.info(
-                    f"Processed {min(offset + BATCH_SIZE, total_records)}/{total_records} records"
+                    "%s progress %s/%s",
+                    log_prefix,
+                    min(offset + BATCH_SIZE, total_records),
+                    total_records,
                 )
 
-        logger.info(f"Successfully updated `last_out` for {total_updated} records.")
+        logger.info(
+            "%s done updated=%s total=%s",
+            log_prefix,
+            total_updated,
+            total_records,
+        )
 
     except Exception as e:
-        logger.error(
-            f"Error executing `update_lesson_attendance_last_out`: {e}", exc_info=True
-        )
+        logger.exception("%s EXCEPTION error=%s", log_prefix, e)
         raise
 
 
@@ -166,23 +148,36 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
     Raises:
         Exception: Логирует подробные ошибки при сохранении записи или изображения.
     """
+    log_prefix = "[lesson_attendance_task]"
     success_records = []
     error_records = []
 
-    for record in attendance_data:
+    records_count = len(attendance_data) if attendance_data else 0
+    image_size = len(image_content) if image_content else 0
+    logger.info(
+        "%s start records=%s image_size_bytes=%s",
+        log_prefix,
+        records_count,
+        image_size,
+    )
+    if not attendance_data:
+        logger.warning("%s empty attendance_data list, nothing to process", log_prefix)
+        return {"success_records": [], "error_records": []}
+
+    for idx, record in enumerate(attendance_data):
+        staff_pin = record.get("staff_pin")
+        tutor_id = record.get("tutor_id")
         try:
-            staff_pin = record.get("staff_pin")
-            tutor_id = record.get("tutor_id")
             tutor = record.get("tutor")
             first_in = record.get("first_in")
             latitude = record.get("latitude")
             longitude = record.get("longitude")
+            subject_name = record.get("subject_name") or ""
 
             timestamp = int(timezone.now().timestamp())
             image_name = f"{staff_pin}_{timestamp}.jpg"
 
             staff = models.Staff.objects.get(pin=staff_pin)
-            logger.info(f"Найден сотрудник с PIN: {staff_pin}")
 
             date_path = timezone.now().strftime("%Y-%m-%d")
             base_path = (
@@ -192,20 +187,28 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
             )
 
             os.makedirs(base_path, exist_ok=True)
-            logger.info(f"Создан путь для сохранения изображений: {base_path}")
-
             file_path = os.path.join(base_path, image_name)
 
             try:
                 with open(file_path, "wb") as destination:
                     destination.write(image_content)
-                logger.info(f"Фотография успешно сохранена: {file_path}")
-            except Exception as e:
-                logger.error(f"Ошибка при сохранении файла изображения: {str(e)}")
-                raise
+            except OSError as e:
+                logger.error(
+                    "%s image_save_failed staff_pin=%s path=%s errno=%s error=%s",
+                    log_prefix,
+                    staff_pin,
+                    file_path,
+                    getattr(e, "errno", None),
+                    str(e),
+                )
+                error_records.append(
+                    {"staff_pin": staff_pin, "error": f"Image save failed: {e}"}
+                )
+                continue
 
             lesson_attendance = models.LessonAttendance.objects.create(
                 staff=staff,
+                subject_name=subject_name,
                 tutor_id=tutor_id,
                 tutor=tutor,
                 first_in=first_in,
@@ -214,22 +217,53 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
                 date_at=timezone.now().date(),
                 staff_image_path=file_path,
             )
-            logger.info(
-                f"Запись посещаемости успешно создана с ID: {lesson_attendance.id}"
+            success_records.append({"id": lesson_attendance.id})
+            logger.debug(
+                "%s created lesson_id=%s staff_pin=%s tutor_id=%s",
+                log_prefix,
+                lesson_attendance.id,
+                staff_pin,
+                tutor_id,
             )
 
-            success_records.append({"id": lesson_attendance.id})
-
         except models.Staff.DoesNotExist:
-            error_message = f"Сотрудник с PIN {staff_pin} не найден."
-            logger.warning(error_message)
-            error_records.append({"staff_pin": staff_pin, "error": error_message})
+            logger.warning(
+                "%s staff_not_found staff_pin=%s tutor_id=%s record_index=%s (add Staff with this pin in control or fix journal payload)",
+                log_prefix,
+                staff_pin,
+                tutor_id,
+                idx,
+            )
+            error_records.append(
+                {
+                    "staff_pin": staff_pin,
+                    "error": "Сотрудник с PIN не найден в БД (Staff.DoesNotExist)",
+                }
+            )
         except Exception as e:
-            logger.error(f"Общая ошибка при обработке записи посещаемости: {str(e)}")
+            logger.exception(
+                "%s record_exception staff_pin=%s tutor_id=%s record_index=%s error=%s",
+                log_prefix,
+                staff_pin,
+                tutor_id,
+                idx,
+                str(e),
+            )
             error_records.append({"staff_pin": staff_pin, "error": str(e)})
 
-    logger.info(f"Итоговые успешные записи: {success_records}")
-    logger.warning(f"Итоговые ошибки записи: {error_records}")
+    logger.info(
+        "%s done created=%s failed=%s failed_pins=%s",
+        log_prefix,
+        len(success_records),
+        len(error_records),
+        [r.get("staff_pin") for r in error_records],
+    )
+    if error_records:
+        logger.warning(
+            "%s error_details %s",
+            log_prefix,
+            error_records,
+        )
 
     return {"success_records": success_records, "error_records": error_records}
 
@@ -246,6 +280,100 @@ def augment_user_images(_self):
     from monitoring_app.augment import run_dali_augmentation_for_all_staff
 
     return run_dali_augmentation_for_all_staff()
+
+
+@shared_task(name="monitoring_app.tasks.clean_old_attendance_photos")
+def clean_old_attendance_photos(days_old=31):
+    """
+    Удаляет фотографии посещаемости (lesson_attendance) старше заданного числа дней.
+
+    Сканирует ATTENDANCE_ROOT (директория из settings, либо env ATTENDANCE_ROOT),
+    удаляет файлы с mtime старше days_old дней. Пустые директории удаляются после.
+
+    Args:
+        days_old: удалять файлы старше этого количества дней (по умолчанию 31).
+
+    Returns:
+        dict: {"deleted_files": int, "deleted_dirs": int, "root": str, "error": str | None}
+    """
+    log_prefix = "[lesson_attendance_cleanup]"
+    root = getattr(settings, "ATTENDANCE_ROOT", None)
+    if not root:
+        logger.warning("%s ATTENDANCE_ROOT not configured, skip", log_prefix)
+        return {
+            "deleted_files": 0,
+            "deleted_dirs": 0,
+            "root": "",
+            "error": "ATTENDANCE_ROOT not set",
+        }
+
+    root = Path(root).resolve()
+    if not root.is_dir():
+        logger.warning("%s root is not a directory: %s", log_prefix, root)
+        return {
+            "deleted_files": 0,
+            "deleted_dirs": 0,
+            "root": str(root),
+            "error": "root is not a directory",
+        }
+
+    cutoff = timezone.now() - datetime.timedelta(days=days_old)
+    cutoff_ts = cutoff.timestamp()
+
+    try:
+        to_delete = []
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                if path.stat().st_mtime < cutoff_ts:
+                    to_delete.append(path)
+            except OSError as e:
+                logger.debug("%s skip stat %s: %s", log_prefix, path, e)
+
+        deleted_files = 0
+        for path in to_delete:
+            try:
+                path.unlink(missing_ok=True)
+                deleted_files += 1
+            except OSError as e:
+                logger.warning("%s unlink failed %s: %s", log_prefix, path, e)
+
+        deleted_dirs = 0
+        for dirpath, _dirnames, _filenames in os.walk(root, topdown=False):
+            if dirpath == str(root):
+                continue
+            try:
+                d = Path(dirpath)
+                if d.is_dir() and not any(d.iterdir()):
+                    d.rmdir()
+                    deleted_dirs += 1
+            except OSError as e:
+                logger.debug("%s skip rmdir %s: %s", log_prefix, dirpath, e)
+
+        logger.info(
+            "%s done root=%s days_old=%s deleted_files=%s deleted_dirs=%s (collected=%s)",
+            log_prefix,
+            root,
+            days_old,
+            deleted_files,
+            deleted_dirs,
+            len(to_delete),
+        )
+        return {
+            "deleted_files": deleted_files,
+            "deleted_dirs": deleted_dirs,
+            "root": str(root),
+            "error": None,
+        }
+    except Exception as e:
+        logger.exception("%s EXCEPTION root=%s error=%s", log_prefix, root, e)
+        return {
+            "deleted_files": deleted_files,
+            "deleted_dirs": deleted_dirs,
+            "root": str(root),
+            "error": str(e),
+        }
 
 
 @shared_task(name="monitoring_app.tasks.warmup_class_location_buffers")
