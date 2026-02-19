@@ -7,10 +7,10 @@ import time
 import zipfile
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Generator, List, Tuple
+from typing import Any, Generator, List, Tuple, cast
 
 import monitoring_app.tasks as tasks
 from celery.result import AsyncResult
@@ -28,6 +28,43 @@ from django.views.generic import View
 from drf_yasg import openapi
 from drf_yasg.inspectors import SwaggerAutoSchema
 from drf_yasg.utils import merge_params, no_body, swagger_auto_schema
+from monitoring_app import (
+    async_logic,
+    attendance_fetcher,
+    ml,
+    models,
+    permissions,
+    serializers,
+    utils,
+)
+from monitoring_app.cache_conf import Cache, get_cache
+from monitoring_app.lesson_locations_conf import (
+    ACCEPTANCE_R_CLUSTER,
+    ACCEPTANCE_R_SAME_POINT,
+    ACCEPTANCE_R_STANDALONE,
+    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+    CLASS_LOCATION_LIST_CACHE_KEY,
+    CLASS_LOCATION_LIST_CACHE_TTL,
+    CLUSTER_THRESHOLD_M,
+    DEFAULT_ACCEPTANCE_RADIUS_M,
+    SAME_POINT_THRESHOLD_M,
+)
+from monitoring_app.signals import invalidate_class_location_cache_impl
+from openpyxl import load_workbook
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.authentication import JWTAuthentication
+
+
+def _db_atomic() -> AbstractContextManager[None]:
+    """Типизированная обёртка над transaction.atomic() для статического анализа."""
+    return cast(AbstractContextManager[None], transaction.atomic())
 
 
 def _get_manual_parameters_for_inspector(view, method, overrides):
@@ -60,36 +97,6 @@ class FormOnlySwaggerAutoSchema(SwaggerAutoSchema):
             return merge_params(parameters, manual)
         return super().add_manual_parameters(parameters)
 
-
-from monitoring_app import (
-    async_logic,
-    attendance_fetcher,
-    ml,
-    models,
-    permissions,
-    serializers,
-    utils,
-)
-from monitoring_app.cache_conf import Cache, get_cache
-from monitoring_app.lesson_locations_conf import (
-    ACCEPTANCE_R_CLUSTER,
-    ACCEPTANCE_R_SAME_POINT,
-    ACCEPTANCE_R_STANDALONE,
-    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
-    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
-    CLUSTER_THRESHOLD_M,
-    DEFAULT_ACCEPTANCE_RADIUS_M,
-    SAME_POINT_THRESHOLD_M,
-)
-from openpyxl import load_workbook
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import ValidationError
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.views import APIView
-from rest_framework_simplejwt.authentication import JWTAuthentication
 
 logger = logging.getLogger(__name__)
 lesson_attendance_logger = logging.getLogger("monitoring_app.lesson_attendance")
@@ -1086,6 +1093,453 @@ def lesson_locations(request):
             {"error": "A critical error occurred. Please try again later."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+
+
+_CLASSLOCATION_FIELDS = (
+    "id",
+    "name",
+    "address",
+    "latitude",
+    "longitude",
+    "acceptance_radius_m",
+)
+
+_classlocation_item_schema = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=["name", "address", "latitude", "longitude"],
+    properties={
+        "name": openapi.Schema(type=openapi.TYPE_STRING, description="Название"),
+        "address": openapi.Schema(type=openapi.TYPE_STRING, description="Адрес"),
+        "latitude": openapi.Schema(
+            type=openapi.TYPE_NUMBER, format=openapi.FORMAT_FLOAT, description="Широта"
+        ),
+        "longitude": openapi.Schema(
+            type=openapi.TYPE_NUMBER, format=openapi.FORMAT_FLOAT, description="Долгота"
+        ),
+        "acceptance_radius_m": openapi.Schema(
+            type=openapi.TYPE_INTEGER,
+            nullable=True,
+            description="Приёмный радиус (м), опционально",
+        ),
+    },
+)
+
+_classlocation_list_response = openapi.Response(
+    description="Список локаций",
+    schema=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        properties={
+            "results": openapi.Schema(
+                type=openapi.TYPE_ARRAY,
+                items=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "id": openapi.Schema(type=openapi.TYPE_INTEGER),
+                        "name": openapi.Schema(type=openapi.TYPE_STRING),
+                        "address": openapi.Schema(type=openapi.TYPE_STRING),
+                        "latitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+                        "longitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+                        "acceptance_radius_m": openapi.Schema(
+                            type=openapi.TYPE_INTEGER, nullable=True
+                        ),
+                    },
+                ),
+            ),
+        },
+    ),
+)
+
+
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Список локаций занятий (CRUD)",
+    operation_description="Возвращает все локации: id, название, адрес, широта, долгота, приёмный радиус (м). Один запрос к БД.",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+    ],
+    responses={200: _classlocation_list_response},
+)
+@swagger_auto_schema(
+    method="post",
+    operation_summary="Создать одну или несколько локаций",
+    operation_description="Тело: один объект или массив объектов. При массовом создании кэш локаций инвалидируется.",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+    ],
+    request_body=openapi.Schema(
+        type=openapi.TYPE_ARRAY,
+        description="Один объект или массив объектов: name, address, latitude, longitude, acceptance_radius_m (опционально).",
+        items=_classlocation_item_schema,
+    ),
+    responses={
+        201: openapi.Response(
+            description="Создано",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "results": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(description="Ошибка валидации"),
+    },
+)
+@swagger_auto_schema(
+    method="delete",
+    operation_summary="Массовое удаление локаций",
+    operation_description="Query-параметр ids: список ID через запятую, например ?ids=1,2,3.",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            name="ids",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="ID локаций через запятую (например 1,2,3)",
+        ),
+    ],
+    responses={
+        200: openapi.Response(description="Удалено"),
+        400: openapi.Response(description="Не указаны ids"),
+    },
+)
+@api_view(["GET", "POST", "DELETE"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def class_location_list_create(request):
+    """GET: список (кэш 1 ч, один запрос .values()). POST/DELETE: инвалидация + прогрев списка и таска радиусов."""
+    if request.method == "GET":
+        data = Cache.get(CLASS_LOCATION_LIST_CACHE_KEY)
+        if data is None:
+            data = list(
+                models.ClassLocation.objects.order_by("id").values(
+                    "id",
+                    "name",
+                    "address",
+                    "latitude",
+                    "longitude",
+                    "acceptance_radius_m",
+                )
+            )
+            Cache.set(
+                CLASS_LOCATION_LIST_CACHE_KEY,
+                data,
+                CLASS_LOCATION_LIST_CACHE_TTL,
+            )
+        return Response({"results": data}, status=status.HTTP_200_OK)
+
+    if request.method == "POST":
+        try:
+            body = request.data
+        except Exception:
+            body = None
+        if body is None:
+            return Response(
+                {"error": "Request body is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        is_list = isinstance(body, list)
+        items = body if is_list else [body]
+        serializer = serializers.ClassLocationSerializer(data=items, many=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        validated = serializer.validated_data
+        if not validated or not isinstance(validated, (list, tuple)):
+            return Response(
+                {"error": "At least one item required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        to_create = [
+            models.ClassLocation(
+                name=d["name"],
+                address=d["address"],
+                latitude=d["latitude"],
+                longitude=d["longitude"],
+                acceptance_radius_m=d.get("acceptance_radius_m"),
+            )
+            for d in validated
+        ]
+        with _db_atomic():
+            created = models.ClassLocation.objects.bulk_create(to_create)
+        if len(created) > 0:
+            invalidate_class_location_cache_impl()
+        result = [
+            {
+                "id": o.id,
+                "name": o.name,
+                "address": o.address,
+                "latitude": o.latitude,
+                "longitude": o.longitude,
+                "acceptance_radius_m": getattr(o, "acceptance_radius_m", None),
+            }
+            for o in created
+        ]
+        return Response({"results": result}, status=status.HTTP_201_CREATED)
+
+    if request.method == "DELETE":
+        ids_param = request.query_params.get("ids") or request.query_params.get("id")
+        if not ids_param:
+            return Response(
+                {"error": "Query parameter 'ids' is required (e.g. ids=1,2,3)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            id_list = [int(x.strip()) for x in ids_param.split(",") if x.strip()]
+        except ValueError:
+            return Response(
+                {"error": "ids must be comma-separated integers"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not id_list:
+            return Response(
+                {"error": "At least one id required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        deleted, _ = models.ClassLocation.objects.filter(id__in=id_list).delete()
+        return Response(
+            {"deleted": deleted, "ids": id_list},
+            status=status.HTTP_200_OK,
+        )
+
+
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Одна локация по ID",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            "id", openapi.IN_PATH, type=openapi.TYPE_INTEGER, description="ID локации"
+        ),
+    ],
+    responses={
+        200: _classlocation_list_response,
+        404: openapi.Response(description="Не найдено"),
+    },
+)
+@swagger_auto_schema(
+    method="patch",
+    operation_summary="Обновить одну локацию",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            "id", openapi.IN_PATH, type=openapi.TYPE_INTEGER, description="ID локации"
+        ),
+    ],
+    request_body=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        properties={
+            "name": openapi.Schema(type=openapi.TYPE_STRING),
+            "address": openapi.Schema(type=openapi.TYPE_STRING),
+            "latitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+            "longitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+            "acceptance_radius_m": openapi.Schema(
+                type=openapi.TYPE_INTEGER, nullable=True
+            ),
+        },
+    ),
+    responses={
+        200: _classlocation_list_response,
+        404: openapi.Response(description="Не найдено"),
+    },
+)
+@swagger_auto_schema(
+    method="delete",
+    operation_summary="Удалить одну локацию",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            "id", openapi.IN_PATH, type=openapi.TYPE_INTEGER, description="ID локации"
+        ),
+    ],
+    responses={
+        200: openapi.Response(description="Удалено"),
+        404: openapi.Response(description="Не найдено"),
+    },
+)
+@api_view(["GET", "PATCH", "DELETE"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def class_location_detail(request, pk):
+    """GET/PATCH/DELETE одной локации по pk. Кэш инвалидируется через signal при save/delete."""
+    loc = get_object_or_404(
+        models.ClassLocation.objects.only(*_CLASSLOCATION_FIELDS),
+        pk=pk,
+    )
+    if request.method == "GET":
+        return Response(
+            {
+                "id": loc.id,
+                "name": loc.name,
+                "address": loc.address,
+                "latitude": loc.latitude,
+                "longitude": loc.longitude,
+                "acceptance_radius_m": loc.acceptance_radius_m,
+            },
+            status=status.HTTP_200_OK,
+        )
+    if request.method == "PATCH":
+        serializer = serializers.ClassLocationSerializer(
+            loc, data=request.data, partial=True
+        )
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    if request.method == "DELETE":
+        loc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+_classlocation_bulk_update_schema = openapi.Schema(
+    type=openapi.TYPE_ARRAY,
+    items=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        required=["id"],
+        properties={
+            "id": openapi.Schema(type=openapi.TYPE_INTEGER, description="ID локации"),
+            "name": openapi.Schema(type=openapi.TYPE_STRING),
+            "address": openapi.Schema(type=openapi.TYPE_STRING),
+            "latitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+            "longitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+            "acceptance_radius_m": openapi.Schema(
+                type=openapi.TYPE_INTEGER, nullable=True
+            ),
+        },
+    ),
+)
+
+
+@swagger_auto_schema(
+    method="patch",
+    operation_summary="Массовое обновление локаций",
+    operation_description="Тело: массив объектов с обязательным полем id. После обновления кэш инвалидируется.",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+    ],
+    request_body=_classlocation_bulk_update_schema,
+    responses={
+        200: openapi.Response(
+            description="Обновлено",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "updated": openapi.Schema(type=openapi.TYPE_INTEGER),
+                    "results": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(description="Ошибка валидации"),
+    },
+)
+@api_view(["PATCH"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def class_location_bulk_update(request):
+    """Массовое обновление: bulk_update + инвалидация кэша."""
+    try:
+        body = request.data
+    except Exception:
+        body = None
+    if not isinstance(body, list) or not body:
+        return Response(
+            {"error": "Body must be a non-empty array of objects with 'id'"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    ids = []
+    for item in body:
+        try:
+            ids.append(int(item.get("id")))
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "Each item must have integer 'id'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    qs = list(
+        models.ClassLocation.objects.only(*_CLASSLOCATION_FIELDS).filter(id__in=ids)
+    )
+    if len(qs) != len(ids):
+        found_ids = {o.id for o in qs}
+        missing = [i for i in ids if i not in found_ids]
+        return Response(
+            {"error": "Some ids not found", "missing_ids": missing},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    by_id = {o.id: o for o in qs}
+    update_fields = ["name", "address", "latitude", "longitude", "acceptance_radius_m"]
+    for raw in body:
+        obj = by_id.get(int(raw["id"]))
+        if not obj:
+            continue
+        for f in update_fields:
+            if f in raw:
+                setattr(obj, f, raw[f])
+    with _db_atomic():
+        models.ClassLocation.objects.bulk_update(qs, update_fields)
+    invalidate_class_location_cache_impl()
+    results = [
+        {
+            "id": o.id,
+            "name": o.name,
+            "address": o.address,
+            "latitude": o.latitude,
+            "longitude": o.longitude,
+            "acceptance_radius_m": o.acceptance_radius_m,
+        }
+        for o in qs
+    ]
+    return Response({"updated": len(qs), "results": results}, status=status.HTTP_200_OK)
 
 
 @swagger_auto_schema(
@@ -4767,10 +5221,6 @@ class UploadFileView(View):
 
             if to_create or to_update:
                 try:
-                    from monitoring_app.signals import (
-                        invalidate_class_location_cache_impl,
-                    )
-
                     invalidate_class_location_cache_impl()
                 except Exception as inv_err:
                     logger.warning(f"Cache invalidation after bulk ops: {inv_err}")

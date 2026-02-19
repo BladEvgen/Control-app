@@ -18,6 +18,21 @@ urlpatterns = [
     path("api/locations", views.map_location, name="locations"),
     path("api/lesson_locations/", views.lesson_locations, name="lesson_locations"),
     path(
+        "api/classlocation/",
+        views.class_location_list_create,
+        name="class_location_list_create",
+    ),
+    path(
+        "api/classlocation/bulk/",
+        views.class_location_bulk_update,
+        name="class_location_bulk_update",
+    ),
+    path(
+        "api/classlocation/<int:pk>/",
+        views.class_location_detail,
+        name="class_location_detail",
+    ),
+    path(
         "api/lesson_attendance/",
         views.create_lesson_attendance,
         name="create_lesson_attendance",

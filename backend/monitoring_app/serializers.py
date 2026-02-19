@@ -1,12 +1,12 @@
 import datetime
+import logging
 from typing import Any
 
-from django.contrib.auth.models import User
-import logging
-
+from django.contrib.auth import get_user_model
+from monitoring_app import models
 from rest_framework import serializers
 
-from monitoring_app import models
+User = get_user_model()
 
 logger = logging.getLogger(__name__)
 
@@ -320,3 +320,19 @@ class AbsentReasonSerializer(serializers.ModelSerializer):
             instance.approved = approved
             instance.save(update_fields=["approved"])
         return instance
+
+
+class ClassLocationSerializer(serializers.ModelSerializer):
+    """Сериализатор для локаций занятий: адрес, название, радиус, широта, долгота."""
+
+    class Meta:
+        model = models.ClassLocation
+        fields = [
+            "id",
+            "name",
+            "address",
+            "latitude",
+            "longitude",
+            "acceptance_radius_m",
+        ]
+        read_only_fields = ["id"]
