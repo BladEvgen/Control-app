@@ -1272,18 +1272,17 @@ def class_location_list_create(request):
                 {"error": "At least one item required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        to_create = [
-            models.ClassLocation(
-                name=d["name"],
-                address=d["address"],
-                latitude=d["latitude"],
-                longitude=d["longitude"],
-                acceptance_radius_m=d.get("acceptance_radius_m"),
-            )
-            for d in validated
-        ]
         with _db_atomic():
-            created = models.ClassLocation.objects.bulk_create(to_create)
+            created = []
+            for d in validated:
+                obj = models.ClassLocation.objects.create(
+                    name=d["name"],
+                    address=d["address"],
+                    latitude=d["latitude"],
+                    longitude=d["longitude"],
+                    acceptance_radius_m=d.get("acceptance_radius_m"),
+                )
+                created.append(obj)
         if len(created) > 0:
             invalidate_class_location_cache_impl()
         result = [
