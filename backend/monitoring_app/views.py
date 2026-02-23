@@ -1492,7 +1492,14 @@ def class_location_bulk_update(request):
         body = request.data
     except Exception:
         body = None
-    if not isinstance(body, list) or not body:
+    if body is None:
+        return Response(
+            {"error": "Body must be a non-empty array of objects with 'id'"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not isinstance(body, list):
+        body = [body] if isinstance(body, dict) and "id" in body else []
+    if not body:
         return Response(
             {"error": "Body must be a non-empty array of objects with 'id'"},
             status=status.HTTP_400_BAD_REQUEST,
@@ -1506,12 +1513,13 @@ def class_location_bulk_update(request):
                 {"error": "Each item must have integer 'id'"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+    unique_ids = list(dict.fromkeys(ids))
     qs = list(
-        models.ClassLocation.objects.only(*_CLASSLOCATION_FIELDS).filter(id__in=ids)
+        models.ClassLocation.objects.only(*_CLASSLOCATION_FIELDS).filter(id__in=unique_ids)
     )
-    if len(qs) != len(ids):
-        found_ids = {o.id for o in qs}
-        missing = [i for i in ids if i not in found_ids]
+    found_ids = {o.id for o in qs}
+    missing = [i for i in unique_ids if i not in found_ids]
+    if missing:
         return Response(
             {"error": "Some ids not found", "missing_ids": missing},
             status=status.HTTP_404_NOT_FOUND,
