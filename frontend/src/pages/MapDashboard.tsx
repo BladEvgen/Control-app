@@ -309,7 +309,7 @@ const MapDashboard: React.FC = () => {
       }
 
       setIsMarkersVisible(true);
-    } catch (error) {
+    } catch {
       dispatch(
         new BaseAction(BaseAction.SET_ERROR, "Не удалось загрузить данные.")
       );

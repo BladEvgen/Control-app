@@ -126,7 +126,7 @@ const PhotoDashboard: React.FC = () => {
     const urlObj = new URL(apiUrl);
     const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
     return `${protocol}://${urlObj.host}/ws/photos/?date=${date}`;
-  }, [apiUrl, date]);
+  }, [date]);
 
 
   useWebSocket({
