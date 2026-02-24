@@ -1505,8 +1505,14 @@ def class_location_bulk_update(request):
         )
     ids = []
     for item in body:
+        raw_id = item.get("id")
+        if raw_id is None:
+            return Response(
+                {"error": "Each item must have integer 'id'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
-            ids.append(int(item.get("id")))
+            ids.append(int(raw_id))
         except (TypeError, ValueError):
             return Response(
                 {"error": "Each item must have integer 'id'"},
