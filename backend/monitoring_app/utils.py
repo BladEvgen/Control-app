@@ -80,6 +80,14 @@ _RX_KARASAI = re.compile(r"карасай", re.IGNORECASE)
 
 _RX_LIFT = re.compile(r"\bлифт[\s\-]*\d+\b|\bлифты?\b|\bлифт\w*\b", re.IGNORECASE)
 
+
+def is_lift_terminal(area_name: str | None) -> bool:
+    """Возвращает True, если зона/терминал — лифт (лифт 1, лифт 8, лифтовые и т.п.)."""
+    if not area_name or not area_name.strip():
+        return False
+    return bool(_RX_LIFT.search(area_name.strip()))
+
+
 KEYWORDS = {
     "abilai": ["абылай", "абылайхана", "цос", "военные", "вход", "выход", "лифт"],
     "torekulova": ["торекулова", "торекулов", "турекулова", "торекулв"],
@@ -217,9 +225,9 @@ class HierarchicalDepartmentFilter(SimpleListFilter):
         while queue:
             current_id = queue.pop(0)
             children = list(
-                models.ChildDepartment.objects.filter(
-                    parent_id=current_id
-                ).values_list("id", flat=True)
+                models.ChildDepartment.objects.filter(parent_id=current_id).values_list(
+                    "id", flat=True
+                )
             )
             queue.extend(children)
             descendant_ids.update(children)
@@ -1054,13 +1062,10 @@ def export_class_locations_to_excel(queryset=None) -> bytes:
     """
     import io
 
-    from openpyxl import Workbook
-
     wb = Workbook()
     ws = wb.active
     ws.title = "Локации"
 
-    # Строки 1–2 удаляются handle_excel
     ws.append(["Экспорт локаций для редактирования"])
     ws.append(["Формат: name, address, latitude,longitude, acceptance_radius_m (м)"])
     ws.append(["name", "address", "geo", "acceptance_radius_m"])
@@ -1182,16 +1187,16 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
     """
     from django.db.models import Q
 
-    logger.info(
-        f"Collecting attendance data from {start_date} to {end_date} for {staff_list.count()} staff members"
-    )
-
     date_range = [
         start_date + datetime.timedelta(days=i)
         for i in range((end_date - start_date).days + 1)
     ]
 
-    staff_ids = list(staff_list.values_list("id", flat=True))
+    staff_list = list(staff_list.select_related("department"))
+    staff_ids = [s.id for s in staff_list]
+    logger.info(
+        f"Collecting attendance data from {start_date} to {end_date} for {len(staff_list)} staff members"
+    )
 
     holidays = (
         get_cache(
@@ -1227,12 +1232,14 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             start_date + datetime.timedelta(days=1),
             end_date + datetime.timedelta(days=1),
         ],
-    ).select_related("staff")
+    ).only(
+        "staff_id", "date_at", "first_in", "last_out", "area_name_in", "area_name_out"
+    )
 
     lesson_attendance_qs = models.LessonAttendance.objects.filter(
         staff_id__in=staff_ids,
         date_at__range=[start_date, end_date],
-    ).select_related("staff")
+    ).only("staff_id", "first_in", "date_at", "last_out", "latitude", "longitude")
 
     remote_work_qs = models.RemoteWork.objects.filter(
         Q(staff_id__in=staff_ids)
@@ -1240,11 +1247,11 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             Q(start_date__lte=end_date, end_date__gte=start_date)
             | Q(permanent_remote=True)
         )
-    ).select_related("staff")
+    ).only("staff_id", "permanent_remote", "start_date", "end_date")
 
     absence_qs = models.AbsentReason.objects.filter(
         staff_id__in=staff_ids, start_date__lte=end_date, end_date__gte=start_date
-    ).select_related("staff")
+    ).only("staff_id", "start_date", "end_date", "reason", "approved")
 
     attendance_map = defaultdict(lambda: defaultdict(dict))
 
@@ -1260,21 +1267,40 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         date_key = local_date.strftime("%Y-%m-%d")
         staff_id = att.staff_id
 
-        first_in_local = convert_to_local(att.first_in) if att.first_in else None
-        last_out_local = convert_to_local(att.last_out) if att.last_out else None
+        use_first_in = att.first_in and not is_lift_terminal(att.area_name_in)
+        use_last_out = att.last_out and not is_lift_terminal(att.area_name_out)
+        first_in_local = convert_to_local(att.first_in) if use_first_in else None
+        last_out_local = convert_to_local(att.last_out) if use_last_out else None
+        elevator_first_in = (
+            convert_to_local(att.first_in)
+            if att.first_in and not use_first_in
+            else None
+        )
+        elevator_last_out = (
+            convert_to_local(att.last_out)
+            if att.last_out and not use_last_out
+            else None
+        )
 
         if staff_id not in attendance_map[date_key]:
-            attendance_map[date_key][staff_id] = {
+            area_name = (
+                (att.area_name_in if (att.area_name_in and use_first_in) else None)
+                or (att.area_name_out if (att.area_name_out and use_last_out) else None)
+                or "Неизвестная локация"
+            )
+            rec = {
                 "first_in": first_in_local,
                 "last_out": last_out_local,
-                "area_name": (
-                    att.area_name_in if att.area_name_in else "Неизвестная локация"
-                ),
+                "area_name": area_name,
                 "source": "staff_attendance",
             }
+            if elevator_first_in is not None or elevator_last_out is not None:
+                rec["elevator_first_in"] = elevator_first_in
+                rec["elevator_last_out"] = elevator_last_out
+            attendance_map[date_key][staff_id] = rec
         else:
             current_rec = attendance_map[date_key][staff_id]
-            if att.first_in and (
+            if use_first_in and (
                 not current_rec["first_in"]
                 or convert_to_local(att.first_in) < current_rec["first_in"]
             ):
@@ -1284,11 +1310,10 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     if current_rec.get("source") == "lesson_attendance"
                     else "mixed"
                 )
-                current_rec["area_name"] = (
-                    att.area_name_in if att.area_name_in else current_rec["area_name"]
-                )
+                if att.area_name_in:
+                    current_rec["area_name"] = att.area_name_in
 
-            if att.last_out and (
+            if use_last_out and (
                 not current_rec["last_out"]
                 or convert_to_local(att.last_out) > current_rec["last_out"]
             ):
@@ -1300,6 +1325,9 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                 )
                 if att.area_name_out:
                     current_rec["area_name"] = att.area_name_out
+            if elevator_first_in is not None or elevator_last_out is not None:
+                current_rec["elevator_first_in"] = elevator_first_in
+                current_rec["elevator_last_out"] = elevator_last_out
 
     for lesson_att in lesson_attendance_qs:
         local_date = (
@@ -1425,33 +1453,48 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         for staff in staff_list
     }
 
-    for date in date_range:
-        date_str = date.strftime("%Y-%m-%d")
-        date_display = date.strftime("%d.%m.%Y")
-        is_weekend = date.weekday() >= 5
-        is_holiday = date in holidays and not holidays[date]
-        is_off_day = is_weekend or is_holiday
+    date_info = [
+        (
+            d.strftime("%Y-%m-%d"),
+            d.strftime("%d.%m.%Y"),
+            (d.weekday() >= 5) or (d in holidays and not holidays.get(d, False)),
+        )
+        for d in date_range
+    ]
+
+    for date_str, date_display, is_off_day in date_info:
+        date_attendance = attendance_map.get(date_str, {})
+        date_remote = remote_work_map.get(date_str, set())
+        date_absence = absence_map.get(date_str, {})
 
         for staff in staff_list:
             staff_id = staff.id
             staff_fio, department_name = staff_data_cache[staff_id]
 
-            has_attendance = staff_id in attendance_map.get(date_str, {})
-            is_remote = staff_id in remote_work_map.get(date_str, set())
-            has_absence = staff_id in absence_map.get(date_str, {})
+            att_data = date_attendance.get(staff_id)
+            has_attendance = att_data is not None
+            is_remote = staff_id in date_remote
+            has_absence = staff_id in date_absence
 
             attendance_info = None
             if has_attendance:
-                att_data = attendance_map[date_str][staff_id]
                 first_in = att_data["first_in"]
                 last_out = att_data["last_out"]
 
-                if first_in and last_out:
-                    area_name = att_data.get("area_name", "Неизвестная локация")
-                    attendance_info = (
-                        f"{first_in.strftime('%H:%M:%S')} - {last_out.strftime('%H:%M:%S')}\n"
-                        f"({area_name})"
+                if first_in or last_out:
+                    raw_area = att_data.get("area_name", "Неизвестная локация")
+                    display_area = resolve_area_address(raw_area) or raw_area
+                    t_in = (
+                        (first_in or last_out).strftime("%H:%M:%S")
+                        if (first_in or last_out)
+                        else "—"
                     )
+                    t_out = (
+                        (last_out or first_in).strftime("%H:%M:%S")
+                        if (last_out or first_in)
+                        else "—"
+                    )
+                    attendance_info = f"{t_in} - {t_out}\n({display_area})"
 
             if is_off_day:
                 if attendance_info:
@@ -1461,7 +1504,33 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     status_info = "Выходной"
                     meta = "holiday"
             else:
-                if has_attendance and is_remote:
+                first_in = att_data["first_in"] if att_data else None
+                last_out = att_data["last_out"] if att_data else None
+                has_elevator_times = att_data and (
+                    att_data.get("elevator_first_in") is not None
+                    or att_data.get("elevator_last_out") is not None
+                )
+                is_elevator_only = (
+                    has_attendance
+                    and first_in is None
+                    and last_out is None
+                    and not has_absence
+                    and has_elevator_times
+                )
+                if is_elevator_only:
+                    ei = att_data.get("elevator_first_in") if att_data else None
+                    eo = att_data.get("elevator_last_out") if att_data else None
+                    raw_area = att_data.get("area_name") if att_data else None
+                    lift_addr = resolve_area_address(raw_area) if raw_area else None
+                    addr_suffix = f"\n({lift_addr})" if lift_addr else ""
+                    if ei is not None or eo is not None:
+                        t_in = ei.strftime("%H:%M:%S") if ei else "—"
+                        t_out = eo.strftime("%H:%M:%S") if eo else "—"
+                        status_info = f"{t_in} - {t_out}\nЛИФТ{addr_suffix}"
+                    else:
+                        status_info = f"ЛИФТ{addr_suffix}"
+                    meta = "elevator_only"
+                elif has_attendance and is_remote:
                     status_info = (
                         f"Удаленная работа + Присутствие\n{attendance_info}"
                         if attendance_info
@@ -1469,7 +1538,7 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     )
                     meta = "remote_work"
                 elif has_attendance and has_absence:
-                    absence_info = absence_map[date_str][staff_id][0]
+                    absence_info = date_absence[staff_id][0]
                     reason = absence_info["reason"]
                     approved = absence_info["approved"]
 
@@ -1494,7 +1563,7 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     status_info = "Удаленная работа"
                     meta = "remote_work"
                 elif has_absence:
-                    absence_info = absence_map[date_str][staff_id][0]
+                    absence_info = date_absence[staff_id][0]
                     status_info = absence_info["reason"]
                     meta = (
                         "absence_reason_approved"
@@ -1568,6 +1637,9 @@ def generate_excel_file(
     fill_not_approved = PatternFill(
         start_color="FB7185", end_color="FB7185", fill_type="solid"
     )
+    fill_elevator = PatternFill(
+        start_color="9CA3AF", end_color="9CA3AF", fill_type="solid"
+    )
     thin_border = Border(
         left=Side(style="thin"),
         right=Side(style="thin"),
@@ -1602,6 +1674,7 @@ def generate_excel_file(
         ("Удаленная работа", fill_remote),
         ("Одобрено", fill_approved),
         ("Не одобрено", fill_not_approved),
+        ("ЛИФТ", fill_elevator),
     ]
     for i, (legend_text, legend_fill) in enumerate(legends, start=1):
         row_idx = legend_row + i
@@ -1713,6 +1786,8 @@ def generate_excel_file(
             elif meta in ["absence", "absence_reason"]:
                 data_cell.fill = fill_not_approved
                 data_cell.font = Font(name="Arial", size=10, color="FFFFFF")
+            elif meta == "elevator_only":
+                data_cell.fill = fill_elevator
         row_idx += 1
 
     for col_idx in range(1, ws.max_column + 1):
