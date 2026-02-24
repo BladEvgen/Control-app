@@ -29,7 +29,7 @@ const HeaderComponent: React.FC<HeaderComponentProps> = ({
   }
 
   return (
-    <header className="bg-primary-dark text-text-light shadow-header sticky top-0 z-50">
+    <header className="bg-primary-dark text-text-light shadow-md">
       <Suspense fallback={null}>
         <div className="hidden lg:block">
           <DesktopNavbar

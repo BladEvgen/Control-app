@@ -21,7 +21,6 @@ module.exports = {
           800: "#1E40AF",
           900: "#1E3A8A",
           950: "#172554",
-          dark: "#1E3A8A",
         },
         secondary: {
           50: "#F5F3FF",
@@ -58,13 +57,12 @@ module.exports = {
           700: "#B91C1C",
         },
         background: {
-          light: "#F8FAFC",
+          light: "#F9FAFB",
           dark: "#0F172A",
-          surface: "#F8FAFC",
         },
         text: {
-          light: "#F8FAFB",
-          dark: "#0F172A",
+          light: "#F9FAFB",
+          dark: "#111827",
         },
       },
       keyframes: {
@@ -117,14 +115,13 @@ module.exports = {
         float: "float 3s ease-in-out infinite",
       },
       boxShadow: {
-        card: "0 1px 3px 0 rgb(0 0 0 / 0.05), 0 1px 2px -1px rgb(0 0 0 / 0.05)",
+        card: "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
         "card-hover":
-          "0 12px 28px -8px rgb(0 0 0 / 0.08), 0 4px 12px -4px rgb(0 0 0 / 0.04)",
-        header: "0 1px 0 0 rgb(255 255 255 / 0.06)",
+          "0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)",
         button:
-          "0 1px 2px rgba(37, 99, 235, 0.2)",
+          "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
         "button-hover":
-          "0 4px 12px rgba(37, 99, 235, 0.25)",
+          "0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)",
       },
       backgroundImage: {
         "gradient-radial": "radial-gradient(var(--tw-gradient-stops))",

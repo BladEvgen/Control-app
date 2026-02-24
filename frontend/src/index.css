@@ -5,12 +5,6 @@
 
 :root {
     --transition-standard: all 0.3s ease;
-    --surface: #f8fafc;
-        --header-bg: #1e3a8a;
-        --primary: #2563eb;
-        --primary-hover: #1d4ed8;
-        --border: #e2e8f0;
-        --ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 *,
 *::before,
@@ -114,11 +108,11 @@ select {
     }
 
     .btn {
-        @apply inline-flex items-center justify-center px-6 py-3 rounded-lg font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2;
+        @apply inline-flex items-center justify-center px-6 py-3 rounded-lg font-medium shadow-button transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2;
     }
 
     .btn-primary {
-        @apply btn bg-primary-600 hover:bg-primary-700 text-white shadow-button hover:shadow-button-hover focus:ring-primary-500 active:scale-[0.98];
+        @apply btn bg-gradient-to-r from-primary-600 to-primary-700 text-white hover:from-primary-700 hover:to-primary-800 focus:ring-primary-500;
     }
 
     .btn-secondary {

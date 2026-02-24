@@ -92,7 +92,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           background:
             theme === "dark"
               ? "linear-gradient(120deg, #0F172A 0%, #1E293B 25%, #1E3A8A 50%, #312E81 75%, #4C1D95 100%)"
-              : "linear-gradient(180deg, #F8FAFC 0%, #F1F5F9 50%, rgba(239, 246, 255, 0.4) 100%)",
+              : "linear-gradient(120deg, #F9FAFB 0%, #F3F4F6 25%, #EFF6FF 50%, #F5F3FF 75%, #FAF5FF 100%)",
         }}
       />
 
