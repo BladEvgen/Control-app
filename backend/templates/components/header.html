@@ -1,191 +1,169 @@
-<header class="bg-[#123075] shadow-md sticky top-0 z-50">
-  <div class="container mx-auto px-4">
-    <div class="flex justify-between items-center py-3">
-      <!-- Logo -->
-      <a href="{%url 'react_app'%}" class="text-white text-2xl font-bold flex items-center">
-        Staff App
-        <i class="fas fa-user-clock ml-2"></i>
-      </a>
+<header class="staff-header sticky top-0 z-50 w-full bg-primary-900 text-white shadow-header">
+  <nav class="container mx-auto px-4 py-3 flex items-center justify-between gap-4">
+    <a href="{% url 'react_app' %}" class="flex items-center gap-2.5 text-white font-bold text-xl tracking-tight hover:opacity-90 transition-opacity duration-200 focus:outline-none focus:ring-2 focus:ring-white/50 focus:ring-offset-2 focus:ring-offset-primary-900 rounded-lg">
+      <span class="flex h-9 w-9 items-center justify-center rounded-lg bg-white/15 text-white">
+        <i class="fas fa-user-clock text-sm"></i>
+      </span>
+      Staff App
+    </a>
 
-      <!-- Desktop Navigation -->
-      <div class="hidden lg:flex items-center space-x-4">
-
-          
-          <div class="relative ml-4">
-            <button id="user-menu-button" 
-                    class="flex items-center text-white bg-blue-700 hover:bg-blue-800 px-4 py-2 rounded-md transition duration-200" 
-                    aria-expanded="false" 
-                    aria-haspopup="true">
-              <span class="mr-2">{{ request.user.username }}</span>
-              <i class="fas fa-chevron-down text-xs"></i>
-            </button>
-            
-            <div id="user-dropdown" 
-                class="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg overflow-hidden z-50 hidden transition duration-200 transform origin-top-right scale-95 opacity-0"
-                role="menu" 
-                aria-orientation="vertical" 
-                aria-labelledby="user-menu-button"
-                tabindex="-1">
-              
-              <a href="{% url 'react_app' %}" class="block px-4 py-3 text-gray-700 hover:bg-gray-100 transition duration-200" role="menuitem" tabindex="-1">
-                <i class="fas fa-home mr-2 text-blue-500"></i> Home
-              </a>
-              
-              {% if request.user.is_authenticated %}
-                {% if request.user.is_superuser %}
-                <a href="{% url 'schema-swagger-ui' %}" class="block px-4 py-3 text-gray-700 hover:bg-gray-100 transition duration-200" role="menuitem" tabindex="-1">
-                  <i class="fas fa-code mr-2"></i> Swagger
-                </a>
-              {% endif %}
-              <a href="{% url 'uploadFile' %}" class="block px-4 py-3 text-gray-700 hover:bg-gray-100 transition duration-200" role="menuitem" tabindex="-1">
-                <i class="fas fa-upload mr-2 text-green-500"></i> Upload Files
-              </a>
-              
-              <a href="{% url 'logout' %}" class="block px-4 py-3 text-red-600 hover:bg-gray-100 transition duration-200" role="menuitem" tabindex="-1">
-                <i class="fas fa-sign-out-alt mr-2"></i> Logout
-              </a>
-            </div>
-          </div>
-        {% else %}
-          <a href="{% url 'login_view' %}" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md transition duration-200">
-            <i class="fas fa-sign-in-alt mr-2"></i> Login
+    <div class="hidden lg:flex items-center gap-2">
+      {% if request.user.is_authenticated %}
+      <div class="relative" id="user-menu-wrapper">
+        <button id="user-menu-button"
+          class="header-dropdown-trigger flex items-center gap-2 rounded-lg py-2.5 pl-4 pr-3 text-white font-medium bg-white/10 hover:bg-white/15 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/30 focus:ring-offset-2 focus:ring-offset-primary-900 transition-all duration-200"
+          aria-expanded="false"
+          aria-haspopup="true">
+          <span class="max-w-[140px] truncate">{{ request.user.username }}</span>
+          <i class="fas fa-chevron-down header-dropdown-chevron ml-0.5 text-white text-xs transition-transform duration-200" aria-hidden="true"></i>
+        </button>
+        <div id="user-dropdown"
+          class="staff-dropdown absolute right-0 mt-2 w-56 rounded-xl border border-gray-200 bg-white text-gray-800 py-1.5 shadow-card-hover z-50 hidden"
+          role="menu"
+          aria-orientation="vertical"
+          aria-labelledby="user-menu-button"
+          tabindex="-1">
+          <a href="{% url 'react_app' %}" class="flex items-center gap-3 px-4 py-3 text-gray-700 hover:bg-primary-50 hover:text-primary-700 rounded-lg mx-1.5 transition-colors duration-200" role="menuitem" tabindex="-1">
+            <i class="fas fa-home w-5 text-primary-500"></i>
+            <span>Главная</span>
           </a>
-        {% endif %}
+          {% if request.user.is_superuser %}
+          <a href="{% url 'schema-swagger-ui' %}" class="flex items-center gap-3 px-4 py-3 text-gray-700 hover:bg-primary-50 hover:text-primary-700 rounded-lg mx-1.5 transition-colors duration-200" role="menuitem" tabindex="-1">
+            <i class="fas fa-code w-5 text-primary-500"></i>
+            <span>Swagger</span>
+          </a>
+          {% endif %}
+          <a href="{% url 'uploadFile' %}" class="flex items-center gap-3 px-4 py-3 text-gray-700 hover:bg-primary-50 hover:text-primary-700 rounded-lg mx-1.5 transition-colors duration-200" role="menuitem" tabindex="-1">
+            <i class="fas fa-upload w-5 text-primary-500"></i>
+            <span>Загрузка файлов</span>
+          </a>
+          <div class="my-1 border-t border-gray-100"></div>
+          <a href="{% url 'logout' %}" class="flex items-center gap-3 px-4 py-3 text-red-600 hover:bg-red-50 rounded-lg mx-1.5 transition-colors duration-200" role="menuitem" tabindex="-1">
+            <i class="fas fa-sign-out-alt w-5"></i>
+            <span>Выйти</span>
+          </a>
+        </div>
       </div>
-
-      <!-- Mobile Menu Button -->
-      <button id="mobile-menu-button" class="lg:hidden flex items-center text-white focus:outline-none">
-        <i class="fas fa-bars text-xl"></i>
-      </button>
+      {% else %}
+      <a href="{% url 'login_view' %}" class="inline-flex items-center gap-2 rounded-lg bg-white/15 hover:bg-white/25 border border-white/20 px-5 py-2.5 text-sm font-semibold text-white transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-white/30 focus:ring-offset-2 focus:ring-offset-primary-900">
+        <i class="fas fa-sign-in-alt"></i>
+        Войти
+      </a>
+      {% endif %}
     </div>
-  </div>
+
+    <button id="mobile-menu-button" class="lg:hidden flex h-10 w-10 items-center justify-center rounded-lg text-white hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/30 focus:ring-offset-2 focus:ring-offset-primary-900 transition-colors duration-200" aria-label="Открыть меню">
+      <i class="fas fa-bars text-xl"></i>
+    </button>
+  </nav>
 </header>
 
-<!-- Mobile Menu Container -->
-<div id="mobile-menu-container" class="mobile-menu-container lg:hidden">
-  <div class="mobile-menu">
-    <div class="drag-indicator"></div>
-      <div class="px-4 py-3">
-        <div class="text-sm font-medium text-gray-500">Logged in as</div>
-        <div class="text-base font-medium text-gray-800">{{ request.user.username }}</div>
-      </div>
-    <div class="px-2 pt-2 pb-3 space-y-1">
-      <a href="{% url 'react_app' %}" class="block px-4 py-3 rounded-md text-base font-medium text-gray-800 hover:bg-gray-100 transition duration-200">
-        <i class="fas fa-home mr-2 text-blue-500"></i> Home
+<div id="mobile-menu-container" class="mobile-menu-overlay lg:hidden">
+  <div class="mobile-menu-panel">
+    <div class="mobile-drag-bar"></div>
+    {% if request.user.is_authenticated %}
+    <div class="px-3 py-3 mb-3 rounded-xl bg-primary-50 border border-primary-100">
+      <p class="text-xs font-medium text-primary-600">Вы вошли как</p>
+      <p class="font-semibold text-gray-800 truncate">{{ request.user.username }}</p>
+    </div>
+    {% endif %}
+    <nav class="space-y-0.5">
+      <a href="{% url 'react_app' %}" class="flex items-center gap-3 rounded-xl px-4 py-3 text-gray-700 font-medium hover:bg-primary-50 hover:text-primary-700 transition-colors duration-200">
+        <i class="fas fa-home w-5 text-primary-500"></i>
+        Главная
       </a>
-      
       {% if request.user.is_authenticated %}
         {% if request.user.is_superuser %}
-        <a href="{% url 'schema-swagger-ui' %}" class="block px-4 py-3 rounded-md text-base font-medium text-gray-800 hover:bg-gray-100 transition duration-200">
-          <i class="fas fa-code mr-2 text-green-500"></i> Swagger
+        <a href="{% url 'schema-swagger-ui' %}" class="flex items-center gap-3 rounded-xl px-4 py-3 text-gray-700 font-medium hover:bg-primary-50 hover:text-primary-700 transition-colors duration-200">
+          <i class="fas fa-code w-5 text-primary-500"></i>
+          Swagger
         </a>
         {% endif %}
-        
-        <a href="{% url 'uploadFile' %}" class="block px-4 py-3 rounded-md text-base font-medium text-gray-800 hover:bg-gray-100 transition duration-200">
-          <i class="fas fa-upload mr-2 text-green-500"></i> Upload Files
+        <a href="{% url 'uploadFile' %}" class="flex items-center gap-3 rounded-xl px-4 py-3 text-gray-700 font-medium hover:bg-primary-50 hover:text-primary-700 transition-colors duration-200">
+          <i class="fas fa-upload w-5 text-primary-500"></i>
+          Загрузка файлов
         </a>
-        
-        <div class="border-t border-gray-200 my-2"></div>
-        
-
-        
-        <div class="border-t border-gray-200 my-2"></div>
-        
-        <a href="{% url 'logout' %}" class="block px-4 py-3 rounded-md text-base font-medium text-red-600 hover:bg-red-50 transition duration-200">
-          <i class="fas fa-sign-out-alt mr-2"></i> Logout
+        <div class="border-t border-gray-100 my-2"></div>
+        <a href="{% url 'logout' %}" class="flex items-center gap-3 rounded-xl px-4 py-3 text-red-600 font-medium hover:bg-red-50 transition-colors duration-200">
+          <i class="fas fa-sign-out-alt w-5"></i>
+          Выйти
         </a>
       {% else %}
-        <div class="my-3 px-4">
-          <a href="{% url 'login_view' %}" class="block w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md text-center transition duration-200">
-            <i class="fas fa-sign-in-alt mr-2"></i> Login
+        <div class="pt-4">
+          <a href="{% url 'login_view' %}" class="flex items-center justify-center gap-2 w-full rounded-xl bg-primary-600 hover:bg-primary-700 py-3.5 font-semibold text-white shadow-card transition-all duration-200">
+            <i class="fas fa-sign-in-alt"></i>
+            Войти
           </a>
         </div>
       {% endif %}
-    </div>
+    </nav>
   </div>
 </div>
 
 <script>
-  document.addEventListener('DOMContentLoaded', function() {
-    // Desktop dropdown menu
-    const userMenuButton = document.getElementById('user-menu-button');
-    const userDropdown = document.getElementById('user-dropdown');
-    
+  document.addEventListener('DOMContentLoaded', function () {
+    var userMenuButton = document.getElementById('user-menu-button');
+    var userDropdown = document.getElementById('user-dropdown');
+    var chevron = userMenuButton && userMenuButton.querySelector('.header-dropdown-chevron');
+
     if (userMenuButton && userDropdown) {
-      userMenuButton.addEventListener('click', function() {
-        const expanded = this.getAttribute('aria-expanded') === 'true';
+      userMenuButton.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var expanded = this.getAttribute('aria-expanded') === 'true';
         this.setAttribute('aria-expanded', !expanded);
-        
         if (!expanded) {
-          userDropdown.classList.remove('hidden', 'scale-95', 'opacity-0');
-          userDropdown.classList.add('scale-100', 'opacity-100');
+          userDropdown.classList.remove('hidden');
+          userDropdown.style.animation = 'dropdownIn 0.2s ease-out forwards';
+          if (chevron) chevron.style.transform = 'rotate(180deg)';
         } else {
-          userDropdown.classList.add('scale-95', 'opacity-0');
-          setTimeout(() => {
-            userDropdown.classList.add('hidden');
-          }, 200);
+          userDropdown.style.animation = 'none';
+          userDropdown.classList.add('hidden');
+          if (chevron) chevron.style.transform = '';
         }
       });
-      
-      // Close dropdown when clicking outside
-      document.addEventListener('click', function(event) {
-        if (!userMenuButton.contains(event.target) && !userDropdown.contains(event.target)) {
+      document.addEventListener('click', function (e) {
+        if (!userMenuButton.contains(e.target) && !userDropdown.contains(e.target)) {
           userMenuButton.setAttribute('aria-expanded', 'false');
-          userDropdown.classList.add('scale-95', 'opacity-0');
-          setTimeout(() => {
-            userDropdown.classList.add('hidden');
-          }, 200);
+          userDropdown.classList.add('hidden');
+          if (chevron) chevron.style.transform = '';
         }
       });
     }
-    
-    // Mobile menu
-    const mobileMenuButton = document.getElementById('mobile-menu-button');
-    const mobileMenuContainer = document.getElementById('mobile-menu-container');
-    const mobileMenu = mobileMenuContainer?.querySelector('.mobile-menu');
-    
+
+    var mobileMenuButton = document.getElementById('mobile-menu-button');
+    var mobileMenuContainer = document.getElementById('mobile-menu-container');
+    var mobilePanel = mobileMenuContainer && mobileMenuContainer.querySelector('.mobile-menu-panel');
     if (mobileMenuButton && mobileMenuContainer) {
-      mobileMenuButton.addEventListener('click', function() {
+      mobileMenuButton.addEventListener('click', function () {
         mobileMenuContainer.classList.toggle('active');
         document.body.style.overflow = mobileMenuContainer.classList.contains('active') ? 'hidden' : '';
       });
-      
-      // Close when clicking outside the menu
-      mobileMenuContainer.addEventListener('click', function(event) {
-        if (event.target === mobileMenuContainer) {
+      mobileMenuContainer.addEventListener('click', function (e) {
+        if (e.target === mobileMenuContainer) {
           mobileMenuContainer.classList.remove('active');
           document.body.style.overflow = '';
         }
       });
-      
-      // Touch drag functionality
-      if (mobileMenu) {
-        let startY, currentY;
-        let isDragging = false;
-        
-        mobileMenu.addEventListener('touchstart', function(e) {
+      if (mobilePanel) {
+        var startY, currentY, isDragging = false;
+        mobilePanel.addEventListener('touchstart', function (e) {
           startY = e.touches[0].clientY;
           isDragging = true;
-          mobileMenu.style.transition = 'none';
+          mobilePanel.style.transition = 'none';
         });
-        
-        mobileMenu.addEventListener('touchmove', function(e) {
+        mobilePanel.addEventListener('touchmove', function (e) {
           if (!isDragging) return;
           currentY = e.touches[0].clientY;
-          const deltaY = currentY - startY;
-          
-          if (deltaY > 0) {
-            mobileMenu.style.transform = `translateY(${deltaY}px)`;
-          }
+          var deltaY = currentY - startY;
+          if (deltaY > 0) mobilePanel.style.transform = 'translateY(' + deltaY + 'px)';
         });
-        
-        mobileMenu.addEventListener('touchend', function() {
-          mobileMenu.style.transition = 'transform 0.3s ease';
-          if (isDragging && currentY - startY > 100) {
+        mobilePanel.addEventListener('touchend', function () {
+          mobilePanel.style.transition = 'transform 0.35s cubic-bezier(0.22, 1, 0.36, 1)';
+          if (isDragging && currentY - startY > 80) {
             mobileMenuContainer.classList.remove('active');
             document.body.style.overflow = '';
           } else {
-            mobileMenu.style.transform = '';
+            mobilePanel.style.transform = '';
           }
           isDragging = false;
         });

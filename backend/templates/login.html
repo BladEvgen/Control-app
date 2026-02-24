@@ -3,75 +3,53 @@
 {% block title %}Вход — Staff App{% endblock %}
 {% load static %}
 
-{% block extra_css %}
-<style>
-  .login-card {
-    box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1);
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
-  }
-  .login-card:hover { box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15); }
-  .input-field {
-    transition: all 0.2s ease;
-  }
-  .input-field {
-    border: 1px solid #d1d5db;
-    background: #fff;
-  }
-  .input-field:focus {
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
-    border-color: #3b82f6;
-  }
-</style>
-{% endblock %}
-
 {% block main %}
-<div class="flex items-center justify-center min-h-[calc(100vh-280px)] py-12 px-4 sm:px-6 lg:px-8">
-  <div class="login-card form-card bg-white w-full max-w-md rounded-2xl overflow-hidden border border-gray-200" style="max-width: 28rem;">
-    <div class="bg-gradient-to-r from-blue-800 to-blue-600 px-6 py-10 text-center">
-      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-white/20 backdrop-blur-sm mb-5">
+<div class="flex items-center justify-center min-h-[calc(100vh-280px)] py-10 sm:py-14 px-4">
+  <div class="form-card w-full max-w-md bg-white rounded-2xl overflow-hidden border border-gray-200 shadow-card-lg animate-enter">
+    <div class="bg-primary-900 px-6 py-10 sm:py-12 text-center">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-white/15 mb-5">
         <i class="fas fa-user-shield text-3xl text-white"></i>
       </div>
-      <h1 class="text-2xl sm:text-3xl font-bold text-white">Добро пожаловать</h1>
-      <p class="text-blue-100 mt-2 text-sm sm:text-base">Войдите в свой аккаунт</p>
+      <h1 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">Добро пожаловать</h1>
+      <p class="text-primary-100 mt-2 text-sm sm:text-base font-medium">Войдите в свой аккаунт</p>
     </div>
 
     <div class="p-6 sm:p-8">
       <form method="post" action="{% url 'login_view' %}" class="space-y-6">
         {% csrf_token %}
-
         <div>
-          <label for="username" class="block text-sm font-medium text-gray-700 mb-2">Имя пользователя</label>
+          <label for="username" class="block text-sm font-semibold text-gray-700 mb-2">Имя пользователя</label>
           <div class="relative">
             <div class="form-icon-wrap">
-              <i class="fas fa-user text-lg"></i>
+              <i class="fas fa-user text-gray-400"></i>
             </div>
-            <input type="text" id="username" name="username" class="input-field form-input-with-icon block w-full py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 placeholder-gray-400"
+            <input type="text" id="username" name="username"
+              class="input-field form-input-with-icon block w-full py-3.5 pl-4 pr-4 text-gray-900 placeholder-gray-400 focus:outline-none"
               placeholder="Введите логин" required autocomplete="username" autofocus />
           </div>
         </div>
 
         <div>
           <div class="flex items-center justify-between mb-2">
-            <label for="password" class="block text-sm font-medium text-gray-700">Пароль</label>
-            <a href="{% url 'password_reset_request' %}" 
-              class="text-sm text-blue-600 hover:text-blue-800 font-medium transition-colors duration-200 hover:underline">
+            <label for="password" class="block text-sm font-semibold text-gray-700">Пароль</label>
+            <a href="{% url 'password_reset_request' %}" class="text-sm font-medium text-primary-600 hover:text-primary-700 transition-colors">
               Забыли пароль?
             </a>
           </div>
           <div class="relative">
             <div class="form-icon-wrap">
-              <i class="fas fa-lock text-lg"></i>
+              <i class="fas fa-lock text-gray-400"></i>
             </div>
-            <input type="password" id="password" name="password" class="input-field form-input-with-icon form-input-with-right-icon block w-full py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 placeholder-gray-400"
+            <input type="password" id="password" name="password"
+              class="input-field form-input-with-icon form-input-with-right-icon block w-full py-3.5 pl-4 pr-4 text-gray-900 placeholder-gray-400 focus:outline-none"
               placeholder="Введите пароль" required autocomplete="current-password" />
-            <button type="button" class="password-toggle form-icon-wrap form-icon-right text-gray-400 hover:text-gray-600 transition-colors p-1 rounded-lg hover:bg-gray-100"
-              aria-label="Показать/скрыть пароль">
+            <button type="button" class="password-toggle form-icon-wrap form-icon-right text-gray-400 hover:text-gray-600 transition-colors p-1.5 rounded-lg hover:bg-gray-100" aria-label="Показать/скрыть пароль">
               <i class="fas fa-eye text-lg" id="password-toggle-icon"></i>
             </button>
           </div>
         </div>
 
-        <button type="submit" class="btn-primary-solid btn-block">
+        <button type="submit" class="btn-primary-solid btn-block py-3.5 text-base">
           <i class="fas fa-sign-in-alt"></i>
           <span>Войти</span>
         </button>
@@ -83,17 +61,18 @@
 
 {% block extra_js %}
 <script>
-  document.addEventListener('DOMContentLoaded', function() {
-    const passwordInput = document.getElementById('password');
-    const passwordToggle = document.querySelector('.password-toggle');
-    const passwordToggleIcon = document.getElementById('password-toggle-icon');
-
-    passwordToggle?.addEventListener('click', function() {
-      const isPassword = passwordInput.type === 'password';
-      passwordInput.type = isPassword ? 'text' : 'password';
-      passwordToggleIcon.classList.toggle('fa-eye', !isPassword);
-      passwordToggleIcon.classList.toggle('fa-eye-slash', isPassword);
-    });
+  document.addEventListener('DOMContentLoaded', function () {
+    var passwordInput = document.getElementById('password');
+    var passwordToggle = document.querySelector('.password-toggle');
+    var passwordToggleIcon = document.getElementById('password-toggle-icon');
+    if (passwordToggle && passwordToggleIcon) {
+      passwordToggle.addEventListener('click', function () {
+        var isPassword = passwordInput.type === 'password';
+        passwordInput.type = isPassword ? 'text' : 'password';
+        passwordToggleIcon.classList.toggle('fa-eye', !isPassword);
+        passwordToggleIcon.classList.toggle('fa-eye-slash', isPassword);
+      });
+    }
   });
 </script>
 {% endblock %}

@@ -4,85 +4,57 @@
 
 {% block title %}Загрузка файлов — Staff App{% endblock %}
 
-{% block extra_css %}
-<style>
-  .upload-card {
-    box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1);
-    transition: all 0.3s ease;
-  }
-  .upload-card:hover { box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15); }
-  .drop-zone {
-    transition: all 0.2s ease;
-  }
-  .drop-zone.drag-over {
-    border-color: #3b82f6;
-    background-color: #eff6ff;
-  }
-  .select-icon-wrap {
-    position: absolute;
-    right: 12px;
-    top: 0;
-    bottom: 0;
-    display: flex;
-    align-items: center;
-    z-index: 10;
-    pointer-events: none;
-    color: #6b7280;
-  }
-</style>
-{% endblock %}
-
 {% block main %}
-<div class="flex items-center justify-center min-h-[calc(100vh-280px)] py-12 px-4 sm:px-6 lg:px-8">
+<div class="flex items-center justify-center min-h-[calc(100vh-280px)] py-10 sm:py-14 px-4">
   {% if user.is_authenticated %}
-  <div class="upload-card form-card w-full max-w-lg bg-white rounded-2xl overflow-hidden border border-gray-200 p-6 sm:p-8" style="max-width: 32rem;">
+  <div class="form-card w-full max-w-lg bg-white rounded-2xl border border-gray-200 shadow-card-lg p-6 sm:p-8 animate-enter">
     <div class="text-center mb-8">
-      <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-blue-100 text-blue-600 mb-4">
+      <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary-100 text-primary-600 mb-4">
         <i class="fas fa-cloud-upload-alt text-2xl"></i>
       </div>
-      <h2 class="text-2xl sm:text-3xl font-bold text-gray-800">Загрузка файлов</h2>
-      <p class="text-gray-500 mt-1 text-sm">Выберите шаблон и загрузите документ</p>
+      <h2 class="text-2xl sm:text-3xl font-bold text-gray-800 tracking-tight">Загрузка файлов</h2>
+      <p class="text-gray-500 mt-1 text-sm font-medium">Выберите шаблон и загрузите документ</p>
     </div>
 
     <form id="upload-form" enctype="multipart/form-data" method="post" class="space-y-6">
       {% csrf_token %}
 
       <div>
-        <label for="category" class="block text-sm font-medium text-gray-700 mb-2">Шаблон</label>
+        <label for="category" class="block text-sm font-semibold text-gray-700 mb-2">Шаблон</label>
         <div class="relative">
           <select name="category" id="category"
-            class="block w-full pl-4 pr-10 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 bg-white appearance-none transition-all duration-200 hover:border-gray-300">
+            class="input-field block w-full pl-4 pr-10 py-3.5 text-gray-900 bg-white appearance-none hover:border-gray-300">
             <option value="" disabled selected>Выберите шаблон</option>
             {% for category in categories %}
             <option value="{{ category.slug }}">{{ category.name }}</option>
             {% endfor %}
           </select>
           <div class="select-icon-wrap">
-            <i class="fas fa-chevron-down"></i>
+            <i class="fas fa-chevron-down text-gray-400"></i>
           </div>
         </div>
       </div>
 
       <div id="parent-department-container" class="hidden">
-        <label for="parent_department" class="block text-sm font-medium text-gray-700 mb-2">Откуда удалить</label>
+        <label for="parent_department" class="block text-sm font-semibold text-gray-700 mb-2">Откуда удалить</label>
         <div class="relative">
           <select name="parent_department" id="parent_department"
-            class="block w-full pl-4 pr-10 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 bg-white appearance-none transition-all duration-200 hover:border-gray-300">
+            class="input-field block w-full pl-4 pr-10 py-3.5 text-gray-900 bg-white appearance-none hover:border-gray-300">
             <option value="" disabled selected>Выберите родительский отдел</option>
             {% for parent in parent_departments %}
             <option value="{{ parent.id }}">{{ parent.name }}</option>
             {% endfor %}
           </select>
           <div class="select-icon-wrap">
-            <i class="fas fa-chevron-down"></i>
+            <i class="fas fa-chevron-down text-gray-400"></i>
           </div>
         </div>
       </div>
 
       <div>
-        <label for="file" class="block text-sm font-medium text-gray-700 mb-2">Файл</label>
+        <label for="file" class="block text-sm font-semibold text-gray-700 mb-2">Файл</label>
         <div id="drop-area"
-          class="drop-zone border-2 border-dashed border-gray-200 rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer bg-gray-50 hover:bg-blue-50/50 hover:border-blue-300 transition-all duration-200">
+          class="drop-zone border-2 border-dashed border-gray-200 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer bg-gray-50 hover:bg-primary-50 hover:border-primary-300 transition-all duration-200">
           <input type="file" name="file" id="file" accept=".xlsx, .zip" class="hidden" />
           <i class="fas fa-file-excel text-4xl text-gray-400 mb-3"></i>
           <p id="drop-text" class="text-center text-gray-500 font-medium">Перетащите файл сюда или нажмите для выбора</p>
@@ -91,13 +63,11 @@
       </div>
 
       <div class="flex flex-col sm:flex-row gap-4">
-        <button type="submit" id="submit-btn"
-          class="flex-1 btn-primary-solid">
+        <button type="submit" id="submit-btn" class="flex-1 btn-primary-solid">
           <i class="fas fa-upload"></i>
           Загрузить
         </button>
-        <a href="{% url 'download_examples_zip' %}"
-          class="flex-1 btn-success-solid">
+        <a href="{% url 'download_examples_zip' %}" class="flex-1 btn-success-solid text-center">
           <i class="fas fa-download"></i>
           Скачать примеры
         </a>
@@ -107,12 +77,12 @@
     {% if messages %}
     <ul class="messages fixed top-24 right-4 z-50 space-y-2 max-w-sm w-full">
       {% for message in messages %}
-      <li class="p-4 rounded-xl shadow-lg border transition-all duration-300 opacity-0 scale-95
+      <li class="p-4 rounded-2xl shadow-lg border transition-all duration-300
         {% if message.tags == 'error' %}bg-red-50 border-red-200 text-red-800
-        {% elif message.tags == 'success' %}bg-green-50 border-green-200 text-green-800
-        {% elif message.tags == 'warning' %}bg-yellow-50 border-yellow-200 text-yellow-800
-        {% else %}bg-blue-50 border-blue-200 text-blue-800{% endif %}">
-        <div class="flex items-center gap-2">
+        {% elif message.tags == 'success' %}bg-emerald-50 border-emerald-200 text-emerald-800
+        {% elif message.tags == 'warning' %}bg-amber-50 border-amber-200 text-amber-800
+        {% else %}bg-primary-50 border-primary-200 text-primary-800{% endif %}">
+        <div class="flex items-center gap-2 font-medium">
           <i class="fas fa-{% if message.tags == 'error' %}exclamation-circle{% elif message.tags == 'success' %}check-circle{% elif message.tags == 'warning' %}exclamation-triangle{% else %}info-circle{% endif %}"></i>
           <span>{{ message }}</span>
         </div>
@@ -123,14 +93,13 @@
   </div>
 
   {% else %}
-  <div class="upload-card form-card w-full max-w-lg bg-white rounded-2xl overflow-hidden border border-gray-200 p-8 sm:p-12 text-center" style="max-width: 32rem;">
+  <div class="form-card w-full max-w-lg bg-white rounded-2xl border border-gray-200 shadow-card-lg p-8 sm:p-12 text-center animate-enter">
     <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-amber-100 text-amber-600 mb-6">
       <i class="fas fa-lock text-2xl"></i>
     </div>
     <h2 class="text-2xl font-bold text-gray-800 mb-3">Требуется авторизация</h2>
-    <p class="text-gray-600 mb-6">Для загрузки файлов необходимо войти в аккаунт</p>
-    <a href="{% url 'login_view' %}"
-      class="btn-primary-solid">
+    <p class="text-gray-600 mb-6 font-medium">Для загрузки файлов необходимо войти в аккаунт</p>
+    <a href="{% url 'login_view' %}" class="btn-primary-solid inline-flex">
       <i class="fas fa-sign-in-alt"></i>
       Войти
     </a>
@@ -178,16 +147,16 @@
         if (files.length) {
           fileInput.files = files;
           dropText.textContent = files[0].name;
-          dropText.classList.remove('text-gray-500');
-          dropText.classList.add('text-green-600');
+          dropText.classList.remove('text-slate-500');
+          dropText.classList.add('text-emerald-600', 'font-semibold');
         }
       });
 
       fileInput.addEventListener('change', function() {
         if (this.files.length) {
           dropText.textContent = this.files[0].name;
-          dropText.classList.remove('text-gray-500');
-          dropText.classList.add('text-green-600');
+          dropText.classList.remove('text-slate-500');
+          dropText.classList.add('text-emerald-600', 'font-semibold');
         }
       });
     }
