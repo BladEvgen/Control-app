@@ -21,6 +21,7 @@ import { motion } from "framer-motion";
 import useWindowSize from "../hooks/useWindowSize";
 import EditableDateField from "../components/EditableDateField";
 import { FaCompress, FaExpand } from "react-icons/fa";
+import { useAppSelector } from "../store/hooks";
 
 ChartJS.register(...registerables);
 
@@ -39,6 +40,9 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
 
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const diagramRef = useRef<HTMLDivElement>(null);
+  const reportsAutoRefreshMinutes = useAppSelector(
+    (state) => state.ui.reportsAutoRefreshMinutes
+  );
 
   const handleFullscreenChange = useCallback(() => {
     const isFs = !!document.fullscreenElement;
@@ -106,6 +110,13 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    if (reportsAutoRefreshMinutes <= 0) return;
+    const intervalMs = reportsAutoRefreshMinutes * 60 * 1000;
+    const id = window.setInterval(fetchData, intervalMs);
+    return () => clearInterval(id);
+  }, [fetchData, reportsAutoRefreshMinutes]);
 
   useEffect(() => {
     if (stats && stats.data_for_date && stats.data_for_date !== selectedDate) {

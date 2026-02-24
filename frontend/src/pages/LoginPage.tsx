@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useLocation } from "react-router-dom";
 import axiosInstance, { setCookie } from "../api";
 import { useNavigate } from "../RouterUtils";
 import {
@@ -80,8 +81,16 @@ const LoginPage = () => {
   });
   const { setUser, setTokens, setLoading } = useAuth();
   const usernameInputRef = useRef<HTMLInputElement>(null);
-
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const getRedirectPath = useCallback((): string => {
+    const from = (location.state as { from?: { pathname?: string } })?.from;
+    const pathname = from?.pathname;
+    if (!pathname || pathname === "/app/login") return "/";
+    if (pathname.startsWith("/app")) return pathname.slice(4) || "/";
+    return pathname || "/";
+  }, [location]);
 
   useEffect(() => {
     usernameInputRef.current?.focus();
@@ -148,7 +157,7 @@ const LoginPage = () => {
       window.dispatchEvent(new Event("userLoggedIn"));
 
       setTimeout(() => {
-        navigate("/");
+        navigate(getRedirectPath());
       }, 800);
     } catch (error: unknown) {
       console.error("Login error:", error);
@@ -183,6 +192,7 @@ const LoginPage = () => {
     setLoading,
     isSubmitting,
     validateForm,
+    getRedirectPath,
   ]);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {

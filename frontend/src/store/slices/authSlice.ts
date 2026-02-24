@@ -48,8 +48,15 @@ const isTokenValid = (token: string | null): boolean => {
 
 const getInitialToken = (): string | null => {
   const accessToken = getCookie("access_token");
+  const refreshToken = getCookie("refresh_token");
   if (accessToken && !isTokenValid(accessToken)) {
-    log.warn("Invalid access token detected on initialization, removing");
+    if (refreshToken) {
+      log.info(
+        "Access token expired on init but refresh token present, keeping session"
+      );
+      return accessToken;
+    }
+    log.warn("Invalid access token and no refresh token, removing");
     removeCookie("access_token");
     return null;
   }
@@ -73,14 +80,21 @@ const getInitialUser = (): UserProfile | null => {
   return null;
 };
 
-const initialState: AuthState = {
-  user: getInitialUser(),
-  token: getInitialToken(),
-  isLoading: true,
-  isAuthenticated: Boolean(getInitialToken() && getInitialUser()),
-  accessTokenExpires: localStorage.getItem("access_token_expires"),
-  refreshTokenExpires: localStorage.getItem("refresh_token_expires"),
+const getInitialAuth = () => {
+  const token = getInitialToken();
+  const user = getInitialUser();
+  const hasRefresh = Boolean(getCookie("refresh_token"));
+  return {
+    user,
+    token,
+    isLoading: true,
+    isAuthenticated: Boolean((token || hasRefresh) && user),
+    accessTokenExpires: localStorage.getItem("access_token_expires"),
+    refreshTokenExpires: localStorage.getItem("refresh_token_expires"),
+  };
 };
+
+const initialState: AuthState = getInitialAuth();
 
 const authSlice = createSlice({
   name: "auth",

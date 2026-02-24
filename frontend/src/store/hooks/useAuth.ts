@@ -9,8 +9,10 @@ import {
   UserProfile,
 } from "../slices/authSlice";
 import { useEffect } from "react";
-import { getCookie } from "../../api";
+import { getCookie, scheduleNextRefreshBeforeExpiry } from "../../api";
 import { log } from "../../api";
+
+const AUTH_SYNC_KEY = "app:authSync" as const;
 
 export const useAuth = () => {
   const dispatch = useAppDispatch();
@@ -56,14 +58,46 @@ export const useAuth = () => {
       }
     };
 
+    const syncAuthFromOtherTab = () => {
+      const access = getCookie("access_token");
+      if (!access) return;
+      const refresh = getCookie("refresh_token");
+      const accessTokenExpires = localStorage.getItem("access_token_expires");
+      const refreshTokenExpires = localStorage.getItem("refresh_token_expires");
+      dispatch(
+        setTokens({
+          access,
+          refresh: refresh ?? undefined,
+          accessTokenExpires: accessTokenExpires ?? undefined,
+          refreshTokenExpires: refreshTokenExpires ?? undefined,
+        })
+      );
+      scheduleNextRefreshBeforeExpiry();
+    };
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === AUTH_SYNC_KEY && e.newValue) {
+        syncAuthFromOtherTab();
+      }
+    };
+
+    let channel: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== "undefined") {
+      channel = new BroadcastChannel("auth");
+      channel.onmessage = () => syncAuthFromOtherTab();
+    }
+
     window.addEventListener("userLoggedIn", onUserLoggedIn);
     window.addEventListener("userLoggedOut", onUserLoggedOut);
     window.addEventListener("tokensRefreshed", onTokensRefreshed);
+    window.addEventListener("storage", onStorage);
 
     return () => {
       window.removeEventListener("userLoggedIn", onUserLoggedIn);
       window.removeEventListener("userLoggedOut", onUserLoggedOut);
       window.removeEventListener("tokensRefreshed", onTokensRefreshed);
+      window.removeEventListener("storage", onStorage);
+      channel?.close();
     };
   }, [dispatch]);
 

@@ -11,12 +11,14 @@ interface UIState {
   notifications: Notification[];
   globalLoading: boolean;
   sidebarOpen: boolean;
+  reportsAutoRefreshMinutes: number;
 }
 
 const initialState: UIState = {
   notifications: [],
   globalLoading: false,
   sidebarOpen: true,
+  reportsAutoRefreshMinutes: 5,
 };
 
 const uiSlice = createSlice({
@@ -48,6 +50,9 @@ const uiSlice = createSlice({
     toggleSidebar: (state) => {
       state.sidebarOpen = !state.sidebarOpen;
     },
+    setReportsAutoRefreshMinutes: (state, action: PayloadAction<number>) => {
+      state.reportsAutoRefreshMinutes = Math.max(0, action.payload);
+    },
   },
 });
 
@@ -58,6 +63,7 @@ export const {
   setGlobalLoading,
   setSidebarOpen,
   toggleSidebar,
+  setReportsAutoRefreshMinutes,
 } = uiSlice.actions;
 
 export default uiSlice.reducer;

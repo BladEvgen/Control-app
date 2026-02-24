@@ -12,6 +12,24 @@ import { FaExpand, FaCompress, FaCalendarAlt } from "react-icons/fa";
 import { motion, Variants } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
 import EditableDateField from "../components/EditableDateField";
+import { useAppSelector } from "../store/hooks";
+
+type MapDispatchPayload = boolean | LocationData[] | string;
+
+interface DocumentWithFullscreen extends Document {
+  webkitExitFullscreen?: () => Promise<void>;
+  mozCancelFullScreen?: () => Promise<void>;
+  msExitFullscreen?: () => Promise<void>;
+  webkitFullscreenElement?: Element | null;
+  mozFullScreenElement?: Element | null;
+  msFullscreenElement?: Element | null;
+}
+
+interface DocumentElementWithFullscreen extends HTMLElement {
+  webkitRequestFullscreen?: () => Promise<void>;
+  mozRequestFullScreen?: () => Promise<void>;
+  msRequestFullscreen?: () => Promise<void>;
+}
 
 const getFormattedDateAt = (): string => {
   const yesterday = new Date();
@@ -240,11 +258,14 @@ const MapDashboard: React.FC = () => {
   const [zoomLevel, setZoomLevel] = useState<number>(13.5);
   const [assignedColors, setAssignedColors] = useState<string[]>([]);
   const [dateAt, setDateAt] = useState<string>(getFormattedDateAt());
+  const reportsAutoRefreshMinutes = useAppSelector(
+    (state) => state.ui.reportsAutoRefreshMinutes
+  );
 
   const mapRef = useRef<LeafletMap | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
 
-  const dispatch = (action: BaseAction<any>) => {
+  const dispatch = useCallback((action: BaseAction<MapDispatchPayload>) => {
     switch (action.type) {
       case BaseAction.SET_LOADING:
         setLoading(action.payload as boolean);
@@ -260,9 +281,9 @@ const MapDashboard: React.FC = () => {
       default:
         break;
     }
-  };
+  }, []);
 
-  const fetchLocations = async (selectedDate: string) => {
+  const fetchLocations = useCallback(async (selectedDate: string) => {
     dispatch(new BaseAction(BaseAction.SET_LOADING, true));
     try {
       const response = await axiosInstance.get(
@@ -293,11 +314,18 @@ const MapDashboard: React.FC = () => {
         new BaseAction(BaseAction.SET_ERROR, "Не удалось загрузить данные.")
       );
     }
-  };
+  }, [dispatch]);
 
   useEffect(() => {
     fetchLocations(dateAt);
-  }, [dateAt]);
+  }, [dateAt, fetchLocations]);
+
+  useEffect(() => {
+    if (reportsAutoRefreshMinutes <= 0) return;
+    const intervalMs = reportsAutoRefreshMinutes * 60 * 1000;
+    const id = window.setInterval(() => fetchLocations(dateAt), intervalMs);
+    return () => clearInterval(id);
+  }, [dateAt, reportsAutoRefreshMinutes, fetchLocations]);
 
   useEffect(() => {
     if (locations.length > 0) {
@@ -366,35 +394,38 @@ const MapDashboard: React.FC = () => {
       }
     }, 100);
 
+    const docEl = document.documentElement as DocumentElementWithFullscreen;
+    const doc = document as DocumentWithFullscreen;
     if (!isFullscreen) {
-      if (document.documentElement.requestFullscreen) {
-        document.documentElement.requestFullscreen();
-      } else if ((document.documentElement as any).webkitRequestFullscreen) {
-        (document.documentElement as any).webkitRequestFullscreen();
-      } else if ((document.documentElement as any).mozRequestFullScreen) {
-        (document.documentElement as any).mozRequestFullScreen();
-      } else if ((document.documentElement as any).msRequestFullscreen) {
-        (document.documentElement as any).msRequestFullscreen();
+      if (docEl.requestFullscreen) {
+        docEl.requestFullscreen();
+      } else if (docEl.webkitRequestFullscreen) {
+        docEl.webkitRequestFullscreen();
+      } else if (docEl.mozRequestFullScreen) {
+        docEl.mozRequestFullScreen();
+      } else if (docEl.msRequestFullscreen) {
+        docEl.msRequestFullscreen();
       }
     } else {
       if (document.exitFullscreen) {
         document.exitFullscreen();
-      } else if ((document as any).webkitExitFullscreen) {
-        (document as any).webkitExitFullscreen();
-      } else if ((document as any).mozCancelFullScreen) {
-        (document as any).mozCancelFullScreen();
-      } else if ((document as any).msExitFullscreen) {
-        (document as any).msExitFullscreen();
+      } else if (doc.webkitExitFullscreen) {
+        doc.webkitExitFullscreen();
+      } else if (doc.mozCancelFullScreen) {
+        doc.mozCancelFullScreen();
+      } else if (doc.msExitFullscreen) {
+        doc.msExitFullscreen();
       }
     }
   };
 
   const handleFullscreenChange = useCallback(() => {
+    const doc = document as DocumentWithFullscreen;
     const newFullscreenState =
       !!document.fullscreenElement ||
-      !!(document as any).webkitFullscreenElement ||
-      !!(document as any).mozFullScreenElement ||
-      !!(document as any).msFullscreenElement;
+      !!doc.webkitFullscreenElement ||
+      !!doc.mozFullScreenElement ||
+      !!doc.msFullscreenElement;
 
     setIsFullscreen(newFullscreenState);
 

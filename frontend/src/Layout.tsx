@@ -9,6 +9,10 @@ import HeaderComponent from "./components/HeaderComponent";
 import FooterComponent from "./components/FooterComponent";
 import AuthWebSocketInitializer from "./components/AuthWebSocketInitializer";
 import ScrollToTopButton from "./components/ScrollToTopButton";
+import {
+  proactiveRefreshIfNeeded,
+  scheduleNextRefreshBeforeExpiry,
+} from "./api";
 
 interface LayoutProps {
   children: ReactNode;
@@ -45,6 +49,20 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     safeSetItem("theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      void proactiveRefreshIfNeeded();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    if (document.visibilityState === "visible") {
+      void proactiveRefreshIfNeeded();
+    }
+    scheduleNextRefreshBeforeExpiry();
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isChangingTheme) {

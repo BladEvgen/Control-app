@@ -156,11 +156,78 @@ const axiosInstance = axios.create({
 let refreshPromise: Promise<string> | null = null;
 let refreshAttempts = 0;
 const MAX_REFRESH_ATTEMPTS = 3;
+const ACCESS_EXPIRE_BUFFER_MS = 60 * 1000;
+const ONE_MINUTE_MS = 60 * 1000;
+
+let refreshScheduleTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
 const resetRefreshAttempts = () => {
   setTimeout(() => {
     refreshAttempts = 0;
   }, 60000);
+};
+
+const getAccessTokenExpiryMs = (): number | null => {
+  const accessToken = getCookie("access_token");
+  if (!accessToken) return null;
+  try {
+    const parts = accessToken.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(atob(parts[1]));
+    if (!payload.exp) return null;
+    return payload.exp * 1000;
+  } catch {
+    return null;
+  }
+};
+
+const isAccessExpiredOrExpiringSoon = (accessToken: string): boolean => {
+  try {
+    const parts = accessToken.split(".");
+    if (parts.length !== 3) return true;
+    const payload = JSON.parse(atob(parts[1]));
+    if (!payload.exp) return false;
+    return payload.exp * 1000 <= Date.now() + ACCESS_EXPIRE_BUFFER_MS;
+  } catch {
+    return true;
+  }
+};
+
+export const clearRefreshSchedule = (): void => {
+  if (refreshScheduleTimeoutId !== null) {
+    clearTimeout(refreshScheduleTimeoutId);
+    refreshScheduleTimeoutId = null;
+  }
+};
+
+export const scheduleNextRefreshBeforeExpiry = (): void => {
+  clearRefreshSchedule();
+  const expiryMs = getAccessTokenExpiryMs();
+  if (expiryMs === null) return;
+  const delayMs = expiryMs - ONE_MINUTE_MS - Date.now();
+  if (delayMs <= 0) {
+    void proactiveRefreshIfNeeded();
+    return;
+  }
+  refreshScheduleTimeoutId = setTimeout(() => {
+    refreshScheduleTimeoutId = null;
+    void proactiveRefreshIfNeeded();
+  }, delayMs);
+};
+
+const handleLogout = () => {
+  log.info("Logging out. Clearing authentication data...");
+  clearRefreshSchedule();
+  try {
+    clearAuthData();
+    window.dispatchEvent(new Event("userLoggedOut"));
+    setTimeout(() => {
+      window.location.href = addPrefix("/login");
+    }, 100);
+  } catch (error) {
+    log.error("Error during logout:", error);
+    window.location.href = addPrefix("/login");
+  }
 };
 
 const refreshTokens = async (): Promise<string> => {
@@ -251,6 +318,21 @@ const refreshTokens = async (): Promise<string> => {
         })
       );
 
+      scheduleNextRefreshBeforeExpiry();
+
+      if (typeof window !== "undefined") {
+        try {
+          if ("BroadcastChannel" in window) {
+            const ch = new BroadcastChannel("auth");
+            ch.postMessage({ type: "tokens-refreshed", timestamp: Date.now() });
+            ch.close();
+          }
+          localStorage.setItem("app:authSync", String(Date.now()));
+        } catch {
+          // ignore
+        }
+      }
+
       refreshPromise = null;
       return newAccessToken;
     })
@@ -262,6 +344,21 @@ const refreshTokens = async (): Promise<string> => {
     });
 
   return refreshPromise;
+};
+
+
+export const proactiveRefreshIfNeeded = async (): Promise<void> => {
+  const refreshToken = getCookie("refresh_token");
+  if (!refreshToken) return;
+  const accessToken = getCookie("access_token");
+  if (accessToken && !isAccessExpiredOrExpiringSoon(accessToken)) return;
+  try {
+    await refreshTokens();
+  } catch {
+    if (isDebug) {
+      log.info("Proactive refresh failed (handled in refreshTokens)");
+    }
+  }
 };
 
 axiosInstance.interceptors.request.use(
@@ -284,7 +381,11 @@ axiosInstance.interceptors.request.use(
       let accessToken = getCookie("access_token");
       const refreshToken = getCookie("refresh_token");
 
-      if (!accessToken && refreshToken) {
+      const needRefresh =
+        refreshToken &&
+        (!accessToken || isAccessExpiredOrExpiringSoon(accessToken));
+
+      if (needRefresh) {
         try {
           accessToken = await refreshTokens();
         } catch (err) {
@@ -338,20 +439,5 @@ axiosInstance.interceptors.response.use(
     return Promise.reject(error);
   }
 );
-
-const handleLogout = () => {
-  log.info("Logging out. Clearing authentication data...");
-  try {
-    clearAuthData();
-    window.dispatchEvent(new Event("userLoggedOut"));
-
-    setTimeout(() => {
-      window.location.href = addPrefix("/login");
-    }, 100);
-  } catch (error) {
-    log.error("Error during logout:", error);
-    window.location.href = addPrefix("/login");
-  }
-};
 
 export default axiosInstance;
