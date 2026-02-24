@@ -10,7 +10,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 from django.conf import settings
-from insightface.app import FaceAnalysis
 from rest_framework.exceptions import ValidationError
 from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
@@ -22,6 +21,16 @@ from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from monitoring_app import models
 
 cv2 = cast(Any, importlib.import_module("cv2"))
+
+def _get_face_analysis():
+    try:
+        from insightface.app import FaceAnalysis
+        return FaceAnalysis
+    except ImportError as e:
+        raise ImportError(
+            "insightface не установлен. На Windows установите Visual C++ Build Tools, "
+            "затем: pip install -r requirements_win_optional.txt"
+        ) from e
 
 # -----------------------------------
 # 1. Logging Setup
@@ -36,7 +45,7 @@ logger = logging.getLogger("django")
 
 
 class _ArcFaceModelHolder:
-    instance: Optional[FaceAnalysis] = None
+    instance: Optional[Any] = None
 
 
 arcface_model_holder = _ArcFaceModelHolder()
@@ -54,6 +63,7 @@ def load_arcface_model():
     if arcface_model_holder.instance is None:
         with arcface_lock:
             if arcface_model_holder.instance is None:
+                FaceAnalysis = _get_face_analysis()
                 device_type = "GPU" if torch.cuda.is_available() else "CPU"
                 logger.info(f"Using {device_type} for ArcFace model")
                 model = FaceAnalysis(
