@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from kombu import Queue
 
 # Host names and DEBUG setting
-HOST_NAMES = ["RogStrix", "MacBook-Pro.local", "MacbookPro"]
+HOST_NAMES = ["RogStrix", "MacBook-Pro.local", "MacbookPro", "Rumishka"]
 DEBUG = socket.gethostname() in HOST_NAMES
 
 # Base directories
@@ -282,7 +282,7 @@ if DEBUG:
         "NAME": BASE_DIR / "db.sqlite3",
     }
 else:
-    # If production using MySQL or PostgreSQL
+    # If production using MySQL, PostgreSQL or SQLite
     if DB_TYPE == "mysql":
         DATABASES["default"] = {
             "ENGINE": "django.db.backends.mysql",
@@ -300,6 +300,11 @@ else:
             "PASSWORD": os.getenv("DB_PASSWORD"),
             "HOST": os.getenv("DB_HOST"),
             "PORT": os.getenv("DB_PORT", "5432"),
+        }
+    elif DB_TYPE == "sqlite3":
+        DATABASES["default"] = {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
         }
     else:
         raise ValueError(f"Unsupported database type: {DB_TYPE}")
