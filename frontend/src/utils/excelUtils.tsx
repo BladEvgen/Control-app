@@ -194,7 +194,7 @@ export const generateAndDownloadExcel = async (
     const [day, month, year] = dateKey.split("-");
     const formattedDate = `${day}.${month}.${year}`;
 
-    let attendanceInfo = "";
+    let attendanceInfo: string;
     if (record.first_in && record.last_out) {
       attendanceInfo = formatTimeRange(record.first_in, record.last_out);
     } else if (record.is_weekend) {

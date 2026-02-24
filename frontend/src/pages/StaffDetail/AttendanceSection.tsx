@@ -50,7 +50,7 @@ const AttendanceSection: React.FC<AttendanceSectionProps> = ({
       </div>
       <div className="flex flex-wrap gap-2 mb-6">
         {legendItems.map((item, index) => {
-          let colorClass = "";
+          let colorClass: string;
           if (item === "Выходной день") {
             colorClass = "bg-amber-400 dark:bg-amber-500";
           } else if (item.includes("Работа в выходной")) {
