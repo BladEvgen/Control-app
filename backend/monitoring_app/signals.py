@@ -64,7 +64,7 @@ def invalidate_staff_cache_on_save(sender, instance, created, **kwargs):
         invalidate_cache(f"staff_{instance.pin}")
         invalidate_cache_pattern(f"staff_detail_{instance.pin}*")
         if hasattr(instance, "department") and instance.department:
-            invalidate_cache(f"child_department_detail_{instance.department.id}")
+            invalidate_cache(f"child_department_detail_v2_{instance.department.id}")
         logger.info(f"Invalidated staff cache for PIN: {instance.pin}")
 
 
@@ -74,7 +74,7 @@ def invalidate_staff_cache_on_delete(sender, instance, **kwargs):
         invalidate_cache(f"staff_{instance.pin}")
         invalidate_cache_pattern(f"staff_detail_{instance.pin}*")
         if hasattr(instance, "department") and instance.department:
-            invalidate_cache(f"child_department_detail_{instance.department.id}")
+            invalidate_cache(f"child_department_detail_v2_{instance.department.id}")
         invalidate_cache_pattern("staff_attendance_stats_*")
         logger.info(f"Invalidated staff cache for PIN: {instance.pin}")
 
@@ -83,8 +83,8 @@ def invalidate_staff_cache_on_delete(sender, instance, **kwargs):
 def invalidate_department_cache(sender, instance, **kwargs):
     """Инвалидирует кэш при изменении департаментов."""
     dept_id = str(instance.id)
-    invalidate_cache(f"department_summary_{dept_id}")
-    invalidate_cache(f"child_department_detail_{dept_id}")
+    invalidate_cache(f"department_summary_v2_{dept_id}")
+    invalidate_cache(f"child_department_detail_v2_{dept_id}")
     invalidate_cache_pattern(f"staff_detail_{dept_id}*")
     invalidate_cache("parent_department_ids")
     invalidate_cache("root_departments_batch")

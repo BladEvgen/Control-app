@@ -1,10 +1,10 @@
 import datetime
 import logging
+
 from django.core.management.base import BaseCommand
 from django.utils import timezone
-from monitoring_app import models
+from monitoring_app import models, utils
 from monitoring_app.cache_conf import register_preload, warmup_cache
-from monitoring_app import utils
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,19 @@ class Command(BaseCommand):
             return _fetch_root_departments_data()
 
         register_preload("root_departments_batch", get_root_departments_batch)
+
+        def get_department_summary_1():
+            from monitoring_app.views import _build_department_summary_data
+
+            return _build_department_summary_data("1")
+
+        def get_department_summary_3():
+            from monitoring_app.views import _build_department_summary_data
+
+            return _build_department_summary_data("3")
+
+        register_preload("department_summary_v2_1", get_department_summary_1)
+        register_preload("department_summary_v2_3", get_department_summary_3)
 
         results = warmup_cache(keys=keys, force=force)
 
