@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useCallback } from "react";
 import { useAppSelector, useAppDispatch } from "../store/hooks";
 import { setUser, setTokens, logout } from "../store/slices/authSlice";
-import { getCookie } from "../api";
+import { getCookie, log } from "../api";
 import { apiUrl } from "../../apiConfig";
 import useWebSocket from "../hooks/useWebSocket";
-import { log } from "../api";
 import axiosInstance from "../api";
+
+const wsLog = (msg: string, data?: unknown) => {
+  log.info(`[WS-Auth] ${msg}`, data ?? "");
+};
 
 const AuthWebSocketInitializer: React.FC = () => {
   const dispatch = useAppDispatch();
@@ -26,7 +29,7 @@ const AuthWebSocketInitializer: React.FC = () => {
       const response = await axiosInstance.post(
         "/token/refresh/",
         { refresh: refreshToken },
-        { skipAuthInterceptor: true }
+        { skipAuthInterceptor: true },
       );
 
       const newAccessToken = response.data.access;
@@ -39,12 +42,14 @@ const AuthWebSocketInitializer: React.FC = () => {
         return;
       }
 
-      dispatch(setTokens({
-        access: newAccessToken,
-        refresh: newRefreshToken,
-        accessTokenExpires: response.data.access_token_expires,
-        refreshTokenExpires: response.data.refresh_token_expires,
-      }));
+      dispatch(
+        setTokens({
+          access: newAccessToken,
+          refresh: newRefreshToken,
+          accessTokenExpires: response.data.access_token_expires,
+          refreshTokenExpires: response.data.refresh_token_expires,
+        }),
+      );
 
       window.dispatchEvent(
         new CustomEvent("tokensRefreshed", {
@@ -54,11 +59,11 @@ const AuthWebSocketInitializer: React.FC = () => {
             accessTokenExpires: response.data.access_token_expires,
             refreshTokenExpires: response.data.refresh_token_expires,
           },
-        })
+        }),
       );
 
       log.info("Токен успешно обновлен. Переподключаем WebSocket...");
-      
+
       if (wsReconnectRef.current) {
         setTimeout(() => {
           wsReconnectRef.current?.();
@@ -84,37 +89,45 @@ const AuthWebSocketInitializer: React.FC = () => {
     return `${protocol}://${urlObj.host}/ws/user-detail/?token=${token}`;
   }, [token]);
 
-  const { sendMessage, reconnect } = useWebSocket({
+  const { reconnect } = useWebSocket({
     url: wsUrl || "",
     onMessage: (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
-        log.info("AuthWebSocketInitializer received WS message:", data);
-        
+        wsLog("сообщение", {
+          type: data?.type,
+          hasUserProfile: !!data?.user_profile,
+        });
+
+        if (data.type === "pong" && data.user_profile) {
+          wsLog("профиль из heartbeat", data.user_profile?.username);
+          dispatch(setUser(data.user_profile));
+          return;
+        }
         if (data.type === "user_profile") {
-          if (data.user) {
-            dispatch(setUser(data.user));
-          } else if (data.id) {
-            dispatch(setUser(data));
+          const userData = data.user ?? data;
+          if (userData?.id || userData?.username) {
+            wsLog("профиль из user_profile", userData?.username);
+            dispatch(setUser(userData));
           }
-        } else if (data.error === "token_expired" || data.action === "refresh_token") {
-          log.warn("Получено сообщение об истечении токена от WebSocket");
+          return;
+        }
+        if (data.error === "token_expired" || data.action === "refresh_token") {
+          wsLog("токен истек, refresh");
           handleTokenRefresh();
-        } else if (data.error) {
+          return;
+        }
+        if (data.error) {
+          wsLog("ошибка", data.error);
           log.error("Error getting profile:", data.error);
-        } else if (data.user) {
-          dispatch(setUser(data.user));
-        } else if (data.id) {
-          dispatch(setUser(data));
         }
       } catch (error) {
+        wsLog("ошибка парсинга", error);
         log.error("Error parsing WS message:", error);
       }
     },
     onOpen: () => {
-      if (wsUrl) {
-        sendMessage(JSON.stringify({ action: "get_profile" }));
-      }
+      wsLog("onOpen - профиль придет с первым pong (heartbeat)");
     },
     onTokenExpired: handleTokenRefresh,
     onRefreshExpired: handleRefreshExpired,
@@ -128,4 +141,3 @@ const AuthWebSocketInitializer: React.FC = () => {
 };
 
 export default AuthWebSocketInitializer;
-

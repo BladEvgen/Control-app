@@ -1,6 +1,14 @@
 import { log } from "../api";
 import { useEffect, useRef, useCallback } from "react";
 
+const wsLog = (msg: string, data?: unknown) => {
+  try {
+    console.info(`[WS] ${msg}`, data ?? "");
+  } catch {
+    console.info(`[WS] ${msg}`);
+  }
+};
+
 const WS_CLOSE_TOKEN_EXPIRED = 4001;
 const WS_CLOSE_TOKEN_INVALID = 4002;
 const WS_CLOSE_REFRESH_EXPIRED = 4003;
@@ -74,7 +82,7 @@ const useWebSocket = ({
   }, [onRefreshExpired]);
 
   const handlePong = useCallback(() => {
-    log.info("Получен pong от сервера");
+    wsLog("pong получен");
     if (pongTimeoutRefLocal.current) {
       clearTimeout(pongTimeoutRefLocal.current);
       pongTimeoutRefLocal.current = null;
@@ -84,7 +92,7 @@ const useWebSocket = ({
 
   const sendPing = useCallback(() => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      log.info("Отправка ping");
+      wsLog("ping отправлен");
       wsRef.current.send(JSON.stringify({ type: "ping" }));
 
       pongTimeoutRefLocal.current = window.setTimeout(() => {
@@ -96,14 +104,14 @@ const useWebSocket = ({
 
   const connect = useCallback(() => {
     if (!urlRef.current) {
-      log.warn("WebSocket URL не задан, соединение не устанавливается.");
+      wsLog("URL не задан, соединение не устанавливается");
       return;
     }
-    log.info("Пытаемся подключиться к WebSocket:", urlRef.current);
+    wsLog("подключение", urlRef.current);
     wsRef.current = new WebSocket(urlRef.current);
 
     wsRef.current.onopen = () => {
-      log.info("WebSocket соединение установлено");
+      wsLog("соединение установлено");
       onOpenRef.current?.();
 
       pingIntervalRef.current = window.setInterval(sendPing, pingInterval);
@@ -118,35 +126,56 @@ const useWebSocket = ({
     };
 
     wsRef.current.onmessage = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-        log.info("Получено сообщение от WebSocket:", data);
+      const dataStr = typeof event.data === "string" ? event.data : "";
+      setTimeout(() => {
+        try {
+          const data = JSON.parse(dataStr);
+          wsLog("сообщение", {
+            type: data?.type,
+            hasProfile: !!data?.user_profile,
+          });
 
-        if (data.type === "pong") {
-          handlePong();
-          return;
-        }
-
-        if (data.error === "token_expired" || data.action === "refresh_token") {
-          log.warn("Получено сообщение об истечении токена от WebSocket");
-          if (!isRefreshingTokenRef.current && onTokenExpiredRef.current) {
-            isRefreshingTokenRef.current = true;
-            onTokenExpiredRef.current();
+          if (data.type === "pong") {
+            handlePong();
+            if (data.user_profile) {
+              onMessageRef.current?.({
+                ...event,
+                data: dataStr,
+              } as MessageEvent);
+            }
+            return;
           }
-          return;
-        }
 
-        onMessageRef.current?.(event);
-      } catch (error) {
-        log.error("Ошибка при обработке сообщения WebSocket:", error);
-      }
+          if (
+            data.error === "token_expired" ||
+            data.action === "refresh_token"
+          ) {
+            log.warn("Получено сообщение об истечении токена от WebSocket");
+            if (!isRefreshingTokenRef.current && onTokenExpiredRef.current) {
+              isRefreshingTokenRef.current = true;
+              onTokenExpiredRef.current();
+            }
+            return;
+          }
+
+          onMessageRef.current?.({ ...event, data: dataStr } as MessageEvent);
+        } catch (error) {
+          wsLog("ошибка обработки", error);
+          log.error("Ошибка при обработке сообщения WebSocket:", error);
+        }
+      }, 0);
     };
 
     wsRef.current.onclose = (event: CloseEvent) => {
-      log.warn("WebSocket соединение закрыто:", event.code, event.reason);
-      
-      if (event.code === WS_CLOSE_TOKEN_EXPIRED || event.code === WS_CLOSE_TOKEN_INVALID) {
-        log.warn("WebSocket закрыт из-за истечения/невалидности токена. Обновляем токен...");
+      wsLog("соединение закрыто", { code: event.code, reason: event.reason });
+
+      if (
+        event.code === WS_CLOSE_TOKEN_EXPIRED ||
+        event.code === WS_CLOSE_TOKEN_INVALID
+      ) {
+        log.warn(
+          "WebSocket закрыт из-за истечения/невалидности токена. Обновляем токен...",
+        );
         if (!isRefreshingTokenRef.current && onTokenExpiredRef.current) {
           isRefreshingTokenRef.current = true;
           onTokenExpiredRef.current();
@@ -185,14 +214,16 @@ const useWebSocket = ({
         pongTimeoutRefLocal.current = null;
       }
 
-      if (shouldReconnect && isMountedRef.current && !isRefreshingTokenRef.current) {
+      if (
+        shouldReconnect &&
+        isMountedRef.current &&
+        !isRefreshingTokenRef.current
+      ) {
         const nextReconnectInterval = Math.min(
           reconnectInterval * 2 ** attemptRef.current,
-          60000
+          60000,
         );
-        log.info(
-          `Пробуем переподключиться к WebSocket через ${nextReconnectInterval} мс...`
-        );
+        wsLog(`переподключение через ${nextReconnectInterval} мс`);
         reconnectTimeoutRef.current = window.setTimeout(() => {
           attemptRef.current += 1;
           connect();
@@ -201,7 +232,7 @@ const useWebSocket = ({
     };
 
     wsRef.current.onerror = (error) => {
-      log.error("Ошибка WebSocket:", error);
+      wsLog("ошибка WebSocket", error);
       onErrorRef.current?.(error);
       wsRef.current?.close();
     };
@@ -232,7 +263,7 @@ const useWebSocket = ({
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(message);
     } else {
-      log.warn("WebSocket не открыт. Невозможно отправить сообщение:", message);
+      wsLog("WebSocket не открыт, отправка невозможна");
     }
   }, []);
 
@@ -246,7 +277,7 @@ const useWebSocket = ({
   }, [connect]);
 
   if (!url) {
-    log.warn("WebSocket URL не задан, соединение не устанавливается.");
+    wsLog("URL не задан, соединение не устанавливается");
     return { sendMessage: () => {}, reconnect: () => {} };
   }
 

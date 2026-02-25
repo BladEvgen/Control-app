@@ -80,7 +80,7 @@ const ScrollToTopButton: React.FC = memo(() => {
           whileHover={{ scale: 1.1, y: -2 }}
           whileTap={{ scale: 0.95 }}
           onClick={scrollToTop}
-          className="fixed bottom-20 md:bottom-24 right-4 md:right-6 z-40 p-3 md:p-3.5 bg-primary-600 hover:bg-primary-700 active:bg-primary-800 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-300 flex items-center justify-center border-2 border-white/20 dark:border-gray-800/50 backdrop-blur-sm"
+          className="hidden md:flex fixed bottom-24 right-6 z-40 p-3.5 bg-primary-600 hover:bg-primary-700 active:bg-primary-800 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-300 items-center justify-center border-2 border-white/20 dark:border-gray-800/50 backdrop-blur-sm"
           aria-label="Прокрутить наверх"
           style={{
             marginRight: "max(16px, env(safe-area-inset-right, 0px))",

@@ -44,7 +44,6 @@ class DepartmentAction extends BaseAction<DepartmentActionPayload> {
 
 interface DepartmentState {
   data: IData;
-  mode?: "root" | "department";
   loading: boolean;
   error: string | null;
 }
@@ -62,7 +61,7 @@ const initialState: DepartmentState = {
 
 const reducer = (
   state: DepartmentState,
-  action: DepartmentAction
+  action: DepartmentAction,
 ): DepartmentState => {
   switch (action.type) {
     case DepartmentAction.SET_LOADING:
@@ -106,10 +105,10 @@ const DepartmentPage: React.FC = () => {
   const { data, loading, error } = state;
 
   const [endDate, setEndDate] = useState<string>(
-    getFormattedDate(yesterdayDate)
+    getFormattedDate(yesterdayDate),
   );
   const [startDate, setStartDate] = useState<string>(
-    getFormattedDate(startInitialDate)
+    getFormattedDate(startInitialDate),
   );
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
   const today = getFormattedDate(todayDate);
@@ -135,7 +134,7 @@ const DepartmentPage: React.FC = () => {
     dispatch(new DepartmentAction(DepartmentAction.SET_LOADING, true));
     try {
       const response = await axiosInstance.get(
-        `${apiUrl}/api/departments/root/`
+        `${apiUrl}/api/departments/root/`,
       );
 
       interface RootDepartmentItem {
@@ -168,7 +167,7 @@ const DepartmentPage: React.FC = () => {
           date_of_creation: d.date_of_creation ?? "",
           parent: "",
           has_child_departments: d.has_child_departments ?? false,
-        })
+        }),
       );
 
       const virtualRoot: IData = {
@@ -185,8 +184,8 @@ const DepartmentPage: React.FC = () => {
       dispatch(
         new DepartmentAction(
           DepartmentAction.SET_ERROR,
-          "Не удалось загрузить корневые отделы. Пожалуйста, попробуйте позже."
-        )
+          "Не удалось загрузить корневые отделы. Пожалуйста, попробуйте позже.",
+        ),
       );
     }
   }, []);
@@ -207,7 +206,9 @@ const DepartmentPage: React.FC = () => {
 
       dispatch(new DepartmentAction(DepartmentAction.SET_LOADING, true));
       try {
-        const res = await axiosInstance.get(`${apiUrl}/api/department/${id}/`);
+        const res = await axiosInstance.get(`${apiUrl}/api/department/${id}/`, {
+          timeout: 30000,
+        });
         cacheManager.set(cacheKey, res.data);
         dispatch(new DepartmentAction(DepartmentAction.SET_DATA, res.data));
       } catch (err) {
@@ -215,12 +216,12 @@ const DepartmentPage: React.FC = () => {
         dispatch(
           new DepartmentAction(
             DepartmentAction.SET_ERROR,
-            "Не удалось загрузить данные. Пожалуйста, попробуйте позже."
-          )
+            "Не удалось загрузить данные. Пожалуйста, попробуйте позже.",
+          ),
         );
       }
     },
-    []
+    [],
   );
 
   useEffect(() => {
@@ -259,7 +260,7 @@ const DepartmentPage: React.FC = () => {
           params: { startDate, endDate },
           responseType: "blob",
           timeout: 600000,
-        }
+        },
       );
       clearWaitNotification();
       setIsDownloading(false);
@@ -298,7 +299,7 @@ const DepartmentPage: React.FC = () => {
       },
       exit: { opacity: 0 },
     }),
-    []
+    [],
   );
 
   const itemVariants = useMemo(
@@ -307,19 +308,23 @@ const DepartmentPage: React.FC = () => {
       animate: { opacity: 1, y: 0 },
       exit: { opacity: 0, y: -20 },
     }),
-    []
+    [],
   );
 
   const breadcrumbs = useMemo(() => {
-    if (!departmentId) {
-      return [];
+    if (!departmentId) return [];
+    const path = data?.breadcrumb_path;
+    if (path && path.length > 0) {
+      return path.map((item, idx) => {
+        const isLast = idx === path.length - 1;
+        return {
+          label: formatDepartmentName(item.name),
+          path: isLast ? undefined : `/department/${item.id}`,
+        };
+      });
     }
-    return [
-      {
-        label: formatDepartmentName(data?.name || ""),
-      },
-    ];
-  }, [departmentId, data?.name]);
+    return [{ label: formatDepartmentName(data?.name || "") }];
+  }, [departmentId, data?.name, data?.breadcrumb_path]);
 
   return (
     <AnimatePresence mode="wait">
@@ -383,10 +388,7 @@ const DepartmentPage: React.FC = () => {
                 variants={itemVariants}
                 className="card overflow-hidden"
               >
-                <DepartmentTable
-                  data={data}
-                  mode={departmentId ? "department" : "root"}
-                />
+                <DepartmentTable data={data} />
               </motion.div>
             )}
           </>

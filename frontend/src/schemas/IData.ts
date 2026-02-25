@@ -30,11 +30,11 @@ export interface IUserDetails {
     email: string;
     first_name: string;
     last_name: string;
-    date_joined: string;  
-    last_login: string | null;  
+    date_joined: string;
+    last_login: string | null;
     phonenumber: string;
     is_banned: boolean;
-    last_login_ip: string | null;  
+    last_login_ip: string | null;
   };
 }
 
@@ -59,11 +59,17 @@ export interface IChildDepartment {
   has_child_departments: boolean;
 }
 
+export interface IBreadcrumbPathItem {
+  id: string;
+  name: string;
+}
+
 export interface IData {
   name: string;
   date_of_creation: string;
   child_departments: IChildDepartment[];
   total_staff_count: number;
+  breadcrumb_path?: IBreadcrumbPathItem[];
 }
 
 export interface IStaffData {
@@ -78,6 +84,7 @@ export interface IChildDepartmentData {
   child_department: IChildDepartment;
   staff_count: number;
   staff_data: IStaffData;
+  breadcrumb_path?: IBreadcrumbPathItem[];
 }
 
 export interface StaffData {
@@ -117,7 +124,7 @@ export interface AttendanceStats {
     individual_percentage: number;
   }>;
   absent_data: Array<{ staff_pin: string; name: string }>;
-  data_for_date : string;
+  data_for_date: string;
 }
 
 export interface LocationData {

@@ -10,6 +10,32 @@
 
 <body>
   <div id="root"></div>
+  <div id="load-error" style="display:none;padding:2rem;text-align:center;font-family:system-ui,sans-serif;max-width:480px;margin:2rem auto;">
+    <h2 style="margin-bottom:1rem;color:#1e40af;">Страница не загрузилась</h2>
+    <p style="margin-bottom:1rem;color:#4b5563;">Браузер не поддерживает приложение или произошла ошибка.</p>
+    <p style="margin-bottom:1.5rem;color:#6b7280;font-size:0.9rem;">Обновите браузер или откройте на другом устройстве.</p>
+    <button type="button" onclick="location.reload()" style="padding:0.5rem 1rem;font-size:1rem;cursor:pointer;background:#2563eb;color:white;border:none;border-radius:6px;">Обновить</button>
+  </div>
+  <noscript>
+    <p style="padding:2rem;text-align:center;font-family:system-ui">Для работы приложения необходим JavaScript. Включите его в настройках браузера.</p>
+  </noscript>
+  <script>
+    (function(){
+      var shown=false;
+      function show(){
+        if(shown)return;
+        var root=document.getElementById('root');
+        if(root&&root.querySelector('*'))return;
+        shown=true;
+        var err=document.getElementById('load-error');
+        if(root)root.style.display='none';
+        if(err)err.style.display='block';
+      }
+      window.onerror=show;
+      window.onunhandledrejection=show;
+      setTimeout(function(){ if(document.getElementById('root')&&!document.getElementById('root').querySelector('*'))show(); },12000);
+    })();
+  </script>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 

@@ -16,13 +16,9 @@ import {
 
 interface DepartmentTableProps {
   data: IData;
-  mode?: "root" | "department";
 }
 
-const DepartmentTable: React.FC<DepartmentTableProps> = ({
-  data,
-  mode = "department",
-}) => {
+const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
   const navigate = useNavigate();
   const [page, setPage] = useState<number>(0);
   const [rowsPerPage] = useState<number>(10);
@@ -35,21 +31,21 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
         : `/childDepartment/${departmentId}`;
       navigate(path);
     },
-    [navigate]
+    [navigate],
   );
 
   const filteredDepartments = useMemo(() => {
     return (data?.child_departments ?? [])
       .sort((a, b) => a.name.localeCompare(b.name))
       .filter((department) =>
-        department.name.toLowerCase().includes(searchQuery.toLowerCase())
+        department.name.toLowerCase().includes(searchQuery.toLowerCase()),
       );
   }, [data, searchQuery]);
 
   const totalPages = Math.ceil(filteredDepartments.length / rowsPerPage);
   const visibleDepartments = filteredDepartments.slice(
     page * rowsPerPage,
-    page * rowsPerPage + rowsPerPage
+    page * rowsPerPage + rowsPerPage,
   );
 
   const handleChangePage = (newPage: number) => {
@@ -169,8 +165,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
             </motion.div>
           ) : (
             visibleDepartments.map((department) => {
-              const hasChildDepartments =
-                mode === "root" ? department.has_child_departments : false;
+              const hasChildDepartments = department.has_child_departments;
 
               return (
                 <motion.div
@@ -181,12 +176,22 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
                   onClick={() =>
                     handleRowClick(
                       String(department.child_id),
-                      hasChildDepartments
+                      hasChildDepartments,
                     )
                   }
                 >
                   <div className="flex items-start mb-3">
-                    <FaFolderOpen className="text-primary-500 dark:text-primary-400 text-xl mt-1 mr-3" />
+                    {hasChildDepartments ? (
+                      <FaFolderOpen
+                        className="text-primary-500 dark:text-primary-400 text-xl mt-1 mr-3"
+                        title="Отдел с подразделениями"
+                      />
+                    ) : (
+                      <FaFolder
+                        className="text-primary-500 dark:text-primary-400 text-xl mt-1 mr-3"
+                        title="Конечный отдел (сотрудники)"
+                      />
+                    )}
                     <h3 className="text-lg font-medium text-primary-700 dark:text-primary-300">
                       {formatDepartmentName(department.name)}
                     </h3>
@@ -195,7 +200,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
                     <FaCalendarAlt className="mr-2 text-gray-500 dark:text-gray-500" />
                     <span className="font-mono">
                       {new Date(
-                        department.date_of_creation
+                        department.date_of_creation,
                       ).toLocaleDateString()}
                     </span>
                   </div>
@@ -205,9 +210,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
           )}
         </motion.div>
 
-        {
-          /* Desktop table view */
-        }
+        {/* Desktop table view */}
         <motion.div
           className="hidden md:block overflow-hidden rounded-lg"
           variants={tableVariants}
@@ -256,13 +259,23 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
                       onClick={() =>
                         handleRowClick(
                           String(department.child_id),
-                          hasChildDepartments
+                          hasChildDepartments,
                         )
                       }
                     >
                       <td className="py-4 pl-6 pr-3 whitespace-nowrap">
                         <div className="flex items-center">
-                          <FaFolderOpen className="flex-shrink-0 h-5 w-5 text-primary-500 dark:text-primary-400 mr-3" />
+                          {hasChildDepartments ? (
+                            <FaFolderOpen
+                              className="flex-shrink-0 h-5 w-5 text-primary-500 dark:text-primary-400 mr-3"
+                              title="Отдел с подразделениями"
+                            />
+                          ) : (
+                            <FaFolder
+                              className="flex-shrink-0 h-5 w-5 text-primary-500 dark:text-primary-400 mr-3"
+                              title="Конечный отдел (сотрудники)"
+                            />
+                          )}
                           <span className="text-base font-medium text-primary-700 hover:text-primary-900 dark:text-primary-300 dark:hover:text-primary-100 transition-colors duration-200">
                             {formatDepartmentName(department.name)}
                           </span>
@@ -270,7 +283,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
                       </td>
                       <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400 font-mono">
                         {new Date(
-                          department.date_of_creation
+                          department.date_of_creation,
                         ).toLocaleDateString()}
                       </td>
                       <td className="py-4 pl-3 pr-6 whitespace-nowrap text-right text-sm">
@@ -351,7 +364,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
                   >
                     {pageNum + 1}
                   </button>
-                )
+                ),
               )}
 
               <button

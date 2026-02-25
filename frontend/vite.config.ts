@@ -8,6 +8,8 @@ export default defineConfig({
     port: 5173,
   },
   build: {
+    target: "es2015",
+    cssTarget: "chrome61",
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {

@@ -55,7 +55,7 @@ const ChildDepartmentPage = () => {
     useWaitNotification();
 
   const dispatch = (
-    action: BaseAction<boolean | IChildDepartmentData | string | null>
+    action: BaseAction<boolean | IChildDepartmentData | string | null>,
   ) => {
     switch (action.type) {
       case BaseAction.SET_LOADING:
@@ -76,12 +76,9 @@ const ChildDepartmentPage = () => {
 
   useEffect(() => {
     const fetchData = async (forceRefresh = false) => {
-      if (!id) {
-        return;
-      }
+      if (!id) return;
 
       const cacheKey = `child_department_${id}`;
-
       if (!forceRefresh) {
         const cachedData = cacheManager.get<IChildDepartmentData>(cacheKey);
         if (cachedData) {
@@ -95,7 +92,7 @@ const ChildDepartmentPage = () => {
       dispatch(new BaseAction(BaseAction.SET_LOADING, true));
       try {
         const res = await axiosInstance.get(
-          `${apiUrl}/api/child_department/${id}/`
+          `${apiUrl}/api/child_department/${id}/`,
         );
         cacheManager.set(cacheKey, res.data);
         dispatch(new BaseAction(BaseAction.SET_DATA, res.data));
@@ -104,14 +101,12 @@ const ChildDepartmentPage = () => {
         dispatch(
           new BaseAction(
             BaseAction.SET_ERROR,
-            "Не удалось загрузить данные. Пожалуйста, попробуйте еще раз."
-          )
+            "Не удалось загрузить данные. Пожалуйста, попробуйте еще раз.",
+          ),
         );
       }
     };
-    if (id) {
-      fetchData();
-    }
+    if (id) fetchData();
   }, [id]);
 
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -141,11 +136,22 @@ const ChildDepartmentPage = () => {
     (pin: string) => {
       navigate(`/staffDetail/${pin}`);
     },
-    [navigate]
+    [navigate],
   );
 
   const breadcrumbs = useMemo(() => {
-    const items = [];
+    const path = data?.breadcrumb_path;
+    if (path && path.length > 0) {
+      return path.map((item, idx) => {
+        const isLast = idx === path.length - 1;
+        return {
+          label: formatDepartmentName(item.name),
+          path: isLast ? undefined : `/department/${item.id}`,
+        };
+      });
+    }
+    const items: Array<{ label: string; path?: string; onClick?: () => void }> =
+      [];
     if (data?.child_department.parent) {
       items.push({
         label: "Отделы",
@@ -153,12 +159,10 @@ const ChildDepartmentPage = () => {
       });
     }
     if (data?.child_department?.name) {
-      items.push({
-        label: formatDepartmentName(data.child_department.name),
-      });
+      items.push({ label: formatDepartmentName(data.child_department.name) });
     }
     return items;
-  }, [data?.child_department, navigateToParent]);
+  }, [data?.child_department, data?.breadcrumb_path, navigateToParent]);
 
   const handleDownload = useCallback(async () => {
     if (!id) return;
@@ -172,7 +176,7 @@ const ChildDepartmentPage = () => {
           params: { startDate, endDate },
           responseType: "blob",
           timeout: 600000,
-        }
+        },
       );
       clearWaitNotification();
       setIsDownloading(false);
@@ -210,10 +214,10 @@ const ChildDepartmentPage = () => {
     () =>
       data?.staff_data
         ? Object.entries(data.staff_data).filter(([, staff]) =>
-            staff.FIO.toLowerCase().includes(searchQuery.toLowerCase())
+            staff.FIO.toLowerCase().includes(searchQuery.toLowerCase()),
           )
         : [],
-    [data?.staff_data, searchQuery]
+    [data?.staff_data, searchQuery],
   );
 
   const containerVariants = useMemo(
@@ -227,15 +231,15 @@ const ChildDepartmentPage = () => {
         },
       },
     }),
-    []
+    [],
   );
 
   const itemVariants = useMemo(
     () => ({
-      hidden: { opacity: 0, y: 20 },
+      hidden: { opacity: 0, y: 10 },
       visible: { opacity: 1, y: 0 },
     }),
-    []
+    [],
   );
 
   return (
@@ -334,6 +338,8 @@ const ChildDepartmentPage = () => {
             <motion.div
               className="block md:hidden space-y-4"
               variants={containerVariants}
+              initial="hidden"
+              animate="visible"
             >
               {filteredStaff.length === 0 ? (
                 <motion.div
@@ -390,7 +396,7 @@ const ChildDepartmentPage = () => {
                           </span>{" "}
                           <span className="text-gray-800 dark:text-gray-200">
                             {new Date(
-                              staff.date_of_creation
+                              staff.date_of_creation,
                             ).toLocaleDateString()}
                           </span>
                         </div>
@@ -474,7 +480,7 @@ const ChildDepartmentPage = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400 font-mono">
                           {new Date(
-                            staff.date_of_creation
+                            staff.date_of_creation,
                           ).toLocaleDateString()}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">

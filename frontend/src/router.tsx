@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { createBrowserRouter, Outlet } from "react-router-dom";
 import LoaderComponent from "./components/LoaderComponent";
+import ErrorFallback from "./components/ErrorFallback";
 import { addPrefix } from "./RouterUtils";
 import Layout from "./Layout";
 import RequireAuth from "./RequireAuth";
@@ -21,6 +22,11 @@ const router = createBrowserRouter([
         <Suspense fallback={<LoaderComponent />}>
           <Outlet />
         </Suspense>
+      </Layout>
+    ),
+    errorElement: (
+      <Layout>
+        <ErrorFallback />
       </Layout>
     ),
     children: [

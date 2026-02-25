@@ -98,7 +98,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
       <HeaderComponent toggleTheme={toggleTheme} currentTheme={theme} />
 
-      <main className="flex-1 relative pt-6 pb-10">
+      <main className="flex-1 relative pt-6 pb-24 lg:pb-10">
         <div
           ref={contentRef}
           className="relative z-10 container mx-auto px-4 transition-opacity duration-300"
