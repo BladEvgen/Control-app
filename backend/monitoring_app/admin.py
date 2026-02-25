@@ -15,11 +15,13 @@ from django.contrib import admin
 from django.contrib.admin import SimpleListFilter
 from django.contrib.admin.models import LogEntry
 from django.contrib.admin.views.decorators import staff_member_required
+from django.contrib.auth import logout
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Avg, Count, F, Q
+from django.shortcuts import redirect
 
 
 def _db_atomic() -> AbstractContextManager[None]:
@@ -31,7 +33,7 @@ from django.db.models.functions import TruncMonth
 from django.db.utils import DatabaseError, OperationalError
 from django.http import HttpResponse, JsonResponse
 from django.template.response import TemplateResponse
-from django.urls import path
+from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.html import format_html
@@ -195,9 +197,16 @@ class MonitoringAdminSite(admin.AdminSite):
         )
         return context
 
+    def app_index(self, request, app_label, extra_context=None):
+        """При клике на «Система мониторинга» в хлебных крошках — на главную с дашбордом."""
+        if app_label == "monitoring_app":
+            return redirect(reverse("%s:index" % self.name))
+        return super().app_index(request, app_label, extra_context)
+
     def get_urls(self):
         urls = super().get_urls()
         custom_urls = [
+            path("logout/", self.admin_view(self.admin_logout_view), name="logout"),
             path("dashboard/", self.admin_view(self.dashboard_view), name="dashboard"),
             path(
                 "api/attendance-stats/",
@@ -211,6 +220,11 @@ class MonitoringAdminSite(admin.AdminSite):
             ),
         ]
         return custom_urls + urls
+
+    def admin_logout_view(self, request):
+        """Logout с поддержкой GET (для ссылок, закладок). Django 5+ по умолчанию требует POST."""
+        logout(request)
+        return redirect("/admin/")
 
     @method_decorator(staff_member_required)
     def dashboard_view(self, request):
@@ -427,17 +441,17 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
     def queryset(self, request, queryset):
         today = timezone.now().date()
 
-        LATE_THRESHOLD_MINUTES = 15
-        EARLY_LEAVE_THRESHOLD_MINUTES = 15
-        MINIMUM_WORKDAY_HOURS = 4
-        STANDARD_WORKDAY_HOURS = 8
+        late_threshold_minutes = 15
+        early_leave_threshold_minutes = 15
+        minimum_workday_hours = 4
+        standard_workday_hours = 8
 
         work_start = timezone.now().replace(hour=9, minute=0, second=0, microsecond=0)
         work_end = timezone.now().replace(hour=18, minute=0, second=0, microsecond=0)
 
-        late_threshold = work_start + timedelta(minutes=LATE_THRESHOLD_MINUTES)
+        late_threshold = work_start + timedelta(minutes=late_threshold_minutes)
         early_leave_threshold = work_end - timedelta(
-            minutes=EARLY_LEAVE_THRESHOLD_MINUTES
+            minutes=early_leave_threshold_minutes
         )
 
         if self.value() == "present":
@@ -491,8 +505,8 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
                     - F("attendance__first_in")
                 )
                 .filter(
-                    workday_duration__gte=timedelta(hours=MINIMUM_WORKDAY_HOURS),
-                    workday_duration__lt=timedelta(hours=STANDARD_WORKDAY_HOURS),
+                    workday_duration__gte=timedelta(hours=minimum_workday_hours),
+                    workday_duration__lt=timedelta(hours=standard_workday_hours),
                 )
                 .distinct()
             )
@@ -1432,62 +1446,64 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
 # ===== ATTENDANCE MODELS =====
 
 
-class FastStaffAttendancePaginator(Paginator):
-    """Paginator с кэшированным count для StaffAttendance (ключ по query)."""
+class CachedCountQuerySet:
+    """
+    Обёртка QuerySet с кэшированным count() (ключ по хэшу запроса).
+    Paginator вызывает object_list.count() — используем стандартный Paginator.
+    """
 
-    def __init__(self, object_list, per_page, orphans=0, allow_empty_first_page=True):
-        super().__init__(
-            object_list,
-            per_page,
-            orphans=orphans,
-            allow_empty_first_page=allow_empty_first_page,
-        )
+    def __init__(self, queryset):
+        self._queryset = queryset
         self._count = None
 
-    @property
     def count(self):
         if self._count is not None:
             return self._count
-        try:
-            import hashlib
+        import hashlib
 
-            q = self.object_list.query
+        try:
+            q = self._queryset.query
             qstr = str(q.where) + str(q.order_by)
             h = hashlib.md5(qstr.encode()).hexdigest()[:16]
             cache_key = f"staffatt_count_{h}"
             self._count = cache.get(cache_key)
             if self._count is None:
-                self._count = self.object_list.count()
+                self._count = self._queryset.count()
                 cache.set(cache_key, self._count, 300)
         except (ValueError, TypeError):
             self._count = 0
         except (DatabaseError, OperationalError) as e:
             logger.warning(
-                "FastStaffAttendancePaginator: database error on count: %s",
+                "CachedCountQuerySet: database error on count: %s",
                 e,
                 exc_info=True,
             )
             try:
-                self._count = self.object_list.count()
+                self._count = self._queryset.count()
             except Exception:
                 self._count = 0
         except Exception as e:
             logger.warning(
-                "FastStaffAttendancePaginator: unexpected error on count: %s",
+                "CachedCountQuerySet: unexpected error on count: %s",
                 e,
                 exc_info=True,
             )
             try:
-                self._count = self.object_list.count()
+                self._count = self._queryset.count()
             except Exception:
                 self._count = 0
         return self._count
+
+    def __getitem__(self, key):
+        return self._queryset[key]
+
+    def __getattr__(self, name):
+        return getattr(self._queryset, name)
 
 
 @admin.register(StaffAttendance, site=admin_site)
 class StaffAttendanceAdmin(admin.ModelAdmin):
     change_list_template = "admin/change_list_filter_sidebar.html"
-    # date_hierarchy убран — Min/Max на 235k+ записей тормозят страницу
     list_display = (
         "staff",
         "staff_department",
@@ -1500,7 +1516,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         "absence_reason",
     )
     list_filter = (
-        DateRangeFilter,  # Первым — всегда фильтр по дате (обязателен)
+        DateRangeFilter,
         monitoring_utils.HierarchicalDepartmentFilter,
         "absence_reason",
     )
@@ -1514,11 +1530,21 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
     ordering = ("-date_at", "staff")
     list_per_page = 25
     show_full_result_count = False
-    paginator = FastStaffAttendancePaginator
+
+    def get_paginator(
+        self, request, queryset, per_page, orphans=0, allow_empty_first_page=True
+    ):
+        return Paginator(
+            CachedCountQuerySet(queryset),
+            per_page,
+            orphans=orphans,
+            allow_empty_first_page=allow_empty_first_page,
+        )
+
     list_select_related = ("staff", "staff__department", "absence_reason")
     autocomplete_fields = ("absence_reason",)
     actions = ["export_attendance_data", "mark_as_absent"]
-    list_max_show_all = 50  # Ограничить «Показать все» для тяжёлой таблицы
+    list_max_show_all = 50
 
     readonly_fields = (
         "staff",
@@ -2077,8 +2103,6 @@ class ClassLocationAdmin(ModelAdmin):
     def export_for_upload(self, request, queryset):
         """Экспорт в Excel (формат загрузки). Выберите записи или нажмите «Выбрать все»."""
         from urllib.parse import quote
-
-        from monitoring_app import utils as monitoring_utils
 
         content = monitoring_utils.export_class_locations_to_excel(queryset)
         filename = "class_locations_export.xlsx"
