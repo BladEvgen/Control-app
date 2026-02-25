@@ -75,6 +75,7 @@ def invalidate_staff_cache_on_delete(sender, instance, **kwargs):
         invalidate_cache_pattern(f"staff_detail_{instance.pin}*")
         if hasattr(instance, "department") and instance.department:
             invalidate_cache(f"child_department_detail_{instance.department.id}")
+        invalidate_cache_pattern("staff_attendance_stats_*")
         logger.info(f"Invalidated staff cache for PIN: {instance.pin}")
 
 

@@ -464,9 +464,17 @@ CELERY_BEAT_SCHEDULE = (
     {}
     if DEBUG
     else {
-        "get-attendance-every-day-5am": {
+        "get-attendance-every-day-4am": {
             "task": "monitoring_app.tasks.get_all_attendance_task",
-            "schedule": crontab(hour="5", minute="0"),
+            "schedule": crontab(hour="4", minute="0"),
+        },
+        "sync-staff-from-api-twice-weekly": {
+            "task": "monitoring_app.tasks.sync_staff_from_api_task",
+            "schedule": crontab(
+                day_of_week="1,4",
+                hour="5",
+                minute="30",
+            ),
         },
         "update-lesson-attendance-last-out-every-10-minutes": {
             "task": "monitoring_app.tasks.update_lesson_attendance_last_out",

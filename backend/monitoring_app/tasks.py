@@ -34,6 +34,30 @@ def get_all_attendance_task():
     return summary
 
 
+@shared_task(name="monitoring_app.tasks.sync_staff_from_api_task")
+def sync_staff_from_api_task(dry_run: bool = False):
+    """
+    Удаляет из БД сотрудников (Staff), которых в API СКУД уже нет. Новых не добавляет.
+
+    Args:
+        dry_run: Если True — только показать, кого удалили бы, без изменений в БД.
+
+    Returns:
+        dict: Результат синхронизации:
+            - "deleted" (int): количество удалённых записей;
+            - "errors" (list): список строк с ошибками при проверке по API.
+    """
+    from monitoring_app.staff_sync import sync_staff_from_external
+
+    result = sync_staff_from_external(dry_run=dry_run)
+    logger.info(
+        "sync_staff_from_api_task: deleted=%s errors=%s",
+        result.get("deleted", 0),
+        len(result.get("errors", [])),
+    )
+    return result
+
+
 @shared_task(name="monitoring_app.tasks.update_lesson_attendance_last_out")
 def update_lesson_attendance_last_out():
     """Автоматически проставляет last_out для занятий без отметки об окончании.
