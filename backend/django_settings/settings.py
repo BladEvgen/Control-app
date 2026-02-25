@@ -636,6 +636,19 @@ LOGGING = {
             "level": "INFO",
             "filters": ["ignore_shutdown", "ignore_pylint"],
         },
+        "ws_user_file": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "ws_user.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 7,
+            "utc": True,
+            "encoding": "utf-8",
+            "delay": True,
+            "formatter": "standard",
+            "level": "INFO",
+            "filters": ["ignore_shutdown", "ignore_pylint"],
+        },
         "lesson_locations_not_found_file": {
             "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
             "filename": str(LOG_DIR / "lesson_locations_not_found.log"),
@@ -709,6 +722,11 @@ LOGGING = {
         "monitoring_app.admin": {
             "handlers": ["admin_errors_file_no_filter", "console"],
             "level": MONITORING_ADMIN_LEVEL,
+            "propagate": False,
+        },
+        "monitoring_app.ws_user": {
+            "handlers": ["file", "console", "ws_user_file"],
+            "level": "INFO" if DEBUG else "WARNING",
             "propagate": False,
         },
     },

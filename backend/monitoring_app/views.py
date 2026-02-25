@@ -1520,7 +1520,9 @@ def class_location_bulk_update(request):
             )
     unique_ids = list(dict.fromkeys(ids))
     qs = list(
-        models.ClassLocation.objects.only(*_CLASSLOCATION_FIELDS).filter(id__in=unique_ids)
+        models.ClassLocation.objects.only(*_CLASSLOCATION_FIELDS).filter(
+            id__in=unique_ids
+        )
     )
     found_ids = {o.id for o in qs}
     missing = [i for i in unique_ids if i not in found_ids]
@@ -1635,6 +1637,63 @@ def get_parent_id(request):
         return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
 
 
+def _get_breadcrumb_path(dept_id: str) -> list[dict]:
+    """Возвращает путь от корня до отдела: [{id, name}, ...]."""
+    try:
+        dept = models.ChildDepartment.objects.get(id=dept_id)
+    except models.ChildDepartment.DoesNotExist:
+        return []
+    path = []
+    current = dept
+    while current:
+        path.append({"id": str(current.id), "name": current.name})
+        current = current.parent
+    path.reverse()
+    return path
+
+
+def _build_department_summary_data(parent_department_id: str):
+    """Строит данные для department_summary. Используется в API и warmup."""
+
+    def get_subtree_staff_count(dept_id: str) -> int:
+        """Подсчёт сотрудников в поддереве через рекурсивный CTE (оптимизация для больших деревьев)."""
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH RECURSIVE subtree AS (
+                    SELECT id FROM monitoring_app_childdepartment WHERE id = %s
+                    UNION ALL
+                    SELECT cd.id FROM monitoring_app_childdepartment cd
+                    JOIN subtree s ON cd.parent_id = s.id
+                )
+                SELECT COUNT(DISTINCT st.id) FROM monitoring_app_staff st
+                INNER JOIN subtree s ON st.department_id = s.id
+                """,
+                [dept_id],
+            )
+            row = cursor.fetchone()
+            return row[0] if row else 0
+
+    parent_department = get_object_or_404(
+        models.ChildDepartment, id=parent_department_id
+    )
+    total_staff_count = get_subtree_staff_count(parent_department.id)
+    child_departments_data = models.ChildDepartment.objects.filter(
+        parent=parent_department
+    )
+    child_departments_data_serialized = serializers.ChildDepartmentSerializer(
+        child_departments_data, many=True
+    ).data
+    breadcrumb_path = _get_breadcrumb_path(parent_department_id)
+    return {
+        "name": parent_department.name,
+        "date_of_creation": parent_department.date_of_creation,
+        "child_departments": child_departments_data_serialized,
+        "total_staff_count": total_staff_count,
+        "breadcrumb_path": breadcrumb_path,
+    }
+
+
 @swagger_auto_schema(
     method="GET",
     operation_summary="Сводная информация о департаменте",
@@ -1703,7 +1762,7 @@ def get_parent_id(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def department_summary(request, parent_department_id):
-    cache_key = f"department_summary_{parent_department_id}"
+    cache_key = f"department_summary_v2_{parent_department_id}"
     logger.info(
         f"Request received for department summary with ID {parent_department_id}"
     )
@@ -1716,62 +1775,12 @@ def department_summary(request, parent_department_id):
         )
 
     try:
-
-        def calculate_staff_count(department: models.ChildDepartment) -> int:
-            rows = list(models.ChildDepartment.objects.values_list("id", "parent_id"))
-
-            children_by_parent = {}
-            for cid, pid in rows:
-                children_by_parent.setdefault(pid, []).append(cid)
-
-            visited = set()
-            stack = [department.id]
-            subtree_ids = []
-
-            while stack:
-                cur = stack.pop()
-                if cur in visited:
-                    continue
-                visited.add(cur)
-                subtree_ids.append(cur)
-                stack.extend(children_by_parent.get(cur, []))
-
-            total = (
-                models.Staff.objects.filter(department_id__in=subtree_ids)
-                .values("id")
-                .distinct()
-                .count()
-            )
-            return total
-
-        parent_department = get_object_or_404(
-            models.ChildDepartment, id=parent_department_id
-        )
-        logger.info(
-            f"Department found: {parent_department.name} (ID: {parent_department_id})"
-        )
-        parent_department_id = str(parent_department_id).zfill(5)
-        total_staff_count = calculate_staff_count(parent_department)
-
-        child_departments_data = models.ChildDepartment.objects.filter(
-            parent=parent_department
-        )
-        child_departments_data_serialized = serializers.ChildDepartmentSerializer(
-            child_departments_data, many=True
-        ).data
-
-        data = {
-            "name": parent_department.name,
-            "date_of_creation": parent_department.date_of_creation,
-            "child_departments": child_departments_data_serialized,
-            "total_staff_count": total_staff_count,
-        }
-
-        logger.debug(f"Caching department summary data with key: {cache_key}")
         cached_data = get_cache(
-            cache_key, query=lambda: data, timeout=5 * 60, cache=Cache
+            cache_key,
+            query=lambda: _build_department_summary_data(parent_department_id),
+            timeout=5 * 60,
+            cache=Cache,
         )
-
         logger.info(f"Returning summary data for department ID {parent_department_id}")
         return Response(cached_data, status=status.HTTP_200_OK)
     except Exception as e:
@@ -2094,15 +2103,12 @@ def child_department_detail(request, child_department_id):
         f"Request received for child department detail with ID {child_department_id}"
     )
 
-    cache_key = f"child_department_detail_{child_department_id}"
+    cache_key = f"child_department_detail_v2_{child_department_id}"
 
     def fetch_child_department_data():
         try:
             child_department = models.ChildDepartment.objects.get(
                 id=child_department_id
-            )
-            logger.info(
-                f"Found child department: {child_department.name} (ID: {child_department_id})"
             )
         except models.ChildDepartment.DoesNotExist:
             logger.warning(f"Child department with ID {child_department_id} not found")
@@ -2111,11 +2117,10 @@ def child_department_detail(request, child_department_id):
         all_departments = [
             child_department
         ] + child_department.get_all_child_departments()
-        staff_in_department = models.Staff.objects.filter(
-            department__in=all_departments
-        )
-        logger.debug(
-            f"Found {staff_in_department.count()} staff members in child department ID {child_department_id}"
+        staff_in_department = (
+            models.Staff.objects.filter(department__in=all_departments)
+            .select_related("department")
+            .prefetch_related("positions")
         )
 
         staff_data = {}
@@ -2124,28 +2129,24 @@ def child_department_detail(request, child_department_id):
                 fio = staff_member.name
             else:
                 fio = f"{staff_member.surname} {staff_member.name}"
-
             staff_data[staff_member.pin] = {
                 "FIO": fio,
                 "date_of_creation": staff_member.date_of_creation,
                 "avatar": (staff_member.avatar.url if staff_member.avatar else None),
-                "positions": [
-                    position.name for position in staff_member.positions.all()
-                ],
+                "positions": [p.name for p in staff_member.positions.all()],
             }
-            logger.debug(f"Processed staff member: {fio} (PIN: {staff_member.pin})")
 
         sorted_staff_data = dict(
             sorted(staff_data.items(), key=lambda item: item[1]["FIO"])
         )
-        logger.info(f"Sorted staff data for child department ID {child_department_id}")
-
+        breadcrumb_path = _get_breadcrumb_path(child_department_id)
         return {
             "child_department": serializers.ChildDepartmentSerializer(
                 child_department
             ).data,
             "staff_count": staff_in_department.count(),
             "staff_data": sorted_staff_data,
+            "breadcrumb_path": breadcrumb_path,
         }
 
     try:
