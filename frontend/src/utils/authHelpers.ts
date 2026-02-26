@@ -1,7 +1,7 @@
 import { log } from "../api";
 import { getCookie, clearAuthData } from "../api";
 
-const isTokenValid = (token: string | null): boolean => {
+export const isTokenValid = (token: string | null): boolean => {
   if (!token) return false;
 
   try {
@@ -40,7 +40,7 @@ export const isAuthenticated = (): boolean => {
 
     if (accessToken && !isTokenValid(accessToken)) {
       log.info(
-        "Access token invalid/expired but refresh token exists, continuing auth flow"
+        "Access token invalid/expired but refresh token exists, continuing auth flow",
       );
       return true;
     }
@@ -64,7 +64,7 @@ export const getUsername = (): string => {
 
 export const logoutUser = (
   navigate: (path: string) => void,
-  extraCallback?: () => void
+  extraCallback?: () => void,
 ): void => {
   try {
     clearAuthData();

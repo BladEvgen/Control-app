@@ -1,5 +1,5 @@
 import { log } from "../api";
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 
 const wsLog = (msg: string, data?: unknown) => {
   try {
@@ -49,6 +49,7 @@ const useWebSocket = ({
   const attemptRef = useRef<number>(0);
   const urlRef = useRef<string | null>(url);
   const isRefreshingTokenRef = useRef<boolean>(false);
+  const [isConnected, setIsConnected] = useState<boolean>(false);
 
   const onOpenRef = useRef<() => void>();
   const onCloseRef = useRef<(event: CloseEvent) => void>();
@@ -112,6 +113,7 @@ const useWebSocket = ({
 
     wsRef.current.onopen = () => {
       wsLog("соединение установлено");
+      setIsConnected(true);
       onOpenRef.current?.();
 
       pingIntervalRef.current = window.setInterval(sendPing, pingInterval);
@@ -145,6 +147,7 @@ const useWebSocket = ({
             }
             return;
           }
+          if (data.type === "heartbeat") return;
 
           if (
             data.error === "token_expired" ||
@@ -167,6 +170,7 @@ const useWebSocket = ({
     };
 
     wsRef.current.onclose = (event: CloseEvent) => {
+      setIsConnected(false);
       wsLog("соединение закрыто", { code: event.code, reason: event.reason });
 
       if (
@@ -278,10 +282,10 @@ const useWebSocket = ({
 
   if (!url) {
     wsLog("URL не задан, соединение не устанавливается");
-    return { sendMessage: () => {}, reconnect: () => {} };
+    return { sendMessage: () => {}, reconnect: () => {}, isConnected: false };
   }
 
-  return { sendMessage, reconnect };
+  return { sendMessage, reconnect, isConnected };
 };
 
 export default useWebSocket;

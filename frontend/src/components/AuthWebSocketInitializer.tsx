@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useCallback } from "react";
 import { useAppSelector, useAppDispatch } from "../store/hooks";
-import { setUser, setTokens, logout } from "../store/slices/authSlice";
-import { getCookie, log } from "../api";
+import type { RootState } from "../store";
+import { setUser, logout } from "../store/slices/authSlice";
+import { getCookie, log, proactiveRefreshIfNeeded } from "../api";
 import { apiUrl } from "../../apiConfig";
 import useWebSocket from "../hooks/useWebSocket";
-import axiosInstance from "../api";
+import { isTokenValid } from "../utils/authHelpers";
 
 const wsLog = (msg: string, data?: unknown) => {
   log.info(`[WS-Auth] ${msg}`, data ?? "");
@@ -12,13 +13,17 @@ const wsLog = (msg: string, data?: unknown) => {
 
 const AuthWebSocketInitializer: React.FC = () => {
   const dispatch = useAppDispatch();
-  const token = useAppSelector((state) => state.auth.token);
+  const token = useAppSelector((state: RootState) => state.auth.token);
   const wsReconnectRef = useRef<(() => void) | null>(null);
+
+  const hasValidToken = Boolean(token && isTokenValid(token));
+  const refreshToken = getCookie("refresh_token");
+  const needsRefreshBeforeConnect =
+    token && !isTokenValid(token) && refreshToken;
 
   const handleTokenRefresh = useCallback(async () => {
     try {
       log.info("WebSocket требует обновления токена. Пытаемся обновить...");
-      const refreshToken = getCookie("refresh_token");
       if (!refreshToken) {
         log.error("Refresh токен не найден. Выполняем логаут.");
         dispatch(logout());
@@ -26,55 +31,22 @@ const AuthWebSocketInitializer: React.FC = () => {
         return;
       }
 
-      const response = await axiosInstance.post(
-        "/token/refresh/",
-        { refresh: refreshToken },
-        { skipAuthInterceptor: true },
+      await proactiveRefreshIfNeeded();
+      log.info(
+        "Токен успешно обновлен. WebSocket переподключится с новым токеном.",
       );
-
-      const newAccessToken = response.data.access;
-      const newRefreshToken = response.data.refresh;
-
-      if (!newAccessToken) {
-        log.error("Не удалось получить новый access токен. Выполняем логаут.");
-        dispatch(logout());
-        window.dispatchEvent(new Event("userLoggedOut"));
-        return;
-      }
-
-      dispatch(
-        setTokens({
-          access: newAccessToken,
-          refresh: newRefreshToken,
-          accessTokenExpires: response.data.access_token_expires,
-          refreshTokenExpires: response.data.refresh_token_expires,
-        }),
-      );
-
-      window.dispatchEvent(
-        new CustomEvent("tokensRefreshed", {
-          detail: {
-            access: newAccessToken,
-            refresh: newRefreshToken,
-            accessTokenExpires: response.data.access_token_expires,
-            refreshTokenExpires: response.data.refresh_token_expires,
-          },
-        }),
-      );
-
-      log.info("Токен успешно обновлен. Переподключаем WebSocket...");
 
       if (wsReconnectRef.current) {
         setTimeout(() => {
           wsReconnectRef.current?.();
-        }, 500);
+        }, 300);
       }
     } catch (error) {
       log.error("Ошибка обновления токена:", error);
       dispatch(logout());
       window.dispatchEvent(new Event("userLoggedOut"));
     }
-  }, [dispatch]);
+  }, [dispatch, refreshToken]);
 
   const handleRefreshExpired = useCallback(() => {
     log.error("Refresh токен истек. Выполняем логаут.");
@@ -82,12 +54,18 @@ const AuthWebSocketInitializer: React.FC = () => {
     window.dispatchEvent(new Event("userLoggedOut"));
   }, [dispatch]);
 
+  useEffect(() => {
+    if (needsRefreshBeforeConnect) {
+      void proactiveRefreshIfNeeded();
+    }
+  }, [needsRefreshBeforeConnect]);
+
   const wsUrl = useMemo(() => {
-    if (!token) return null;
+    if (!hasValidToken || !token) return null;
     const urlObj = new URL(apiUrl);
     const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
     return `${protocol}://${urlObj.host}/ws/user-detail/?token=${token}`;
-  }, [token]);
+  }, [hasValidToken, token]);
 
   const { reconnect } = useWebSocket({
     url: wsUrl || "",
