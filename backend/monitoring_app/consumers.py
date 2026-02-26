@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 
@@ -8,6 +9,8 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+HEARTBEAT_INTERVAL = 20
+
 
 class PhotoConsumer(AsyncJsonWebsocketConsumer):
 
@@ -15,6 +18,24 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         super().__init__(*args, **kwargs)
         self.date = timezone.now().date()
         self.group_name = ""
+        self._heartbeat_task = None
+
+    async def _heartbeat_loop(self):
+        """Периодическая отправка heartbeat для поддержания соединения."""
+        try:
+            while True:
+                await asyncio.sleep(HEARTBEAT_INTERVAL)
+                await self.send_json(
+                    {
+                        "type": "heartbeat",
+                        "timestamp": timezone.now().isoformat(),
+                    }
+                )
+                logger.debug("Sent heartbeat to client")
+        except asyncio.CancelledError:
+            logger.debug("Heartbeat task cancelled")
+        except Exception as e:
+            logger.warning("Heartbeat error: %s", e)
 
     async def connect(self):
         query_params = self.scope["query_string"].decode()
@@ -36,17 +57,27 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         logger.info(f"Client connected and joined group {self.group_name}")
 
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
         photos = await self.get_photos_for_date(self.date)
         await self.send_json({"type": "initial_photos", "photos": photos})
 
     async def disconnect(self, _close_code):
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
         logger.info(f"Client disconnected and left group {self.group_name}")
 
     async def receive_json(self, content, **kwargs):
         if content.get("type") == "ping":
-            await self.send_json({"type": "pong"})
-            logger.info("Received ping, sent pong")
+            await self.send_json(
+                {"type": "pong", "timestamp": timezone.now().isoformat()}
+            )
+            logger.debug("Received ping, sent pong")
             return
 
         if "date" in content:

@@ -6,7 +6,6 @@ import os
 import time
 import zipfile
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, contextmanager
 from io import BytesIO
 from pathlib import Path
@@ -23,7 +22,9 @@ from django.db import IntegrityError, connection, transaction
 from django.db.models import Count, Q
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.template import TemplateDoesNotExist
 from django.utils import timezone
+from django.views.decorators.cache import never_cache
 from django.views.generic import View
 from drf_yasg import openapi
 from drf_yasg.inspectors import SwaggerAutoSchema
@@ -272,29 +273,41 @@ token_param_config = openapi.Parameter(
 
 
 @permission_classes([AllowAny])
+@never_cache
 def home(request):
-    return render(
+    response = render(
         request,
         "index.html",
     )
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    return response
 
 
 @permission_classes([AllowAny])
+@never_cache
 def react_app(request):
-    def render_react_app():
-        try:
-            return render(request, "index.html")
-        except Exception as error:
-            logger.error(f"React App {str(error)}")
-            return None
+    try:
+        response = render(request, "index.html")
+    except TemplateDoesNotExist:
+        logger.exception("React app template index.html not found")
+        return HttpResponse(
+            b"Error loading React app",
+            status=500,
+            content_type="text/plain; charset=utf-8",
+        )
+    except Exception:
+        logger.exception("React app render failed")
+        return HttpResponse(
+            b"Error loading React app",
+            status=500,
+            content_type="text/plain; charset=utf-8",
+        )
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        future = executor.submit(render_react_app)
-        response = future.result()
-
-    if response is None:
-        return HttpResponse(b"Error loading React app", status=500)
-
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
     return response
 
 
