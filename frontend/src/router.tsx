@@ -1,19 +1,24 @@
-import { lazy, Suspense } from "react";
+import { Suspense } from "react";
 import { createBrowserRouter, Outlet } from "react-router-dom";
 import LoaderComponent from "./components/LoaderComponent";
 import ErrorFallback from "./components/ErrorFallback";
 import { addPrefix } from "./RouterUtils";
 import Layout from "./Layout";
 import RequireAuth from "./RequireAuth";
+import { lazyWithRetry } from "./utils/lazyWithRetry";
+import LoginPage from "./pages/LoginPage";
 
-const LoginPage = lazy(() => import("./pages/LoginPage"));
-const MainPage = lazy(() => import("./pages/MainPage"));
-const DepartmentPage = lazy(() => import("./pages/DepartmentPage"));
-const ChildDepartmentPage = lazy(() => import("./pages/ChildDepartmentPage"));
-const StaffDetail = lazy(() => import("./pages/StaffDetail/StaffDetail"));
-const Dashboard = lazy(() => import("./pages/Dashboard"));
-const MapPage = lazy(() => import("./pages/MapDashboard"));
-const PhotoDashboard = lazy(() => import("./pages/PhotoDashboard"));
+const MainPage = lazyWithRetry(() => import("./pages/MainPage"));
+const DepartmentPage = lazyWithRetry(() => import("./pages/DepartmentPage"));
+const ChildDepartmentPage = lazyWithRetry(
+  () => import("./pages/ChildDepartmentPage"),
+);
+const StaffDetail = lazyWithRetry(
+  () => import("./pages/StaffDetail/StaffDetail"),
+);
+const Dashboard = lazyWithRetry(() => import("./pages/Dashboard"));
+const MapPage = lazyWithRetry(() => import("./pages/MapDashboard"));
+const PhotoDashboard = lazyWithRetry(() => import("./pages/PhotoDashboard"));
 
 const router = createBrowserRouter([
   {
