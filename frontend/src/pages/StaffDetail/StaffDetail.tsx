@@ -20,9 +20,10 @@ import MobileActionButtons from "./MobileActionButtons";
 import StaffHeader from "./StaffHeader";
 import EmployeeInfo from "./EmployeeInfo";
 import AttendanceSection from "./AttendanceSection";
+import { lazyWithRetry } from "../../utils/lazyWithRetry";
 
-const NewAbsenceModal = React.lazy(
-  () => import("../../components/NewAbsenceModal")
+const NewAbsenceModal = lazyWithRetry(
+  () => import("../../components/NewAbsenceModal"),
 );
 
 const containerVariants = {
@@ -36,19 +37,19 @@ const StaffDetail: React.FC = () => {
 
   const [staffData, setStaffData] = useState<StaffData | null>(null);
   const [attendance, setAttendance] = useState<Record<string, AttendanceData>>(
-    {}
+    {},
   );
   const [startDate, setStartDate] = useState<string>(
     new Date(new Date().setDate(new Date().getDate() - 7))
       .toISOString()
-      .split("T")[0]
+      .split("T")[0],
   );
   const [endDate, setEndDate] = useState<string>(
-    new Date().toISOString().split("T")[0]
+    new Date().toISOString().split("T")[0],
   );
   const [notificationMessage, setNotificationMessage] = useState("");
   const [notificationType, setNotificationType] = useState<"warning" | "error">(
-    "error"
+    "error",
   );
   const [showNotification, setShowNotification] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -125,7 +126,7 @@ const StaffDetail: React.FC = () => {
           legend.add(
             data.is_absent_approved
               ? `Одобрено: ${data.absent_reason}`
-              : `Не одобрено: ${data.absent_reason}`
+              : `Не одобрено: ${data.absent_reason}`,
           );
         } else if (data.is_weekend) {
           if (
@@ -150,20 +151,19 @@ const StaffDetail: React.FC = () => {
 
       return Array.from(legend);
     },
-    []
+    [],
   );
 
   const legendItems = useMemo(
     () => generateLegendItems(attendance),
-    [attendance, generateLegendItems]
+    [attendance, generateLegendItems],
   );
 
   const handleDownloadExcel = async () => {
     if (!staffData) return;
     try {
-      const { generateAndDownloadExcel } = await import(
-        "../../utils/excelUtils"
-      );
+      const { generateAndDownloadExcel } =
+        await import("../../utils/excelUtils");
       generateAndDownloadExcel(staffData, startDate, endDate);
     } catch (error) {
       console.error("Ошибка при генерации Excel:", error);
@@ -200,7 +200,7 @@ const StaffDetail: React.FC = () => {
 
   const hasAbsenceWithReason = useMemo(() => {
     return Object.values(attendance).some(
-      (record) => record.absent_reason && record.absent_reason.trim() !== ""
+      (record) => record.absent_reason && record.absent_reason.trim() !== "",
     );
   }, [attendance]);
 
@@ -230,7 +230,7 @@ const StaffDetail: React.FC = () => {
 
   useEffect(() => {
     const scrollButton = document.querySelector(
-      '[aria-label="Прокрутить наверх"]'
+      '[aria-label="Прокрутить наверх"]',
     ) as HTMLElement;
     if (scrollButton) {
       scrollButton.style.display = "none";
