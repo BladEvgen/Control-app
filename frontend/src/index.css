@@ -211,19 +211,118 @@ select {
         z-index: -1;
 }
 
+@property --electric-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.photo-electric-border {
+  --electric-angle: 0deg;
+  position: relative;
+  padding: 2px;
+  border-radius: 14px;
+  background: conic-gradient(
+    from var(--electric-angle),
+    #3b82f6,
+    #8b5cf6,
+    #06b6d4,
+    #8b5cf6,
+    #3b82f6
+  );
+  animation: electricBorderRotate 2.5s linear infinite;
+}
+
+.photo-electric-border-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  background: white;
+}
+
+.dark .photo-electric-border-inner {
+  background: rgb(31 41 55);
+}
+
+@keyframes electricBorderRotate {
+  to {
+    --electric-angle: 360deg;
+  }
+}
+
+.photo-shine-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 40%,
+    rgba(255, 255, 255, 0.12) 45%,
+    rgba(255, 255, 255, 0.2) 50%,
+    rgba(255, 255, 255, 0.12) 55%,
+    transparent 60%
+  );
+  background-size: 200% 100%;
+  animation: photoShine 3s ease-in-out infinite;
+  pointer-events: none;
+  border-radius: inherit;
+  z-index: 1;
+}
+
+.dark .photo-shine-overlay {
+  background: linear-gradient(
+    105deg,
+    transparent 40%,
+    rgba(255, 255, 255, 0.1) 45%,
+    rgba(255, 255, 255, 0.22) 50%,
+    rgba(255, 255, 255, 0.1) 55%,
+    transparent 60%
+  );
+}
+
+@keyframes photoShine {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.photo-kiosk-marquee-mask {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    rgba(0, 0, 0, 1) 5%,
+    rgba(0, 0, 0, 1) 95%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    rgba(0, 0, 0, 1) 5%,
+    rgba(0, 0, 0, 1) 95%,
+    transparent 100%
+  );
+}
+
+.photo-marquee-track {
+  display: flex;
+  animation: photoMarquee linear infinite;
+}
+
+.photo-marquee-track:hover,
+.photo-marquee-track.photo-marquee-paused {
+  animation-play-state: paused !important;
+}
+
+@keyframes photoMarquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
 .neon-glow {
     box-shadow: 0 0 10px rgba(139, 92, 246, 0.75),
         0 0 20px rgba(139, 92, 246, 0.5),
         0 0 30px rgba(139, 92, 246, 0.25);
     animation: neonPulse 2s infinite alternate;
-}
-
-.leaflet-popup-content-wrapper {
-    border-radius: 12px;
-}
-
-.leaflet-popup-content {
-    margin: 8px;
 }
 
 @keyframes rotation {
@@ -286,9 +385,186 @@ select {
 
 .leaflet-popup-content {
     margin: 0 !important;
-        width: auto !important;
-        min-width: 280px;
-        max-width: 360px;
+        width: min(320px, calc(100vw - 40px)) !important;
+        min-width: min(240px, calc(100vw - 40px));
+        max-width: min(320px, calc(100vw - 40px));
+}
+
+.map-popup-title {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    line-height: 1.3;
+    word-break: break-word;
+}
+
+.map-popup-address {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    line-height: 1.35;
+    word-break: break-word;
+}
+
+.leaflet-popup-close-button {
+    padding: 8px 8px 0 0 !important;
+    color: #64748b !important;
+}
+
+.map-popup-card {
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.18);
+}
+
+.map-pin-icon-wrapper {
+    background: transparent !important;
+    border: none !important;
+}
+
+.map-pin-icon {
+    --pin-color: #ef4444;
+    --pin-scale: 1;
+    position: relative;
+    width: 48px;
+    height: 58px;
+    transform: scale(var(--pin-scale));
+    transform-origin: center bottom;
+    pointer-events: none;
+}
+
+.map-pin-wave {
+    position: absolute;
+    left: 50%;
+    bottom: 10px;
+    width: 26px;
+    height: 26px;
+    transform: translateX(-50%);
+    border-radius: 999px;
+    background: var(--pin-color);
+    opacity: 0.28;
+    animation: mapPinWave 2.3s ease-out infinite;
+}
+
+.map-pin-core {
+    position: absolute;
+    left: 50%;
+    bottom: 10px;
+    width: 24px;
+    height: 24px;
+    transform: translateX(-50%) rotate(-45deg);
+    border-radius: 999px 999px 999px 0;
+    background: var(--pin-color);
+    border: 2px solid rgba(255, 255, 255, 0.96);
+    box-shadow: 0 8px 16px rgba(15, 23, 42, 0.35);
+}
+
+.map-pin-core-dot {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: white;
+    transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.map-pin-badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    min-width: 22px;
+    height: 17px;
+    border-radius: 999px;
+    padding: 0 5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    line-height: 1;
+    font-weight: 700;
+    color: white;
+    background: rgba(15, 23, 42, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.8);
+}
+
+.map-pin-icon.is-active .map-pin-core {
+    box-shadow: 0 0 0 8px rgba(255, 255, 255, 0.26), 0 10px 22px rgba(15, 23, 42, 0.45);
+}
+
+.map-pin-icon.is-active .map-pin-wave {
+    opacity: 0.38;
+}
+
+.map-marker-aura {
+    animation: mapAuraPulse 2.8s ease-in-out infinite;
+    filter: saturate(1.25);
+}
+
+.map-marker-perimeter {
+    animation: mapPerimeterPulse 1.8s ease-in-out infinite;
+    stroke-linecap: round;
+}
+
+.map-marker-wave {
+    animation: mapWaveOrbit 2.6s linear infinite, mapWavePulse 1.9s ease-in-out infinite;
+    stroke-linecap: round;
+}
+
+@keyframes mapPinWave {
+    0% {
+        transform: translateX(-50%) scale(0.65);
+        opacity: 0.34;
+    }
+
+    100% {
+        transform: translateX(-50%) scale(1.75);
+        opacity: 0;
+    }
+}
+
+@keyframes mapAuraPulse {
+    0%, 100% {
+        opacity: 0.56;
+    }
+
+    50% {
+        opacity: 0.96;
+    }
+}
+
+@keyframes mapPerimeterPulse {
+    0%, 100% {
+        opacity: 0.72;
+        stroke-width: 2.2;
+    }
+
+    50% {
+        opacity: 1;
+        stroke-width: 3.8;
+    }
+}
+
+@keyframes mapWaveOrbit {
+    from {
+        stroke-dashoffset: 0;
+    }
+
+    to {
+        stroke-dashoffset: -84;
+    }
+}
+
+@keyframes mapWavePulse {
+    0%, 100% {
+        opacity: 0.62;
+    }
+
+    50% {
+        opacity: 0.98;
+    }
 }
 
 .leaflet-popup-tip {
@@ -304,69 +580,33 @@ select {
     border-color: rgba(55, 65, 81, 0.5);
 }
 
-.animated-marker-icon {
-    filter: drop-shadow(0 4px 3px rgba(0, 0, 0, 0.3));
-    transform-origin: bottom center;
-    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-    will-change: transform;
-}
-
-.animated-marker-icon:hover {
-    filter: drop-shadow(0 8px 6px rgba(0, 0, 0, 0.4));
-    transform: scale(1.1) translateY(-5px);
-}
-
-.marker-influence-circle {
-    transition: opacity 0.3s ease-in-out, stroke-dashoffset 5s linear;
-}
-.marker-highlight-ring {
-    opacity: 0.7;
-    animation: pulse-subtle 3s ease-in-out infinite;
-    will-change: opacity, transform;
-}
-@keyframes pulse-subtle {
-    0% {
-        opacity: 0.4;
-        transform: scale(0.95);
-    }
-
-        50% {
-            opacity: 0.7;
-            transform: scale(1.05);
-        }
-    100% {
-        opacity: 0.4;
-            transform: scale(0.95);
-        }
-        }
-        
-        .leaflet-control-zoom {
+.leaflet-control-zoom {
             border-radius: 8px !important;
             overflow: hidden;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
-        }
-        
-        .leaflet-control-zoom-in,
-        .leaflet-control-zoom-out {
+}
+
+.leaflet-control-zoom-in,
+.leaflet-control-zoom-out {
             width: 36px !important;
             height: 36px !important;
             line-height: 36px !important;
             font-size: 18px !important;
             background-color: white !important;
             color: #4b5563 !important;
-        }
-        
-        .leaflet-control-zoom-in:hover,
-        .leaflet-control-zoom-out:hover {
+}
+
+.leaflet-control-zoom-in:hover,
+.leaflet-control-zoom-out:hover {
             background-color: #f3f4f6 !important;
             color: #111827 !important;
-        }
-        
-        .dark .leaflet-control-zoom-in,
-        .dark .leaflet-control-zoom-out {
+}
+
+.dark .leaflet-control-zoom-in,
+.dark .leaflet-control-zoom-out {
             background-color: #1f2937 !important;
             color: #e5e7eb !important;
-        }
+}
 .dark .leaflet-control-zoom-in:hover,
 .dark .leaflet-control-zoom-out:hover {
     background-color: #374151 !important;
@@ -407,4 +647,13 @@ select {
 
 .leaflet-fade-anim .leaflet-map-pane .leaflet-popup {
     transition-property: opacity, transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .map-pin-wave,
+    .map-marker-aura,
+    .map-marker-perimeter,
+    .map-marker-wave {
+        animation: none !important;
+    }
 }
