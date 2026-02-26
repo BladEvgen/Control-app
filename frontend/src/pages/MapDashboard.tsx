@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { MapContainer, TileLayer, useMap, ZoomControl } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L, { Map as LeafletMap } from "leaflet";
+import { useLocation, useNavigate } from "react-router-dom";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import Notification from "../components/Notification";
@@ -9,27 +10,35 @@ import AnimatedMarker from "../components/AnimatedMarker";
 import { BaseAction } from "../schemas/BaseAction";
 import { LocationData } from "../schemas/IData";
 import { FaExpand, FaCompress, FaCalendarAlt } from "react-icons/fa";
+import { FiClock, FiCrosshair, FiMapPin, FiMaximize2, FiUsers } from "react-icons/fi";
 import { motion, Variants } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
 import EditableDateField from "../components/EditableDateField";
 import { useAppSelector } from "../store/hooks";
 
 type MapDispatchPayload = boolean | LocationData[] | string;
+type MapFocusMode = "first" | "all";
 
 interface DocumentWithFullscreen extends Document {
-  webkitExitFullscreen?: () => Promise<void>;
-  mozCancelFullScreen?: () => Promise<void>;
-  msExitFullscreen?: () => Promise<void>;
+  webkitExitFullscreen?: () => Promise<void> | void;
+  mozCancelFullScreen?: () => Promise<void> | void;
+  msExitFullscreen?: () => Promise<void> | void;
   webkitFullscreenElement?: Element | null;
   mozFullScreenElement?: Element | null;
   msFullscreenElement?: Element | null;
 }
 
 interface DocumentElementWithFullscreen extends HTMLElement {
-  webkitRequestFullscreen?: () => Promise<void>;
-  mozRequestFullScreen?: () => Promise<void>;
-  msRequestFullscreen?: () => Promise<void>;
+  webkitRequestFullscreen?: () => Promise<void> | void;
+  mozRequestFullScreen?: () => Promise<void> | void;
+  msRequestFullscreen?: () => Promise<void> | void;
 }
+
+const MAP_DEFAULT_CENTER: [number, number] = [54.328962, 48.389899];
+const MAP_DEFAULT_ZOOM = 13.5;
+const MAP_MULTI_POINT_ZOOM = 15;
+const MAP_SINGLE_POINT_ZOOM = 16;
+const NUMBER_FORMATTER = new Intl.NumberFormat("ru-RU");
 
 const getFormattedDateAt = (): string => {
   const yesterday = new Date();
@@ -41,7 +50,7 @@ const calculateDistance = (
   lat1: number,
   lon1: number,
   lat2: number,
-  lon2: number
+  lon2: number,
 ): number => {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -125,13 +134,13 @@ const generateVibrantColors = (numColors: number): string[] => {
 
 const assignHighContrastColors = (
   locations: LocationData[],
-  distanceThreshold: number
+  distanceThreshold: number,
 ): string[] => {
   const numLocations = locations.length;
 
   const adjacencyList: number[][] = Array.from(
     { length: numLocations },
-    () => []
+    () => [],
   );
 
   for (let i = 0; i < numLocations; i++) {
@@ -140,7 +149,7 @@ const assignHighContrastColors = (
         locations[i].lat,
         locations[i].lng,
         locations[j].lat,
-        locations[j].lng
+        locations[j].lng,
       );
       if (distance <= distanceThreshold) {
         adjacencyList[i].push(j);
@@ -156,7 +165,7 @@ const assignHighContrastColors = (
 
   const locationIndices = Array.from(
     { length: numLocations },
-    (_, i) => i
+    (_, i) => i,
   ).sort((a, b) => adjacencyList[b].length - adjacencyList[a].length);
 
   for (const i of locationIndices) {
@@ -231,39 +240,86 @@ const useFullscreenChange = (callback: () => void) => {
 
 const MapEventHandler: React.FC<{
   mapRef: React.MutableRefObject<LeafletMap | null>;
-  handleZoom: () => void;
-}> = ({ mapRef, handleZoom }) => {
+  onMapReady: () => void;
+}> = ({ mapRef, onMapReady }) => {
   const map = useMap();
 
   useEffect(() => {
     mapRef.current = map;
-    map.on("zoomend", handleZoom);
-    handleZoom();
-
-    return () => {
-      map.off("zoomend", handleZoom);
-    };
-  }, [map, mapRef, handleZoom]);
+    onMapReady();
+  }, [map, mapRef, onMapReady]);
 
   return null;
 };
 
 const MapDashboard: React.FC = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const isKiosk =
+    /\/map$/.test(location.pathname) &&
+    new URLSearchParams(location.search).get("kiosk") === "1";
+
   const [locations, setLocations] = useState<LocationData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [visiblePopup, setVisiblePopup] = useState<string | null>(null);
   const [isMarkersVisible, setIsMarkersVisible] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [zoomLevel, setZoomLevel] = useState<number>(13.5);
+  const [isFullscreenBusy, setIsFullscreenBusy] = useState(false);
+  const [mapReadyVersion, setMapReadyVersion] = useState(0);
+  const [mapFocusMode, setMapFocusMode] = useState<MapFocusMode>("first");
   const [assignedColors, setAssignedColors] = useState<string[]>([]);
   const [dateAt, setDateAt] = useState<string>(getFormattedDateAt());
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [suppressAutoPanPopupId, setSuppressAutoPanPopupId] = useState<
+    string | null
+  >(null);
   const reportsAutoRefreshMinutes = useAppSelector(
-    (state) => state.ui.reportsAutoRefreshMinutes
+    (state) => state.ui.reportsAutoRefreshMinutes,
   );
 
   const mapRef = useRef<LeafletMap | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
+  const fullscreenToggleLockRef = useRef(false);
+  const restoreKioskSearchOnExitRef = useRef(false);
+  const shouldFitOnNextDataRef = useRef(true);
+  const hasAutoOpenedPopupRef = useRef(false);
+  const visiblePopupRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    visiblePopupRef.current = visiblePopup;
+  }, [visiblePopup]);
+
+  const getLocationIdentifier = useCallback(
+    (loc: LocationData, index: number) =>
+      `${loc.name}-${loc.address}-${loc.lat}-${loc.lng}-${index}`,
+    [],
+  );
+
+  const getFullscreenElement = useCallback((): Element | null => {
+    const doc = document as DocumentWithFullscreen;
+    return (
+      document.fullscreenElement ??
+      doc.webkitFullscreenElement ??
+      doc.mozFullScreenElement ??
+      doc.msFullscreenElement ??
+      null
+    );
+  }, []);
+
+  const totalEmployees = useMemo(
+    () => locations.reduce((sum, loc) => sum + loc.employees, 0),
+    [locations],
+  );
+
+  const lastUpdatedLabel = useMemo(() => {
+    if (!lastUpdatedAt) return "ожидание";
+    return new Intl.DateTimeFormat("ru-RU", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(lastUpdatedAt);
+  }, [lastUpdatedAt]);
 
   const dispatch = useCallback((action: BaseAction<MapDispatchPayload>) => {
     switch (action.type) {
@@ -283,42 +339,67 @@ const MapDashboard: React.FC = () => {
     }
   }, []);
 
-  const fetchLocations = useCallback(async (selectedDate: string) => {
-    dispatch(new BaseAction(BaseAction.SET_LOADING, true));
-    try {
-      const response = await axiosInstance.get(
-        `${apiUrl}/api/locations?employees=true&date_at=${selectedDate}`
-      );
-      const fetchedLocations: LocationData[] = response.data.filter(
-        (loc: LocationData) => loc.employees > 0
-      );
+  const fetchLocations = useCallback(
+    async (selectedDate: string) => {
+      dispatch(new BaseAction(BaseAction.SET_LOADING, true));
+      try {
+        const response = await axiosInstance.get(
+          `${apiUrl}/api/locations?employees=true&date_at=${selectedDate}`,
+        );
+        const fetchedLocations: LocationData[] = response.data.filter(
+          (loc: LocationData) => loc.employees > 0,
+        );
 
-      dispatch(new BaseAction(BaseAction.SET_DATA, fetchedLocations));
+        dispatch(new BaseAction(BaseAction.SET_DATA, fetchedLocations));
 
-      const distanceThreshold = 0.25;
-      const tempAssignedColors = assignHighContrastColors(
-        fetchedLocations,
-        distanceThreshold
-      );
-      setAssignedColors(tempAssignedColors);
+        const distanceThreshold = 0.25;
+        const tempAssignedColors = assignHighContrastColors(
+          fetchedLocations,
+          distanceThreshold,
+        );
+        setAssignedColors(tempAssignedColors);
+        setLastUpdatedAt(new Date());
 
-      if (fetchedLocations.length > 0) {
-        setVisiblePopup(
-          `${fetchedLocations[0].name}-${fetchedLocations[0].address}-0`
+        const fetchedIdentifiers = fetchedLocations.map((loc, index) =>
+          getLocationIdentifier(loc, index),
+        );
+        const currentVisiblePopup = visiblePopupRef.current;
+        const hasCurrentVisible =
+          currentVisiblePopup !== null &&
+          fetchedIdentifiers.includes(currentVisiblePopup);
+
+        if (hasCurrentVisible) {
+          setVisiblePopup(currentVisiblePopup);
+          setSuppressAutoPanPopupId(null);
+        } else if (!hasAutoOpenedPopupRef.current && fetchedIdentifiers[0]) {
+          const firstPopupId = fetchedIdentifiers[0];
+          setVisiblePopup(firstPopupId);
+          setSuppressAutoPanPopupId(firstPopupId);
+          hasAutoOpenedPopupRef.current = true;
+        } else {
+          setVisiblePopup(null);
+          setSuppressAutoPanPopupId(null);
+        }
+
+        setIsMarkersVisible(true);
+      } catch {
+        dispatch(
+          new BaseAction(BaseAction.SET_ERROR, "Не удалось загрузить данные."),
         );
       }
-
-      setIsMarkersVisible(true);
-    } catch {
-      dispatch(
-        new BaseAction(BaseAction.SET_ERROR, "Не удалось загрузить данные.")
-      );
-    }
-  }, [dispatch]);
+    },
+    [dispatch, getLocationIdentifier],
+  );
 
   useEffect(() => {
     fetchLocations(dateAt);
   }, [dateAt, fetchLocations]);
+
+  useEffect(() => {
+    if (locations.length === 0) {
+      shouldFitOnNextDataRef.current = true;
+    }
+  }, [locations.length]);
 
   useEffect(() => {
     if (reportsAutoRefreshMinutes <= 0) return;
@@ -327,126 +408,314 @@ const MapDashboard: React.FC = () => {
     return () => clearInterval(id);
   }, [dateAt, reportsAutoRefreshMinutes, fetchLocations]);
 
-  useEffect(() => {
-    if (locations.length > 0) {
-      const timeoutId = setTimeout(() => {
-        if (mapRef.current && mapRef.current.getContainer()) {
-          try {
-            mapRef.current.setView(
-              [locations[0].lat, locations[0].lng],
-              mapRef.current.getZoom(),
-              {
-                animate: false,
-              }
-            );
-          } catch (error) {
-            console.error("Error setting map view:", error);
-          }
-        }
-      }, 500);
-
-      return () => clearTimeout(timeoutId);
-    }
-  }, [locations]);
-
   const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedDate = event.target.value;
     const today = new Date().toISOString().split("T")[0];
 
     if (selectedDate > today) {
       setDateAt(today);
-      fetchLocations(today);
     } else {
       setDateAt(selectedDate);
-      fetchLocations(selectedDate);
     }
+    setMapFocusMode("first");
+    shouldFitOnNextDataRef.current = true;
   };
 
   const toggleVisibility = (location: LocationData, index: number) => {
-    const identifier = `${location.name}-${location.address}-${index}`;
-    setVisiblePopup(visiblePopup === identifier ? null : identifier);
-    if (mapRef.current) {
-      mapRef.current.setView(
-        [location.lat, location.lng],
-        mapRef.current.getZoom(),
-        { animate: true }
-      );
+    const identifier = getLocationIdentifier(location, index);
+    const nextVisiblePopup = visiblePopup === identifier ? null : identifier;
+    setSuppressAutoPanPopupId(null);
+    setVisiblePopup(nextVisiblePopup);
+
+    if (nextVisiblePopup) {
+      toggleMapOnMarkerClick(location, !isFullscreenBusy);
     }
   };
 
-  const customIcon = L.icon({
-    iconUrl: `${apiUrl}/media/marker.png`,
-    iconSize: [35, 40],
-    iconAnchor: [17, 35],
-    popupAnchor: [0, -40],
-    className: "custom-marker-icon",
-  });
+  const safeSetView = useCallback(
+    (center: [number, number], zoom: number, animate: boolean): boolean => {
+      const map = mapRef.current;
+      if (!map) return false;
 
-  const handleFullscreenToggle = () => {
-    window.scrollTo(0, 0);
+      const mapInternals = map as LeafletMap & {
+        _loaded?: boolean;
+        _mapPane?: HTMLElement | null;
+      };
 
-    setTimeout(() => {
-      window.scrollTo(0, 0);
-
-      if (mapRef.current) {
-        const currentCenter = mapRef.current.getCenter();
-        mapRef.current.setView(currentCenter, mapRef.current.getZoom());
+      if (!mapInternals._loaded || !mapInternals._mapPane) {
+        return false;
       }
-    }, 100);
+
+      const container = map.getContainer();
+      if (!container || !container.isConnected) {
+        return false;
+      }
+
+      try {
+        map.setView(center, zoom, { animate });
+        return true;
+      } catch (error) {
+        console.warn("Map setView failed, fallback to non-animated view.", error);
+        try {
+          map.invalidateSize();
+          map.setView(center, zoom, { animate: false });
+          return true;
+        } catch (fallbackError) {
+          console.error("Map setView fallback failed.", fallbackError);
+          return false;
+        }
+      }
+    },
+    [],
+  );
+
+  const safeFitBounds = useCallback(
+    (bounds: L.LatLngBounds, animate: boolean, maxZoom: number): boolean => {
+      const map = mapRef.current;
+      if (!map) return false;
+
+      const mapInternals = map as LeafletMap & {
+        _loaded?: boolean;
+        _mapPane?: HTMLElement | null;
+      };
+
+      if (!mapInternals._loaded || !mapInternals._mapPane) {
+        return false;
+      }
+
+      const container = map.getContainer();
+      if (!container || !container.isConnected) {
+        return false;
+      }
+
+      try {
+        map.fitBounds(bounds, {
+          padding: [72, 72],
+          maxZoom,
+          animate,
+        });
+        return true;
+      } catch (error) {
+        console.warn(
+          "Map fitBounds failed, fallback to non-animated fit.",
+          error,
+        );
+        try {
+          map.invalidateSize();
+          map.fitBounds(bounds, {
+            padding: [72, 72],
+            maxZoom,
+            animate: false,
+          });
+          return true;
+        } catch (fallbackError) {
+          console.error("Map fitBounds fallback failed.", fallbackError);
+          return false;
+        }
+      }
+    },
+    [],
+  );
+
+  const toggleMapViewToLocation = useCallback(
+    (location: LocationData, animate: boolean) => {
+      const map = mapRef.current;
+      if (!map) return;
+
+      safeSetView([location.lat, location.lng], map.getZoom(), animate);
+    },
+    [safeSetView],
+  );
+
+  const toggleMapOnMarkerClick = useCallback(
+    (location: LocationData, shouldAnimate: boolean) => {
+      if (!shouldAnimate) {
+        toggleMapViewToLocation(location, false);
+        return;
+      }
+      toggleMapViewToLocation(location, true);
+    },
+    [toggleMapViewToLocation],
+  );
+
+  const centerMapOnFirstLocation = useCallback((animate = false): boolean => {
+    if (locations.length === 0) {
+      return safeSetView(MAP_DEFAULT_CENTER, MAP_DEFAULT_ZOOM, false);
+    }
+
+    const [firstLocation] = locations;
+    const targetZoom =
+      locations.length === 1 ? MAP_SINGLE_POINT_ZOOM : MAP_MULTI_POINT_ZOOM;
+    return safeSetView([firstLocation.lat, firstLocation.lng], targetZoom, animate);
+  }, [locations, safeSetView]);
+
+  const fitMapToAllLocations = useCallback((animate = true): boolean => {
+    if (locations.length === 0) {
+      return safeSetView(MAP_DEFAULT_CENTER, MAP_DEFAULT_ZOOM, false);
+    }
+
+    if (locations.length === 1) {
+      return centerMapOnFirstLocation(animate);
+    }
+
+    const bounds = L.latLngBounds(
+      locations.map((loc) => [loc.lat, loc.lng] as [number, number]),
+    );
+    if (!bounds.isValid()) return false;
+
+    return safeFitBounds(bounds, animate, MAP_MULTI_POINT_ZOOM);
+  }, [centerMapOnFirstLocation, locations, safeFitBounds, safeSetView]);
+
+  const handleFocusFirst = useCallback(() => {
+    setMapFocusMode("first");
+    centerMapOnFirstLocation(true);
+  }, [centerMapOnFirstLocation]);
+
+  const handleFocusAll = useCallback(() => {
+    setMapFocusMode("all");
+    fitMapToAllLocations(true);
+  }, [fitMapToAllLocations]);
+
+  const handleMapReady = useCallback(() => {
+    setMapReadyVersion((prev) => prev + 1);
+  }, []);
+
+  const handleFullscreenToggle = useCallback(async () => {
+    if (fullscreenToggleLockRef.current) return;
 
     const docEl = document.documentElement as DocumentElementWithFullscreen;
     const doc = document as DocumentWithFullscreen;
-    if (!isFullscreen) {
-      if (docEl.requestFullscreen) {
-        docEl.requestFullscreen();
-      } else if (docEl.webkitRequestFullscreen) {
-        docEl.webkitRequestFullscreen();
-      } else if (docEl.mozRequestFullScreen) {
-        docEl.mozRequestFullScreen();
-      } else if (docEl.msRequestFullscreen) {
-        docEl.msRequestFullscreen();
+    const currentlyFullscreen = !!getFullscreenElement();
+
+    fullscreenToggleLockRef.current = true;
+    setIsFullscreenBusy(true);
+
+    try {
+      if (!currentlyFullscreen) {
+        if (!isKiosk) {
+          restoreKioskSearchOnExitRef.current = true;
+          navigate(
+            { pathname: location.pathname, search: "?kiosk=1" },
+            { replace: true },
+          );
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
+        }
+
+        const req =
+          docEl.requestFullscreen ??
+          docEl.webkitRequestFullscreen ??
+          docEl.mozRequestFullScreen ??
+          docEl.msRequestFullscreen;
+        if (req) {
+          await Promise.resolve(req.call(docEl));
+        }
+      } else {
+        const exit =
+          document.exitFullscreen ??
+          doc.webkitExitFullscreen ??
+          doc.mozCancelFullScreen ??
+          doc.msExitFullscreen;
+        if (exit) {
+          await Promise.resolve(exit.call(doc));
+        }
       }
-    } else {
-      if (document.exitFullscreen) {
-        document.exitFullscreen();
-      } else if (doc.webkitExitFullscreen) {
-        doc.webkitExitFullscreen();
-      } else if (doc.mozCancelFullScreen) {
-        doc.mozCancelFullScreen();
-      } else if (doc.msExitFullscreen) {
-        doc.msExitFullscreen();
-      }
+    } catch (error) {
+      console.error("Error toggling fullscreen:", error);
+    } finally {
+      window.setTimeout(() => {
+        if (!getFullscreenElement()) {
+          setIsFullscreenBusy(false);
+          fullscreenToggleLockRef.current = false;
+        }
+      }, 350);
     }
-  };
+  }, [getFullscreenElement, isKiosk, location.pathname, navigate]);
 
   const handleFullscreenChange = useCallback(() => {
-    const doc = document as DocumentWithFullscreen;
-    const newFullscreenState =
-      !!document.fullscreenElement ||
-      !!doc.webkitFullscreenElement ||
-      !!doc.mozFullScreenElement ||
-      !!doc.msFullscreenElement;
-
+    const newFullscreenState = !!getFullscreenElement();
     setIsFullscreen(newFullscreenState);
+    setIsFullscreenBusy(false);
+    fullscreenToggleLockRef.current = false;
 
-    setTimeout(() => {
-      window.scrollTo(0, 0);
-
-      if (mapRef.current) {
-        const currentCenter = mapRef.current.getCenter();
-        mapRef.current.invalidateSize();
-        mapRef.current.setView(currentCenter, mapRef.current.getZoom());
+    if (!newFullscreenState && restoreKioskSearchOnExitRef.current) {
+      restoreKioskSearchOnExitRef.current = false;
+      if (new URLSearchParams(window.location.search).get("kiosk") === "1") {
+        navigate(
+          { pathname: location.pathname, search: "" },
+          { replace: true },
+        );
       }
-    }, 300);
-  }, []);
+    }
+
+    window.setTimeout(() => {
+      if (!mapRef.current) return;
+      mapRef.current.invalidateSize();
+    }, 480);
+  }, [getFullscreenElement, location.pathname, navigate]);
 
   useFullscreenChange(handleFullscreenChange);
 
-  const handleZoom = useCallback(() => {
-    if (mapRef.current) {
-      setZoomLevel(mapRef.current.getZoom());
+  useEffect(() => {
+    if (!shouldFitOnNextDataRef.current) return;
+
+    let attempts = 0;
+
+    const tryCenter = () => {
+      const centered = centerMapOnFirstLocation();
+      if (centered) {
+        shouldFitOnNextDataRef.current = false;
+        setMapFocusMode("first");
+      }
+      return centered;
+    };
+
+    if (tryCenter()) {
+      return;
     }
+
+    const id = window.setInterval(() => {
+      attempts += 1;
+      if (tryCenter() || attempts >= 25) {
+        window.clearInterval(id);
+      }
+    }, 120);
+
+    return () => window.clearInterval(id);
+  }, [centerMapOnFirstLocation, locations, mapReadyVersion]);
+
+  useEffect(() => {
+    const el = mapContainerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let resizeTimeout: number | null = null;
+    const ro = new ResizeObserver(() => {
+      if (resizeTimeout !== null) {
+        window.clearTimeout(resizeTimeout);
+      }
+      resizeTimeout = window.setTimeout(() => {
+        if (mapRef.current) {
+          mapRef.current.invalidateSize();
+        }
+      }, 120);
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      if (resizeTimeout !== null) {
+        window.clearTimeout(resizeTimeout);
+      }
+    };
   }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "F11") {
+        event.preventDefault();
+        handleFullscreenToggle();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [handleFullscreenToggle]);
 
   useEffect(() => {
     return () => {
@@ -487,88 +756,172 @@ const MapDashboard: React.FC = () => {
         }}
       />
 
-      <motion.div
-        className="absolute top-4 right-6 z-10 bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden"
-        variants={dateVariants}
-        initial="hidden"
-        animate="visible"
+      <div
+        className={`relative z-20 mx-auto w-full max-w-[1600px] px-3 sm:px-4 ${
+          isFullscreen ? "pt-2 pb-2" : "pt-4 sm:pt-5 pb-3"
+        }`}
       >
-        <div className="p-4 flex items-center gap-3">
-          <FaCalendarAlt className="text-primary-600 dark:text-primary-400" />
-          <div>
-            <EditableDateField
-              label="Дата данных"
-              value={dateAt}
-              onChange={handleDateChange}
-              containerClassName="m-0 p-0"
-              labelClassName="text-xs text-gray-500 dark:text-gray-400 mb-0 mr-2"
-              displayClassName="font-medium text-gray-800 dark:text-gray-200 hover:text-primary-600 dark:hover:text-primary-400 cursor-pointer"
-            />
+        <motion.div
+          className={`rounded-2xl border px-3 sm:px-4 py-2.5 sm:py-3 shadow-lg backdrop-blur-md flex flex-wrap items-center justify-between gap-3 ${
+            isFullscreen
+              ? "border-white/55 dark:border-slate-700/70 bg-white/65 dark:bg-slate-900/45"
+              : "border-white/65 dark:border-slate-700/80 bg-white/70 dark:bg-slate-900/55"
+          }`}
+          variants={dateVariants}
+          initial="hidden"
+          animate="visible"
+        >
+          <div className="min-w-0">
+            <h1 className="text-lg sm:text-xl font-semibold text-gray-800 dark:text-gray-100 truncate">
+              Карта посещаемости
+            </h1>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 sm:gap-2 text-[11px] sm:text-xs">
+              <span className="inline-flex items-center gap-1 rounded-full border border-sky-200/90 dark:border-sky-700/70 bg-sky-50/90 dark:bg-sky-900/30 px-2 py-0.5 text-sky-700 dark:text-sky-200">
+                <FiMapPin className="w-3 h-3" />
+                {NUMBER_FORMATTER.format(locations.length)} точек
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full border border-violet-200/90 dark:border-violet-700/70 bg-violet-50/90 dark:bg-violet-900/30 px-2 py-0.5 text-violet-700 dark:text-violet-200">
+                <FiUsers className="w-3 h-3" />
+                {NUMBER_FORMATTER.format(totalEmployees)} посещений
+              </span>
+            </div>
           </div>
-        </div>
-      </motion.div>
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <div className="inline-flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55">
+              <FaCalendarAlt className="text-primary-600 dark:text-primary-400" />
+              <EditableDateField
+                label="Дата данных"
+                value={dateAt}
+                onChange={handleDateChange}
+                containerClassName="m-0 p-0"
+                labelClassName="text-xs text-gray-500 dark:text-gray-400 mb-0 mr-2"
+                displayClassName="font-medium text-gray-800 dark:text-gray-200 hover:text-primary-600 dark:hover:text-primary-400 cursor-pointer"
+              />
+            </div>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-[11px] sm:text-xs text-gray-700 dark:text-gray-300">
+              <FiClock className="w-3.5 h-3.5 text-primary-600 dark:text-primary-400" />
+              Обновлено: {lastUpdatedLabel}
+            </div>
+            <motion.button
+              onClick={handleFocusFirst}
+              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                mapFocusMode === "first"
+                  ? "border-primary-400/80 bg-primary-500/15 text-primary-700 dark:text-primary-200"
+                  : "border-slate-300 dark:border-slate-600 bg-white/75 dark:bg-slate-900/70 text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-800"
+              }`}
+              variants={buttonVariants}
+              initial="initial"
+              whileHover="hover"
+              whileTap="tap"
+            >
+              <FiCrosshair className="w-4 h-4" />
+              К первой точке
+            </motion.button>
+            <motion.button
+              onClick={handleFocusAll}
+              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                mapFocusMode === "all"
+                  ? "border-primary-400/80 bg-primary-500/15 text-primary-700 dark:text-primary-200"
+                  : "border-slate-300 dark:border-slate-600 bg-white/75 dark:bg-slate-900/70 text-slate-700 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-800"
+              }`}
+              variants={buttonVariants}
+              initial="initial"
+              whileHover="hover"
+              whileTap="tap"
+            >
+              <FiMaximize2 className="w-4 h-4" />
+              Все точки
+            </motion.button>
+            <motion.button
+              onClick={handleFullscreenToggle}
+              disabled={isFullscreenBusy}
+              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white transition-colors ${
+                isFullscreenBusy
+                  ? "bg-primary-400 cursor-not-allowed"
+                  : "bg-primary-600 hover:bg-primary-700"
+              }`}
+              aria-label={
+                isFullscreen
+                  ? "Выйти из полноэкранного режима"
+                  : "Полноэкранный режим"
+              }
+              variants={buttonVariants}
+              initial="initial"
+              whileHover="hover"
+              whileTap="tap"
+            >
+              {isFullscreen && !isFullscreenBusy ? (
+                <FaCompress className="w-4 h-4" />
+              ) : (
+                <FaExpand className="w-4 h-4" />
+              )}
+              <span>
+                {isFullscreenBusy
+                  ? isFullscreen
+                    ? "Выход..."
+                    : "Открытие..."
+                  : isFullscreen
+                    ? "Выход"
+                    : "Полный экран"}
+              </span>
+            </motion.button>
+          </div>
+        </motion.div>
+      </div>
 
-      <motion.button
-        onClick={handleFullscreenToggle}
-        className="absolute top-4 left-4 z-20 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 p-3 rounded-full shadow-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200"
-        aria-label={
+      <div
+        className={`relative z-10 mx-auto w-full ${
           isFullscreen
-            ? "Выйти из полноэкранного режима"
-            : "Полноэкранный режим"
-        }
-        variants={buttonVariants}
-        initial="initial"
-        whileHover="hover"
-        whileTap="tap"
+            ? "max-w-none px-2 sm:px-3 pb-2 sm:pb-3"
+            : "max-w-[1600px] px-3 sm:px-4 pb-3 sm:pb-4"
+        } ${isFullscreen ? "h-[calc(100vh-112px)]" : "h-[clamp(420px,72vh,860px)]"} transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]`}
       >
-        {isFullscreen ? (
-          <FaCompress className="w-5 h-5" />
-        ) : (
-          <FaExpand className="w-5 h-5" />
-        )}
-      </motion.button>
-
-      <div className="flex justify-center items-center w-full h-screen py-8 px-4">
         <motion.div
           ref={mapContainerRef}
           variants={mapContainerVariants}
           initial="hidden"
           animate="visible"
-          className={`relative transition-all duration-700 ease-in-out ${
-            isFullscreen
-              ? "w-[105%] h-[98vh] -mx-6"
-              : "w-[85%] h-[70vh] mx-auto"
-          }`}
+          className="relative w-full h-full"
         >
           <div
-            className={`w-full h-full overflow-hidden shadow-2xl transition-all duration-700 ease-in-out ${
+            className={`relative w-full h-full overflow-hidden transition-all duration-500 ${
               isFullscreen
-                ? "rounded-none"
-                : "rounded-xl border-4 border-gray-800"
+                ? "rounded-2xl border border-white/45 dark:border-slate-700/70 shadow-[0_20px_60px_-25px_rgba(15,23,42,0.75)]"
+                : "rounded-2xl border border-white/60 dark:border-slate-700/80 shadow-2xl"
             }`}
-            style={{
-              boxShadow: isFullscreen
-                ? "0 0 40px 10px rgba(0, 0, 0, 0.5)"
-                : "0 4px 30px rgba(0, 0, 0, 0.5)",
-            }}
           >
+            {locations.length === 0 && (
+              <div className="pointer-events-none absolute inset-0 z-[650] flex items-center justify-center p-4">
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="pointer-events-auto rounded-2xl border border-white/70 dark:border-slate-700/80 bg-white/85 dark:bg-slate-900/85 px-5 py-4 shadow-2xl backdrop-blur-sm text-center max-w-md"
+                >
+                  <div className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                    На выбранную дату нет активных точек
+                  </div>
+                  <div className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+                    Измени дату или дождись следующего обновления.
+                  </div>
+                </motion.div>
+              </div>
+            )}
+
             <MapContainer
-              center={[54.328962, 48.389899]}
-              zoom={zoomLevel}
+              center={MAP_DEFAULT_CENTER}
+              zoom={MAP_DEFAULT_ZOOM}
               style={{ width: "100%", height: "100%" }}
               zoomControl={false}
+              attributionControl={false}
               className="z-10"
             >
               <ZoomControl position="bottomright" />
-              <MapEventHandler mapRef={mapRef} handleZoom={handleZoom} />
+              <MapEventHandler mapRef={mapRef} onMapReady={handleMapReady} />
 
-              <TileLayer
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-              />
+              <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
 
               {locations.map((location, index) => {
-                const identifier = `${location.name}-${location.address}-${index}`;
+                const identifier = getLocationIdentifier(location, index);
                 return (
                   <AnimatedMarker
                     key={identifier}
@@ -577,12 +930,13 @@ const MapDashboard: React.FC = () => {
                     address={location.address}
                     employees={location.employees}
                     isVisible={isMarkersVisible}
-                    icon={customIcon}
                     onClick={() => toggleVisibility(location, index)}
                     popupVisible={visiblePopup === identifier}
-                    radius={160}
+                    autoPan={
+                      suppressAutoPanPopupId !== identifier && !isFullscreenBusy
+                    }
+                    radius={96}
                     color={assignedColors[index]}
-                    zoomLevel={zoomLevel}
                   />
                 );
               })}
