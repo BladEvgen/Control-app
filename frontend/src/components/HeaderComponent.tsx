@@ -1,14 +1,15 @@
-import React, { lazy, Suspense, useEffect } from "react";
+import React, { Suspense, useEffect } from "react";
 import { useAuth } from "../store/hooks";
 import { isAuthenticated } from "../utils/authHelpers";
+import { lazyWithRetry } from "../utils/lazyWithRetry";
 
 type HeaderComponentProps = {
   toggleTheme: () => void;
   currentTheme: string;
 };
 
-const DesktopNavbar = lazy(() => import("./DesktopNavbar"));
-const MobileNavbar = lazy(() => import("./MobileNavbar"));
+const DesktopNavbar = lazyWithRetry(() => import("./DesktopNavbar"));
+const MobileNavbar = lazyWithRetry(() => import("./MobileNavbar"));
 
 const HeaderComponent: React.FC<HeaderComponentProps> = ({
   toggleTheme,

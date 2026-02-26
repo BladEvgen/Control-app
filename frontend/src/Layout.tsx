@@ -5,6 +5,7 @@ import React, {
   useRef,
   useCallback,
 } from "react";
+import { useLocation } from "react-router-dom";
 import HeaderComponent from "./components/HeaderComponent";
 import FooterComponent from "./components/FooterComponent";
 import AuthWebSocketInitializer from "./components/AuthWebSocketInitializer";
@@ -37,6 +38,12 @@ const safeSetItem = (key: string, value: string): void => {
 };
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
+  const location = useLocation();
+  const isLoginRoute = /\/login\/?$/.test(location.pathname);
+  const isKioskRoute =
+    /\/(photo|map)$/.test(location.pathname) &&
+    new URLSearchParams(location.search).get("kiosk") === "1";
+
   const [theme, setTheme] = useState<string>(() => {
     return safeGetItem("theme", "light");
   });
@@ -84,7 +91,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   return (
     <div className="flex flex-col min-h-screen overflow-hidden">
-      <AuthWebSocketInitializer />
+      {!isLoginRoute && <AuthWebSocketInitializer />}
 
       <div
         className="fixed inset-0 w-full h-full z-[-1] transition-colors duration-700"
@@ -96,12 +103,22 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         }}
       />
 
-      <HeaderComponent toggleTheme={toggleTheme} currentTheme={theme} />
+      {!isKioskRoute && !isLoginRoute && (
+        <HeaderComponent toggleTheme={toggleTheme} currentTheme={theme} />
+      )}
 
-      <main className="flex-1 relative pt-6 pb-24 lg:pb-10">
+      <main
+        className={`flex-1 relative ${isKioskRoute ? "pt-2 pb-4 px-0" : isLoginRoute ? "pt-0 pb-0" : "pt-6 pb-24 lg:pb-10"}`}
+      >
         <div
           ref={contentRef}
-          className="relative z-10 container mx-auto px-4 transition-opacity duration-300"
+          className={`relative z-10 transition-opacity duration-300 ${
+            isKioskRoute
+              ? "w-full max-w-none px-0"
+              : isLoginRoute
+                ? "w-full max-w-none px-0"
+                : "container mx-auto px-4"
+          }`}
           style={{ opacity: isChangingTheme ? 0.6 : 1 }}
         >
           {isChangingTheme && contentCache.current
@@ -110,8 +127,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         </div>
       </main>
 
-      <FooterComponent />
-      <ScrollToTopButton />
+      {!isKioskRoute && !isLoginRoute && <FooterComponent />}
+      {!isLoginRoute && <ScrollToTopButton />}
     </div>
   );
 };
