@@ -1,6 +1,16 @@
 import { useRouteError } from "react-router-dom";
-import { useMemo } from "react";
-import { FaExclamationTriangle, FaHome, FaRedo, FaCircle } from "react-icons/fa";
+import { useEffect, useMemo } from "react";
+import {
+  FaExclamationTriangle,
+  FaHome,
+  FaRedo,
+  FaCircle,
+} from "react-icons/fa";
+import {
+  forceHardReload,
+  isChunkLoadError,
+  tryRecoverChunkLoadError,
+} from "../utils/chunkRecovery";
 
 const FRIENDLY_HINTS = [
   "Проверьте подключение к интернету",
@@ -8,10 +18,16 @@ const FRIENDLY_HINTS = [
   "Попробуйте обновить страницу или зайти позже",
 ];
 
-/** Проверяет, похоже ли на проблему с браузером */
-function getBrowserMismatchInfo(error: unknown): { reason: string; solution: string } | null {
+function getBrowserMismatchInfo(
+  error: unknown,
+): { reason: string; solution: string } | null {
   const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
   const errMsg = error instanceof Error ? error.message : String(error);
+  const isTvBrowser = /TV|SmartTV|Tizen|WebOS|NetCast|HbbTV|Viera|BRAVIA/i.test(
+    ua,
+  );
+  const chromeVersionMatch = ua.match(/Chrome\/(\d+)/i);
+  const chromeMajor = chromeVersionMatch ? Number(chromeVersionMatch[1]) : null;
 
   if (/\bMSIE\b|Trident\//i.test(ua)) {
     return {
@@ -19,15 +35,25 @@ function getBrowserMismatchInfo(error: unknown): { reason: string; solution: str
       solution: "Используйте актуальный браузер.",
     };
   }
-  if (/TV|Tizen|WebOS|NetCast/i.test(ua)) {
+  if (isTvBrowser) {
     return {
-      reason: "Встроенный браузер телевизора не поддерживает приложение.",
-      solution: "Откройте на смартфоне или компьютере.",
+      reason:
+        "Встроенный браузер телевизора часто не поддерживает современные веб-приложения.",
+      solution:
+        "Обновите браузер/ПО телевизора. Если не помогло, откройте дашборд на ПК или телефоне.",
+    };
+  }
+  if (chromeMajor !== null && chromeMajor < 90) {
+    return {
+      reason: `Слишком старая версия браузера (Chromium ${chromeMajor}).`,
+      solution:
+        "Обновите браузер до более новой версии или используйте современный браузер на другом устройстве.",
     };
   }
   if (
-    /YaBrowser|Yandex|SamsungBrowser/i.test(ua) ||
-    /SyntaxError|Unexpected token|is not a function|undefined is not/i.test(errMsg)
+    /SyntaxError|Unexpected token|is not a function|undefined is not/i.test(
+      errMsg,
+    )
   ) {
     return {
       reason: "Браузер не поддерживает приложение.",
@@ -37,13 +63,16 @@ function getBrowserMismatchInfo(error: unknown): { reason: string; solution: str
   return null;
 }
 
-/**
- * Fallback UI для ошибок React Router.
- * Показывается вместо "Unexpected Application Error" — без стека и технических деталей.
- */
 const ErrorFallback: React.FC = () => {
   const error = useRouteError();
   const browserMismatch = useMemo(() => getBrowserMismatchInfo(error), [error]);
+  const chunkError = useMemo(() => isChunkLoadError(error), [error]);
+
+  useEffect(() => {
+    if (chunkError) {
+      tryRecoverChunkLoadError(error);
+    }
+  }, [chunkError, error]);
 
   if (import.meta.env.DEV) {
     console.error("Route error:", error);
@@ -59,7 +88,17 @@ const ErrorFallback: React.FC = () => {
           <h2 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-primary-600 to-secondary-600 bg-clip-text text-transparent dark:from-primary-400 dark:to-secondary-400 mb-3">
             Страница не загрузилась
           </h2>
-          {browserMismatch ? (
+          {chunkError ? (
+            <div className="mb-6 p-4 rounded-lg bg-warning-50 dark:bg-warning-900/20 border border-warning-200 dark:border-warning-800 text-left">
+              <p className="font-semibold text-warning-800 dark:text-warning-200 mb-1">
+                Приложение было обновлено
+              </p>
+              <p className="text-sm text-warning-700 dark:text-warning-300">
+                Нужна полная перезагрузка страницы, чтобы загрузить свежие
+                файлы.
+              </p>
+            </div>
+          ) : browserMismatch ? (
             <div className="mb-6 p-4 rounded-lg bg-warning-50 dark:bg-warning-900/20 border border-warning-200 dark:border-warning-800 text-left">
               <p className="font-semibold text-warning-800 dark:text-warning-200 mb-1">
                 Браузер не подходит
@@ -92,11 +131,17 @@ const ErrorFallback: React.FC = () => {
           <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
             <button
               type="button"
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                if (chunkError) {
+                  forceHardReload();
+                } else {
+                  window.location.reload();
+                }
+              }}
               className="btn-primary flex items-center justify-center gap-2"
             >
               <FaRedo className="w-4 h-4" />
-              Обновить страницу
+              {chunkError ? "Перезапустить приложение" : "Обновить страницу"}
             </button>
             <a
               href="/app"

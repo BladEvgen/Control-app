@@ -1,5 +1,10 @@
 import { Component, ErrorInfo, ReactNode } from "react";
 import { FaExclamationTriangle, FaHome, FaRedo } from "react-icons/fa";
+import {
+  forceHardReload,
+  isChunkLoadError,
+  tryRecoverChunkLoadError,
+} from "../utils/chunkRecovery";
 
 interface Props {
   children: ReactNode;
@@ -22,6 +27,9 @@ class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    if (tryRecoverChunkLoadError(error)) {
+      return;
+    }
     console.error("ErrorBoundary caught:", error, errorInfo);
   }
 
@@ -30,6 +38,9 @@ class ErrorBoundary extends Component<Props, State> {
       if (this.props.fallback) {
         return this.props.fallback;
       }
+      const chunkError = this.state.error
+        ? isChunkLoadError(this.state.error)
+        : false;
       return (
         <div className="flex flex-col justify-center items-center min-h-[60vh] px-4 py-12">
           <div className="card max-w-lg w-full p-8 animate-fadeInUp">
@@ -38,20 +49,31 @@ class ErrorBoundary extends Component<Props, State> {
                 <FaExclamationTriangle className="w-16 h-16 text-danger-600 dark:text-danger-400" />
               </div>
               <h2 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-primary-600 to-secondary-600 bg-clip-text text-transparent dark:from-primary-400 dark:to-secondary-400 mb-3">
-                Ошибка загрузки
+                {chunkError
+                  ? "Нужно перезапустить приложение"
+                  : "Ошибка загрузки"}
               </h2>
               <p className="text-gray-600 dark:text-gray-400 mb-8 leading-relaxed">
-                Приложение не удалось загрузить. Попробуйте обновить страницу или
-                использовать другой браузер.
+                {chunkError
+                  ? "Похоже, приложение обновилось на сервере. Выполните полную перезагрузку страницы."
+                  : "Приложение не удалось загрузить. Попробуйте обновить страницу или использовать другой браузер."}
               </p>
               <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
                 <button
                   type="button"
-                  onClick={() => window.location.reload()}
+                  onClick={() => {
+                    if (chunkError) {
+                      forceHardReload();
+                    } else {
+                      window.location.reload();
+                    }
+                  }}
                   className="btn-primary flex items-center justify-center gap-2"
                 >
                   <FaRedo className="w-4 h-4" />
-                  Обновить страницу
+                  {chunkError
+                    ? "Перезапустить приложение"
+                    : "Обновить страницу"}
                 </button>
                 <a
                   href="/app"
