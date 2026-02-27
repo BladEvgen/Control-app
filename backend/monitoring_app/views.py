@@ -2,6 +2,7 @@ import base64
 import datetime
 import json
 import logging
+import math
 import os
 import time
 import zipfile
@@ -117,6 +118,72 @@ LUNCH_BREAK_END = datetime.time(hour=14, minute=0)
 
 CLASS_LOCATION_CACHE_TTL = datetime.timedelta(minutes=60)
 DEPARTMENT_CONFIRMATION_CACHE_TTL = 10 * 60 * 60
+
+
+def get_confirmable_threshold(total_group: int) -> int:
+    """Вычисляет минимальное число отметившихся в основной локации для подтверждения.
+
+    Формула: max(2, ceil(0.20 * n + 0.70 * sqrt(n))), где n — размер группы.
+    Гарантирует, что одна случайная отметка не даёт подтверждение и порог растёт
+    с размером группы.
+
+    Args:
+        total_group: Общее количество студентов в группе за дату.
+
+    Returns:
+        Минимальное количество отметившихся в основной локации, при котором
+        подтверждение возможно (не менее 2).
+    """
+    n = max(1, total_group)
+    return max(2, math.ceil(0.20 * n + 0.70 * math.sqrt(n)))
+
+
+def get_min_leader_share(total_group: int) -> float:
+    """Возвращает минимальную долю основной локации среди отметившихся за день.
+
+    Args:
+        total_group: Общее количество студентов в группе.
+
+    Returns:
+        Минимальная доля (0..1): 0.60 при n <= 5, 0.55 при n <= 12, иначе 0.50.
+    """
+    if total_group <= 5:
+        return 0.60
+    if total_group <= 12:
+        return 0.55
+    return 0.50
+
+
+def is_main_location_confirmable(
+    leader_count: int,
+    total_group: int,
+    total_with_attendance: int,
+) -> bool:
+    """Проверяет, может ли первая локация дня считаться подтверждающей.
+
+    Основная локация подтверждает только если: количество в ней не меньше
+    динамического порога и её доля среди отметившихся не ниже минимальной.
+
+    Args:
+        leader_count: Количество отметившихся в первой (основной) локации.
+        total_group: Размер группы (всего студентов).
+        total_with_attendance: Всего отметившихся за день.
+
+    Returns:
+        True, если первая локация проходит порог и минимальную долю;
+        False иначе (в т.ч. при одной отметке или недостаточной доле).
+    """
+    if total_with_attendance <= 1:
+        return False
+    threshold = get_confirmable_threshold(total_group)
+    if leader_count < threshold:
+        return False
+    leader_share = leader_count / total_with_attendance
+    if leader_share < get_min_leader_share(total_group):
+        return False
+    return True
+
+
 CLASS_LOCATION_CACHE = {
     "expires_at": None,
     "kd_tree": None,
@@ -317,7 +384,7 @@ def _merge_attendance_for_date(sa_records, la_records, kd_tree, class_names):
     Returns:
         dict: first_in, last_out, area_name_in, area_name_out, first_in_source, last_out_source.
     """
-    combined = {
+    combined: dict[str, Any] = {
         "first_in": None,
         "last_out": None,
         "area_name_in": None,
@@ -946,21 +1013,26 @@ def _build_one_day_confirmation(
     name_to_address=None,
     address_to_name=None,
 ) -> dict[str, Any]:
-    """Build one-day confirmation payload for a department (single date, may hit DB).
+    """Формирует ответ подтверждения посещаемости по отделу за один день (одиночный запрос по дате).
 
-    Used when requesting a single date; for range use fetch_attendance_by_event_dates
-    and _build_one_day_from_records.
+    Собирает отметки из StaffAttendance и LessonAttendance, строит список локаций
+    (сортировка: по количеству отметившихся DESC, затем address ASC, name ASC).
+    Основная локация дня — первая в списке. Подтверждение (confirmed=True) только
+    у студентов из основной локации и только если она проходит динамический порог
+    и минимальную долю среди отметившихся. pct считается от total_with_attendance.
+    При отсутствии данных за день всем ставится waiting=True.
 
     Args:
-        _dept: ChildDepartment instance (unused; kept for API consistency with callers).
-        target_date: Event date (working day).
-        staff_list: List of staff objects (id, pin).
-        location_searcher: Optional LocationSearcher for LA.
-        name_to_address: Optional name -> address map.
-        address_to_name: Optional address -> name map.
+        _dept: Экземпляр ChildDepartment (не используется, оставлен для совместимости API).
+        target_date: Дата события (рабочий день).
+        staff_list: Список сотрудников (объекты с id, pin).
+        location_searcher: Опционально LocationSearcher для привязки LA к локациям.
+        name_to_address: Опционально словарь название -> адрес.
+        address_to_name: Опционально словарь адрес -> название.
 
     Returns:
-        dict: date, data_available, total, locations, by_pin_short.
+        Словарь с ключами: date, data_available, total, locations (name, address, count, pct, pins_short),
+        by_pin_short (confirmed, waiting, location, location_address, first_in по pin_short).
     """
     date_str = target_date.strftime("%Y-%m-%d")
     staff_ids = [s.id for s in staff_list]
@@ -1045,10 +1117,23 @@ def _build_one_day_confirmation(
             date_at=data_insert_date
         ).exists()
 
-    locations_sorted = sorted(location_counts.items(), key=lambda x: -len(x[1]))
-    main_address = locations_sorted[0][0] if locations_sorted else None
-
     total_with_attendance = sum(len(pins) for _, pins in location_counts.items())
+    total_group = len(staff_list)
+    locations_sorted = sorted(
+        location_counts.items(),
+        key=lambda x: (-len(x[1]), x[0], (address_to_name.get(x[0]) or x[0])),
+    )
+    main_address = locations_sorted[0][0] if locations_sorted else None
+    first_count = len(locations_sorted[0][1]) if locations_sorted else 0
+    confirmable_main_address = (
+        main_address
+        if main_address
+        and is_main_location_confirmable(
+            first_count, total_group, total_with_attendance
+        )
+        else None
+    )
+
     locations_payload = []
     for addr, pins in locations_sorted:
         pct = (
@@ -1059,7 +1144,7 @@ def _build_one_day_confirmation(
         pins_short = [utils.pin_to_external_format(p) for p in pins]
         locations_payload.append(
             {
-                "name": address_to_name.get(addr, addr),
+                "name": address_to_name.get(addr) or addr,
                 "address": addr,
                 "count": len(pins),
                 "pct": pct,
@@ -1073,33 +1158,35 @@ def _build_one_day_confirmation(
         if not data_available:
             confirmed = False
             waiting = True
-        elif addr is None:
-            confirmed = False
-            waiting = False
-        elif addr == main_address:
-            confirmed = True
-            waiting = False
         else:
-            confirmed = False
             waiting = False
+            if addr is None:
+                confirmed = False
+            elif confirmable_main_address is None:
+                confirmed = False
+            elif addr == confirmable_main_address:
+                confirmed = True
+            else:
+                confirmed = False
 
         fi = staff_first_in.get(s.id)
         first_in_iso = (
             fi.astimezone(timezone.get_current_timezone()).isoformat() if fi else None
         )
         pin_short = utils.pin_to_external_format(s.pin)
-        location_name = address_to_name.get(addr, addr) if addr else None
+        location_name = (address_to_name.get(addr) or addr) if addr else None
         by_pin_short[pin_short] = {
             "confirmed": confirmed,
             "waiting": waiting,
             "location": location_name,
+            "location_address": addr if addr else None,
             "first_in": first_in_iso,
         }
 
     return {
         "date": date_str,
         "data_available": data_available,
-        "total": len(staff_list),
+        "total": total_group,
         "locations": locations_payload,
         "by_pin_short": by_pin_short,
     }
@@ -1116,24 +1203,27 @@ def _build_one_day_from_records(
     address_to_name: dict,
     dates_with_any_sa: set | None = None,
 ) -> dict[str, Any]:
-    """Build one-day confirmation payload from pre-fetched SA/LA (no DB).
+    """Формирует ответ подтверждения за один день по уже загруженным SA/LA (без обращений к БД).
 
-    If dates_with_any_sa is provided, data_available = (has locations) or
-    (data_insert_date in dates_with_any_sa). staff_with_sa = staff with SA first_in only.
+    Логика совпадает с _build_one_day_confirmation: основная локация — первая после
+    сортировки (count DESC, address ASC, name ASC); подтверждение только для неё
+    и только при прохождении динамического порога и минимальной доли. pct от числа
+    отметившихся. Если передан dates_with_any_sa, data_available вычисляется как
+    (есть отметки за день) или (data_insert_date в dates_with_any_sa).
 
     Args:
-        target_date: Event date (working day).
-        staff_list: List of staff objects (with id, pin).
-        sa_records: SA dicts for this day (event_date; SA date_at = target_date + 1).
-        la_records: LA dicts for this day.
-        data_available: Used only when dates_with_any_sa is None.
-        location_searcher: LocationSearcher for LA coordinates.
-        name_to_address: Map name -> address.
-        address_to_name: Map address -> name.
-        dates_with_any_sa: Set of data_insert_dates that have any SA (optional).
+        target_date: Дата события (рабочий день).
+        staff_list: Список сотрудников (id, pin).
+        sa_records: Записи StaffAttendance за этот день (date_at = target_date + 1).
+        la_records: Записи LessonAttendance за этот день.
+        data_available: Используется только при dates_with_any_sa is None.
+        location_searcher: LocationSearcher для привязки координат LA к локациям.
+        name_to_address: Словарь название -> адрес.
+        address_to_name: Словарь адрес -> название.
+        dates_with_any_sa: Множество дат выгрузки, по которым есть хотя бы одна SA (опционально).
 
     Returns:
-        dict: date, data_available, total, locations, by_pin_short.
+        Словарь: date, data_available, total, locations, by_pin_short.
     """
     date_str = target_date.strftime("%Y-%m-%d")
     staff_with_sa = frozenset(r["staff_id"] for r in sa_records if r.get("first_in"))
@@ -1185,10 +1275,23 @@ def _build_one_day_from_records(
     elif data_available is None:
         data_available = False
 
-    locations_sorted = sorted(location_counts.items(), key=lambda x: -len(x[1]))
-    main_address = locations_sorted[0][0] if locations_sorted else None
-
     total_with_attendance = sum(len(pins) for _, pins in location_counts.items())
+    total_group = len(staff_list)
+    locations_sorted = sorted(
+        location_counts.items(),
+        key=lambda x: (-len(x[1]), x[0], (address_to_name.get(x[0]) or x[0])),
+    )
+    main_address = locations_sorted[0][0] if locations_sorted else None
+    first_count = len(locations_sorted[0][1]) if locations_sorted else 0
+    confirmable_main_address = (
+        main_address
+        if main_address
+        and is_main_location_confirmable(
+            first_count, total_group, total_with_attendance
+        )
+        else None
+    )
+
     locations_payload = []
     for addr, pins in locations_sorted:
         pct = (
@@ -1199,7 +1302,7 @@ def _build_one_day_from_records(
         pins_short = [utils.pin_to_external_format(p) for p in pins]
         locations_payload.append(
             {
-                "name": address_to_name.get(addr, addr),
+                "name": address_to_name.get(addr) or addr,
                 "address": addr,
                 "count": len(pins),
                 "pct": pct,
@@ -1213,33 +1316,35 @@ def _build_one_day_from_records(
         if not data_available:
             confirmed = False
             waiting = True
-        elif addr is None:
-            confirmed = False
-            waiting = False
-        elif addr == main_address:
-            confirmed = True
-            waiting = False
         else:
-            confirmed = False
             waiting = False
+            if addr is None:
+                confirmed = False
+            elif confirmable_main_address is None:
+                confirmed = False
+            elif addr == confirmable_main_address:
+                confirmed = True
+            else:
+                confirmed = False
 
         fi = staff_first_in.get(s.id)
         first_in_iso = (
             fi.astimezone(timezone.get_current_timezone()).isoformat() if fi else None
         )
         pin_short = utils.pin_to_external_format(s.pin)
-        location_name = address_to_name.get(addr, addr) if addr else None
+        location_name = (address_to_name.get(addr) or addr) if addr else None
         by_pin_short[pin_short] = {
             "confirmed": confirmed,
             "waiting": waiting,
             "location": location_name,
+            "location_address": addr if addr else None,
             "first_in": first_in_iso,
         }
 
     return {
         "date": date_str,
         "data_available": data_available,
-        "total": len(staff_list),
+        "total": total_group,
         "locations": locations_payload,
         "by_pin_short": by_pin_short,
     }
@@ -1250,13 +1355,19 @@ def _build_one_day_from_records(
     operation_summary="Подтверждение оценок по посещаемости (отдел)",
     operation_description=(
         "Эндпоинт для интеграции с системой оценок: по отделу (группе) и дате возвращает, "
-        "кто из сотрудников был на «основной» локации (где большинство), а кто — нет.\n\n"
+        "кто из сотрудников был на «основной» локации (где большинство отметившихся), а кто — нет.\n\n"
         "**Логика:**\n"
         "- Собираются отметки посещаемости за день (StaffAttendance и LessonAttendance).\n"
-        "- Локации группируются по адресу; основная — та, у которой наибольший процент сотрудников.\n"
-        "- Для каждого сотрудника: **confirmed** = был на основной локации, **waiting** = данные ещё не выгружены.\n\n"
-        "**Поиск по сотруднику:** в ответе объект **by_pin_short** — ключи это PIN без обёртки S/T (S9614S → 9614). "
-        "Оценка разрешена, если у этого pin_short поле **confirmed** = true."
+        "- Основная локация за день — та, где отметилось больше всего человек.\n"
+        "- Проценты (pct) по локациям считаются от **числа отметившихся** (распределение пришедших).\n"
+        "- Основная локация дня — первая в отсортированном списке (count DESC, address ASC, name ASC). "
+        "Подтверждение только для неё и только если она проходит порог max(2, ceil(0.20*n + 0.70*sqrt(n))) "
+        "и минимальную долю среди отметившихся (60% при n<=5, 55% при n<=12, 50% иначе). Остальные локации — неподтверждение.\n"
+        "- У каждой локации в ответе обязательно есть **name** и **address**.\n"
+        "- В **by_pin_short**: **confirmed** = true только у тех, кто был в основной локации; "
+        "из другой локации или без отметки — confirmed = false. **waiting** = данные ещё не выгружены.\n\n"
+        "**Поиск по сотруднику:** ключи by_pin_short — PIN без обёртки S/T (S9614S → 9614). "
+        "Оценка разрешена, если у pin_short **confirmed** = true."
     ),
     tags=["Attendance & Statistics"],
     manual_parameters=[
