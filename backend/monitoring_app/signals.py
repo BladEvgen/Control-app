@@ -42,11 +42,22 @@ def send_new_photo(sender, instance, created, **kwargs):
         )
         invalidate_cache_pattern(f"map_location_{instance.date_at}*")
         invalidate_cache_pattern(f"staff_attendance_stats_{instance.date_at}*")
+    row = (
+        Staff.objects.filter(pk=instance.staff_id)
+        .values_list("department_id", "pin")
+        .first()
+    )
+    if row:
+        dept_id, pin = row
+        if dept_id is not None:
+            invalidate_cache_pattern(f"department_confirmation_{dept_id}_*")
+        if pin:
+            invalidate_cache_pattern(f"staff_detail_{pin}*")
 
 
 @receiver([post_save, post_delete], sender=StaffAttendance)
 def invalidate_attendance_cache(sender, instance, **kwargs):
-    """Инвалидирует кэш при изменении посещаемости сотрудников."""
+    """Инвалидирует кэш при изменении посещаемости сотрудников (в т.ч. после fetcher)."""
     invalidate_cache_pattern("staffatt_count_*")
     if hasattr(instance, "date_at") and instance.date_at:
         work_day = instance.date_at - timedelta(days=1)
@@ -56,6 +67,13 @@ def invalidate_attendance_cache(sender, instance, **kwargs):
             invalidate_cache_pattern(f"staff_detail_{instance.staff.pin}*")
         invalidate_cache_pattern(f"map_location_{work_day_str}*")
         logger.info(f"Invalidated attendance cache for work_day: {work_day_str}")
+    dept_id = (
+        Staff.objects.filter(pk=instance.staff_id)
+        .values_list("department_id", flat=True)
+        .first()
+    )
+    if dept_id is not None:
+        invalidate_cache_pattern(f"department_confirmation_{dept_id}_*")
 
 
 @receiver(post_save, sender=Staff)

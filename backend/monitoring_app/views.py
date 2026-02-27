@@ -116,6 +116,7 @@ LUNCH_BREAK_START = datetime.time(hour=13, minute=0)
 LUNCH_BREAK_END = datetime.time(hour=14, minute=0)
 
 CLASS_LOCATION_CACHE_TTL = datetime.timedelta(minutes=60)
+DEPARTMENT_CONFIRMATION_CACHE_TTL = 10 * 60 * 60
 CLASS_LOCATION_CACHE = {
     "expires_at": None,
     "kd_tree": None,
@@ -216,6 +217,173 @@ def get_class_location_cache():
             raise
 
     return CLASS_LOCATION_CACHE
+
+
+def _to_date(dt):
+    """Normalize date_at from DB (date or datetime) to date.
+
+    Args:
+        dt: Value from date_at field (date or datetime).
+
+    Returns:
+        date or None: The calendar date, or None if dt is None.
+    """
+    if dt is None:
+        return None
+    return dt.date() if hasattr(dt, "date") and callable(getattr(dt, "date")) else dt
+
+
+def fetch_attendance_by_event_dates(staff_ids, date_from, date_to):
+    """Load StaffAttendance and LessonAttendance by event date in one pass per model.
+
+    StaffAttendance.date_at is the day *after* first_in/last_out (upload date).
+    LessonAttendance.date_at is the same calendar day as the lesson.
+    Returns dicts keyed by event_date for reuse in api/staff/{id}/ and
+    api/attendance/department-confirmation/.
+
+    Args:
+        staff_ids: List of staff primary keys.
+        date_from: Start of event date range (inclusive).
+        date_to: End of event date range (inclusive).
+
+    Returns:
+        tuple: (sa_by_event_date, la_by_event_date), each dict[date, list[dict]].
+    """
+    date_from_plus1 = date_from + datetime.timedelta(days=1)
+    date_to_plus1 = date_to + datetime.timedelta(days=1)
+    one_day = datetime.timedelta(days=1)
+
+    sa_by_event_date = defaultdict(list)
+    for r in models.StaffAttendance.objects.filter(
+        staff_id__in=staff_ids,
+        date_at__gte=date_from_plus1,
+        date_at__lte=date_to_plus1,
+    ).values(
+        "staff_id", "date_at", "first_in", "last_out", "area_name_in", "area_name_out"
+    ):
+        d = _to_date(r["date_at"])
+        if d is not None:
+            sa_by_event_date[d - one_day].append(r)
+
+    la_by_event_date = defaultdict(list)
+    for r in models.LessonAttendance.objects.filter(
+        staff_id__in=staff_ids,
+        date_at__gte=date_from,
+        date_at__lte=date_to,
+    ).values("staff_id", "date_at", "first_in", "last_out", "latitude", "longitude"):
+        d = _to_date(r["date_at"])
+        if d is not None:
+            la_by_event_date[d].append(r)
+
+    return dict(sa_by_event_date), dict(la_by_event_date)
+
+
+def _resolve_la_location(lat, lon, kd_tree, class_names):
+    """Resolve (lat, lon) to location name via kd_tree.
+
+    Args:
+        lat: Latitude.
+        lon: Longitude.
+        kd_tree: KDTree for coordinate lookup (or None).
+        class_names: List of location names for kd_tree indices.
+
+    Returns:
+        str or None: Location name, or None on missing/invalid.
+    """
+    if not kd_tree or not class_names or lat is None or lon is None:
+        return None
+    try:
+        _distances, indices = kd_tree.query([[lat, lon]], k=1)
+        if hasattr(indices, "ndim") and indices.ndim > 1:
+            indices = indices.flatten()
+        return class_names[int(indices[0])] if len(indices) > 0 else None
+    except Exception as e:
+        logger.warning("Error resolving LA location: %s", e)
+        return None
+
+
+def _merge_attendance_for_date(sa_records, la_records, kd_tree, class_names):
+    """Merge StaffAttendance and LessonAttendance for one event_date.
+
+    SA has priority for first_in/last_out; LA fills or overrides using kd_tree
+    for location. Records are dicts from .values().
+
+    Args:
+        sa_records: List of SA dicts (staff_id, first_in, last_out, area_name_in/out).
+        la_records: List of LA dicts (staff_id, first_in, last_out, latitude, longitude).
+        kd_tree: KDTree for coordinate lookup (or None).
+        class_names: List of location names for kd_tree indices.
+
+    Returns:
+        dict: first_in, last_out, area_name_in, area_name_out, first_in_source, last_out_source.
+    """
+    combined = {
+        "first_in": None,
+        "last_out": None,
+        "area_name_in": None,
+        "area_name_out": None,
+        "first_in_source": None,
+        "last_out_source": None,
+    }
+    for r in sa_records:
+        if r.get("first_in") and (
+            combined["first_in"] is None or r["first_in"] < combined["first_in"]
+        ):
+            combined["first_in"] = r["first_in"]
+            combined["first_in_source"] = "staff_attendance"
+            if r.get("area_name_in"):
+                combined["area_name_in"] = (
+                    utils.resolve_area_address(r["area_name_in"]) or r["area_name_in"]
+                )
+        if r.get("last_out") and (
+            combined["last_out"] is None or r["last_out"] > combined["last_out"]
+        ):
+            combined["last_out"] = r["last_out"]
+            combined["last_out_source"] = "staff_attendance"
+            if r.get("area_name_out"):
+                combined["area_name_out"] = (
+                    utils.resolve_area_address(r["area_name_out"]) or r["area_name_out"]
+                )
+
+    earliest_la = None
+    latest_la = None
+    for r in la_records:
+        if r.get("first_in"):
+            if earliest_la is None:
+                earliest_la = r
+            elif r["first_in"] < earliest_la["first_in"]:
+                earliest_la = r
+        if r.get("last_out"):
+            if latest_la is None:
+                latest_la = r
+            elif r["last_out"] > latest_la["last_out"]:
+                latest_la = r
+
+    if earliest_la is not None and (
+        combined["first_in"] is None or earliest_la["first_in"] < combined["first_in"]
+    ):
+        combined["first_in"] = earliest_la["first_in"]
+        combined["first_in_source"] = "lesson_attendance"
+        name = _resolve_la_location(
+            earliest_la.get("latitude"),
+            earliest_la.get("longitude"),
+            kd_tree,
+            class_names,
+        )
+        if name:
+            combined["area_name_in"] = name
+    if latest_la is not None and (
+        combined["last_out"] is None or latest_la["last_out"] > combined["last_out"]
+    ):
+        combined["last_out"] = latest_la["last_out"]
+        combined["last_out_source"] = "lesson_attendance"
+        name = _resolve_la_location(
+            latest_la.get("latitude"), latest_la.get("longitude"), kd_tree, class_names
+        )
+        if name:
+            combined["area_name_out"] = name
+
+    return combined
 
 
 def calculate_effective_minutes_with_lunch(first_in, last_out):
@@ -770,6 +938,313 @@ def map_location(request):
         )
 
 
+def _build_one_day_confirmation(
+    _dept: models.ChildDepartment,
+    target_date: datetime.date,
+    staff_list: list,
+    location_searcher=None,
+    name_to_address=None,
+    address_to_name=None,
+) -> dict[str, Any]:
+    """Build one-day confirmation payload for a department (single date, may hit DB).
+
+    Used when requesting a single date; for range use fetch_attendance_by_event_dates
+    and _build_one_day_from_records.
+
+    Args:
+        _dept: ChildDepartment instance (unused; kept for API consistency with callers).
+        target_date: Event date (working day).
+        staff_list: List of staff objects (id, pin).
+        location_searcher: Optional LocationSearcher for LA.
+        name_to_address: Optional name -> address map.
+        address_to_name: Optional address -> name map.
+
+    Returns:
+        dict: date, data_available, total, locations, by_pin_short.
+    """
+    date_str = target_date.strftime("%Y-%m-%d")
+    staff_ids = [s.id for s in staff_list]
+    data_insert_date = target_date + datetime.timedelta(days=1)
+
+    sa_qs = models.StaffAttendance.objects.filter(
+        staff_id__in=staff_ids,
+        date_at=data_insert_date,
+        first_in__isnull=False,
+    ).values("staff_id", "first_in", "area_name_in")
+    sa_records = list(sa_qs)
+    staff_with_sa = {r["staff_id"] for r in sa_records}
+
+    la_qs = (
+        models.LessonAttendance.objects.filter(
+            staff_id__in=staff_ids,
+            date_at=target_date,
+        )
+        .exclude(staff_id__in=staff_with_sa)
+        .values("staff_id", "first_in", "latitude", "longitude")
+    )
+
+    if location_searcher is None or name_to_address is None or address_to_name is None:
+        location_cache = get_class_location_cache()
+        location_searcher = location_cache.get("searcher")
+        if location_searcher is None and location_cache.get("searcher_payload"):
+            try:
+                location_searcher = utils.LocationSearcher(
+                    location_cache["searcher_payload"]
+                )
+            except Exception:
+                location_searcher = None
+        class_locations = list(
+            models.ClassLocation.objects.only("name", "address").values(
+                "name", "address"
+            )
+        )
+        name_to_address = {loc["name"]: loc["address"] for loc in class_locations}
+        address_to_name = {loc["address"]: loc["name"] for loc in class_locations}
+
+    staff_to_location: dict[int, str] = {}
+    staff_first_in: dict[int, datetime.datetime] = {}
+    for sa in sa_records:
+        addr = utils.resolve_area_address(sa.get("area_name_in"))
+        if addr:
+            staff_to_location[sa["staff_id"]] = addr
+        fi = sa.get("first_in")
+        if fi:
+            staff_first_in[sa["staff_id"]] = fi
+
+    la_by_staff: dict[int, list[dict]] = defaultdict(list)
+    for la in la_qs:
+        la_by_staff[la["staff_id"]].append(la)
+    for sid, records in la_by_staff.items():
+        earliest = min(
+            (r for r in records if r.get("first_in")),
+            key=lambda r: r["first_in"],
+            default=None,
+        )
+        if (
+            earliest
+            and location_searcher
+            and earliest.get("latitude") is not None
+            and earliest.get("longitude") is not None
+        ):
+            nearest_name = location_searcher.find_nearest(
+                earliest["latitude"], earliest["longitude"], radius=200
+            )
+            if nearest_name != "Unknown Area" and nearest_name in name_to_address:
+                staff_to_location[sid] = name_to_address[nearest_name]
+                staff_first_in[sid] = earliest["first_in"]
+
+    location_counts: dict[str, list[str]] = defaultdict(list)
+    for staff in staff_list:
+        addr = staff_to_location.get(staff.id)
+        if addr:
+            location_counts[addr].append(staff.pin)
+
+    data_available = bool(staff_to_location)
+    if not data_available:
+        data_available = models.StaffAttendance.objects.filter(
+            date_at=data_insert_date
+        ).exists()
+
+    locations_sorted = sorted(location_counts.items(), key=lambda x: -len(x[1]))
+    main_address = locations_sorted[0][0] if locations_sorted else None
+
+    total_with_attendance = sum(len(pins) for _, pins in location_counts.items())
+    locations_payload = []
+    for addr, pins in locations_sorted:
+        pct = (
+            round(100.0 * len(pins) / total_with_attendance, 2)
+            if total_with_attendance
+            else 0
+        )
+        pins_short = [utils.pin_to_external_format(p) for p in pins]
+        locations_payload.append(
+            {
+                "name": address_to_name.get(addr, addr),
+                "address": addr,
+                "count": len(pins),
+                "pct": pct,
+                "pins_short": pins_short,
+            }
+        )
+
+    by_pin_short: dict[str, dict[str, Any]] = {}
+    for s in staff_list:
+        addr = staff_to_location.get(s.id)
+        if not data_available:
+            confirmed = False
+            waiting = True
+        elif addr is None:
+            confirmed = False
+            waiting = False
+        elif addr == main_address:
+            confirmed = True
+            waiting = False
+        else:
+            confirmed = False
+            waiting = False
+
+        fi = staff_first_in.get(s.id)
+        first_in_iso = (
+            fi.astimezone(timezone.get_current_timezone()).isoformat() if fi else None
+        )
+        pin_short = utils.pin_to_external_format(s.pin)
+        location_name = address_to_name.get(addr, addr) if addr else None
+        by_pin_short[pin_short] = {
+            "confirmed": confirmed,
+            "waiting": waiting,
+            "location": location_name,
+            "first_in": first_in_iso,
+        }
+
+    return {
+        "date": date_str,
+        "data_available": data_available,
+        "total": len(staff_list),
+        "locations": locations_payload,
+        "by_pin_short": by_pin_short,
+    }
+
+
+def _build_one_day_from_records(
+    target_date: datetime.date,
+    staff_list: list,
+    sa_records: list,
+    la_records: list,
+    data_available: bool | None,
+    location_searcher,
+    name_to_address: dict,
+    address_to_name: dict,
+    dates_with_any_sa: set | None = None,
+) -> dict[str, Any]:
+    """Build one-day confirmation payload from pre-fetched SA/LA (no DB).
+
+    If dates_with_any_sa is provided, data_available = (has locations) or
+    (data_insert_date in dates_with_any_sa). staff_with_sa = staff with SA first_in only.
+
+    Args:
+        target_date: Event date (working day).
+        staff_list: List of staff objects (with id, pin).
+        sa_records: SA dicts for this day (event_date; SA date_at = target_date + 1).
+        la_records: LA dicts for this day.
+        data_available: Used only when dates_with_any_sa is None.
+        location_searcher: LocationSearcher for LA coordinates.
+        name_to_address: Map name -> address.
+        address_to_name: Map address -> name.
+        dates_with_any_sa: Set of data_insert_dates that have any SA (optional).
+
+    Returns:
+        dict: date, data_available, total, locations, by_pin_short.
+    """
+    date_str = target_date.strftime("%Y-%m-%d")
+    staff_with_sa = frozenset(r["staff_id"] for r in sa_records if r.get("first_in"))
+
+    staff_to_location: dict[int, str] = {}
+    staff_first_in: dict[int, datetime.datetime] = {}
+    for sa in sa_records:
+        addr = utils.resolve_area_address(sa.get("area_name_in"))
+        if addr:
+            staff_to_location[sa["staff_id"]] = addr
+        fi = sa.get("first_in")
+        if fi:
+            staff_first_in[sa["staff_id"]] = fi
+
+    la_by_staff: dict[int, list[dict]] = defaultdict(list)
+    for la in la_records:
+        if la["staff_id"] not in staff_with_sa:
+            la_by_staff[la["staff_id"]].append(la)
+    for sid, records in la_by_staff.items():
+        earliest = min(
+            (r for r in records if r.get("first_in")),
+            key=lambda r: r["first_in"],
+            default=None,
+        )
+        if (
+            earliest
+            and location_searcher
+            and earliest.get("latitude") is not None
+            and earliest.get("longitude") is not None
+        ):
+            nearest_name = location_searcher.find_nearest(
+                earliest["latitude"], earliest["longitude"], radius=200
+            )
+            if nearest_name != "Unknown Area" and nearest_name in name_to_address:
+                staff_to_location[sid] = name_to_address[nearest_name]
+                staff_first_in[sid] = earliest["first_in"]
+
+    location_counts: dict[str, list[str]] = defaultdict(list)
+    for staff in staff_list:
+        addr = staff_to_location.get(staff.id)
+        if addr:
+            location_counts[addr].append(staff.pin)
+
+    if dates_with_any_sa is not None:
+        data_insert_date = target_date + datetime.timedelta(days=1)
+        data_available = bool(staff_to_location) or (
+            data_insert_date in dates_with_any_sa
+        )
+    elif data_available is None:
+        data_available = False
+
+    locations_sorted = sorted(location_counts.items(), key=lambda x: -len(x[1]))
+    main_address = locations_sorted[0][0] if locations_sorted else None
+
+    total_with_attendance = sum(len(pins) for _, pins in location_counts.items())
+    locations_payload = []
+    for addr, pins in locations_sorted:
+        pct = (
+            round(100.0 * len(pins) / total_with_attendance, 2)
+            if total_with_attendance
+            else 0
+        )
+        pins_short = [utils.pin_to_external_format(p) for p in pins]
+        locations_payload.append(
+            {
+                "name": address_to_name.get(addr, addr),
+                "address": addr,
+                "count": len(pins),
+                "pct": pct,
+                "pins_short": pins_short,
+            }
+        )
+
+    by_pin_short: dict[str, dict[str, Any]] = {}
+    for s in staff_list:
+        addr = staff_to_location.get(s.id)
+        if not data_available:
+            confirmed = False
+            waiting = True
+        elif addr is None:
+            confirmed = False
+            waiting = False
+        elif addr == main_address:
+            confirmed = True
+            waiting = False
+        else:
+            confirmed = False
+            waiting = False
+
+        fi = staff_first_in.get(s.id)
+        first_in_iso = (
+            fi.astimezone(timezone.get_current_timezone()).isoformat() if fi else None
+        )
+        pin_short = utils.pin_to_external_format(s.pin)
+        location_name = address_to_name.get(addr, addr) if addr else None
+        by_pin_short[pin_short] = {
+            "confirmed": confirmed,
+            "waiting": waiting,
+            "location": location_name,
+            "first_in": first_in_iso,
+        }
+
+    return {
+        "date": date_str,
+        "data_available": data_available,
+        "total": len(staff_list),
+        "locations": locations_payload,
+        "by_pin_short": by_pin_short,
+    }
+
+
 @swagger_auto_schema(
     method="GET",
     operation_summary="Подтверждение оценок по посещаемости (отдел)",
@@ -795,21 +1270,34 @@ def map_location(request):
         openapi.Parameter(
             "date",
             openapi.IN_QUERY,
-            description="Дата в формате YYYY-MM-DD (рабочий день, за который смотрим посещаемость)",
+            description="Одна дата YYYY-MM-DD. Используется либо date, либо пара date_from и date_to.",
             type=openapi.TYPE_STRING,
-            required=True,
+            required=False,
+        ),
+        openapi.Parameter(
+            "date_from",
+            openapi.IN_QUERY,
+            description="Начало диапазона дат YYYY-MM-DD (включительно). В паре с date_to — один запрос на весь период (в т.ч. полгода).",
+            type=openapi.TYPE_STRING,
+            required=False,
+        ),
+        openapi.Parameter(
+            "date_to",
+            openapi.IN_QUERY,
+            description="Конец диапазона дат YYYY-MM-DD (включительно). В паре с date_from.",
+            type=openapi.TYPE_STRING,
+            required=False,
         ),
     ],
     responses={
         200: openapi.Response(
-            description="Успешный ответ: метаданные отдела, список локаций с процентами, данные по каждому pin_short",
+            description="Успешный ответ: одна дата — те же поля (date, locations, by_pin_short и т.д.); диапазон — child_department_id, child_department_name, results: [{ date, data_available, total, locations, by_pin_short }, ...].",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
-                required=["date", "child_department_id", "child_department_name", "data_available", "total", "locations", "by_pin_short"],
                 properties={
                     "date": openapi.Schema(
                         type=openapi.TYPE_STRING,
-                        description="Дата запроса (YYYY-MM-DD).",
+                        description="Дата (при запросе одной даты).",
                     ),
                     "child_department_id": openapi.Schema(
                         type=openapi.TYPE_STRING,
@@ -821,72 +1309,32 @@ def map_location(request):
                     ),
                     "data_available": openapi.Schema(
                         type=openapi.TYPE_BOOLEAN,
-                        description="True, если данные посещаемости за эту дату уже выгружены в систему.",
+                        description="True, если данные посещаемости за эту дату уже выгружены (при одной дате).",
                     ),
                     "total": openapi.Schema(
                         type=openapi.TYPE_INTEGER,
-                        description="Число сотрудников в отделе.",
+                        description="Число сотрудников в отделе (при одной дате).",
                     ),
                     "locations": openapi.Schema(
                         type=openapi.TYPE_ARRAY,
-                        description="Локации, отсортированные по убыванию pct. Первый элемент — основная локация (оценка разрешена для pins_short этой локации).",
-                        items=openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "name": openapi.Schema(
-                                    type=openapi.TYPE_STRING,
-                                    description="Название локации.",
-                                ),
-                                "address": openapi.Schema(
-                                    type=openapi.TYPE_STRING,
-                                    description="Адрес локации.",
-                                ),
-                                "count": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    description="Число сотрудников на этой локации.",
-                                ),
-                                "pct": openapi.Schema(
-                                    type=openapi.TYPE_NUMBER,
-                                    description="Доля от числа сотрудников с отметкой, в процентах.",
-                                ),
-                                "pins_short": openapi.Schema(
-                                    type=openapi.TYPE_ARRAY,
-                                    items=openapi.Schema(type=openapi.TYPE_STRING),
-                                    description="PIN сотрудников в формате внешней системы (без S/T).",
-                                ),
-                            },
-                        ),
+                        description="Локации по убыванию pct (при одной дате).",
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
                     ),
                     "by_pin_short": openapi.Schema(
                         type=openapi.TYPE_OBJECT,
-                        description="Объект для быстрого поиска по pin_short (O(1)). Ключ — PIN без обёртки S/T (например 9614). Значение — данные по посещаемости этого сотрудника.",
-                        additional_properties=openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "confirmed": openapi.Schema(
-                                    type=openapi.TYPE_BOOLEAN,
-                                    description="True — сотрудник был на основной локации (оценка разрешена).",
-                                ),
-                                "waiting": openapi.Schema(
-                                    type=openapi.TYPE_BOOLEAN,
-                                    description="True — данные посещаемости за эту дату ещё не выгружены.",
-                                ),
-                                "location": openapi.Schema(
-                                    type=openapi.TYPE_STRING,
-                                    description="Название локации, где была отметка (или адрес, если названия нет). null — отметки нет.",
-                                ),
-                                "first_in": openapi.Schema(
-                                    type=openapi.TYPE_STRING,
-                                    description="Время первой отметки в формате ISO 8601 с таймзоной. null — отметки нет.",
-                                ),
-                            },
-                        ),
+                        description="По pin_short: confirmed, waiting, location, first_in (при одной дате).",
+                        additional_properties=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                    "results": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        description="При запросе по диапазону: массив объектов по дням (date, data_available, total, locations, by_pin_short).",
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
                     ),
                 },
             ),
         ),
         400: openapi.Response(
-            description="Ошибка запроса: не указаны child_department_id или date, либо неверный формат даты.",
+            description="Ошибка: не указаны date или date_from/date_to; неверный формат даты; date_from > date_to.",
         ),
         404: openapi.Response(
             description="Отдел с указанным child_department_id не найден.",
@@ -896,42 +1344,64 @@ def map_location(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def department_attendance_confirmation(request):
-    """Определяет подтверждение оценок по посещаемости для отдела на дату.
+    """Определяет подтверждение оценок по посещаемости для отдела на дату или диапазон дат.
 
-    По переданному отделу (child_department_id) и дате возвращает:
+    По переданному отделу (child_department_id) и дате (или диапазону date_from/date_to) возвращает:
     - список локаций с долей сотрудников (pct) и списком pins_short;
     - объект by_pin_short для поиска по pin_short (формат внешней системы: без S/T)
       с полями confirmed, waiting, location, first_in.
 
-    Оценка считается разрешённой (confirmed=true), если сотрудник был на локации
-    с наибольшим процентом присутствующих (первый элемент в locations).
+    Один день: query date=YYYY-MM-DD. Ответ как раньше (одна дата).
+    Диапазон: query date_from=YYYY-MM-DD и date_to=YYYY-MM-DD (включительно). Ответ — results: [{ date, ... }, ...].
 
     Args:
-        request: GET-запрос. Ожидаемые query-параметры:
-            child_department_id (обязательный): ID ChildDepartment.
-            date (обязательный): дата YYYY-MM-DD.
-
-    Returns:
-        Response: JSON с полями date, child_department_id, child_department_name,
-        data_available, total, locations, by_pin_short. При пустом отделе или
-        ошибке — 400/404 с сообщением в теле.
+        request: GET. Обязателен child_department_id. Либо date, либо оба date_from и date_to.
     """
     child_department_id = request.GET.get("child_department_id")
     date_str = request.GET.get("date")
+    date_from_str = request.GET.get("date_from")
+    date_to_str = request.GET.get("date_to")
 
-    if not child_department_id or not date_str:
+    if not child_department_id:
         return Response(
-            {"error": "child_department_id and date are required"},
+            {"error": "child_department_id is required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    try:
-        target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-    except ValueError:
+    use_range = bool(date_from_str and date_to_str)
+    if not use_range and not date_str:
         return Response(
-            {"error": "Invalid date format, use YYYY-MM-DD"},
+            {"error": "Either date or both date_from and date_to are required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if use_range and date_str:
+        return Response(
+            {"error": "Use either date or date_from/date_to, not both"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if use_range:
+        try:
+            date_from = datetime.datetime.strptime(date_from_str, "%Y-%m-%d").date()
+            date_to = datetime.datetime.strptime(date_to_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response(
+                {"error": "Invalid date format for date_from/date_to, use YYYY-MM-DD"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if date_from > date_to:
+            return Response(
+                {"error": "date_from must be <= date_to"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    else:
+        try:
+            target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response(
+                {"error": "Invalid date format, use YYYY-MM-DD"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
     dept = models.ChildDepartment.objects.filter(id=child_department_id).first()
     if not dept:
@@ -940,158 +1410,118 @@ def department_attendance_confirmation(request):
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    if use_range:
+        cache_key = f"department_confirmation_{child_department_id}_{date_from_str}_{date_to_str}"
+    else:
+        cache_key = f"department_confirmation_{child_department_id}_{date_str}"
+    cached = Cache.get(cache_key)
+    if cached is not None:
+        return Response(cached, status=status.HTTP_200_OK)
+
     staff_list = list(
         models.Staff.objects.filter(department_id=child_department_id).only(
             "id", "pin", "name", "surname"
         )
     )
-    if not staff_list:
-        return Response(
-            {
-                "date": date_str,
-                "child_department_id": child_department_id,
-                "child_department_name": dept.name,
-                "data_available": False,
-                "total": 0,
-                "locations": [],
-                "by_pin_short": {},
-            },
-            status=status.HTTP_200_OK,
-        )
-
-    staff_ids = [s.id for s in staff_list]
-    data_insert_date = target_date + datetime.timedelta(days=1)
-
-    sa_qs = models.StaffAttendance.objects.filter(
-        staff_id__in=staff_ids,
-        date_at=data_insert_date,
-        first_in__isnull=False,
-    ).values("staff_id", "first_in", "area_name_in")
-    sa_records = list(sa_qs)
-    staff_with_sa = {r["staff_id"] for r in sa_records}
-
-    la_qs = models.LessonAttendance.objects.filter(
-        staff_id__in=staff_ids,
-        date_at=target_date,
-    ).exclude(staff_id__in=staff_with_sa).values(
-        "staff_id", "first_in", "latitude", "longitude"
-    )
-
-    location_cache = get_class_location_cache()
-    location_searcher = location_cache.get("searcher")
-    if location_searcher is None and location_cache.get("searcher_payload"):
-        try:
-            location_searcher = utils.LocationSearcher(
-                location_cache["searcher_payload"]
-            )
-        except Exception:
-            location_searcher = None
-
-    class_locations = list(
-        models.ClassLocation.objects.only("name", "address").values("name", "address")
-    )
-    name_to_address = {loc["name"]: loc["address"] for loc in class_locations}
-    address_to_name = {loc["address"]: loc["name"] for loc in class_locations}
-
-    staff_to_location: dict[int, str] = {}
-    staff_first_in: dict[int, datetime.datetime] = {}
-    for sa in sa_records:
-        addr = utils.resolve_area_address(sa.get("area_name_in"))
-        if addr:
-            staff_to_location[sa["staff_id"]] = addr
-        fi = sa.get("first_in")
-        if fi:
-            staff_first_in[sa["staff_id"]] = fi
-
-    la_by_staff: dict[int, list[dict]] = defaultdict(list)
-    for la in la_qs:
-        la_by_staff[la["staff_id"]].append(la)
-    for sid, records in la_by_staff.items():
-        earliest = min(
-            (r for r in records if r.get("first_in")),
-            key=lambda r: r["first_in"],
-            default=None,
-        )
-        if earliest and location_searcher and earliest.get("latitude") is not None and earliest.get("longitude") is not None:
-            nearest_name = location_searcher.find_nearest(
-                earliest["latitude"], earliest["longitude"], radius=200
-            )
-            if nearest_name != "Unknown Area" and nearest_name in name_to_address:
-                staff_to_location[sid] = name_to_address[nearest_name]
-                staff_first_in[sid] = earliest["first_in"]
-
-    location_counts: dict[str, list[str]] = defaultdict(list)
-    for staff in staff_list:
-        addr = staff_to_location.get(staff.id)
-        if addr:
-            location_counts[addr].append(staff.pin)
-
-    data_available = bool(staff_to_location)
-    if not data_available:
-        data_available = models.StaffAttendance.objects.filter(
-            date_at=data_insert_date
-        ).exists()
-
-    locations_sorted = sorted(
-        location_counts.items(), key=lambda x: -len(x[1])
-    )
-    main_address = locations_sorted[0][0] if locations_sorted else None
-
-    total_with_attendance = sum(len(pins) for _, pins in location_counts.items())
-    locations_payload = []
-    for idx, (addr, pins) in enumerate(locations_sorted):
-        pct = (
-            round(100.0 * len(pins) / total_with_attendance, 2)
-            if total_with_attendance else 0
-        )
-        pins_short = [utils.pin_to_external_format(p) for p in pins]
-        locations_payload.append({
-            "name": address_to_name.get(addr, addr),
-            "address": addr,
-            "count": len(pins),
-            "pct": pct,
-            "pins_short": pins_short,
-        })
-
-    by_pin_short: dict[str, dict[str, Any]] = {}
-    for s in staff_list:
-        addr = staff_to_location.get(s.id)
-        if not data_available:
-            confirmed = False
-            waiting = True
-        elif addr is None:
-            confirmed = False
-            waiting = False
-        elif addr == main_address:
-            confirmed = True
-            waiting = False
-        else:
-            confirmed = False
-            waiting = False
-
-        fi = staff_first_in.get(s.id)
-        first_in_iso = (
-            fi.astimezone(timezone.get_current_timezone()).isoformat()
-            if fi else None
-        )
-        pin_short = utils.pin_to_external_format(s.pin)
-        location_name = address_to_name.get(addr, addr) if addr else None
-        by_pin_short[pin_short] = {
-            "confirmed": confirmed,
-            "waiting": waiting,
-            "location": location_name,
-            "first_in": first_in_iso,
+    if not staff_list and not use_range:
+        payload = {
+            "date": date_str,
+            "child_department_id": child_department_id,
+            "child_department_name": dept.name,
+            "data_available": False,
+            "total": 0,
+            "locations": [],
+            "by_pin_short": {},
         }
+        Cache.set(cache_key, payload, DEPARTMENT_CONFIRMATION_CACHE_TTL)
+        return Response(payload, status=status.HTTP_200_OK)
+    if not staff_list and use_range:
+        results = []
+        d = date_from
+        while d <= date_to:
+            results.append(
+                {
+                    "date": d.strftime("%Y-%m-%d"),
+                    "data_available": False,
+                    "total": 0,
+                    "locations": [],
+                    "by_pin_short": {},
+                }
+            )
+            d += datetime.timedelta(days=1)
+        payload = {
+            "child_department_id": child_department_id,
+            "child_department_name": dept.name,
+            "results": results,
+        }
+        Cache.set(cache_key, payload, DEPARTMENT_CONFIRMATION_CACHE_TTL)
+        return Response(payload, status=status.HTTP_200_OK)
 
-    return Response({
-        "date": date_str,
+    if use_range:
+        staff_ids = [s.id for s in staff_list]
+        sa_by_event_date, la_by_event_date = fetch_attendance_by_event_dates(
+            staff_ids, date_from, date_to
+        )
+        # data_available по дню: есть ли SA с date_at = event_date + 1 (дата выгрузки)
+        dates_with_any_sa = {ed + datetime.timedelta(days=1) for ed in sa_by_event_date}
+
+        location_cache = get_class_location_cache()
+        location_searcher = location_cache.get("searcher")
+        if location_searcher is None and location_cache.get("searcher_payload"):
+            try:
+                location_searcher = utils.LocationSearcher(
+                    location_cache["searcher_payload"]
+                )
+            except Exception:
+                location_searcher = None
+        class_locations = list(
+            models.ClassLocation.objects.only("name", "address").values(
+                "name", "address"
+            )
+        )
+        name_to_address = {loc["name"]: loc["address"] for loc in class_locations}
+        address_to_name = {loc["address"]: loc["name"] for loc in class_locations}
+
+        # По каждой дате — свой расчёт: locations, pct и main_address считаются только по этому дню.
+        results = []
+        d = date_from
+        while d <= date_to:
+            sa_records = sa_by_event_date.get(d, [])
+            la_records = la_by_event_date.get(d, [])
+            day_payload = _build_one_day_from_records(
+                d,
+                staff_list,
+                sa_records,
+                la_records,
+                data_available=None,
+                location_searcher=location_searcher,
+                name_to_address=name_to_address,
+                address_to_name=address_to_name,
+                dates_with_any_sa=dates_with_any_sa,
+            )
+            results.append(day_payload)
+            d += datetime.timedelta(days=1)
+
+        payload = {
+            "child_department_id": child_department_id,
+            "child_department_name": dept.name,
+            "results": results,
+        }
+        Cache.set(cache_key, payload, DEPARTMENT_CONFIRMATION_CACHE_TTL)
+        return Response(payload, status=status.HTTP_200_OK)
+
+    day_payload = _build_one_day_confirmation(dept, target_date, staff_list)
+    payload = {
+        "date": day_payload["date"],
         "child_department_id": child_department_id,
         "child_department_name": dept.name,
-        "data_available": data_available,
-        "total": len(staff_list),
-        "locations": locations_payload,
-        "by_pin_short": by_pin_short,
-    }, status=status.HTTP_200_OK)
+        "data_available": day_payload["data_available"],
+        "total": day_payload["total"],
+        "locations": day_payload["locations"],
+        "by_pin_short": day_payload["by_pin_short"],
+    }
+    Cache.set(cache_key, payload, DEPARTMENT_CONFIRMATION_CACHE_TTL)
+    return Response(payload, status=status.HTTP_200_OK)
 
 
 @swagger_auto_schema(
@@ -2783,188 +3213,29 @@ def get_staff_detail(staff, start_date, end_date):
     logger.info(f"Получение деталей сотрудника {staff.name} (PIN: {staff.pin})")
     logger.debug(f"Запрошенный диапазон дат: {start_date} до {end_date}")
 
-    attendance_qs = models.StaffAttendance.objects.filter(
-        staff=staff,
-        date_at__range=[
-            start_date + datetime.timedelta(days=1),
-            end_date + datetime.timedelta(days=1),
-        ],
+    sa_by_event_date, la_by_event_date = fetch_attendance_by_event_dates(
+        [staff.id], start_date, end_date
     )
-
-    lesson_qs = models.LessonAttendance.objects.filter(
-        staff=staff,
-        date_at__range=[start_date, end_date],
-    )
-
     location_cache = get_class_location_cache()
     kd_tree = location_cache["kd_tree"]
     class_names = location_cache["class_names"]
     if kd_tree and class_names:
         logger.debug(f"KDTree initialized with {len(class_names)} locations")
 
+    all_event_dates = sorted(
+        set(sa_by_event_date.keys()) | set(la_by_event_date.keys())
+    )
     combined_attendance = {}
+    for event_date in all_event_dates:
+        combined_attendance[event_date] = _merge_attendance_for_date(
+            sa_by_event_date.get(event_date, []),
+            la_by_event_date.get(event_date, []),
+            kd_tree,
+            class_names,
+        )
 
-    for record in attendance_qs:
-        date_key = record.date_at - datetime.timedelta(days=1)
-        if date_key not in combined_attendance:
-            combined_attendance[date_key] = {
-                "first_in": record.first_in,
-                "last_out": record.last_out,
-                "area_name_in": None,
-                "area_name_out": None,
-                "first_in_source": None,
-                "last_out_source": None,
-            }
-            if record.area_name_in:
-                area_address = utils.resolve_area_address(record.area_name_in)
-                combined_attendance[date_key]["area_name_in"] = (
-                    area_address or record.area_name_in
-                )
-            if record.area_name_out:
-                area_address = utils.resolve_area_address(record.area_name_out)
-                combined_attendance[date_key]["area_name_out"] = (
-                    area_address or record.area_name_out
-                )
-            if record.first_in:
-                combined_attendance[date_key]["first_in_source"] = "staff_attendance"
-            if record.last_out:
-                combined_attendance[date_key]["last_out_source"] = "staff_attendance"
-        else:
-            if record.first_in:
-                current_first_in = combined_attendance[date_key]["first_in"]
-                if not current_first_in or record.first_in < current_first_in:
-                    combined_attendance[date_key]["first_in"] = record.first_in
-                    combined_attendance[date_key][
-                        "first_in_source"
-                    ] = "staff_attendance"
-                    if record.area_name_in:
-                        area_address = utils.resolve_area_address(record.area_name_in)
-                        combined_attendance[date_key]["area_name_in"] = (
-                            area_address or record.area_name_in
-                        )
-
-            if record.last_out:
-                current_last_out = combined_attendance[date_key]["last_out"]
-                if not current_last_out or record.last_out > current_last_out:
-                    combined_attendance[date_key]["last_out"] = record.last_out
-                    combined_attendance[date_key][
-                        "last_out_source"
-                    ] = "staff_attendance"
-                    if record.area_name_out:
-                        area_address = utils.resolve_area_address(record.area_name_out)
-                        combined_attendance[date_key]["area_name_out"] = (
-                            area_address or record.area_name_out
-                        )
-
-    lesson_by_date = defaultdict(list)
-    for record in lesson_qs:
-        date_key = record.date_at
-        lesson_by_date[date_key].append(record)
-
-    for date_key, lesson_records in lesson_by_date.items():
-        earliest_record = None
-        latest_record = None
-
-        for record in lesson_records:
-            if record.first_in:
-                if (
-                    earliest_record is None
-                    or record.first_in < earliest_record.first_in
-                ):
-                    earliest_record = record
-            if record.last_out:
-                if latest_record is None or record.last_out > latest_record.last_out:
-                    latest_record = record
-
-        if date_key not in combined_attendance:
-            combined_attendance[date_key] = {
-                "first_in": earliest_record.first_in if earliest_record else None,
-                "last_out": latest_record.last_out if latest_record else None,
-                "area_name_in": None,
-                "area_name_out": None,
-                "first_in_source": "lesson_attendance" if earliest_record else None,
-                "last_out_source": "lesson_attendance" if latest_record else None,
-            }
-            if kd_tree and class_names:
-                if earliest_record and earliest_record.first_in:
-                    try:
-                        _distances, indices = kd_tree.query(
-                            [[earliest_record.latitude, earliest_record.longitude]], k=1
-                        )
-                        if hasattr(indices, "ndim") and indices.ndim > 1:
-                            indices = indices.flatten()
-                        if len(indices) > 0:
-                            location_name = class_names[int(indices[0])]
-                            combined_attendance[date_key][
-                                "area_name_in"
-                            ] = location_name
-                    except Exception as e:
-                        logger.warning(
-                            f"Error finding location for earliest_record: {e}"
-                        )
-                if latest_record and latest_record.last_out:
-                    try:
-                        _distances, indices = kd_tree.query(
-                            [[latest_record.latitude, latest_record.longitude]], k=1
-                        )
-                        if hasattr(indices, "ndim") and indices.ndim > 1:
-                            indices = indices.flatten()
-                        if len(indices) > 0:
-                            location_name = class_names[int(indices[0])]
-                            combined_attendance[date_key][
-                                "area_name_out"
-                            ] = location_name
-                    except Exception as e:
-                        logger.warning(f"Error finding location for latest_record: {e}")
-        else:
-            if earliest_record and earliest_record.first_in:
-                current_first_in = combined_attendance[date_key]["first_in"]
-                if not current_first_in or earliest_record.first_in < current_first_in:
-                    combined_attendance[date_key]["first_in"] = earliest_record.first_in
-                    combined_attendance[date_key][
-                        "first_in_source"
-                    ] = "lesson_attendance"
-                    if kd_tree and class_names:
-                        try:
-                            _distances, indices = kd_tree.query(
-                                [[earliest_record.latitude, earliest_record.longitude]],
-                                k=1,
-                            )
-                            if hasattr(indices, "ndim") and indices.ndim > 1:
-                                indices = indices.flatten()
-                            if len(indices) > 0:
-                                location_name = class_names[int(indices[0])]
-                                combined_attendance[date_key][
-                                    "area_name_in"
-                                ] = location_name
-                        except Exception as e:
-                            logger.warning(
-                                f"Error finding location for earliest_record: {e}"
-                            )
-
-            if latest_record and latest_record.last_out:
-                current_last_out = combined_attendance[date_key]["last_out"]
-                if not current_last_out or latest_record.last_out > current_last_out:
-                    combined_attendance[date_key]["last_out"] = latest_record.last_out
-                    combined_attendance[date_key][
-                        "last_out_source"
-                    ] = "lesson_attendance"
-                    if kd_tree and class_names:
-                        try:
-                            _distances, indices = kd_tree.query(
-                                [[latest_record.latitude, latest_record.longitude]], k=1
-                            )
-                            if hasattr(indices, "ndim") and indices.ndim > 1:
-                                indices = indices.flatten()
-                            if len(indices) > 0:
-                                location_name = class_names[int(indices[0])]
-                                combined_attendance[date_key][
-                                    "area_name_out"
-                                ] = location_name
-                        except Exception as e:
-                            logger.warning(
-                                f"Error finding location for latest_record: {e}"
-                            )
+    attendance_dates = list(sa_by_event_date.keys())
+    lesson_dates = list(la_by_event_date.keys())
 
     logger.debug(f"Объединенные данные посещаемости: {combined_attendance}")
 
@@ -2990,19 +3261,8 @@ def get_staff_detail(staff, start_date, end_date):
     logger.debug(f"Получено причин отсутствия: {absent_reason_qs.count()}")
 
     dates = []
-
-    if attendance_qs.exists():
-        attendance_dates = [
-            attendance.date_at - datetime.timedelta(days=1)
-            for attendance in attendance_qs
-        ]
-        dates.extend(attendance_dates)
-    else:
-        attendance_dates = []
-
-    if lesson_qs.exists():
-        lesson_dates = [lesson.date_at for lesson in lesson_qs]
-        dates.extend(lesson_dates)
+    dates.extend(attendance_dates)
+    dates.extend(lesson_dates)
 
     if remote_work_qs.exists():
         remote_dates = []
