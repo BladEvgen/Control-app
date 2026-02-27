@@ -79,10 +79,7 @@ const getTapeNumRows = (
     viewportHeight - header - extraBottomReservePx - extraTopReservePx,
   );
   const n = Math.floor(available / rowHeight);
-  return Math.max(
-    TAPE_NUM_ROWS_MIN,
-    Math.min(TAPE_NUM_ROWS_MAX, n),
-  );
+  return Math.max(TAPE_NUM_ROWS_MIN, Math.min(TAPE_NUM_ROWS_MAX, n));
 };
 
 const MarqueeTrack: React.FC<{
@@ -426,7 +423,8 @@ const PhotoDashboard: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [cardWidthPx, setCardWidthPx] = useState<number>(CARD_WIDTH_MD);
   const [tapeNumRows, setTapeNumRows] = useState<number>(3);
-  const [kioskNarrowViewport, setKioskNarrowViewport] = useState<boolean>(false);
+  const [kioskNarrowViewport, setKioskNarrowViewport] =
+    useState<boolean>(false);
 
   const getCurrentLocalDate = useCallback((): string => {
     const today = new Date();
@@ -546,15 +544,10 @@ const PhotoDashboard: React.FC = () => {
       const isKioskMode = isKiosk || isFullscreen;
       const extraBottom = isKioskMode ? BOTTOM_RESERVE_KIOSK_PX : 0;
       const extraTop = isKioskMode ? KIOSK_MAIN_TOP_RESERVE_PX : 0;
-      const headerReserve = isKioskMode
-        ? KIOSK_HEADER_RESERVE_PX
-        : undefined;
+      const headerReserve = isKioskMode ? KIOSK_HEADER_RESERVE_PX : undefined;
       const availableHeight = Math.max(
         0,
-        h -
-          (headerReserve ?? HEADER_ESTIMATE_PX) -
-          extraBottom -
-          extraTop,
+        h - (headerReserve ?? HEADER_ESTIMATE_PX) - extraBottom - extraTop,
       );
 
       let cardW = getCardWidthForViewport(w);
@@ -563,24 +556,14 @@ const PhotoDashboard: React.FC = () => {
         cardW = Math.round(cardW * 0.9);
       }
 
-      const rows = getTapeNumRows(
-        h,
-        w,
-        extraBottom,
-        extraTop,
-        headerReserve,
-      );
+      const rows = getTapeNumRows(h, w, extraBottom, extraTop, headerReserve);
       setTapeNumRows(rows);
 
       let heightCapped = false;
       const rowHeight = cardW + CARD_META_HEIGHT + ROW_GAP_PX;
-      if (
-        isKioskMode &&
-        rows > 0 &&
-        availableHeight < rows * rowHeight
-      ) {
-        const maxCardH = Math.floor(availableHeight / rows) -
-          CARD_META_HEIGHT - ROW_GAP_PX;
+      if (isKioskMode && rows > 0 && availableHeight < rows * rowHeight) {
+        const maxCardH =
+          Math.floor(availableHeight / rows) - CARD_META_HEIGHT - ROW_GAP_PX;
         cardW = Math.max(CARD_WIDTH_MIN_PX, Math.min(cardW, maxCardH));
         heightCapped = true;
       }
@@ -704,22 +687,24 @@ const PhotoDashboard: React.FC = () => {
 
   const photoRows = useMemo(() => {
     const numRows = tapeNumRows;
-    const maxCols = Math.ceil(photos.length / numRows) || 1;
-    const rows: (PhotoData | null)[][] = Array.from({ length: numRows }, () =>
-      Array.from({ length: maxCols }, () => null),
-    );
-    for (let i = 0; i < photos.length; i++) {
-      const r = i % numRows;
-      const c = Math.floor(i / numRows);
-      rows[r][c] = photos[i];
+    if (numRows <= 0 || photos.length === 0) {
+      return [];
+    }
+    const perRow = Math.ceil(photos.length / numRows);
+    const rows: (PhotoData | null)[][] = [];
+    for (let r = 0; r < numRows; r++) {
+      const start = r * perRow;
+      const end = Math.min(start + perRow, photos.length);
+      if (start < end) {
+        rows.push(photos.slice(start, end));
+      }
     }
     return rows;
   }, [photos, tapeNumRows]);
 
   const tapeCols = Math.ceil(photos.length / tapeNumRows) || 1;
   const marqueeSpeed = useMemo(
-    () =>
-      MARQUEE_SPEED + Math.min(Math.max(tapeCols, 1), 10) * 2,
+    () => MARQUEE_SPEED + Math.min(Math.max(tapeCols, 1), 10) * 2,
     [tapeCols],
   );
 
@@ -854,7 +839,9 @@ const PhotoDashboard: React.FC = () => {
           </div>
           <div
             className={`flex flex-wrap items-center ${
-              isFullscreen || isKiosk ? "gap-1.5 sm:gap-2 lg:gap-4" : "gap-2 sm:gap-3 md:gap-4"
+              isFullscreen || isKiosk
+                ? "gap-1.5 sm:gap-2 lg:gap-4"
+                : "gap-2 sm:gap-3 md:gap-4"
             }`}
           >
             <motion.button
@@ -878,9 +865,13 @@ const PhotoDashboard: React.FC = () => {
               whileTap={{ scale: 0.98 }}
             >
               {isFullscreen && !isFullscreenBusy ? (
-                <FaCompress className={`${isFullscreen || isKiosk ? "w-3.5 h-3.5 lg:w-4 lg:h-4" : "w-4 h-4"}`} />
+                <FaCompress
+                  className={`${isFullscreen || isKiosk ? "w-3.5 h-3.5 lg:w-4 lg:h-4" : "w-4 h-4"}`}
+                />
               ) : (
-                <FaExpand className={`${isFullscreen || isKiosk ? "w-3.5 h-3.5 lg:w-4 lg:h-4" : "w-4 h-4"}`} />
+                <FaExpand
+                  className={`${isFullscreen || isKiosk ? "w-3.5 h-3.5 lg:w-4 lg:h-4" : "w-4 h-4"}`}
+                />
               )}
               <span>
                 {isFullscreenBusy
@@ -899,7 +890,9 @@ const PhotoDashboard: React.FC = () => {
                   : "gap-2 px-2.5 py-1.5 text-xs sm:px-3 sm:text-sm md:px-4 md:py-2 md:text-base"
               }`}
             >
-              <FaRegCalendarAlt className={`opacity-80 ${isFullscreen || isKiosk ? "w-3 h-3 lg:w-4 lg:h-4" : "w-3.5 h-3.5 md:w-4 md:h-4"}`} />
+              <FaRegCalendarAlt
+                className={`opacity-80 ${isFullscreen || isKiosk ? "w-3 h-3 lg:w-4 lg:h-4" : "w-3.5 h-3.5 md:w-4 md:h-4"}`}
+              />
               <span className="capitalize">{todayLabel}</span>
             </span>
           </div>
@@ -916,8 +909,7 @@ const PhotoDashboard: React.FC = () => {
         style={
           isKiosk
             ? {
-                paddingBottom:
-                  "max(1rem, env(safe-area-inset-bottom, 0px))",
+                paddingBottom: "max(1rem, env(safe-area-inset-bottom, 0px))",
               }
             : undefined
         }
@@ -1005,9 +997,7 @@ const PhotoDashboard: React.FC = () => {
             </button>
 
             <div className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain [@media(orientation:landscape)]:flex-row [@media(orientation:landscape)]:overflow-hidden">
-              <div
-                className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex-shrink-0 max-h-[50vh] [@media(orientation:landscape)]:max-h-none [@media(orientation:landscape)]:w-[min(42%,85vh)] [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:aspect-square [@media(orientation:landscape)]:shrink-0"
-              >
+              <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex-shrink-0 max-h-[50vh] [@media(orientation:landscape)]:max-h-none [@media(orientation:landscape)]:w-[min(42%,85vh)] [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:aspect-square [@media(orientation:landscape)]:shrink-0">
                 <img
                   src={`${apiUrl}${selectedPhoto.photoUrl}`}
                   alt={selectedPhoto.staffFullName}
