@@ -88,6 +88,30 @@ def is_lift_terminal(area_name: str | None) -> bool:
     return bool(_RX_LIFT.search(area_name.strip()))
 
 
+@lru_cache(maxsize=8192)
+def pin_to_external_format(pin: str | None) -> str:
+    """Приводит PIN к формату внешней системы (убирает обёртку S и T).
+
+    Используется для сопоставления сотрудников с системой оценок, где PIN
+    хранятся без префикса/суффикса (например, 9614 вместо S9614S).
+    Результат кэшируется (lru_cache) для повторных вызовов с тем же pin.
+
+    Args:
+        pin: PIN сотрудника в формате системы контроля (может быть None).
+
+    Returns:
+        PIN без обёртки: S9614S → 9614, T861T → 861. Если обёртки нет
+        или pin пустой — возвращается исходная строка или пустая строка.
+    """
+    if not pin:
+        return ""
+    if len(pin) >= 2 and pin[0] == "S" and pin[-1] == "S":
+        return pin[1:-1]
+    if len(pin) >= 2 and pin[0] == "T" and pin[-1] == "T":
+        return pin[1:-1]
+    return pin
+
+
 KEYWORDS = {
     "abilai": ["абылай", "абылайхана", "цос", "военные", "вход", "выход", "лифт"],
     "torekulova": ["торекулова", "торекулов", "турекулова", "торекулв"],

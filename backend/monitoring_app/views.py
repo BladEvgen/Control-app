@@ -772,6 +772,330 @@ def map_location(request):
 
 @swagger_auto_schema(
     method="GET",
+    operation_summary="Подтверждение оценок по посещаемости (отдел)",
+    operation_description=(
+        "Эндпоинт для интеграции с системой оценок: по отделу (группе) и дате возвращает, "
+        "кто из сотрудников был на «основной» локации (где большинство), а кто — нет.\n\n"
+        "**Логика:**\n"
+        "- Собираются отметки посещаемости за день (StaffAttendance и LessonAttendance).\n"
+        "- Локации группируются по адресу; основная — та, у которой наибольший процент сотрудников.\n"
+        "- Для каждого сотрудника: **confirmed** = был на основной локации, **waiting** = данные ещё не выгружены.\n\n"
+        "**Поиск по сотруднику:** в ответе объект **by_pin_short** — ключи это PIN без обёртки S/T (S9614S → 9614). "
+        "Оценка разрешена, если у этого pin_short поле **confirmed** = true."
+    ),
+    tags=["Attendance & Statistics"],
+    manual_parameters=[
+        openapi.Parameter(
+            "child_department_id",
+            openapi.IN_QUERY,
+            description="ID подразделения (ChildDepartment), например группа «ЖМ 724 0/б»",
+            type=openapi.TYPE_STRING,
+            required=True,
+        ),
+        openapi.Parameter(
+            "date",
+            openapi.IN_QUERY,
+            description="Дата в формате YYYY-MM-DD (рабочий день, за который смотрим посещаемость)",
+            type=openapi.TYPE_STRING,
+            required=True,
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Успешный ответ: метаданные отдела, список локаций с процентами, данные по каждому pin_short",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                required=["date", "child_department_id", "child_department_name", "data_available", "total", "locations", "by_pin_short"],
+                properties={
+                    "date": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Дата запроса (YYYY-MM-DD).",
+                    ),
+                    "child_department_id": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="ID отдела (ChildDepartment).",
+                    ),
+                    "child_department_name": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Название отдела (группы).",
+                    ),
+                    "data_available": openapi.Schema(
+                        type=openapi.TYPE_BOOLEAN,
+                        description="True, если данные посещаемости за эту дату уже выгружены в систему.",
+                    ),
+                    "total": openapi.Schema(
+                        type=openapi.TYPE_INTEGER,
+                        description="Число сотрудников в отделе.",
+                    ),
+                    "locations": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        description="Локации, отсортированные по убыванию pct. Первый элемент — основная локация (оценка разрешена для pins_short этой локации).",
+                        items=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "name": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="Название локации.",
+                                ),
+                                "address": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="Адрес локации.",
+                                ),
+                                "count": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    description="Число сотрудников на этой локации.",
+                                ),
+                                "pct": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    description="Доля от числа сотрудников с отметкой, в процентах.",
+                                ),
+                                "pins_short": openapi.Schema(
+                                    type=openapi.TYPE_ARRAY,
+                                    items=openapi.Schema(type=openapi.TYPE_STRING),
+                                    description="PIN сотрудников в формате внешней системы (без S/T).",
+                                ),
+                            },
+                        ),
+                    ),
+                    "by_pin_short": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        description="Объект для быстрого поиска по pin_short (O(1)). Ключ — PIN без обёртки S/T (например 9614). Значение — данные по посещаемости этого сотрудника.",
+                        additional_properties=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "confirmed": openapi.Schema(
+                                    type=openapi.TYPE_BOOLEAN,
+                                    description="True — сотрудник был на основной локации (оценка разрешена).",
+                                ),
+                                "waiting": openapi.Schema(
+                                    type=openapi.TYPE_BOOLEAN,
+                                    description="True — данные посещаемости за эту дату ещё не выгружены.",
+                                ),
+                                "location": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="Название локации, где была отметка (или адрес, если названия нет). null — отметки нет.",
+                                ),
+                                "first_in": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="Время первой отметки в формате ISO 8601 с таймзоной. null — отметки нет.",
+                                ),
+                            },
+                        ),
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(
+            description="Ошибка запроса: не указаны child_department_id или date, либо неверный формат даты.",
+        ),
+        404: openapi.Response(
+            description="Отдел с указанным child_department_id не найден.",
+        ),
+    },
+)
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def department_attendance_confirmation(request):
+    """Определяет подтверждение оценок по посещаемости для отдела на дату.
+
+    По переданному отделу (child_department_id) и дате возвращает:
+    - список локаций с долей сотрудников (pct) и списком pins_short;
+    - объект by_pin_short для поиска по pin_short (формат внешней системы: без S/T)
+      с полями confirmed, waiting, location, first_in.
+
+    Оценка считается разрешённой (confirmed=true), если сотрудник был на локации
+    с наибольшим процентом присутствующих (первый элемент в locations).
+
+    Args:
+        request: GET-запрос. Ожидаемые query-параметры:
+            child_department_id (обязательный): ID ChildDepartment.
+            date (обязательный): дата YYYY-MM-DD.
+
+    Returns:
+        Response: JSON с полями date, child_department_id, child_department_name,
+        data_available, total, locations, by_pin_short. При пустом отделе или
+        ошибке — 400/404 с сообщением в теле.
+    """
+    child_department_id = request.GET.get("child_department_id")
+    date_str = request.GET.get("date")
+
+    if not child_department_id or not date_str:
+        return Response(
+            {"error": "child_department_id and date are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return Response(
+            {"error": "Invalid date format, use YYYY-MM-DD"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    dept = models.ChildDepartment.objects.filter(id=child_department_id).first()
+    if not dept:
+        return Response(
+            {"error": f"ChildDepartment {child_department_id} not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    staff_list = list(
+        models.Staff.objects.filter(department_id=child_department_id).only(
+            "id", "pin", "name", "surname"
+        )
+    )
+    if not staff_list:
+        return Response(
+            {
+                "date": date_str,
+                "child_department_id": child_department_id,
+                "child_department_name": dept.name,
+                "data_available": False,
+                "total": 0,
+                "locations": [],
+                "by_pin_short": {},
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    staff_ids = [s.id for s in staff_list]
+    data_insert_date = target_date + datetime.timedelta(days=1)
+
+    sa_qs = models.StaffAttendance.objects.filter(
+        staff_id__in=staff_ids,
+        date_at=data_insert_date,
+        first_in__isnull=False,
+    ).values("staff_id", "first_in", "area_name_in")
+    sa_records = list(sa_qs)
+    staff_with_sa = {r["staff_id"] for r in sa_records}
+
+    la_qs = models.LessonAttendance.objects.filter(
+        staff_id__in=staff_ids,
+        date_at=target_date,
+    ).exclude(staff_id__in=staff_with_sa).values(
+        "staff_id", "first_in", "latitude", "longitude"
+    )
+
+    location_cache = get_class_location_cache()
+    location_searcher = location_cache.get("searcher")
+    if location_searcher is None and location_cache.get("searcher_payload"):
+        try:
+            location_searcher = utils.LocationSearcher(
+                location_cache["searcher_payload"]
+            )
+        except Exception:
+            location_searcher = None
+
+    class_locations = list(
+        models.ClassLocation.objects.only("name", "address").values("name", "address")
+    )
+    name_to_address = {loc["name"]: loc["address"] for loc in class_locations}
+    address_to_name = {loc["address"]: loc["name"] for loc in class_locations}
+
+    staff_to_location: dict[int, str] = {}
+    staff_first_in: dict[int, datetime.datetime] = {}
+    for sa in sa_records:
+        addr = utils.resolve_area_address(sa.get("area_name_in"))
+        if addr:
+            staff_to_location[sa["staff_id"]] = addr
+        fi = sa.get("first_in")
+        if fi:
+            staff_first_in[sa["staff_id"]] = fi
+
+    la_by_staff: dict[int, list[dict]] = defaultdict(list)
+    for la in la_qs:
+        la_by_staff[la["staff_id"]].append(la)
+    for sid, records in la_by_staff.items():
+        earliest = min(
+            (r for r in records if r.get("first_in")),
+            key=lambda r: r["first_in"],
+            default=None,
+        )
+        if earliest and location_searcher and earliest.get("latitude") is not None and earliest.get("longitude") is not None:
+            nearest_name = location_searcher.find_nearest(
+                earliest["latitude"], earliest["longitude"], radius=200
+            )
+            if nearest_name != "Unknown Area" and nearest_name in name_to_address:
+                staff_to_location[sid] = name_to_address[nearest_name]
+                staff_first_in[sid] = earliest["first_in"]
+
+    location_counts: dict[str, list[str]] = defaultdict(list)
+    for staff in staff_list:
+        addr = staff_to_location.get(staff.id)
+        if addr:
+            location_counts[addr].append(staff.pin)
+
+    data_available = bool(staff_to_location)
+    if not data_available:
+        data_available = models.StaffAttendance.objects.filter(
+            date_at=data_insert_date
+        ).exists()
+
+    locations_sorted = sorted(
+        location_counts.items(), key=lambda x: -len(x[1])
+    )
+    main_address = locations_sorted[0][0] if locations_sorted else None
+
+    total_with_attendance = sum(len(pins) for _, pins in location_counts.items())
+    locations_payload = []
+    for idx, (addr, pins) in enumerate(locations_sorted):
+        pct = (
+            round(100.0 * len(pins) / total_with_attendance, 2)
+            if total_with_attendance else 0
+        )
+        pins_short = [utils.pin_to_external_format(p) for p in pins]
+        locations_payload.append({
+            "name": address_to_name.get(addr, addr),
+            "address": addr,
+            "count": len(pins),
+            "pct": pct,
+            "pins_short": pins_short,
+        })
+
+    by_pin_short: dict[str, dict[str, Any]] = {}
+    for s in staff_list:
+        addr = staff_to_location.get(s.id)
+        if not data_available:
+            confirmed = False
+            waiting = True
+        elif addr is None:
+            confirmed = False
+            waiting = False
+        elif addr == main_address:
+            confirmed = True
+            waiting = False
+        else:
+            confirmed = False
+            waiting = False
+
+        fi = staff_first_in.get(s.id)
+        first_in_iso = (
+            fi.astimezone(timezone.get_current_timezone()).isoformat()
+            if fi else None
+        )
+        pin_short = utils.pin_to_external_format(s.pin)
+        location_name = address_to_name.get(addr, addr) if addr else None
+        by_pin_short[pin_short] = {
+            "confirmed": confirmed,
+            "waiting": waiting,
+            "location": location_name,
+            "first_in": first_in_iso,
+        }
+
+    return Response({
+        "date": date_str,
+        "child_department_id": child_department_id,
+        "child_department_name": dept.name,
+        "data_available": data_available,
+        "total": len(staff_list),
+        "locations": locations_payload,
+        "by_pin_short": by_pin_short,
+    }, status=status.HTTP_200_OK)
+
+
+@swagger_auto_schema(
+    method="GET",
     operation_summary="Список локаций для занятий",
     operation_description=(
         "**Без latitude/longitude:** все локации (id, name, address, latitude, longitude). "
