@@ -45,23 +45,55 @@ const formatTime = (iso: string): string => {
 const CARD_WIDTH_BASE = 220;
 const CARD_WIDTH_SM = 260;
 const CARD_WIDTH_MD = 280;
-const CARD_GAP = 16;
-const MAX_KIOSK_COLS = 6;
+const CARD_WIDTH_LG = 300;
+const CARD_META_HEIGHT = 100;
+const ROW_GAP_PX = 12;
+const HEADER_ESTIMATE_PX = 200;
+const BOTTOM_RESERVE_KIOSK_PX = 88;
+const KIOSK_HEADER_RESERVE_PX = 200;
+const KIOSK_MAIN_TOP_RESERVE_PX = 100;
+const CARD_WIDTH_MIN_PX = 140;
+const KIOSK_SHRINK_VIEWPORT_WIDTH = 1280;
+const TAPE_NUM_ROWS_MIN = 1;
+const TAPE_NUM_ROWS_MAX = 6;
 
 const getCardWidthForViewport = (viewportWidth: number): number => {
+  if (viewportWidth >= 1024) return CARD_WIDTH_LG;
   if (viewportWidth >= 768) return CARD_WIDTH_MD;
   if (viewportWidth >= 640) return CARD_WIDTH_SM;
   return CARD_WIDTH_BASE;
 };
 
+const getTapeNumRows = (
+  viewportHeight: number,
+  viewportWidth: number,
+  extraBottomReservePx = 0,
+  extraTopReservePx = 0,
+  headerReservePx?: number,
+): number => {
+  const header = headerReservePx ?? HEADER_ESTIMATE_PX;
+  const cardW = getCardWidthForViewport(viewportWidth);
+  const rowHeight = cardW + CARD_META_HEIGHT + ROW_GAP_PX;
+  const available = Math.max(
+    100,
+    viewportHeight - header - extraBottomReservePx - extraTopReservePx,
+  );
+  const n = Math.floor(available / rowHeight);
+  return Math.max(
+    TAPE_NUM_ROWS_MIN,
+    Math.min(TAPE_NUM_ROWS_MAX, n),
+  );
+};
+
 const MarqueeTrack: React.FC<{
-  items: PhotoData[];
+  items: (PhotoData | null)[];
   rowIndex: number;
   speedPxSec: number;
   hoverSpeed?: number;
   isPaused: boolean;
+  cardWidthPx: number;
   renderItem: (
-    photo: PhotoData,
+    photo: PhotoData | null,
     displayIndex: number,
     copyIndex: number,
   ) => React.ReactNode;
@@ -71,6 +103,7 @@ const MarqueeTrack: React.FC<{
   speedPxSec,
   hoverSpeed = MARQUEE_HOVER_SPEED,
   isPaused,
+  cardWidthPx,
   renderItem,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -204,10 +237,15 @@ const MarqueeTrack: React.FC<{
           >
             {items.map((photo, itemIndex) => {
               const displayIndex = copyIndex * items.length + itemIndex;
+              const key =
+                photo != null
+                  ? `row-${rowIndex}-${copyIndex}-${photo.photoUrl}-${photo.attendanceTime}-${itemIndex}`
+                  : `row-${rowIndex}-${copyIndex}-empty-${itemIndex}`;
               return (
                 <li
-                  key={`row-${rowIndex}-${copyIndex}-${photo.photoUrl}-${photo.attendanceTime}-${itemIndex}`}
+                  key={key}
                   className="mr-4 my-1 flex-shrink-0 list-none"
+                  style={photo == null ? { width: cardWidthPx } : undefined}
                 >
                   {renderItem(photo, displayIndex, copyIndex)}
                 </li>
@@ -385,9 +423,10 @@ const PhotoDashboard: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const maxPhotosRef = useRef<number>(12);
   const [hoveredCardKey, setHoveredCardKey] = useState<string | null>(null);
-  const [isMarqueeHovered, setIsMarqueeHovered] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [colsPerRow, setColsPerRow] = useState<number>(4);
+  const [cardWidthPx, setCardWidthPx] = useState<number>(CARD_WIDTH_MD);
+  const [tapeNumRows, setTapeNumRows] = useState<number>(3);
+  const [kioskNarrowViewport, setKioskNarrowViewport] = useState<boolean>(false);
 
   const getCurrentLocalDate = useCallback((): string => {
     const today = new Date();
@@ -496,35 +535,80 @@ const PhotoDashboard: React.FC = () => {
   }, [updateMaxPhotos]);
 
   useEffect(() => {
-    if (photos.length === 0) return;
-    const el = containerRef.current;
-    const updateCols = () => {
-      const viewportWidth = window.innerWidth;
-      const cardWidth = getCardWidthForViewport(viewportWidth);
-      const w =
-        el?.offsetWidth ?? Math.max(viewportWidth - 32, cardWidth + CARD_GAP);
-      const maxColsByWidth = Math.max(
-        1,
-        Math.floor((w + CARD_GAP) / (cardWidth + CARD_GAP)),
-      );
-      const kioskColsCap = Math.max(
-        MAX_KIOSK_COLS,
-        Math.ceil(Math.max(photos.length, 1) / 3),
-      );
-      const effectiveCols = isKiosk
-        ? Math.min(maxColsByWidth, kioskColsCap)
-        : maxColsByWidth;
-      setColsPerRow(effectiveCols);
+    const getViewportSize = (): { w: number; h: number } => {
+      const vv = window.visualViewport;
+      const h = vv ? vv.height : window.innerHeight;
+      const w = vv ? vv.width : window.innerWidth;
+      return { w, h };
     };
-    updateCols();
-    const ro = new ResizeObserver(updateCols);
+    const updateLayout = () => {
+      const { w, h } = getViewportSize();
+      const isKioskMode = isKiosk || isFullscreen;
+      const extraBottom = isKioskMode ? BOTTOM_RESERVE_KIOSK_PX : 0;
+      const extraTop = isKioskMode ? KIOSK_MAIN_TOP_RESERVE_PX : 0;
+      const headerReserve = isKioskMode
+        ? KIOSK_HEADER_RESERVE_PX
+        : undefined;
+      const availableHeight = Math.max(
+        0,
+        h -
+          (headerReserve ?? HEADER_ESTIMATE_PX) -
+          extraBottom -
+          extraTop,
+      );
+
+      let cardW = getCardWidthForViewport(w);
+      const narrowViewport = w < KIOSK_SHRINK_VIEWPORT_WIDTH;
+      if (isKioskMode && narrowViewport) {
+        cardW = Math.round(cardW * 0.9);
+      }
+
+      const rows = getTapeNumRows(
+        h,
+        w,
+        extraBottom,
+        extraTop,
+        headerReserve,
+      );
+      setTapeNumRows(rows);
+
+      let heightCapped = false;
+      const rowHeight = cardW + CARD_META_HEIGHT + ROW_GAP_PX;
+      if (
+        isKioskMode &&
+        rows > 0 &&
+        availableHeight < rows * rowHeight
+      ) {
+        const maxCardH = Math.floor(availableHeight / rows) -
+          CARD_META_HEIGHT - ROW_GAP_PX;
+        cardW = Math.max(CARD_WIDTH_MIN_PX, Math.min(cardW, maxCardH));
+        heightCapped = true;
+      }
+      setCardWidthPx(cardW);
+      setKioskNarrowViewport(isKioskMode && (narrowViewport || heightCapped));
+    };
+    updateLayout();
+    const el = containerRef.current;
+    const ro = new ResizeObserver(updateLayout);
     if (el) ro.observe(el);
-    window.addEventListener("resize", updateCols);
+    window.addEventListener("resize", updateLayout);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", updateLayout);
+      window.visualViewport.addEventListener("scroll", updateLayout);
+    }
+    document.addEventListener("fullscreenchange", updateLayout);
+    document.addEventListener("webkitfullscreenchange", updateLayout);
     return () => {
       ro.disconnect();
-      window.removeEventListener("resize", updateCols);
+      window.removeEventListener("resize", updateLayout);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", updateLayout);
+        window.visualViewport.removeEventListener("scroll", updateLayout);
+      }
+      document.removeEventListener("fullscreenchange", updateLayout);
+      document.removeEventListener("webkitfullscreenchange", updateLayout);
     };
-  }, [photos.length, isKiosk]);
+  }, [isKiosk, isFullscreen]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -619,16 +703,24 @@ const PhotoDashboard: React.FC = () => {
   );
 
   const photoRows = useMemo(() => {
-    const rows: PhotoData[][] = [];
-    for (let i = 0; i < photos.length; i += colsPerRow) {
-      rows.push(photos.slice(i, i + colsPerRow));
+    const numRows = tapeNumRows;
+    const maxCols = Math.ceil(photos.length / numRows) || 1;
+    const rows: (PhotoData | null)[][] = Array.from({ length: numRows }, () =>
+      Array.from({ length: maxCols }, () => null),
+    );
+    for (let i = 0; i < photos.length; i++) {
+      const r = i % numRows;
+      const c = Math.floor(i / numRows);
+      rows[r][c] = photos[i];
     }
     return rows;
-  }, [photos, colsPerRow]);
+  }, [photos, tapeNumRows]);
 
+  const tapeCols = Math.ceil(photos.length / tapeNumRows) || 1;
   const marqueeSpeed = useMemo(
-    () => MARQUEE_SPEED + Math.min(Math.max(colsPerRow, 1), 10) * 2,
-    [colsPerRow],
+    () =>
+      MARQUEE_SPEED + Math.min(Math.max(tapeCols, 1), 10) * 2,
+    [tapeCols],
   );
 
   const renderCardMeta = useCallback((photo: PhotoData) => {
@@ -656,15 +748,17 @@ const PhotoDashboard: React.FC = () => {
       rowIndex: number,
       cardIndex: number,
       isHovered: boolean,
+      kioskCardWidth?: number,
     ) => (
       <motion.article
         key={`${photo.photoUrl}-${photo.attendanceTime}-${keyIndex}`}
         initial={false}
-        className={`photo-item group relative flex-shrink-0 w-[220px] sm:w-[260px] md:w-[280px] rounded-2xl cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60 focus-visible:ring-offset-2 flex flex-col transition-all duration-300 ${
+        className={`photo-item group relative flex-shrink-0 w-[220px] sm:w-[260px] md:w-[280px] lg:w-[300px] rounded-2xl md:rounded-3xl cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60 focus-visible:ring-offset-2 flex flex-col transition-all duration-300 ${
           isHovered
             ? ""
             : "overflow-hidden bg-white/95 dark:bg-gray-800/95 ring-1 ring-white/80 dark:ring-gray-700/90 shadow-[0_12px_30px_-20px_rgba(15,23,42,0.7)] hover:shadow-[0_20px_45px_-25px_rgba(37,99,235,0.55)] hover:ring-primary-300/70 dark:hover:ring-primary-400/45"
         }`}
+        style={kioskCardWidth != null ? { width: kioskCardWidth } : undefined}
         onClick={() => setSelectedPhoto(photo)}
         onMouseEnter={() => setHoveredCardKey(`r${rowIndex}-i${cardIndex}`)}
         onMouseLeave={() => setHoveredCardKey(null)}
@@ -712,35 +806,65 @@ const PhotoDashboard: React.FC = () => {
   );
 
   const renderPhotos = () => (
-    <div className={isKiosk ? "py-2 sm:py-3" : "py-6"}>
+    <div
+      className={
+        isKiosk
+          ? "min-h-[100vh] min-h-[100dvh] flex flex-col py-3 sm:py-4 md:py-5"
+          : "py-6"
+      }
+    >
       {photos.length > 0 && hints && !isKiosk && (
         <p className="text-gray-500 dark:text-gray-400 text-xs sm:text-sm mb-3">
           {hints}
         </p>
       )}
       <div
-        className={`mx-auto w-full max-w-[1500px] ${
+        className={`mx-auto w-full max-w-[1500px] flex-shrink-0 ${
           isFullscreen
-            ? "mb-2 sm:mb-3 rounded-2xl border border-white/55 dark:border-slate-700/70 bg-white/65 dark:bg-slate-900/45 backdrop-blur-md px-3 sm:px-4 py-2.5 sm:py-3 shadow-lg"
+            ? "mb-1.5 rounded-xl border border-white/55 dark:border-slate-700/70 bg-white/65 dark:bg-slate-900/45 backdrop-blur-md px-2 py-1.5 shadow-lg lg:mb-4 lg:rounded-2xl lg:px-5 lg:py-3"
             : isKiosk
-              ? "mb-2 sm:mb-3"
+              ? "mb-1.5 px-2 py-1 lg:mb-4 lg:px-5 lg:py-2"
               : "mb-4"
         }`}
       >
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div
+          className={`flex flex-wrap items-center justify-between ${
+            isFullscreen || isKiosk ? "gap-2 lg:gap-4" : "gap-3 md:gap-4"
+          }`}
+        >
           <div className="min-w-0">
-            <h1 className="text-lg sm:text-xl md:text-2xl font-semibold text-gray-800 dark:text-white truncate">
+            <h1
+              className={`font-semibold text-gray-800 dark:text-white truncate ${
+                isFullscreen || isKiosk
+                  ? "text-sm sm:text-base lg:text-xl xl:text-2xl"
+                  : "text-lg sm:text-xl md:text-2xl"
+              }`}
+            >
               {pageTitle}
             </h1>
-            <p className="text-[11px] sm:text-xs text-gray-600 dark:text-gray-300 mt-0.5">
+            <p
+              className={`text-gray-600 dark:text-gray-300 ${
+                isFullscreen || isKiosk
+                  ? "mt-0 text-[10px] sm:text-xs lg:text-sm"
+                  : "mt-0.5 text-[11px] sm:text-xs md:text-sm"
+              }`}
+            >
               {pageSubtitle}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <div
+            className={`flex flex-wrap items-center ${
+              isFullscreen || isKiosk ? "gap-1.5 sm:gap-2 lg:gap-4" : "gap-2 sm:gap-3 md:gap-4"
+            }`}
+          >
             <motion.button
               onClick={handleFullscreenToggle}
               disabled={isFullscreenBusy}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white transition-colors ${
+              className={`flex items-center gap-1.5 rounded-lg font-semibold text-white transition-colors ${
+                isFullscreen || isKiosk
+                  ? "px-2 py-1 text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-sm"
+                  : "gap-2 px-3.5 py-1.5 text-xs md:px-4 md:py-2 md:text-sm"
+              } ${
                 isFullscreenBusy
                   ? "bg-primary-400 cursor-not-allowed"
                   : "bg-primary-600 hover:bg-primary-700"
@@ -754,9 +878,9 @@ const PhotoDashboard: React.FC = () => {
               whileTap={{ scale: 0.98 }}
             >
               {isFullscreen && !isFullscreenBusy ? (
-                <FaCompress className="w-4 h-4" />
+                <FaCompress className={`${isFullscreen || isKiosk ? "w-3.5 h-3.5 lg:w-4 lg:h-4" : "w-4 h-4"}`} />
               ) : (
-                <FaExpand className="w-4 h-4" />
+                <FaExpand className={`${isFullscreen || isKiosk ? "w-3.5 h-3.5 lg:w-4 lg:h-4" : "w-4 h-4"}`} />
               )}
               <span>
                 {isFullscreenBusy
@@ -768,8 +892,14 @@ const PhotoDashboard: React.FC = () => {
                     : "Полный экран"}
               </span>
             </motion.button>
-            <span className="inline-flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 text-xs sm:text-sm whitespace-nowrap">
-              <FaRegCalendarAlt className="w-3.5 h-3.5 opacity-80" />
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap ${
+                isFullscreen || isKiosk
+                  ? "px-2 py-1 text-[10px] sm:text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-base"
+                  : "gap-2 px-2.5 py-1.5 text-xs sm:px-3 sm:text-sm md:px-4 md:py-2 md:text-base"
+              }`}
+            >
+              <FaRegCalendarAlt className={`opacity-80 ${isFullscreen || isKiosk ? "w-3 h-3 lg:w-4 lg:h-4" : "w-3.5 h-3.5 md:w-4 md:h-4"}`} />
               <span className="capitalize">{todayLabel}</span>
             </span>
           </div>
@@ -778,28 +908,30 @@ const PhotoDashboard: React.FC = () => {
 
       <div
         ref={containerRef}
-        className={`overflow-x-hidden overflow-y-visible [scrollbar-width:none] [-ms-overflow-style:none] ${isKiosk ? "photo-kiosk-marquee-mask py-2 pb-4" : "py-4 pb-8 px-4"}`}
+        className={`[scrollbar-width:none] [-ms-overflow-style:none] ${
+          isKiosk
+            ? "photo-kiosk-marquee-mask flex-1 min-h-0 flex flex-col overflow-x-hidden overflow-y-hidden px-4 sm:px-6 md:px-8 lg:px-10 py-2 sm:py-3 md:py-4 pb-4 sm:pb-5 md:pb-6"
+            : "overflow-x-hidden overflow-y-visible py-4 pb-8 px-4 md:px-6"
+        }`}
         style={
           isKiosk
             ? {
-                paddingLeft: "clamp(1.5rem, 4vw, 2.5rem)",
-                paddingRight: "clamp(1.5rem, 4vw, 2.5rem)",
+                paddingBottom:
+                  "max(1rem, env(safe-area-inset-bottom, 0px))",
               }
             : undefined
         }
-        onMouseEnter={() => setIsMarqueeHovered(true)}
-        onMouseLeave={() => setIsMarqueeHovered(false)}
       >
         <div
-          className={`flex flex-col ${isKiosk ? "gap-2 sm:gap-3 py-1" : "gap-4 py-3"}`}
+          className={`flex flex-col flex-1 min-h-0 ${isKiosk ? "gap-2 sm:gap-3 md:gap-4 lg:gap-5 py-1 justify-center" : "gap-4 md:gap-5 py-3 md:py-4"}`}
         >
           {photoRows.map((rowPhotos, rowIndex) => (
             <div
               key={rowIndex}
               className={
                 isKiosk
-                  ? "overflow-x-hidden overflow-y-visible py-2 sm:py-3"
-                  : "overflow-x-hidden overflow-y-visible py-4"
+                  ? "overflow-x-hidden overflow-y-visible py-2 sm:py-3 md:py-4 lg:py-5"
+                  : "overflow-x-hidden overflow-y-visible py-4 md:py-5"
               }
               style={{ minHeight: 1 }}
             >
@@ -807,9 +939,22 @@ const PhotoDashboard: React.FC = () => {
                 items={rowPhotos}
                 rowIndex={rowIndex}
                 speedPxSec={marqueeSpeed}
-                isPaused={!!selectedPhoto || isMarqueeHovered}
+                isPaused={!!selectedPhoto || !!hoveredCardKey}
                 hoverSpeed={MARQUEE_HOVER_SPEED}
+                cardWidthPx={cardWidthPx}
                 renderItem={(photo, displayIndex, copyIndex) => {
+                  if (photo == null) {
+                    return (
+                      <div
+                        className="flex-shrink-0 rounded-2xl bg-transparent"
+                        style={{
+                          width: cardWidthPx,
+                          height: cardWidthPx + 80,
+                        }}
+                        aria-hidden
+                      />
+                    );
+                  }
                   const keyIndex =
                     rowIndex * 1_000_000 + copyIndex * 10_000 + displayIndex;
                   const cardIndex = displayIndex;
@@ -821,6 +966,7 @@ const PhotoDashboard: React.FC = () => {
                     rowIndex,
                     cardIndex,
                     isHovered,
+                    kioskNarrowViewport ? cardWidthPx : undefined,
                   );
                 }}
               />
@@ -835,7 +981,7 @@ const PhotoDashboard: React.FC = () => {
     selectedPhoto && (
       <AnimatePresence>
         <motion.div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 sm:p-5 md:p-6"
           onClick={() => setSelectedPhoto(null)}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -843,7 +989,7 @@ const PhotoDashboard: React.FC = () => {
           transition={{ duration: 0.2 }}
         >
           <motion.div
-            className="relative w-full max-w-md rounded-2xl overflow-hidden bg-white dark:bg-gray-800 shadow-2xl flex flex-col"
+            className="relative w-full max-w-md sm:max-w-lg md:max-w-xl lg:max-w-2xl rounded-2xl md:rounded-3xl overflow-hidden bg-white dark:bg-gray-800 shadow-2xl flex flex-col max-h-[90vh] md:max-h-[85vh] [@media(orientation:landscape)]:max-w-4xl [@media(orientation:landscape)]:max-h-[90vh]"
             onClick={(e) => e.stopPropagation()}
             initial={{ scale: 0.92, opacity: 0, y: 20 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
@@ -851,50 +997,54 @@ const PhotoDashboard: React.FC = () => {
             transition={{ type: "spring", damping: 28, stiffness: 300 }}
           >
             <button
-              className="absolute top-3 right-3 z-10 w-9 h-9 rounded-full bg-white/90 dark:bg-gray-700/90 hover:bg-gray-100 dark:hover:bg-gray-600 shadow-md text-gray-700 dark:text-gray-200 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-primary-500 touch-manipulation transition-colors"
+              className="absolute top-3 right-3 z-10 w-9 h-9 md:w-10 md:h-10 rounded-full bg-white/90 dark:bg-gray-700/90 hover:bg-gray-100 dark:hover:bg-gray-600 shadow-md text-gray-700 dark:text-gray-200 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-primary-500 touch-manipulation transition-colors"
               onClick={() => setSelectedPhoto(null)}
               aria-label="Закрыть"
             >
-              <FaTimes className="w-4 h-4" />
+              <FaTimes className="w-4 h-4 md:w-5 md:h-5" />
             </button>
 
-            <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
-              <img
-                src={`${apiUrl}${selectedPhoto.photoUrl}`}
-                alt={selectedPhoto.staffFullName}
-                className="w-full h-full object-contain"
-                draggable={false}
-              />
-            </div>
+            <div className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain [@media(orientation:landscape)]:flex-row [@media(orientation:landscape)]:overflow-hidden">
+              <div
+                className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex-shrink-0 max-h-[50vh] [@media(orientation:landscape)]:max-h-none [@media(orientation:landscape)]:w-[min(42%,85vh)] [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:aspect-square [@media(orientation:landscape)]:shrink-0"
+              >
+                <img
+                  src={`${apiUrl}${selectedPhoto.photoUrl}`}
+                  alt={selectedPhoto.staffFullName}
+                  className="w-full h-full object-contain"
+                  draggable={false}
+                />
+              </div>
 
-            <div className="p-5 sm:p-6 flex flex-col gap-3">
-              <h2 className="text-xl font-semibold text-gray-800 dark:text-white pr-8">
-                {selectedPhoto.staffFullName}
-              </h2>
-              <div className="flex flex-col gap-1.5 text-sm">
-                <p className="text-gray-600 dark:text-gray-300 flex items-center gap-2">
-                  <FaBuilding className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                  <span>
-                    <span className="font-medium text-gray-700 dark:text-gray-200">
-                      {getLabelForDepartment(selectedPhoto)}:
-                    </span>{" "}
-                    {selectedPhoto.department}
-                  </span>
-                </p>
-                <p className="text-gray-600 dark:text-gray-300 flex items-center gap-2">
-                  <FaClock className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                  <span>
-                    <span className="font-medium text-gray-700 dark:text-gray-200">
-                      Время:
-                    </span>{" "}
-                    {formatTime(selectedPhoto.attendanceTime)}
-                  </span>
-                </p>
-                {selectedPhoto.tutorInfo && (
-                  <p className="text-gray-500 dark:text-gray-400 text-xs mt-1 leading-relaxed">
-                    {selectedPhoto.tutorInfo}
+              <div className="p-5 sm:p-6 md:p-7 flex flex-col gap-3 flex-shrink-0 [@media(orientation:landscape)]:flex-1 [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:overflow-y-auto [@media(orientation:landscape)]:justify-center">
+                <h2 className="text-xl md:text-2xl font-semibold text-gray-800 dark:text-white pr-10 md:pr-12">
+                  {selectedPhoto.staffFullName}
+                </h2>
+                <div className="flex flex-col gap-1.5 text-sm">
+                  <p className="text-gray-600 dark:text-gray-300 flex items-center gap-2">
+                    <FaBuilding className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                    <span>
+                      <span className="font-medium text-gray-700 dark:text-gray-200">
+                        {getLabelForDepartment(selectedPhoto)}:
+                      </span>{" "}
+                      {selectedPhoto.department}
+                    </span>
                   </p>
-                )}
+                  <p className="text-gray-600 dark:text-gray-300 flex items-center gap-2">
+                    <FaClock className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                    <span>
+                      <span className="font-medium text-gray-700 dark:text-gray-200">
+                        Время:
+                      </span>{" "}
+                      {formatTime(selectedPhoto.attendanceTime)}
+                    </span>
+                  </p>
+                  {selectedPhoto.tutorInfo && (
+                    <p className="text-gray-500 dark:text-gray-400 text-xs mt-1 leading-relaxed">
+                      {selectedPhoto.tutorInfo}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
           </motion.div>
