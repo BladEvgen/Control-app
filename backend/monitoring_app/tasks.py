@@ -31,6 +31,20 @@ def get_all_attendance_task():
         summary.get("created_records"),
         summary.get("updated_records"),
     )
+    if summary.get("created_records", 0) or summary.get("updated_records", 0):
+        try:
+            from django.core.management import call_command
+
+            call_command(
+                "warmup_cache",
+                keys=["today_attendance_stats", "map_locations_today"],
+                force=True,
+            )
+            logger.info(
+                "get_all_attendance_task: refreshed today_attendance_stats and map_locations_today"
+            )
+        except Exception as e:
+            logger.warning("get_all_attendance_task: warmup_cache failed: %s", e)
     return summary
 
 

@@ -98,7 +98,9 @@ def register_preload(key: str, query: Callable[[], Any]) -> None:
     logger.info(f"Registered preload function for key: {key}")
 
 
-def warmup_cache(keys: Optional[List[str]] = None, force: bool = False) -> Dict[str, Any]:
+def warmup_cache(
+    keys: Optional[List[str]] = None, force: bool = False
+) -> Dict[str, Any]:
     """
     Прогревает кэш, выполняя предзагрузку для всех зарегистрированных ключей или указанных ключей.
 
@@ -170,10 +172,10 @@ def invalidate_cache(key: str, cache: BaseCache = Cache) -> bool:
 def invalidate_cache_pattern(pattern: str, cache: BaseCache = Cache) -> int:
     """
     Инвалидирует все ключи кэша, соответствующие паттерну.
-    Внимание: Работает только с Redis и Memcached, которые поддерживают поиск по паттернам.
+
 
     Args:
-        pattern (str): Паттерн для поиска ключей (например, "staff_*").
+        pattern (str): Паттерн для поиска ключей (например, "staff_detail_*").
         cache (any, optional): Объект кэша. По умолчанию: `Cache`.
 
     Returns:
@@ -183,18 +185,33 @@ def invalidate_cache_pattern(pattern: str, cache: BaseCache = Cache) -> int:
         >>> invalidate_cache_pattern("staff_detail_*")
     """
     try:
+        if hasattr(cache, "_cache") and hasattr(cache._cache, "get_client"):
+            client = cache._cache.get_client(write=True)
+            redis_pattern = f"*{pattern.rstrip('*')}*"
+            keys_to_delete = list(client.scan_iter(match=redis_pattern))
+            if keys_to_delete:
+                deleted_count = client.delete(*keys_to_delete)
+                logger.info(
+                    "Invalidated %s cache keys matching pattern: %s",
+                    deleted_count,
+                    pattern,
+                )
+                return deleted_count or 0
+            return 0
         if hasattr(cache, "keys"):
             keys = cache.keys(pattern)
             if keys:
                 deleted = cache.delete_many(keys)
                 deleted_count = deleted if deleted is not None else 0
-                logger.info(f"Invalidated {deleted_count} cache keys matching pattern: {pattern}")
+                logger.info(
+                    "Invalidated %s cache keys matching pattern: %s",
+                    deleted_count,
+                    pattern,
+                )
                 return deleted_count
-            else:
-                return 0
-        else:
-            logger.warning("Cache backend does not support pattern invalidation")
             return 0
+        logger.warning("Cache backend does not support pattern invalidation")
+        return 0
     except Exception as e:
-        logger.error(f"Error invalidating cache pattern {pattern}: {str(e)}")
+        logger.error("Error invalidating cache pattern %s: %s", pattern, e)
         return 0

@@ -1,7 +1,8 @@
 import asyncio
 import logging
 from contextlib import AbstractContextManager
-from datetime import datetime
+from datetime import datetime as dt
+from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -11,8 +12,8 @@ from channels.db import database_sync_to_async
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
-
 from monitoring_app import models
+from monitoring_app.cache_conf import invalidate_cache, invalidate_cache_pattern
 
 logger = logging.getLogger("django")
 
@@ -113,7 +114,7 @@ class AsyncAttendanceFetcher:
         max_tries=3,
     )
     async def fetch_attendance(
-        self, pin: str, start_date: datetime, end_date: datetime
+        self, pin: str, start_date: dt, end_date: dt
     ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
         if self.session is None:
             raise RuntimeError("aiohttp session is not initialized")
@@ -126,7 +127,9 @@ class AsyncAttendanceFetcher:
             "startDate": start_date.strftime("%Y-%m-%d %H:%M:%S"),
             "access_token": settings.API_KEY,
         }
-        request_url = f"{settings.API_URL.rstrip('/')}/api/transaction/listAttTransaction"
+        request_url = (
+            f"{settings.API_URL.rstrip('/')}/api/transaction/listAttTransaction"
+        )
         logger.debug("Fetching attendance for PIN %s", pin)
 
         try:
@@ -313,7 +316,9 @@ class AsyncAttendanceFetcher:
 
             async def process_pin(pin: str) -> dict[str, Any]:
                 try:
-                    data, error = await fetcher.fetch_attendance(pin, start_date, end_date)
+                    data, error = await fetcher.fetch_attendance(
+                        pin, start_date, end_date
+                    )
                 except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as exc:
                     logger.error(
                         "Attendance fetch failed after retries for PIN %s: %s",
@@ -333,9 +338,13 @@ class AsyncAttendanceFetcher:
                     return {"pin": pin, "data": [], "error": error}
 
                 if data:
-                    logger.debug("Retrieved %d attendance records for PIN %s", len(data), pin)
+                    logger.debug(
+                        "Retrieved %d attendance records for PIN %s", len(data), pin
+                    )
                 else:
-                    logger.info("No attendance events for PIN %s in requested period", pin)
+                    logger.info(
+                        "No attendance events for PIN %s in requested period", pin
+                    )
 
                 return {"pin": pin, "data": data, "error": None}
 
@@ -351,7 +360,10 @@ class AsyncAttendanceFetcher:
                     async with results_lock:
                         results.append(result)
                         processed_counter += 1
-                        if processed_counter % 100 == 0 or processed_counter == total_pins:
+                        if (
+                            processed_counter % 100 == 0
+                            or processed_counter == total_pins
+                        ):
                             logger.info(
                                 "Attendance fetch progress: %d/%d pins processed",
                                 processed_counter,
@@ -430,7 +442,7 @@ class AsyncAttendanceFetcher:
 
 
 def update_attendance_records(
-    attendance_data: Dict[str, List[Dict[str, Any]]], next_day: datetime
+    attendance_data: Dict[str, List[Dict[str, Any]]], next_day: dt
 ) -> Dict[str, int]:
     """
     Синхронная функция для обновления базы данных в атомарной транзакции.
@@ -459,12 +471,10 @@ def update_attendance_records(
 
                 try:
                     first_event_time = timezone.make_aware(
-                        datetime.fromisoformat(first_event["eventTime"])
+                        dt.fromisoformat(first_event["eventTime"])
                     )
                     last_event_time = (
-                        timezone.make_aware(
-                            datetime.fromisoformat(last_event["eventTime"])
-                        )
+                        timezone.make_aware(dt.fromisoformat(last_event["eventTime"]))
                         if len(data) > 1
                         else first_event_time
                     )
@@ -530,6 +540,20 @@ def update_attendance_records(
                 ["first_in", "last_out", "area_name_in", "area_name_out"],
             )
         logger.info("Completed atomic transaction for attendance records update")
+
+        if creates or updates:
+            work_day = next_day.date() - timedelta(days=1)
+            work_day_str = work_day.strftime("%Y-%m-%d")
+            invalidate_cache_pattern(f"staff_attendance_stats_{work_day_str}*")
+            invalidate_cache_pattern(f"map_location_{work_day_str}*")
+            invalidate_cache("today_attendance_stats")
+            invalidate_cache("map_locations_today")
+            invalidate_cache_pattern("staff_detail_*")
+            logger.info(
+                "Invalidated attendance cache for work_day=%s (date_at=%s)",
+                work_day_str,
+                next_day.date(),
+            )
 
     return {
         "created_records": len(creates),

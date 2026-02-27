@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import timedelta
 from typing import Any, cast
 
 from asgiref.sync import async_to_sync
@@ -48,12 +49,13 @@ def invalidate_attendance_cache(sender, instance, **kwargs):
     """Инвалидирует кэш при изменении посещаемости сотрудников."""
     invalidate_cache_pattern("staffatt_count_*")
     if hasattr(instance, "date_at") and instance.date_at:
-        date_str = instance.date_at.strftime("%Y-%m-%d")
-        invalidate_cache_pattern(f"staff_attendance_stats_{date_str}*")
+        work_day = instance.date_at - timedelta(days=1)
+        work_day_str = work_day.strftime("%Y-%m-%d")
+        invalidate_cache_pattern(f"staff_attendance_stats_{work_day_str}*")
         if hasattr(instance, "staff") and instance.staff:
             invalidate_cache_pattern(f"staff_detail_{instance.staff.pin}*")
-        invalidate_cache_pattern(f"map_location_{date_str}*")
-        logger.info(f"Invalidated attendance cache for date: {date_str}")
+        invalidate_cache_pattern(f"map_location_{work_day_str}*")
+        logger.info(f"Invalidated attendance cache for work_day: {work_day_str}")
 
 
 @receiver(post_save, sender=Staff)
