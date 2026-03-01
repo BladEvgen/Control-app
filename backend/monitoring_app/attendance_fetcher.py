@@ -2,6 +2,7 @@ import asyncio
 import logging
 from contextlib import AbstractContextManager
 from datetime import datetime as dt
+from datetime import time
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -260,15 +261,20 @@ class AsyncAttendanceFetcher:
         """
         Получает данные о посещаемости всех сотрудников за выбранный день.
         Логика:
-         - Вычисляется дата, за которую собираются данные: prev_date = timezone.now() - days_to_subtract
-         - Границы дня: start_date (начало дня, 00:00:00) и end_date (конец дня, 23:59:59)
-         - Для сохранения в базе используется дата следующего дня: next_day = prev_date + 1 день
+         - Текущая дата берётся в таймзоне проекта (Asia/Almaty), чтобы в 04:00 1 марта
+           выгружались данные за 28 февраля и сохранялись с date_at=1 марта.
+         - work_day_date = вчера по локальной дате; границы дня в локальной таймзоне.
+         - Для сохранения в базе используется дата следующего дня: next_day (дата выгрузки).
         """
         days_to_subtract = days if days is not None else settings.DAYS
-        prev_date = timezone.now() - timezone.timedelta(days=days_to_subtract)
-        start_date = prev_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_date = prev_date.replace(hour=23, minute=59, second=59, microsecond=0)
-        next_day = prev_date + timezone.timedelta(days=1)
+        local_now = timezone.localtime(timezone.now())
+        work_day_date = local_now.date() - timedelta(days=days_to_subtract)
+        next_day_date = work_day_date + timedelta(days=1)
+        start_date = timezone.make_aware(dt.combine(work_day_date, time.min))
+        end_date = timezone.make_aware(
+            dt.combine(work_day_date, time(23, 59, 59, 999999))
+        )
+        next_day = timezone.make_aware(dt.combine(next_day_date, time.min))
 
         logger.info(
             "Starting get_all_attendance for date range: %s to %s, saving records for date %s",

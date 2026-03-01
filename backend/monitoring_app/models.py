@@ -537,6 +537,15 @@ class RemoteWork(models.Model):
 
 
 class StaffAttendance(models.Model):
+    """
+    Посещаемость по СКУД: одна запись на (сотрудник, дата выгрузки).
+
+    date_at — дата выгрузки (день, когда задача в 04:00 сохранила данные).
+    first_in / last_out — фактические время первого входа и последнего выхода
+    за рабочий день (date_at - 1). Пример: запись с date_at=28.02 содержит
+    first_in/last_out за 27.02 (например 09:00 и 18:00 27.02).
+    """
+
     staff = models.ForeignKey(
         Staff,
         on_delete=models.CASCADE,

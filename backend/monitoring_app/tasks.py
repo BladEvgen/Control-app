@@ -12,19 +12,29 @@ logger = logging.getLogger(__name__)
 
 
 @shared_task
-def get_all_attendance_task():
+def get_all_attendance_task(days=None):
+    """
+    Выгрузка посещаемости из API СКУД и сохранение в StaffAttendance.
+
+    days: за сколько дней назад брать рабочий день (по умолчанию settings.DAYS, обычно 1).
+    Пример: days=1 → вчера по локальной дате, date_at=сегодня; days=2 → позавчера, date_at=вчера.
+    Для дозаполнения пропущенных дней вызывать с days=2, 3, ... (по одному запуску на день).
+    """
     import asyncio
 
     from monitoring_app.attendance_fetcher import AsyncAttendanceFetcher
 
     async def main():
         fetcher = AsyncAttendanceFetcher()
-        summary = await fetcher.get_all_attendance()
+        summary = await fetcher.get_all_attendance(days=days)
         return summary
 
     summary = asyncio.run(main())
     logger.info(
-        "get_all_attendance_task summary: total_pins=%s, successful=%s, failed=%s, created=%s, updated=%s",
+        "get_all_attendance_task(days=%s) summary: source_date=%s save_date=%s total_pins=%s, successful=%s, failed=%s, created=%s, updated=%s",
+        days,
+        summary.get("source_date"),
+        summary.get("save_date"),
         summary.get("total_pins"),
         summary.get("successful_requests"),
         summary.get("failed_requests"),
