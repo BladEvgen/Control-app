@@ -108,8 +108,21 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         if photos is None:
             from monitoring_app import models
 
-            qs = models.LessonAttendance.objects.filter(date_at=date).select_related(
-                "staff__department"
+            qs = (
+                models.LessonAttendance.objects.filter(date_at=date)
+                .select_related("staff__department")
+                .only(
+                    "id",
+                    "first_in",
+                    "staff_image_path",
+                    "tutor",
+                    "tutor_id",
+                    "subject_name",
+                    "staff__pin",
+                    "staff__surname",
+                    "staff__name",
+                    "staff__department__name",
+                )
             )
             photos = [
                 {
@@ -126,7 +139,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                 }
                 for record in qs
             ]
-            cache.set(cache_key, photos, timeout=5)
+            cache.set(cache_key, photos, timeout=60)
         return photos
 
     async def new_photo(self, event):
@@ -149,9 +162,22 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         from monitoring_app import models
 
         try:
-            record = models.LessonAttendance.objects.select_related(
-                "staff__department"
-            ).get(id=attendance_id)
+            record = (
+                models.LessonAttendance.objects.select_related("staff__department")
+                .only(
+                    "id",
+                    "first_in",
+                    "staff_image_path",
+                    "tutor",
+                    "tutor_id",
+                    "subject_name",
+                    "staff__pin",
+                    "staff__surname",
+                    "staff__name",
+                    "staff__department__name",
+                )
+                .get(id=attendance_id)
+            )
             return {
                 "staffPin": record.staff.pin,
                 "staffFullName": f"{record.staff.surname} {record.staff.name}",

@@ -104,7 +104,7 @@ def update_lesson_attendance_last_out():
 
         lessons_to_update = models.LessonAttendance.objects.filter(
             last_out__isnull=True, first_in__lte=three_hours_ago
-        )
+        ).only("id", "first_in", "last_out", "date_at")
 
         if not lessons_to_update.exists():
             logger.info("%s no records to update", log_prefix)
