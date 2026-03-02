@@ -15,15 +15,38 @@ DEBUG = socket.gethostname() in HOST_NAMES
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 
+load_dotenv(BASE_DIR / ".env")
+
+
+def _csv_env_frozenset(name: str, default: str) -> frozenset[str]:
+    """Parse comma-separated env var into a normalized frozenset."""
+    return frozenset(
+        item.strip() for item in os.getenv(name, default).split(",") if item.strip()
+    )
+
+
 # Custom settings
 DAYS = 1
+# Серийные номера устройств выхода из здания (devSn из API СКУД)
+ATTENDANCE_EXIT_DEVICE_SNS = _csv_env_frozenset(
+    "ATTENDANCE_EXIT_DEVICE_SNS",
+    "CORL223060005,QJT3244400440,CN3R230260001,CN3R230260016,CN3R230260009",
+)
+ATTENDANCE_AMBIGUOUS_EXIT_DEVICE_SNS = _csv_env_frozenset(
+    "ATTENDANCE_AMBIGUOUS_EXIT_DEVICE_SNS",
+    "QJT3244400440",
+)
+ATTENDANCE_REENTRY_DEVICE_SNS = _csv_env_frozenset(
+    "ATTENDANCE_REENTRY_DEVICE_SNS",
+    "COVS222560013,CN3R230260010,CN3R230260002,CN3R230260003",
+)
+ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES = int(
+    os.getenv("ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES", "45")
+)
 FACE_RECOGNITION_THRESHOLD = 0.76
 RATE_PERIOD = 600
 RATE_LIMIT = 40
 NO_ALBUMENTATIONS_UPDATE: int = int(os.getenv("NO_ALBUMENTATIONS_UPDATE", "1"))
-
-# Load environment variables
-load_dotenv(BASE_DIR / ".env")
 
 # Secret keys and API configurations
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -691,17 +714,17 @@ LOGGING = {
         },
         "monitoring_app.lesson_attendance": {
             "handlers": ["file", "console"] if DEBUG else ["file"],
-            "level": "INFO",
+            "level": "INFO" if DEBUG else "WARNING",
             "propagate": False,
         },
         "monitoring_app.lesson_locations": {
             "handlers": ["lesson_locations_file"],
-            "level": "INFO",
+            "level": "INFO" if DEBUG else "WARNING",
             "propagate": False,
         },
         "monitoring_app.lesson_locations.not_found": {
             "handlers": ["lesson_locations_not_found_file"],
-            "level": "INFO",
+            "level": "INFO" if DEBUG else "WARNING",
             "propagate": False,
         },
         "monitoring_app.serializers": {

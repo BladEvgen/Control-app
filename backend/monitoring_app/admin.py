@@ -1040,9 +1040,11 @@ class StaffAdmin(admin.ModelAdmin):
         if hasattr(obj, "attendance_today_list") and obj.attendance_today_list:
             attendance = obj.attendance_today_list[0]
         else:
-            attendance = StaffAttendance.objects.filter(
-                staff=obj, date_at=today
-            ).first()
+            attendance = (
+                StaffAttendance.objects.filter(staff=obj, date_at=today)
+                .only("id", "first_in", "last_out")
+                .first()
+            )
 
         if not attendance:
             remote = False
@@ -1125,13 +1127,18 @@ class StaffAdmin(admin.ModelAdmin):
                 staff=obj, date_at__range=(start_date, end_date)
             )
             .select_related("absence_reason")
+            .only("id", "date_at", "first_in", "last_out", "absence_reason_id")
             .order_by("date_at")
         )
         records_dict = {rec.date_at: rec for rec in attendance_records}
 
-        lesson_records = LessonAttendance.objects.filter(
-            staff=obj, date_at__range=(start_date, end_date)
-        ).order_by("date_at", "first_in")
+        lesson_records = (
+            LessonAttendance.objects.filter(
+                staff=obj, date_at__range=(start_date, end_date)
+            )
+            .only("id", "date_at", "first_in", "last_out", "staff_id")
+            .order_by("date_at", "first_in")
+        )
         lessons_dict = defaultdict(list)
         for lesson in lesson_records:
             lessons_dict[lesson.date_at].append(lesson)
@@ -1552,8 +1559,11 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         "first_in",
         "last_out",
         "duration",
+        "formatted_effective_work_seconds",
         "area_name_out",
         "area_name_in",
+        "formatted_area_sequence",
+        "formatted_effective_work_intervals",
     )
 
     fieldsets = (
@@ -1566,6 +1576,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
                     "first_in",
                     "last_out",
                     "duration",
+                    "formatted_effective_work_seconds",
                 ),
                 "classes": ("wide",),
             },
@@ -1576,6 +1587,8 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
                 "fields": (
                     "area_name_in",
                     "area_name_out",
+                    "formatted_area_sequence",
+                    "formatted_effective_work_intervals",
                 ),
                 "classes": ("wide",),
             },
@@ -1606,30 +1619,179 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
     formatted_last_out.short_description = "Выход"
 
     def duration(self, obj):
-        if obj.first_in and obj.last_out:
-            delta = obj.last_out - obj.first_in
-            total_seconds = int(delta.total_seconds())
-
+        total_seconds = None
+        if obj.effective_work_seconds is not None:
+            total_seconds = obj.effective_work_seconds
+        elif obj.first_in and obj.last_out:
+            total_seconds = int((obj.last_out - obj.first_in).total_seconds())
+        if total_seconds is not None:
             if total_seconds < 0:
                 return format_html('<span style="color: red;">Ошибка времени</span>')
-
             if total_seconds > 86400:
                 total_seconds = 86400
-
             hours, remainder = divmod(total_seconds, 3600)
             minutes = remainder // 60
-
             time_str = f"{hours:02d}:{minutes:02d}"
-
             if hours < 1:
                 return format_html('<span style="color: red;">{}</span>', time_str)
-            elif hours < 2:
+            if hours < 2:
                 return format_html('<span style="color: orange;">{}</span>', time_str)
-            else:
-                return format_html('<span style="color: green;">{}</span>', time_str)
+            return format_html('<span style="color: green;">{}</span>', time_str)
         return "-"
 
-    duration.short_description = "Продолжительность"
+    duration.short_description = "Продолжительность (эффективная)"
+
+    def formatted_effective_work_seconds(self, obj):
+        """Отображает effective_work_seconds в виде «N сек (X ч Y мин)»."""
+        if obj is None or getattr(obj, "effective_work_seconds", None) is None:
+            return format_html("<span style='color: #999;'>—</span>")
+        sec = obj.effective_work_seconds
+        hours, remainder = divmod(sec, 3600)
+        minutes = remainder // 60
+        return format_html(
+            "{} сек <span style='color: #666;'>({} ч {} мин)</span>",
+            sec,
+            hours,
+            minutes,
+        )
+
+    formatted_effective_work_seconds.short_description = (
+        "Эффективное время в здании (сек)"
+    )
+
+    def formatted_area_sequence(self, obj):
+        """Рендерит цепочку зон: №, Время, Зона, Устройство (devSn). Выход подсвечивается."""
+        if obj is None:
+            return format_html("<span style='color: #999;'>—</span>")
+        seq = getattr(obj, "area_sequence", None)
+        if not seq or not isinstance(seq, list):
+            return format_html("<span style='color: #999;'>Нет данных</span>")
+        rows = []
+        for i, item in enumerate(seq[:50], 1):
+            if not isinstance(item, dict):
+                continue
+            t = item.get("t") or ""
+            area = item.get("area") or ""
+            dev_sn = item.get("devSn") or "—"
+            is_exit = item.get("is_exit") == "1"
+            is_bridge_transfer = item.get("exit_resolution") == "bridge_transfer"
+            row_bg = ""
+            if is_exit:
+                row_bg = "background: #e0f2fe;"
+            elif is_bridge_transfer:
+                row_bg = "background: #fef9c3;"
+            elif i % 2 == 0:
+                row_bg = "background: #f8fafc;"
+            dev_cell = format_html(
+                "<span style='font-family: monospace; font-size: 12px; color: #475569;'>{}</span>",
+                dev_sn,
+            )
+            if is_exit:
+                dev_cell = format_html(
+                    "<span style='font-family: monospace; font-size: 12px; color: #0284c7;' title=\"Турникет выхода\">{} ✓</span>",
+                    dev_sn,
+                )
+            elif is_bridge_transfer:
+                dev_cell = format_html(
+                    "<span style='font-family: monospace; font-size: 12px; color: #a16207;' title=\"Переход в пристройку\">{} ↔</span>",
+                    dev_sn,
+                )
+            rows.append(
+                format_html(
+                    "<tr style='{}'>"
+                    "<td style='padding: 8px 14px; text-align: right; min-width: 2.5em; font-weight: 500;'>{}</td>"
+                    "<td style='padding: 8px 14px; min-width: 4em; font-variant-numeric: tabular-nums; font-size: 14px;'>{}</td>"
+                    "<td style='padding: 8px 14px; min-width: 12em;'>{}</td>"
+                    "<td style='padding: 8px 14px; min-width: 14em;'>{}</td></tr>",
+                    row_bg,
+                    i,
+                    t,
+                    area,
+                    dev_cell,
+                )
+            )
+        head = format_html(
+            "<thead><tr style='background: #334155; color: #f1f5f9;'>"
+            "<th style='text-align: right; padding: 10px 14px; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;'>№</th>"
+            "<th style='text-align: left; padding: 10px 14px; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;'>Время</th>"
+            "<th style='text-align: left; padding: 10px 14px; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;'>Зона</th>"
+            "<th style='text-align: left; padding: 10px 14px; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;'>Устройство / Статус</th></tr></thead>"
+        )
+        tail = (
+            format_html(
+                "<tr style='background: #f1f5f9;'><td colspan='4' style='padding: 8px 14px; color: #64748b; font-size: 12px;'>"
+                "… и ещё {} пунктов</td></tr>",
+                len(seq) - 50,
+            )
+            if len(seq) > 50
+            else ""
+        )
+        return format_html(
+            "<div style='max-height: 400px; overflow: auto; border: 1px solid #cbd5e1; border-radius: 8px; "
+            "box-shadow: 0 1px 3px rgba(0,0,0,0.08); min-width: 420px;'>"
+            "<table style='border-collapse: collapse; font-size: 13px; width: 100%; min-width: 400px;'>{}{}{}</table></div>",
+            head,
+            format_html("".join(rows)),
+            tail,
+        )
+
+    formatted_area_sequence.short_description = "Цепочка зон (карта перемещений)"
+
+    def formatted_effective_work_intervals(self, obj):
+        """Рендерит интервалы «в здании» (effective_work_intervals) в читаемом виде."""
+        from datetime import datetime
+
+        if obj is None:
+            return format_html("<span style='color: #999;'>—</span>")
+        intervals = getattr(obj, "effective_work_intervals", None)
+        if not intervals or not isinstance(intervals, list):
+            return format_html("<span style='color: #999;'>Нет данных</span>")
+        lines = []
+        for idx, item in enumerate(intervals[:20], 1):
+            if not isinstance(item, dict):
+                continue
+            start_s = item.get("start") or ""
+            end_s = item.get("end") or ""
+            try:
+                start_dt = datetime.fromisoformat(start_s.replace("Z", "+00:00"))
+                end_dt = datetime.fromisoformat(end_s.replace("Z", "+00:00"))
+                start_local = timezone.localtime(start_dt)
+                end_local = timezone.localtime(end_dt)
+                start_str = start_local.strftime("%H:%M")
+                end_str = end_local.strftime("%H:%M")
+                delta_sec = int((end_dt - start_dt).total_seconds())
+                mins = delta_sec // 60
+                lines.append(
+                    format_html(
+                        "<div style='padding: 2px 0;'>{} — {} ({} мин)</div>",
+                        start_str,
+                        end_str,
+                        mins,
+                    )
+                )
+            except (ValueError, TypeError, AttributeError):
+                lines.append(
+                    format_html(
+                        "<div style='padding: 2px 0; color: #999;'>{} — {}</div>",
+                        start_s[:19] if start_s else "?",
+                        end_s[:19] if end_s else "?",
+                    )
+                )
+        if len(intervals) > 20:
+            lines.append(
+                format_html(
+                    "<div style='color: #666; padding-top: 4px;'>… и ещё {} интервалов</div>",
+                    len(intervals) - 20,
+                )
+            )
+        return format_html(
+            "<div style='max-height: 220px; overflow-y: auto; font-size: 13px;'>{}</div>",
+            format_html("".join(lines)),
+        )
+
+    formatted_effective_work_intervals.short_description = (
+        "Интервалы «в здании» (для объединения с LA)"
+    )
 
     def staff_info(self, obj):
         if not obj.staff:
@@ -1777,6 +1939,7 @@ class LessonAttendanceAdmin(ModelAdmin):
         "photo_preview",
         "location_map",
         "lesson_duration",
+        "formatted_duration_seconds",
     )
     date_hierarchy = "date_at"
     actions = ["export_lesson_data", "cleanup_old_photos"]
@@ -1788,7 +1951,12 @@ class LessonAttendanceAdmin(ModelAdmin):
             "Основная информация",
             {
                 "fields": (
-                    ("first_in", "last_out", "lesson_duration"),
+                    (
+                        "first_in",
+                        "last_out",
+                        "lesson_duration",
+                        "formatted_duration_seconds",
+                    ),
                     "photo_preview",
                     "date_at",
                 ),
@@ -1850,10 +2018,31 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     ordering = ("-date_at", "-first_in")
 
+    def formatted_duration_seconds(self, obj):
+        """Показывает duration_seconds в виде «N сек (X ч Y мин)»."""
+        if obj is None:
+            return format_html("<span style='color: #999;'>—</span>")
+        sec = getattr(obj, "duration_seconds", None)
+        if sec is None:
+            return format_html("<span style='color: #999;'>—</span>")
+        hours, remainder = divmod(sec, 3600)
+        minutes = remainder // 60
+        return format_html(
+            "{} сек <span style='color: #666;'>({} ч {} мин)</span>",
+            sec,
+            hours,
+            minutes,
+        )
+
+    formatted_duration_seconds.short_description = "Длительность занятия (сек)"
+
     def lesson_duration(self, obj):
-        if obj.first_in and obj.last_out:
-            delta = obj.last_out - obj.first_in
-            total_seconds = int(delta.total_seconds())
+        total_seconds = None
+        if getattr(obj, "duration_seconds", None) is not None:
+            total_seconds = obj.duration_seconds
+        elif obj.first_in and obj.last_out:
+            total_seconds = int((obj.last_out - obj.first_in).total_seconds())
+        if total_seconds is not None:
 
             if total_seconds < 0:
                 return format_html('<span style="color: red;">Ошибка времени</span>')

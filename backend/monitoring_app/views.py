@@ -20,7 +20,7 @@ from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Prefetch, Q
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template import TemplateDoesNotExist
@@ -113,8 +113,10 @@ def atomic_block() -> Generator[None, None, None]:
         yield
 
 
-LUNCH_BREAK_START = datetime.time(hour=13, minute=0)
-LUNCH_BREAK_END = datetime.time(hour=14, minute=0)
+# Окно «обед»: обеденный перерыв учитывается только при проходе через турникет выхода в этом интервале (см. фетчер).
+# В fallback (без событий) обед не вычитаем — считаем, что сотрудник не выходил (обедал на месте).
+LUNCH_BREAK_START = datetime.time(hour=12, minute=55)
+LUNCH_BREAK_END = datetime.time(hour=14, minute=5)
 
 CLASS_LOCATION_CACHE_TTL = datetime.timedelta(minutes=60)
 DEPARTMENT_CONFIRMATION_CACHE_TTL = 10 * 60 * 60
@@ -301,20 +303,20 @@ def _to_date(dt):
 
 
 def fetch_attendance_by_event_dates(staff_ids, date_from, date_to):
-    """Load StaffAttendance and LessonAttendance by event date in one pass per model.
+    """Загружает StaffAttendance и LessonAttendance по датам событий одним проходом.
 
-    StaffAttendance.date_at is the day *after* first_in/last_out (upload date).
-    LessonAttendance.date_at is the same calendar day as the lesson.
-    Returns dicts keyed by event_date for reuse in api/staff/{id}/ and
-    api/attendance/department-confirmation/.
+    StaffAttendance.date_at — день выгрузки (следующий за рабочим днём).
+    LessonAttendance.date_at — календарный день занятия. Результаты используются
+    в api/staff/{pin}/ и api/attendance/department-confirmation/.
 
     Args:
-        staff_ids: List of staff primary keys.
-        date_from: Start of event date range (inclusive).
-        date_to: End of event date range (inclusive).
+        staff_ids: Список id сотрудников (первичные ключи Staff).
+        date_from: Начало диапазона дат событий (включительно), date.
+        date_to: Конец диапазона дат событий (включительно), date.
 
     Returns:
-        tuple: (sa_by_event_date, la_by_event_date), each dict[date, list[dict]].
+        Кортеж (sa_by_event_date, la_by_event_date): каждый элемент — словарь
+        {event_date: list[dict]} с записями из .values().
     """
     date_from_plus1 = date_from + datetime.timedelta(days=1)
     date_to_plus1 = date_to + datetime.timedelta(days=1)
@@ -326,7 +328,15 @@ def fetch_attendance_by_event_dates(staff_ids, date_from, date_to):
         date_at__gte=date_from_plus1,
         date_at__lte=date_to_plus1,
     ).values(
-        "staff_id", "date_at", "first_in", "last_out", "area_name_in", "area_name_out"
+        "staff_id",
+        "date_at",
+        "first_in",
+        "last_out",
+        "area_name_in",
+        "area_name_out",
+        "effective_work_seconds",
+        "area_sequence",
+        "effective_work_intervals",
     ):
         d = _to_date(r["date_at"])
         if d is not None:
@@ -337,7 +347,15 @@ def fetch_attendance_by_event_dates(staff_ids, date_from, date_to):
         staff_id__in=staff_ids,
         date_at__gte=date_from,
         date_at__lte=date_to,
-    ).values("staff_id", "date_at", "first_in", "last_out", "latitude", "longitude"):
+    ).values(
+        "staff_id",
+        "date_at",
+        "first_in",
+        "last_out",
+        "latitude",
+        "longitude",
+        "duration_seconds",
+    ):
         d = _to_date(r["date_at"])
         if d is not None:
             la_by_event_date[d].append(r)
@@ -346,16 +364,16 @@ def fetch_attendance_by_event_dates(staff_ids, date_from, date_to):
 
 
 def _resolve_la_location(lat, lon, kd_tree, class_names):
-    """Resolve (lat, lon) to location name via kd_tree.
+    """Определяет название локации по координатам через KD-дерево.
 
     Args:
-        lat: Latitude.
-        lon: Longitude.
-        kd_tree: KDTree for coordinate lookup (or None).
-        class_names: List of location names for kd_tree indices.
+        lat: Широта (float или None).
+        lon: Долгота (float или None).
+        kd_tree: KDTree для поиска по координатам или None.
+        class_names: Список названий локаций по индексам дерева.
 
     Returns:
-        str or None: Location name, or None on missing/invalid.
+        Название локации (str) или None при отсутствии данных или ошибке.
     """
     if not kd_tree or not class_names or lat is None or lon is None:
         return None
@@ -370,19 +388,25 @@ def _resolve_la_location(lat, lon, kd_tree, class_names):
 
 
 def _merge_attendance_for_date(sa_records, la_records, kd_tree, class_names):
-    """Merge StaffAttendance and LessonAttendance for one event_date.
+    """Объединяет StaffAttendance и LessonAttendance за одну дату событий.
 
-    SA has priority for first_in/last_out; LA fills or overrides using kd_tree
-    for location. Records are dicts from .values().
+    Границы first_in/last_out берутся по минимуму/максимуму из SA и LA; при
+    совпадении приоритет у SA. Зоны для LA определяются по координатам через
+    kd_tree. effective_work_seconds считается объединением интервалов SA и LA
+    с вычитанием пересечений (merge_work_intervals_to_total_seconds). area_sequence
+    возвращается только когда обе границы из SA.
 
     Args:
-        sa_records: List of SA dicts (staff_id, first_in, last_out, area_name_in/out).
-        la_records: List of LA dicts (staff_id, first_in, last_out, latitude, longitude).
-        kd_tree: KDTree for coordinate lookup (or None).
-        class_names: List of location names for kd_tree indices.
+        sa_records: Список словарей SA (staff_id, first_in, last_out,
+            area_name_in, area_name_out, effective_work_seconds, effective_work_intervals).
+        la_records: Список словарей LA (staff_id, first_in, last_out,
+            latitude, longitude, duration_seconds).
+        kd_tree: KDTree для поиска локации по координатам или None.
+        class_names: Список названий локаций по индексам дерева.
 
     Returns:
-        dict: first_in, last_out, area_name_in, area_name_out, first_in_source, last_out_source.
+        Словарь: first_in, last_out, area_name_in, area_name_out,
+        first_in_source, last_out_source, effective_work_seconds, area_sequence.
     """
     combined: dict[str, Any] = {
         "first_in": None,
@@ -391,7 +415,13 @@ def _merge_attendance_for_date(sa_records, la_records, kd_tree, class_names):
         "area_name_out": None,
         "first_in_source": None,
         "last_out_source": None,
+        "effective_work_seconds": None,
+        "area_sequence": None,
     }
+    if sa_records:
+        first_sa = sa_records[0]
+        combined["effective_work_seconds"] = first_sa.get("effective_work_seconds")
+        combined["area_sequence"] = first_sa.get("area_sequence")
     for r in sa_records:
         if r.get("first_in") and (
             combined["first_in"] is None or r["first_in"] < combined["first_in"]
@@ -450,47 +480,55 @@ def _merge_attendance_for_date(sa_records, la_records, kd_tree, class_names):
         if name:
             combined["area_name_out"] = name
 
+    intervals: List[Tuple[datetime.datetime, datetime.datetime]] = []
+    if sa_records:
+        for raw in sa_records[0].get("effective_work_intervals") or []:
+            try:
+                s = raw.get("start") and datetime.datetime.fromisoformat(
+                    raw["start"].replace("Z", "+00:00")
+                )
+                e = raw.get("end") and datetime.datetime.fromisoformat(
+                    raw["end"].replace("Z", "+00:00")
+                )
+                if s is not None and e is not None and e > s:
+                    intervals.append((s, e))
+            except (ValueError, TypeError, AttributeError):
+                continue
+    for la in la_records:
+        fi, lo = la.get("first_in"), la.get("last_out")
+        if fi is not None and lo is not None and lo > fi:
+            intervals.append((fi, lo))
+    total_effective = utils.merge_work_intervals_to_total_seconds(intervals)
+    combined["effective_work_seconds"] = (
+        total_effective if total_effective > 0 else None
+    )
+    if (
+        combined["first_in_source"] != "staff_attendance"
+        or combined["last_out_source"] != "staff_attendance"
+    ):
+        combined["area_sequence"] = None
+
     return combined
 
 
 def calculate_effective_minutes_with_lunch(first_in, last_out):
-    """
-    Вычисляет количество рабочих минут, исключая обеденный перерыв (13:00-14:00).
-    Если интервал перекрывает несколько дней, вычитает обед за каждый день.
+    """Считает минуты между первым входом и последним выходом (fallback без событий СКУД).
+
+    Обед не вычитается: обеденный перерыв учитывается только при наличии события
+    выхода через турникет в окне 12:55–14:05 (логика в фетчере — effective_work_seconds).
+    Без событий считаем, что сотрудник не выходил (обедал на месте / работал).
     """
     if not first_in or not last_out:
-        return 0
+        return 0.0
 
     current_tz = timezone.get_current_timezone()
     start = timezone.localtime(first_in, current_tz)
     end = timezone.localtime(last_out, current_tz)
 
     if end <= start:
-        return 0
+        return 0.0
 
-    total_minutes = (end - start).total_seconds() / 60
-
-    lunch_overlap_minutes = 0
-    current_day = start.date()
-    while current_day <= end.date():
-        lunch_start_dt = timezone.make_aware(
-            datetime.datetime.combine(current_day, LUNCH_BREAK_START),
-            current_tz,
-        )
-        lunch_end_dt = timezone.make_aware(
-            datetime.datetime.combine(current_day, LUNCH_BREAK_END),
-            current_tz,
-        )
-
-        overlap_start = max(start, lunch_start_dt)
-        overlap_end = min(end, lunch_end_dt)
-        if overlap_end > overlap_start:
-            lunch_overlap_minutes += (overlap_end - overlap_start).total_seconds() / 60
-
-        current_day += datetime.timedelta(days=1)
-
-    effective_minutes = total_minutes - lunch_overlap_minutes
-    return max(effective_minutes, 0)
+    return (end - start).total_seconds() / 60
 
 
 class StaffAttendancePagination(PageNumberPagination):
@@ -674,11 +712,13 @@ class StaffAttendanceStatsView(APIView):
             cached_data = get_cache(
                 cache_key,
                 query=lambda: self.query_data(target_date, next_date, pin_param),
-                timeout=5 * 60,
+                timeout=6 * 3600,
             )
 
             logger.info("Successfully retrieved staff attendance data.")
-            return Response(cached_data)
+            response = Response(cached_data)
+            response["Cache-Control"] = "public, max-age=21600"
+            return response
 
         except Exception as e:
             logger.error(f"Error while processing request: {str(e)}")
@@ -743,8 +783,16 @@ class StaffAttendanceStatsView(APIView):
         department_name = "Unknown Department"
         staff_queryset = None
 
-        parent_department = models.ParentDepartment.objects.filter(id=pin_param).first()
-        child_department = models.ChildDepartment.objects.filter(id=pin_param).first()
+        parent_department = (
+            models.ParentDepartment.objects.filter(id=pin_param)
+            .only("id", "name")
+            .first()
+        )
+        child_department = (
+            models.ChildDepartment.objects.filter(id=pin_param)
+            .only("id", "name")
+            .first()
+        )
 
         match (parent_department, child_department):
             case (parent, None) if parent:
@@ -752,32 +800,57 @@ class StaffAttendanceStatsView(APIView):
                     department__parent_id=parent.id
                 ).select_related("department")
                 department_name = parent.name
+                logger.info(
+                    "StaffAttendanceStatsView: pin_param=%s → ParentDepartment id=%s, name=%s",
+                    pin_param,
+                    parent.id,
+                    department_name,
+                )
             case (None, child) if child:
                 staff_queryset = models.Staff.objects.filter(
                     department=child
                 ).select_related("department")
                 department_name = child.name
+                logger.info(
+                    "StaffAttendanceStatsView: pin_param=%s → ChildDepartment id=%s, name=%s",
+                    pin_param,
+                    child.id,
+                    department_name,
+                )
             case _:
                 staff_queryset = models.Staff.objects.filter(
                     Q(department__parent__name__icontains="AUP")
                     | Q(department__parent__name__icontains="АУП")
-                ).select_related("department")
-                department_name = (
-                    staff_queryset.first().department.parent.name
-                    if staff_queryset.exists()
-                    else "Unknown Department"
+                ).select_related("department__parent")
+                logger.info(
+                    "StaffAttendanceStatsView: pin_param=%s → fallback AUP/АУП branch",
+                    pin_param,
                 )
 
         target_date_for_filter = target_date + datetime.timedelta(days=1)
-        staff_queryset = staff_queryset.select_related("department__parent").only(
-            "pin",
-            "name",
-            "surname",
-            "department_id",
-            "department__name",
-            "department__parent__name",
+        staff_queryset = (
+            staff_queryset.select_related("department__parent")
+            .prefetch_related(
+                Prefetch(
+                    "positions",
+                    queryset=models.Position.objects.only("name"),
+                )
+            )
+            .only(
+                "id",
+                "pin",
+                "name",
+                "surname",
+                "department_id",
+                "department__name",
+                "department__parent__name",
+            )
         )
         staff_members = list(staff_queryset)
+        if department_name == "Unknown Department" and staff_members:
+            parent = getattr(staff_members[0].department, "parent", None)
+            if parent is not None:
+                department_name = getattr(parent, "name", None) or department_name
 
         if not staff_members:
             return {
@@ -791,33 +864,58 @@ class StaffAttendanceStatsView(APIView):
                 "data_for_date": target_date.strftime("%Y-%m-%d"),
             }
 
+        staff_ids = [s.id for s in staff_members]
+        staff_id_to_pin = {s.id: s.pin for s in staff_members}
+
         staff_attendance_queryset = (
             models.StaffAttendance.objects.filter(
-                date_at=target_date_for_filter, staff__in=staff_members
+                date_at=target_date_for_filter,
+                staff_id__in=staff_ids,
+                first_in__isnull=False,
             )
             .select_related("staff")
             .only(
                 "first_in",
                 "last_out",
-                "area_name_in",
-                "area_name_out",
+                "effective_work_seconds",
+                "staff_id",
                 "staff__pin",
                 "staff__name",
                 "staff__surname",
             )
         )
-
-        attendance_records = list(staff_attendance_queryset)
-        present_staff_records = [
-            record for record in attendance_records if record.first_in is not None
-        ]
+        present_staff_records = list(staff_attendance_queryset)
         attendance_by_pin = {
             record.staff.pin: record for record in present_staff_records
         }
-        present_staff_pins = set(attendance_by_pin.keys())
+
+        # Студенты могут быть только по LessonAttendance (удалённые локации) — учитываем как присутствующих.
+        lesson_staff_ids = set(
+            models.LessonAttendance.objects.filter(
+                date_at=target_date,
+                staff_id__in=staff_ids,
+            )
+            .values_list("staff_id", flat=True)
+            .distinct()
+        )
+        present_pins_from_lessons = {
+            staff_id_to_pin[sid] for sid in lesson_staff_ids if sid in staff_id_to_pin
+        }
+
+        logger.info(
+            "StaffAttendanceStatsView: target_date=%s, target_date_for_filter(SA)=%s, "
+            "staff_count=%s, staff_ids_sample=%s, "
+            "StaffAttendance(present)=%s, LessonAttendance(staff_ids)=%s, present_pins_from_lessons=%s",
+            target_date,
+            target_date_for_filter,
+            len(staff_members),
+            staff_ids[:5] if len(staff_ids) > 5 else staff_ids,
+            len(present_staff_records),
+            len(lesson_staff_ids),
+            len(present_pins_from_lessons),
+        )
 
         total_staff_count = len(staff_members)
-        absent_staff_count = total_staff_count - len(present_staff_pins)
 
         present_between_9_to_18 = 0
         for record in present_staff_records:
@@ -825,11 +923,37 @@ class StaffAttendanceStatsView(APIView):
             if datetime.time(8, 0) <= first_in_time <= datetime.time(19, 0):
                 present_between_9_to_18 += 1
 
-        present_data, absent_data = self.get_attendance_data(
-            staff_members, attendance_by_pin
+        employee_position_name = "Сотрудник"
+        employee_pins = {
+            s.pin
+            for s in staff_members
+            if any(p.name == employee_position_name for p in s.positions.all())
+        }
+        logger.info(
+            "StaffAttendanceStatsView: employee_pins(count)=%s, non_employee(count)=%s",
+            len(employee_pins),
+            total_staff_count - len(employee_pins),
         )
+        present_data, absent_data = self.get_attendance_data(
+            staff_members,
+            attendance_by_pin,
+            present_pins_from_lessons=present_pins_from_lessons,
+            employee_pins=employee_pins,
+        )
+        absent_staff_count = total_staff_count - len(present_data)
 
-        logger.info(f"Data query successful for department: {department_name}")
+        present_from_sa = sum(
+            1 for p in present_data if attendance_by_pin.get(p["staff_pin"])
+        )
+        present_from_la_only = len(present_data) - present_from_sa
+        logger.info(
+            "StaffAttendanceStatsView: present_data=%s (from SA=%s, from LA only=%s), absent_data=%s, department=%s",
+            len(present_data),
+            present_from_sa,
+            present_from_la_only,
+            len(absent_data),
+            department_name,
+        )
 
         return {
             "department_name": department_name,
@@ -842,26 +966,66 @@ class StaffAttendanceStatsView(APIView):
             "data_for_date": target_date.strftime("%Y-%m-%d"),
         }
 
-    def get_attendance_data(self, staff_members, attendance_by_pin):
+    def get_attendance_data(
+        self,
+        staff_members,
+        attendance_by_pin,
+        present_pins_from_lessons=None,
+        employee_pins=None,
+    ):
+        """Формирует present_data и absent_data.
+
+        Сотрудники (должность «Сотрудник»): только StaffAttendance, процент по времени.
+        Студенты и др.: присутствие по StaffAttendance или LessonAttendance (удалённые локации),
+        процент — факт присутствия (100%).
+        """
+        if present_pins_from_lessons is None:
+            present_pins_from_lessons = set()
+        if employee_pins is None:
+            employee_pins = {
+                s.pin
+                for s in staff_members
+                if any(p.name == "Сотрудник" for p in s.positions.all())
+            }
         logger.debug("Generating attendance data.")
         present_data = []
         absent_data = []
         total_minutes = 8 * 60
         for staff in staff_members:
+            is_employee = staff.pin in employee_pins
             attendance = attendance_by_pin.get(staff.pin)
+
             if attendance:
-                minutes_present = (
-                    (attendance.last_out - attendance.first_in).total_seconds() / 60
-                    if attendance.last_out
-                    else 0
-                )
-                individual_percentage = (minutes_present / total_minutes) * 100
+                # Есть запись StaffAttendance — считаем время и процент.
+                if getattr(attendance, "effective_work_seconds", None) is not None:
+                    minutes_present = attendance.effective_work_seconds / 60.0
+                elif attendance.first_in and attendance.last_out:
+                    minutes_present = (
+                        attendance.last_out - attendance.first_in
+                    ).total_seconds() / 60
+                else:
+                    minutes_present = 0
+                if is_employee:
+                    individual_percentage = (minutes_present / total_minutes) * 100
+                else:
+                    individual_percentage = 100.0
                 present_data.append(
                     {
                         "staff_pin": staff.pin,
                         "name": f"{staff.surname} {staff.name}",
                         "minutes_present": round(minutes_present, 2),
                         "individual_percentage": round(individual_percentage, 2),
+                    }
+                )
+                continue
+
+            if not is_employee and staff.pin in present_pins_from_lessons:
+                present_data.append(
+                    {
+                        "staff_pin": staff.pin,
+                        "name": f"{staff.surname} {staff.name}",
+                        "minutes_present": 0,
+                        "individual_percentage": 100.0,
                     }
                 )
                 continue
@@ -1113,9 +1277,11 @@ def _build_one_day_confirmation(
 
     data_available = bool(staff_to_location)
     if not data_available:
-        data_available = models.StaffAttendance.objects.filter(
-            date_at=data_insert_date
-        ).exists()
+        data_available = (
+            models.StaffAttendance.objects.filter(date_at=data_insert_date)
+            .only("id")
+            .exists()
+        )
 
     total_with_attendance = sum(len(pins) for _, pins in location_counts.items())
     total_group = len(staff_list)
@@ -2790,7 +2956,7 @@ def _fetch_root_departments_data():
 @swagger_auto_schema(
     method="GET",
     operation_summary="Получить все корневые департаменты одним запросом",
-    operation_description="Оптимизированный endpoint для получения всех корневых департаментов с их сводной информацией одним запросом. Используется для быстрой загрузки главной страницы.",
+    operation_description="endpoint для получения всех корневых департаментов с их сводной информацией одним запросом",
     tags=["Departments"],
     manual_parameters=[
         openapi.Parameter(
@@ -3049,7 +3215,12 @@ def child_department_detail(request, child_department_id):
 @swagger_auto_schema(
     method="GET",
     operation_summary="Получить информацию о сотруднике",
-    operation_description="Получение подробной информации о сотруднике, включая данные о посещаемости, заработной плате и типе контракта.",
+    operation_description=(
+        "Возвращает подробную информацию о сотруднике за период: посещаемость по датам "
+        "(first_in, last_out, effective_work_seconds — время в здании с учётом выходов, "
+        "area_sequence — цепочка зон для карты перемещений), процент присутствия, бонус, "
+        "тип контракта и зарплату. Данные кэшируются на 5 минут."
+    ),
     tags=["Staff"],
     manual_parameters=[
         openapi.Parameter(
@@ -3164,7 +3335,30 @@ def child_department_detail(request, child_department_id):
                                 "total_minutes": openapi.Schema(
                                     type=openapi.TYPE_NUMBER,
                                     format=openapi.FORMAT_FLOAT,
-                                    description="Общее количество отработанных минут за день",
+                                    description="Отработанные минуты за день (с учётом effective_work_seconds при наличии)",
+                                ),
+                                "effective_work_seconds": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    nullable=True,
+                                    description="Секунды в здании по интервалам (без времени вне здания по турникетам выхода)",
+                                ),
+                                "area_sequence": openapi.Schema(
+                                    type=openapi.TYPE_ARRAY,
+                                    nullable=True,
+                                    items=openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        properties={
+                                            "t": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                description="Время HH:MM",
+                                            ),
+                                            "area": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                description="Название зоны",
+                                            ),
+                                        },
+                                    ),
+                                    description="Цепочка зон по времени для карты перемещений (только при границах из StaffAttendance)",
                                 ),
                                 "is_weekend": openapi.Schema(
                                     type=openapi.TYPE_BOOLEAN,
@@ -3215,20 +3409,18 @@ def child_department_detail(request, child_department_id):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def staff_detail(request, staff_pin):
-    """
-    **Получить информацию о сотруднике**
+    """Возвращает детальную информацию о сотруднике за указанный период.
 
-    Данный метод возвращает подробную информацию о сотруднике, включая данные о посещаемости, заработной плате и типе контракта за указанный период.
+    Включает посещаемость (first_in, last_out, effective_work_seconds, area_sequence),
+    процент присутствия, бонус, тип контракта и зарплату. Данные кэшируются.
 
-    ### Args:
-        - **request (HttpRequest)**: Запрос, содержащий параметры запроса.
-        - **staff_pin (str)**: Уникальный идентификатор сотрудника (PIN).
+    Args:
+        request: HttpRequest с query-параметрами start_date, end_date (YYYY-MM-DD).
+        staff_pin: Уникальный идентификатор сотрудника (PIN), строка.
 
-    ### Returns:
-        - **Response**: Ответ с данными сотрудника или сообщением об ошибке.
-
-    ### Raises:
-        - **ValueError**: Если start_date больше end_date.
+    Returns:
+        Response с JSON-данными сотрудника (200), 400 при неверном диапазоне дат,
+        404 если сотрудник не найден.
     """
 
     logger.info(f"Request received for staff details with PIN {staff_pin}")
@@ -3261,7 +3453,7 @@ def staff_detail(request, staff_pin):
     data = get_cache(
         cache_key,
         query=lambda: get_staff_detail(staff, start_date, end_date),
-        timeout=30,
+        timeout=300,
     )
 
     logger.info(f"Returning staff details for PIN {staff_pin}")
@@ -3269,30 +3461,46 @@ def staff_detail(request, staff_pin):
 
 
 def fetch_staff_data(staff_pin):
-    """Получение данных о сотруднике из базы данных.
+    """Загружает объект сотрудника из БД по PIN с минимумом полей и department.
+
     Args:
-        staff_pin (str): Уникальный идентификатор сотрудника (PIN).
+        staff_pin: Уникальный идентификатор сотрудника (PIN), строка.
+
     Returns:
-        models.Staff: Объект сотрудника.
-        None: Если сотрудник не найден.
+        Экземпляр models.Staff с полями id, pin, name, surname, avatar, department
+        (select_related) или None, если сотрудник не найден.
     """
     try:
-        return models.Staff.objects.get(pin=staff_pin)
+        return (
+            models.Staff.objects.filter(pin=staff_pin)
+            .select_related("department")
+            .only(
+                "id",
+                "pin",
+                "name",
+                "surname",
+                "avatar",
+                "department_id",
+                "department__id",
+                "department__name",
+            )
+            .get()
+        )
     except models.Staff.DoesNotExist:
         return None
 
 
 def get_date_range(request):
-    """
-    Получение диапазона дат из параметров запроса.
+    """Извлекает диапазон дат из query-параметров запроса.
 
-    Если даты не указаны, используется период последних 7 дней.
+    Если параметры не заданы, используется период: последние 7 дней до сегодня.
+    Ожидаемые ключи: start_date, end_date в формате YYYY-MM-DD.
 
     Args:
-        request (HttpRequest): Запрос с параметрами.
+        request: HttpRequest с query_params (DRF или Django).
 
     Returns:
-        tuple: Кортеж с датами начала и окончания периода (datetime.date).
+        Кортеж (start_date, end_date) типа datetime.date.
     """
     end_date_str = request.query_params.get(
         "end_date", timezone.now().strftime("%Y-%m-%d")
@@ -3308,18 +3516,20 @@ def get_date_range(request):
 
 
 def get_staff_detail(staff, start_date, end_date):
-    """
-    Получение подробной информации о сотруднике за указанный период.
+    """Формирует полный словарь данных сотрудника за период для API.
 
-    Включает данные о посещаемости, процент присутствия, заработную плату и тип контракта.
+    Объединяет StaffAttendance и LessonAttendance по датам, считает процент
+    присутствия и бонус, подтягивает удалёнку, отсутствия, праздники и зарплату.
+    Для посещаемости используется effective_work_seconds при наличии.
 
     Args:
-        staff (Staff): Объект сотрудника.
-        start_date (datetime.date): Дата начала периода.
-        end_date (datetime.date): Дата окончания периода.
+        staff: Экземпляр models.Staff (должен иметь id, name, pin, department и т.д.).
+        start_date: Начало периода, date.
+        end_date: Конец периода, date.
 
     Returns:
-        dict: Словарь с данными сотрудника.
+        Словарь с ключами name, surname, positions, avatar, department, department_id,
+        attendance (по датам), percent_for_period, bonus_percentage, contract_type, salary.
     """
     logger.info(f"Получение деталей сотрудника {staff.name} (PIN: {staff.pin})")
     logger.debug(f"Запрошенный диапазон дат: {start_date} до {end_date}")
@@ -3548,16 +3758,20 @@ def get_staff_detail(staff, start_date, end_date):
 
 
 def get_average_attendance_for_period(staff, start_date, end_date):
-    """
-    Расчет среднего процента присутствия за предыдущий аналогичный период.
+    """Считает средний процент присутствия за предыдущие 30 дней для KPI.
+
+    Используется при расчёте штрафного коэффициента в get_staff_detail. При
+    наличии effective_work_seconds берётся он, иначе (last_out - first_in).
+    Норма — 8 часов в день.
 
     Args:
-        staff (Staff): Объект сотрудника.
-        start_date (datetime.date): Дата начала текущего периода.
-        end_date (datetime.date): Дата окончания текущего периода.
+        staff: Экземпляр models.Staff.
+        start_date: Начало текущего запрошенного периода, date.
+        end_date: Конец текущего запрошенного периода, date.
 
     Returns:
-        float: Средний процент присутствия за предыдущий период.
+        Число с плавающей точкой (процент 0–100+). Не менее 1.0 и не более
+        разумного; при отсутствии данных возвращается 85.0.
     """
     logger.info(
         f"Calculating average attendance for staff {staff.name} (PIN: {staff.pin}) from {start_date} to {end_date}"
@@ -3569,7 +3783,7 @@ def get_average_attendance_for_period(staff, start_date, end_date):
 
     previous_attendance_qs = models.StaffAttendance.objects.filter(
         staff=staff, date_at__range=[previous_start_date, previous_end_date]
-    )
+    ).only("id", "date_at", "first_in", "last_out", "effective_work_seconds")
     logger.debug(
         f"Retrieved {previous_attendance_qs.count()} attendance records for previous period"
     )
@@ -3584,17 +3798,20 @@ def get_average_attendance_for_period(staff, start_date, end_date):
     total_days = 0
 
     for attendance in previous_attendance_qs:
-        first_in = attendance.first_in
-        last_out = attendance.last_out
-
-        if first_in and last_out:
-            minutes_present = (last_out - first_in).total_seconds() / 60
-            if minutes_present > 0:
-                total_minutes += minutes_present
-                total_days += 1
-                logger.debug(
-                    f"Processed attendance for {attendance.date_at}: {minutes_present} minutes present"
-                )
+        if attendance.effective_work_seconds is not None:
+            minutes_present = attendance.effective_work_seconds / 60.0
+        elif attendance.first_in and attendance.last_out:
+            minutes_present = (
+                attendance.last_out - attendance.first_in
+            ).total_seconds() / 60
+        else:
+            minutes_present = 0
+        if minutes_present > 0:
+            total_minutes += minutes_present
+            total_days += 1
+            logger.debug(
+                f"Processed attendance for {attendance.date_at}: {minutes_present} minutes present"
+            )
 
     if total_days == 0:
         logger.warning(
@@ -3625,14 +3842,13 @@ def get_average_attendance_for_period(staff, start_date, end_date):
 
 
 def get_expected_minutes_per_day(contract_type):
-    """
-    Получение ожидаемого количества рабочих минут в день на основе типа контракта.
+    """Возвращает норму рабочих минут в день по типу контракта.
 
     Args:
-        contract_type (str): Тип контракта сотрудника.
+        contract_type: Строка типа контракта (например "part_time", "gph", "full_time").
 
     Returns:
-        int: Ожидаемые минуты в день.
+        Целое число минут: 240 для part_time/gph, 480 для остальных.
     """
     if contract_type in ["part_time", "gph"]:
         return 4 * 60
@@ -3654,30 +3870,31 @@ def process_attendance(
     remote_work_qs,
     absent_reason_qs,
 ):
-    """
-    Обработка данных о посещаемости для конкретной даты с учетом новых требований.
+    """Обрабатывает посещаемость за одну дату и обновляет накопительные показатели периода.
+
+    Учитывает выходные, праздники, удалёнку и утверждённые отсутствия. Для расчёта
+    минут используется effective_work_seconds при наличии, иначе first_in/last_out
+    (с учётом обеда через calculate_effective_minutes_with_lunch).
 
     Args:
-        attendance (StaffAttendance): Запись о посещаемости за дату, если есть.
-        event_date (datetime.date): Дата, которую обрабатываем.
-        start_date (datetime.date): Дата начала периода.
-        end_date (datetime.date): Дата окончания периода.
-        holiday_dict (dict): Словарь с информацией о праздничных днях.
-        total_minutes_expected_per_day (int): Ожидаемое количество минут работы в день.
-        cost_per_day (float): Стоимость одного дня в процентах.
-        penalty_rate (float): Штрафной коэффициент за отсутствие.
-        total_minutes_for_period (float): Общее количество минут за период.
-        total_days_with_data (int): Общее количество дней с данными.
-        percent_for_period (float): Процент рабочего времени за период.
-        remote_work_qs (QuerySet): QuerySet с периодами дистанционной работы сотрудника.
-        absent_reason_qs (QuerySet): QuerySet с причинами отсутствия сотрудника.
+        attendance: Словарь объединённой посещаемости за дату (first_in, last_out,
+            effective_work_seconds, area_sequence и др.) или None.
+        event_date: Дата события, date.
+        start_date: Начало периода, date.
+        end_date: Конец периода, date.
+        holiday_dict: Словарь {date: is_working_day} по праздникам.
+        total_minutes_expected_per_day: Норма минут в день (int).
+        cost_per_day: Доля стоимости одного дня в процентах (float).
+        penalty_rate: Штрафной коэффициент (float).
+        total_minutes_for_period: Накопленные минуты за период (float).
+        total_days_with_data: Количество дней с данными (int).
+        percent_for_period: Накопленный процент за период (float).
+        remote_work_qs: QuerySet периодов дистанционной работы сотрудника.
+        absent_reason_qs: QuerySet причин отсутствия сотрудника.
 
     Returns:
-        tuple: Кортеж, содержащий:
-            - attendance_record (dict): Обработанные данные о посещаемости за дату.
-            - total_minutes_for_period (float): Обновленное общее количество минут за период.
-            - total_days_with_data (int): Обновленное количество дней с данными.
-            - percent_for_period (float): Обновленный процент рабочего времени за период.
+        Кортеж (attendance_record, total_minutes_for_period, total_days_with_data,
+        percent_for_period). attendance_record — словарь для ответа API или None.
     """
     logger.info(f"Обработка посещаемости за дату {event_date}")
 
@@ -3698,9 +3915,16 @@ def process_attendance(
     last_out = attendance.get("last_out") if attendance else None
     area_name_in = attendance.get("area_name_in") if attendance else None
     area_name_out = attendance.get("area_name_out") if attendance else None
+    effective_work_seconds = (
+        attendance.get("effective_work_seconds") if attendance else None
+    )
+    area_sequence = attendance.get("area_sequence") if attendance else None
 
     if is_off_day:
-        if first_in and last_out:
+        if effective_work_seconds is not None:
+            total_minutes_worked = effective_work_seconds / 60.0
+            percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
+        elif first_in and last_out:
             total_minutes_worked = calculate_effective_minutes_with_lunch(
                 first_in, last_out
             )
@@ -3730,6 +3954,8 @@ def process_attendance(
             "area_name_out": area_name_out,
             "percent_day": round(percent_day, 2),
             "total_minutes": round(total_minutes_worked, 2),
+            "effective_work_seconds": effective_work_seconds,
+            "area_sequence": area_sequence,
             "is_weekend": True,
             "is_remote_work": False,
             "is_absent_approved": False,
@@ -3751,12 +3977,36 @@ def process_attendance(
     absent_reason_display = None
 
     if is_remote_work:
-        percent_day = 100.0
-        total_minutes_worked = total_minutes_expected_per_day
-        total_minutes_for_period += total_minutes_worked
-        total_days_with_data += 1
-        percent_for_period += percent_day
-        logger.info(f"{event_date} отмечен как день дистанционной работы.")
+        has_physical_attendance = effective_work_seconds is not None or (
+            first_in is not None and last_out is not None
+        )
+        if has_physical_attendance:
+            if effective_work_seconds is not None:
+                total_minutes_worked = effective_work_seconds / 60.0
+            else:
+                total_minutes_worked = calculate_effective_minutes_with_lunch(
+                    first_in, last_out
+                )
+            percent_day = (
+                total_minutes_worked / total_minutes_expected_per_day * 100
+                if total_minutes_expected_per_day
+                else 100.0
+            )
+            total_minutes_for_period += total_minutes_worked
+            total_days_with_data += 1
+            percent_for_period += percent_day
+            logger.info(
+                f"{event_date} дистанционный день с явкой: {total_minutes_worked:.1f} мин, {percent_day:.1f}%."
+            )
+        else:
+            percent_day = 100.0
+            total_minutes_worked = total_minutes_expected_per_day
+            total_minutes_for_period += total_minutes_worked
+            total_days_with_data += 1
+            percent_for_period += percent_day
+            logger.info(
+                f"{event_date} отмечен как день дистанционной работы (без явки)."
+            )
     elif absent_reason:
         is_absent_approved = absent_reason.approved
         absent_reason_display = absent_reason.get_reason_display()
@@ -3779,6 +4029,8 @@ def process_attendance(
                 "area_name_out": area_name_out,
                 "percent_day": 0,
                 "total_minutes": 0,
+                "effective_work_seconds": effective_work_seconds,
+                "area_sequence": area_sequence,
                 "is_weekend": False,
                 "is_remote_work": False,
                 "is_absent_approved": True,
@@ -3800,7 +4052,10 @@ def process_attendance(
                 f"{event_date} неутвержденная причина отсутствия: {absent_reason_display}. Применяется штраф {penalty}%."
             )
     else:
-        if first_in and last_out:
+        if effective_work_seconds is not None:
+            total_minutes_worked = effective_work_seconds / 60.0
+            percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
+        elif first_in and last_out:
             total_minutes_worked = calculate_effective_minutes_with_lunch(
                 first_in, last_out
             )
@@ -3832,6 +4087,8 @@ def process_attendance(
         "area_name_out": area_name_out,
         "percent_day": round(percent_day, 2),
         "total_minutes": round(total_minutes_worked, 2),
+        "effective_work_seconds": effective_work_seconds,
+        "area_sequence": area_sequence,
         "is_weekend": is_off_day,
         "is_remote_work": is_remote_work,
         "is_absent_approved": is_absent_approved,
@@ -4857,29 +5114,21 @@ def staff_detail_by_department_id(request, department_id):
             staff_dict = {staff.id: staff for staff in staff_objects}
             staff_ids = list(staff_dict.keys())
 
-            staff_attendance_qs = (
-                models.StaffAttendance.objects.filter(
-                    staff_id__in=staff_ids,
-                    date_at__range=(start_date, end_date),
-                )
-                .select_related("staff__department")
-                .values("staff_id", "date_at", "first_in", "last_out", "area_name_in")
-            )
+            staff_attendance_qs = models.StaffAttendance.objects.filter(
+                staff_id__in=staff_ids,
+                date_at__range=(start_date, end_date),
+            ).values("staff_id", "date_at", "first_in", "last_out", "area_name_in")
 
-            lesson_attendance_qs = (
-                models.LessonAttendance.objects.filter(
-                    staff_id__in=staff_ids,
-                    date_at__range=(start_date, end_date),
-                )
-                .select_related("staff__department")
-                .values(
-                    "staff_id",
-                    "date_at",
-                    "first_in",
-                    "last_out",
-                    "latitude",
-                    "longitude",
-                )
+            lesson_attendance_qs = models.LessonAttendance.objects.filter(
+                staff_id__in=staff_ids,
+                date_at__range=(start_date, end_date),
+            ).values(
+                "staff_id",
+                "date_at",
+                "first_in",
+                "last_out",
+                "latitude",
+                "longitude",
             )
 
             absent_reasons_qs = (
@@ -5291,6 +5540,18 @@ def login_view(request):
                             "event_time_parse_errors": openapi.Schema(
                                 type=openapi.TYPE_INTEGER
                             ),
+                            "ambiguous_exit_candidates": openapi.Schema(
+                                type=openapi.TYPE_INTEGER,
+                                description="Количество неоднозначных кандидатов на выход (ambiguous exit devices).",
+                            ),
+                            "ambiguous_resolved_as_exit": openapi.Schema(
+                                type=openapi.TYPE_INTEGER,
+                                description="Количество неоднозначных событий, классифицированных как выход.",
+                            ),
+                            "ambiguous_resolved_as_transfer": openapi.Schema(
+                                type=openapi.TYPE_INTEGER,
+                                description="Количество неоднозначных событий, классифицированных как переход в пристройку.",
+                            ),
                             "error_statuses": openapi.Schema(
                                 type=openapi.TYPE_OBJECT,
                                 description="Сводка кодов ошибок внешнего API, например {'401': 12, 'network_or_unknown': 2}.",
@@ -5455,6 +5716,15 @@ async def fetch_data_view(request):
             "updated_records": int(fetch_summary.get("updated_records", 0)),
             "event_time_parse_errors": int(
                 fetch_summary.get("event_time_parse_errors", 0)
+            ),
+            "ambiguous_exit_candidates": int(
+                fetch_summary.get("ambiguous_exit_candidates", 0)
+            ),
+            "ambiguous_resolved_as_exit": int(
+                fetch_summary.get("ambiguous_resolved_as_exit", 0)
+            ),
+            "ambiguous_resolved_as_transfer": int(
+                fetch_summary.get("ambiguous_resolved_as_transfer", 0)
             ),
         }
         if error_statuses_counter:

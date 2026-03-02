@@ -6,7 +6,7 @@ import re
 from collections import Counter, defaultdict
 from difflib import get_close_matches
 from functools import lru_cache
-from typing import Any, Dict, cast
+from typing import Any, Dict, List, Tuple, cast
 
 import numpy as np
 import pandas as pd
@@ -29,6 +29,35 @@ from sklearn.neighbors import KDTree
 DAYS = settings.DAYS
 
 logger = logging.getLogger("django")
+
+
+def merge_work_intervals_to_total_seconds(
+    intervals: List[Tuple[datetime.datetime, datetime.datetime]],
+) -> int:
+    """Объединяет перекрывающиеся интервалы и возвращает суммарную длительность в секундах.
+
+    Интервалы сортируются по началу; пересекающиеся или смежные объединяются в один.
+    Подходит для расчёта эффективного времени по SA и LA без двойного учёта.
+
+    Args:
+        intervals: Список кортежей (start, end) — timezone-aware datetime.
+
+    Returns:
+        Сумма длительностей объединённых интервалов в секундах (int). 0 при пустом списке.
+    """
+    if not intervals:
+        return 0
+    sorted_intervals = sorted(intervals, key=lambda x: (x[0], x[1]))
+    merged: List[Tuple[datetime.datetime, datetime.datetime]] = [
+        (sorted_intervals[0][0], sorted_intervals[0][1])
+    ]
+    for start, end in sorted_intervals[1:]:
+        if start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return sum(int((e - s).total_seconds()) for s, e in merged)
+
 
 arcface_model = None
 
@@ -1257,13 +1286,28 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             end_date + datetime.timedelta(days=1),
         ],
     ).only(
-        "staff_id", "date_at", "first_in", "last_out", "area_name_in", "area_name_out"
+        "staff_id",
+        "date_at",
+        "first_in",
+        "last_out",
+        "area_name_in",
+        "area_name_out",
+        "effective_work_seconds",
+        "effective_work_intervals",
     )
 
     lesson_attendance_qs = models.LessonAttendance.objects.filter(
         staff_id__in=staff_ids,
         date_at__range=[start_date, end_date],
-    ).only("staff_id", "first_in", "date_at", "last_out", "latitude", "longitude")
+    ).only(
+        "staff_id",
+        "first_in",
+        "date_at",
+        "last_out",
+        "latitude",
+        "longitude",
+        "duration_seconds",
+    )
 
     remote_work_qs = models.RemoteWork.objects.filter(
         Q(staff_id__in=staff_ids)
@@ -1317,6 +1361,13 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                 "last_out": last_out_local,
                 "area_name": area_name,
                 "source": "staff_attendance",
+                "first_in_source": "staff_attendance",
+                "last_out_source": "staff_attendance",
+                "effective_work_seconds": getattr(att, "effective_work_seconds", None),
+                "effective_work_intervals": getattr(
+                    att, "effective_work_intervals", None
+                ),
+                "la_intervals": [],
             }
             if elevator_first_in is not None or elevator_last_out is not None:
                 rec["elevator_first_in"] = elevator_first_in
@@ -1334,6 +1385,7 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     if current_rec.get("source") == "lesson_attendance"
                     else "mixed"
                 )
+                current_rec["first_in_source"] = "staff_attendance"
                 if att.area_name_in:
                     current_rec["area_name"] = att.area_name_in
 
@@ -1347,11 +1399,16 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     if current_rec.get("source") == "lesson_attendance"
                     else "mixed"
                 )
+                current_rec["last_out_source"] = "staff_attendance"
                 if att.area_name_out:
                     current_rec["area_name"] = att.area_name_out
             if elevator_first_in is not None or elevator_last_out is not None:
                 current_rec["elevator_first_in"] = elevator_first_in
                 current_rec["elevator_last_out"] = elevator_last_out
+            if getattr(att, "effective_work_seconds", None) is not None:
+                current_rec["effective_work_seconds"] = att.effective_work_seconds
+            if "la_intervals" not in current_rec:
+                current_rec["la_intervals"] = []
 
     for lesson_att in lesson_attendance_qs:
         local_date = (
@@ -1392,14 +1449,26 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             )
 
         if staff_id not in attendance_map[date_key]:
+            la_intervals = []
+            if first_in_local and last_out_local and last_out_local > first_in_local:
+                la_intervals = [(first_in_local, last_out_local)]
             attendance_map[date_key][staff_id] = {
                 "first_in": first_in_local,
                 "last_out": last_out_local,
                 "area_name": location_name,
                 "source": "lesson_attendance",
+                "first_in_source": "lesson_attendance",
+                "last_out_source": "lesson_attendance",
+                "effective_work_seconds": None,
+                "effective_work_intervals": None,
+                "la_intervals": la_intervals,
             }
         else:
             current_rec = attendance_map[date_key][staff_id]
+            if "la_intervals" not in current_rec:
+                current_rec["la_intervals"] = []
+            if first_in_local and last_out_local and last_out_local > first_in_local:
+                current_rec["la_intervals"].append((first_in_local, last_out_local))
 
             if lesson_att.first_in and (
                 not current_rec["first_in"]
@@ -1411,6 +1480,7 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     if current_rec.get("source") == "staff_attendance"
                     else "mixed"
                 )
+                current_rec["first_in_source"] = "lesson_attendance"
                 if current_rec.get("source") == "lesson_attendance":
                     current_rec["area_name"] = location_name
 
@@ -1424,8 +1494,33 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     if current_rec.get("source") == "staff_attendance"
                     else "mixed"
                 )
+                current_rec["last_out_source"] = "lesson_attendance"
                 if current_rec.get("source") == "lesson_attendance":
                     current_rec["area_name"] = location_name
+
+    for date_key in attendance_map:
+        for staff_id in attendance_map[date_key]:
+            rec = attendance_map[date_key][staff_id]
+            intervals: List[Tuple[datetime.datetime, datetime.datetime]] = []
+            for raw in rec.get("effective_work_intervals") or []:
+                try:
+                    s = raw.get("start") and datetime.datetime.fromisoformat(
+                        raw["start"].replace("Z", "+00:00")
+                    )
+                    e = raw.get("end") and datetime.datetime.fromisoformat(
+                        raw["end"].replace("Z", "+00:00")
+                    )
+                    if s is not None and e is not None and e > s:
+                        intervals.append((s, e))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+            for start, end in rec.get("la_intervals") or []:
+                if start and end and end > start:
+                    intervals.append((start, end))
+            total_sec = merge_work_intervals_to_total_seconds(intervals)
+            rec["effective_work_seconds"] = total_sec if total_sec > 0 else None
+            rec.pop("la_intervals", None)
+            rec.pop("effective_work_intervals", None)
 
     remote_work_map = defaultdict(set)
     for rw in remote_work_qs:
@@ -1504,6 +1599,7 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             if has_attendance:
                 first_in = att_data["first_in"]
                 last_out = att_data["last_out"]
+                effective_work_seconds = att_data.get("effective_work_seconds")
 
                 if first_in or last_out:
                     raw_area = att_data.get("area_name", "Неизвестная локация")
@@ -1519,6 +1615,13 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                         else "—"
                     )
                     attendance_info = f"{t_in} - {t_out}\n({display_area})"
+                    if effective_work_seconds is not None:
+                        mins = int(effective_work_seconds // 60)
+                        if mins >= 60:
+                            h, m = divmod(mins, 60)
+                            attendance_info += f"\n{h} ч {m} мин"
+                        else:
+                            attendance_info += f"\n{mins} мин"
 
             if is_off_day:
                 if attendance_info:

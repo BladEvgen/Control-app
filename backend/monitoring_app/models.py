@@ -1,8 +1,8 @@
 import os
 import shutil
 from contextlib import AbstractContextManager
-from decimal import Decimal
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Optional, cast
 
 from django.conf import settings
@@ -11,6 +11,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
 from django.db import models, transaction
+from django.db.models import Q
 from django.db.models.fields.files import FieldFile
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 from django.dispatch import receiver
@@ -586,6 +587,24 @@ class StaffAttendance(models.Model):
     area_name_out = models.CharField(
         null=True, blank=True, max_length=300, verbose_name="Зона выхода"
     )
+    effective_work_seconds = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name="Эффективное время в здании (сек)",
+        help_text="Сумма интервалов «внутри» по турникетам выхода.",
+    )
+    area_sequence = models.JSONField(
+        null=True,
+        blank=True,
+        verbose_name="Цепочка зон (для карты перемещений)",
+        help_text="Список {t, area} в хронологическом порядке.",
+    )
+    effective_work_intervals = models.JSONField(
+        null=True,
+        blank=True,
+        verbose_name="Интервалы «в здании» (для объединения с LA)",
+        help_text="Список {start, end} в ISO формате для вычитания пересечений с занятиями.",
+    )
 
     def __str__(self) -> str:
         attendance_value = self.date_at
@@ -623,6 +642,11 @@ class StaffAttendance(models.Model):
             ),
             models.Index(fields=["first_in"]),
             models.Index(fields=["last_out"]),
+            models.Index(
+                fields=["date_at", "staff"],
+                name="stfatt_date_staff_recent_idx",
+                condition=Q(date_at__gte=date(2024, 9, 1)),
+            ),
         ]
         verbose_name = "Посещаемость сотрудника"
         verbose_name_plural = "Посещаемость сотрудников"
@@ -654,6 +678,12 @@ class LessonAttendance(models.Model, GeoItem):
         help_text="Примерные координаты в радиусе 300 метров",
     )
     date_at = models.DateField(verbose_name="Дата занятия", default=timezone.now)
+    duration_seconds = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name="Длительность занятия (сек)",
+        help_text="last_out − first_in, заполняется при сохранении.",
+    )
     staff_image_path = models.CharField(
         max_length=500,
         verbose_name="Путь к фотографии сотрудника",
@@ -668,7 +698,7 @@ class LessonAttendance(models.Model, GeoItem):
             if path_value.startswith(str(settings.ATTENDANCE_ROOT)):
                 relative_path = path_value.replace(str(settings.ATTENDANCE_ROOT), "")
                 return f"{settings.ATTENDANCE_URL}{relative_path}"
-            media_tail = path_value.split("media/")[-1]
+            media_tail = path_value.rsplit("media/", maxsplit=1)[-1]
             return f"{settings.MEDIA_URL}{media_tail}"
         return "/static/media/images/no-avatar.png"
 
@@ -705,6 +735,15 @@ class LessonAttendance(models.Model, GeoItem):
     def __str__(self):
         return f"{self.subject_name} ({self.staff}) [{self.date_at}]"
 
+    def save(self, *args, **kwargs):
+        if self.first_in is not None and self.last_out is not None:
+            start = cast(datetime, self.first_in)
+            end = cast(datetime, self.last_out)
+            self.duration_seconds = int((end - start).total_seconds())
+        else:
+            self.duration_seconds = None
+        super().save(*args, **kwargs)
+
     class Meta:
         indexes = [
             models.Index(fields=["staff", "date_at"]),
@@ -714,6 +753,11 @@ class LessonAttendance(models.Model, GeoItem):
             models.Index(fields=["first_in"]),
             models.Index(fields=["last_out"]),
             models.Index(fields=["tutor_id"]),
+            models.Index(
+                fields=["date_at", "staff"],
+                name="lsnatt_date_staff_recent_idx",
+                condition=Q(date_at__gte=date(2024, 9, 1)),
+            ),
         ]
         verbose_name = "Посещаемость занятия"
         verbose_name_plural = "Посещаемость занятий"

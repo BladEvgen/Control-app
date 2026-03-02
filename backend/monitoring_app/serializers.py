@@ -183,9 +183,20 @@ class StaffAttendanceDetailSerializer(serializers.Serializer):
         else:
             department_id = obj.staff.department_id
 
-        staff_attendance = models.StaffAttendance.objects.filter(
-            staff__department_id=department_id
-        ).order_by("-date_at")
+        staff_attendance = (
+            models.StaffAttendance.objects.filter(staff__department_id=department_id)
+            .select_related("staff")
+            .only(
+                "id",
+                "staff_id",
+                "date_at",
+                "first_in",
+                "last_out",
+                "staff__surname",
+                "staff__name",
+            )
+            .order_by("-date_at")
+        )
         for attendance in staff_attendance:
             staff_fio = attendance.staff.surname + " " + attendance.staff.name
             date_at = attendance.date_at - datetime.timedelta(days=1)
