@@ -4,6 +4,7 @@ import React, {
   ReactNode,
   useRef,
   useCallback,
+  useMemo,
 } from "react";
 import { useLocation } from "react-router-dom";
 import HeaderComponent from "./components/HeaderComponent";
@@ -39,10 +40,17 @@ const safeSetItem = (key: string, value: string): void => {
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
+  const normalizedPath = useMemo(
+    () => location.pathname.toLowerCase(),
+    [location.pathname],
+  );
   const isLoginRoute = /\/login\/?$/.test(location.pathname);
-  const isKioskRoute =
-    /\/(photo|map)$/.test(location.pathname) &&
+  const hasKioskFlag =
     new URLSearchParams(location.search).get("kiosk") === "1";
+  const isKioskCompatiblePath =
+    /\/(photo|map|dashboard)\/?$/.test(normalizedPath) ||
+    /\/childdepartment\/[^/]+\/?$/.test(normalizedPath);
+  const isKioskRoute = hasKioskFlag && isKioskCompatiblePath;
 
   const [theme, setTheme] = useState<string>(() => {
     return safeGetItem("theme", "light");
@@ -108,13 +116,19 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       )}
 
       <main
-        className={`flex-1 relative ${isKioskRoute ? "pt-2 pb-4 px-0" : isLoginRoute ? "pt-0 pb-0" : "pt-6 pb-24 lg:pb-10"}`}
+        className={`flex-1 relative ${
+          isKioskRoute
+            ? "p-0 min-h-[100dvh] overflow-hidden"
+            : isLoginRoute
+              ? "pt-0 pb-0"
+              : "pt-6 pb-24 lg:pb-10"
+        }`}
       >
         <div
           ref={contentRef}
           className={`relative z-10 transition-opacity duration-300 ${
             isKioskRoute
-              ? "w-full max-w-none px-0"
+              ? "w-full h-full max-w-none p-0"
               : isLoginRoute
                 ? "w-full max-w-none px-0"
                 : "container mx-auto px-4"
@@ -128,7 +142,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       </main>
 
       {!isKioskRoute && !isLoginRoute && <FooterComponent />}
-      {!isLoginRoute && <ScrollToTopButton />}
+      {!isLoginRoute && !isKioskRoute && <ScrollToTopButton />}
     </div>
   );
 };

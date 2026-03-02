@@ -1,12 +1,28 @@
 import { useNavigate } from "../RouterUtils";
-import { useState, useEffect, useCallback, useMemo, memo } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  memo,
+  lazy,
+  Suspense,
+} from "react";
 import { useParams } from "react-router-dom";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { IChildDepartmentData } from "../schemas/IData";
 import { formatDepartmentName } from "../utils/utils";
 import { cacheManager } from "../utils/cache";
-import { FaUserCheck, FaUserTimes, FaBuilding, FaUsers } from "react-icons/fa";
+import {
+  FaUserCheck,
+  FaUserTimes,
+  FaBuilding,
+  FaUsers,
+  FaChartBar,
+  FaChevronDown,
+  FaChevronUp,
+} from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
 import Breadcrumbs from "../components/Breadcrumbs";
@@ -14,6 +30,8 @@ import DateFilterBar from "../components/DateFilterBar";
 import SearchInput from "../components/SearchInput";
 import WaitNotification from "../components/WaitNotification";
 import useWaitNotification from "../hooks/useWaitNotification";
+
+const LazyDashboard = lazy(() => import("./Dashboard"));
 
 class BaseAction<T> {
   static SET_LOADING = "SET_LOADING";
@@ -49,6 +67,7 @@ const ChildDepartmentPage = () => {
   const today = new Date().toISOString().split("T")[0];
 
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
+  const [showDashboard, setShowDashboard] = useState<boolean>(false);
   const navigate = useNavigate();
 
   const { showWaitMessage, startWaitNotification, clearWaitNotification } =
@@ -297,6 +316,44 @@ const ChildDepartmentPage = () => {
                 isDownloadDisabled={isDownloadDisabled}
                 today={today}
               />
+            </motion.div>
+
+            <motion.div variants={itemVariants} className="mb-6">
+              <button
+                type="button"
+                onClick={() => setShowDashboard((v) => !v)}
+                className="flex items-center justify-between w-full card p-4 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors rounded-lg border border-gray-200 dark:border-gray-700"
+                aria-expanded={showDashboard}
+              >
+                <span className="flex items-center gap-2 font-medium text-primary-700 dark:text-primary-300">
+                  <FaChartBar className="text-lg" />
+                  {showDashboard
+                    ? "Свернуть график посещаемости за день"
+                    : "Показать график посещаемости за день"}
+                </span>
+                {showDashboard ? (
+                  <FaChevronUp className="text-gray-500" />
+                ) : (
+                  <FaChevronDown className="text-gray-500" />
+                )}
+              </button>
+              <AnimatePresence>
+                {showDashboard && id && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-4 border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50/50 dark:bg-gray-900/30">
+                      <Suspense fallback={<LoaderComponent />}>
+                        <LazyDashboard pin={id} />
+                      </Suspense>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </motion.div>
 
             {showWaitMessage && (

@@ -303,6 +303,79 @@ select {
   );
 }
 
+.photo-marquee-lux-edges {
+  position: relative;
+  isolation: isolate;
+}
+
+.photo-marquee-lux-edges::before,
+.photo-marquee-lux-edges::after {
+  content: "";
+  position: absolute;
+  top: 8%;
+  bottom: 8%;
+  width: clamp(90px, 10vw, 180px);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.7;
+  filter: blur(16px) saturate(108%);
+}
+
+.photo-marquee-lux-edges::before {
+  left: calc(clamp(90px, 10vw, 180px) * -0.72);
+  background:
+    radial-gradient(ellipse at 20% 50%, rgba(59, 130, 246, 0.4) 0%, rgba(59, 130, 246, 0.18) 38%, rgba(59, 130, 246, 0) 74%),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.24) 0%, rgba(15, 23, 42, 0) 68%);
+  animation: marqueeEdgeGlowLeft 6s ease-in-out infinite;
+}
+
+.photo-marquee-lux-edges::after {
+  right: calc(clamp(90px, 10vw, 180px) * -0.72);
+  background:
+    radial-gradient(ellipse at 80% 50%, rgba(139, 92, 246, 0.38) 0%, rgba(139, 92, 246, 0.16) 40%, rgba(139, 92, 246, 0) 74%),
+    linear-gradient(270deg, rgba(76, 29, 149, 0.22) 0%, rgba(76, 29, 149, 0) 68%);
+  animation: marqueeEdgeGlowRight 6s ease-in-out infinite;
+}
+
+@keyframes marqueeEdgeGlowLeft {
+  0%, 100% { opacity: 0.56; }
+  50% { opacity: 0.8; }
+}
+
+@keyframes marqueeEdgeGlowRight {
+  0%, 100% { opacity: 0.54; }
+  50% { opacity: 0.78; }
+}
+
+.photo-marquee-lux-edges > * {
+  position: relative;
+  z-index: 2;
+}
+
+.photo-marquee-lux-edges-kiosk::before,
+.photo-marquee-lux-edges-kiosk::after {
+  opacity: 0.84;
+}
+
+@media (max-width: 1024px) {
+  .photo-marquee-lux-edges::before,
+  .photo-marquee-lux-edges::after {
+    width: clamp(56px, 9vw, 96px);
+    top: 5%;
+    bottom: 5%;
+    filter: blur(12px) saturate(108%);
+    opacity: 0.82;
+  }
+
+  .photo-marquee-lux-edges::before {
+    left: calc(clamp(56px, 9vw, 96px) * -0.5);
+  }
+
+  .photo-marquee-lux-edges::after {
+    right: calc(clamp(56px, 9vw, 96px) * -0.5);
+  }
+}
+
 .photo-marquee-track {
   display: flex;
   animation: photoMarquee linear infinite;
@@ -392,6 +465,7 @@ select {
 
 .map-popup-title {
     display: -webkit-box;
+    line-clamp: 2;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
@@ -401,6 +475,7 @@ select {
 
 .map-popup-address {
     display: -webkit-box;
+    line-clamp: 2;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;

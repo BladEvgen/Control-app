@@ -1,11 +1,11 @@
 import ExcelJS from "exceljs";
 import { StaffData, AttendanceData } from "../schemas/IData";
-import { formatDepartmentName, formatTimeRange } from "./utils";
+import { formatDepartmentName, formatTimeRange, formatMinutes } from "./utils";
 
 export const generateAndDownloadExcel = async (
   staffData: StaffData,
   startDate: string,
-  endDate: string
+  endDate: string,
 ) => {
   if (!staffData) return;
 
@@ -107,8 +107,9 @@ export const generateAndDownloadExcel = async (
   const colorMap: Record<string, string> = {
     "Выходной день": "F59E0B",
     "Работа в выходной": "34D399",
+    "Удаленная работа + явка": "38BDF8",
     "Удаленная работа": "38BDF8",
-    "Одобрено": "A78BFA",
+    Одобрено: "A78BFA",
     "Не одобрено": "FB7185",
   };
   const legendItems = generateLegendItems(staffData.attendance);
@@ -164,7 +165,12 @@ export const generateAndDownloadExcel = async (
 
   worksheet.addRow([]);
 
-  const attendanceHeader = ["Дата", "Посещаемость", "Процент дня"];
+  const attendanceHeader = [
+    "Дата",
+    "Посещаемость",
+    "Всего времени (ч:мин)",
+    "Процент дня",
+  ];
   const attendanceHeaderRow = worksheet.addRow(attendanceHeader);
   attendanceHeaderRow.font = attendanceHeaderFont;
 
@@ -195,12 +201,17 @@ export const generateAndDownloadExcel = async (
     const formattedDate = `${day}.${month}.${year}`;
 
     let attendanceInfo: string;
-    if (record.first_in && record.last_out) {
-      attendanceInfo = formatTimeRange(record.first_in, record.last_out);
-    } else if (record.is_weekend) {
+    const hasInOut = record.first_in && record.last_out;
+    if (record.is_weekend) {
       attendanceInfo = "Выходной";
     } else if (record.is_remote_work) {
-      attendanceInfo = "Удаленная работа";
+      if (hasInOut) {
+        attendanceInfo = `Удаленная работа, явка ${formatTimeRange(record.first_in, record.last_out)} (${formatMinutes(record.total_minutes)})`;
+      } else {
+        attendanceInfo = "Удаленная работа";
+      }
+    } else if (hasInOut) {
+      attendanceInfo = formatTimeRange(record.first_in, record.last_out);
     } else {
       if (record.is_absent_approved) {
         attendanceInfo = record.absent_reason || "Одобрено (Без причины)";
@@ -211,11 +222,18 @@ export const generateAndDownloadExcel = async (
       }
     }
 
+    const totalTimeStr =
+      record.total_minutes != null ? formatMinutes(record.total_minutes) : "—";
     const dayPercent = record.percent_day
       ? `${record.percent_day.toFixed(2)}%`
       : "0%";
 
-    const row = worksheet.addRow([formattedDate, attendanceInfo, dayPercent]);
+    const row = worksheet.addRow([
+      formattedDate,
+      attendanceInfo,
+      totalTimeStr,
+      dayPercent,
+    ]);
     row.font = textFont;
 
     row.eachCell((cell, colNumber) => {
@@ -239,11 +257,16 @@ export const generateAndDownloadExcel = async (
       };
       cell.alignment = {
         vertical: "middle",
-        horizontal: "center",
-        wrapText: true,
+        horizontal: colNumber === 2 ? "left" : "center",
+        wrapText: colNumber === 2,
       };
     });
   });
+
+  worksheet.getColumn(1).width = 12;
+  worksheet.getColumn(2).width = 48;
+  worksheet.getColumn(3).width = 20;
+  worksheet.getColumn(4).width = 14;
 
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: "application/octet-stream" });
@@ -273,7 +296,7 @@ const getAttendanceColor = (record: AttendanceData): string => {
 };
 
 const generateLegendItems = (
-  attendance: Record<string, AttendanceData>
+  attendance: Record<string, AttendanceData>,
 ): string[] => {
   const legend = new Set<string>();
   Object.values(attendance).forEach((data) => {
@@ -284,7 +307,11 @@ const generateLegendItems = (
         legend.add("Выходной день");
       }
     } else if (data.is_remote_work) {
-      legend.add("Удаленная работа");
+      if (data.first_in && data.last_out) {
+        legend.add("Удаленная работа + явка");
+      } else {
+        legend.add("Удаленная работа");
+      }
     } else if (data.is_absent_approved) {
       legend.add(`Одобрено: ${data.absent_reason || "Без причины"}`);
     } else if (!data.first_in && !data.last_out) {

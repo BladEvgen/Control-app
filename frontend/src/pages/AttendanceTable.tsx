@@ -7,7 +7,6 @@ interface AttendanceTableProps {
   attendance: Record<string, AttendanceData>;
 }
 
-
 const rowVariants = {
   hidden: { opacity: 0, x: 20 },
   visible: (i: number) => ({
@@ -105,7 +104,9 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
     const hasInOut = first_in && last_out;
 
     if (is_remote_work) {
-      return "Дистанционная работа";
+      return hasInOut
+        ? "Дистанционная работа, явка в здании"
+        : "Дистанционная работа";
     }
     if (absent_reason && absent_reason.trim() !== "") {
       return (
@@ -227,7 +228,7 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
   const renderMobileCard = (
     date: string,
     data: AttendanceData,
-    idx: number
+    idx: number,
   ) => {
     const status = getStatusStyle(data);
     const statusText = getStatusText(data);

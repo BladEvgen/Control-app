@@ -21,6 +21,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { log } from "../api";
 import useWebSocket from "../hooks/useWebSocket";
 import LoaderComponent from "../components/LoaderComponent";
+import useWindowSize from "../hooks/useWindowSize";
 
 const PING_INTERVAL = 15000;
 const PONG_TIMEOUT = 8000;
@@ -29,9 +30,11 @@ const MARQUEE_HOVER_SPEED = 0;
 const SMOOTH_TAU = 0.25;
 const MIN_TRACK_COPIES = 2;
 const TRACK_COPY_HEADROOM = 2;
+const STATIC_TRACK_FIT_THRESHOLD = 1.05;
+const HOVER_IDLE_RESUME_MS = 2500;
 
 const getLabelForDepartment = (photo: PhotoData): string =>
-  photo.tutorInfo ? "Группа/Предмет" : "Отдел";
+  photo.tutorInfo ? "Группа" : "Отдел";
 
 const formatTime = (iso: string): string => {
   const d = new Date(iso);
@@ -46,18 +49,71 @@ const CARD_WIDTH_BASE = 220;
 const CARD_WIDTH_SM = 260;
 const CARD_WIDTH_MD = 280;
 const CARD_WIDTH_LG = 300;
+const CARD_WIDTH_XL = 336;
+const CARD_WIDTH_2XL = 372;
 const CARD_META_HEIGHT = 100;
 const ROW_GAP_PX = 12;
 const HEADER_ESTIMATE_PX = 200;
-const BOTTOM_RESERVE_KIOSK_PX = 88;
-const KIOSK_HEADER_RESERVE_PX = 200;
-const KIOSK_MAIN_TOP_RESERVE_PX = 100;
+const BOTTOM_RESERVE_KIOSK_PX = 40;
+const KIOSK_HEADER_RESERVE_PX = 132;
+const KIOSK_MAIN_TOP_RESERVE_PX = 24;
 const CARD_WIDTH_MIN_PX = 140;
 const KIOSK_SHRINK_VIEWPORT_WIDTH = 1280;
 const TAPE_NUM_ROWS_MIN = 1;
 const TAPE_NUM_ROWS_MAX = 6;
+const HANDHELD_LANDSCAPE_MAX_HEIGHT = 1024;
+const HANDHELD_LANDSCAPE_MAX_WIDTH = 1400;
+
+const isSingleRowLandscapeViewport = (
+  viewportWidth: number,
+  viewportHeight: number,
+): boolean => {
+  return (
+    viewportWidth > viewportHeight &&
+    viewportHeight <= HANDHELD_LANDSCAPE_MAX_HEIGHT &&
+    viewportWidth <= HANDHELD_LANDSCAPE_MAX_WIDTH
+  );
+};
+
+const getMaxPhotosForViewport = (
+  width: number,
+  aspectBucket:
+    | "portrait-tall"
+    | "portrait-classic"
+    | "square-ish"
+    | "landscape-classic"
+    | "landscape-wide"
+    | "landscape-ultrawide",
+  resolutionTier: "sd" | "hd" | "fhd" | "qhd" | "uhd",
+  isKiosk: boolean,
+): number => {
+  const byTier: Record<typeof resolutionTier, number> = {
+    sd: 12,
+    hd: 24,
+    fhd: 40,
+    qhd: 60,
+    uhd: 84,
+  };
+  const byAspect: Record<typeof aspectBucket, number> = {
+    "portrait-tall": -8,
+    "portrait-classic": -4,
+    "square-ish": 0,
+    "landscape-classic": 2,
+    "landscape-wide": 8,
+    "landscape-ultrawide": 12,
+  };
+  let max = byTier[resolutionTier] + byAspect[aspectBucket];
+  if (width < 768) max = Math.min(max, 18);
+  if (width < 480) max = Math.min(max, 12);
+  if (isKiosk) {
+    return Math.min(Math.round(max * 1.4), 140);
+  }
+  return Math.max(8, max);
+};
 
 const getCardWidthForViewport = (viewportWidth: number): number => {
+  if (viewportWidth >= 2560) return CARD_WIDTH_2XL;
+  if (viewportWidth >= 1920) return CARD_WIDTH_XL;
   if (viewportWidth >= 1024) return CARD_WIDTH_LG;
   if (viewportWidth >= 768) return CARD_WIDTH_MD;
   if (viewportWidth >= 640) return CARD_WIDTH_SM;
@@ -82,6 +138,20 @@ const getTapeNumRows = (
   return Math.max(TAPE_NUM_ROWS_MIN, Math.min(TAPE_NUM_ROWS_MAX, n));
 };
 
+const getPreferredRowsForViewport = (
+  viewportWidth: number,
+  viewportHeight: number,
+): number => {
+  const isLandscape = viewportWidth > viewportHeight;
+  if (isSingleRowLandscapeViewport(viewportWidth, viewportHeight)) return 1;
+  if (isLandscape && viewportWidth >= 1680) return 2;
+  if (isLandscape && viewportWidth >= 1024) return 2;
+  if (isLandscape && viewportWidth >= 768) return 2;
+  if (viewportHeight >= 1200) return 2;
+  if (viewportHeight >= 920) return 2;
+  return 1;
+};
+
 const MarqueeTrack: React.FC<{
   items: (PhotoData | null)[];
   rowIndex: number;
@@ -93,6 +163,7 @@ const MarqueeTrack: React.FC<{
     photo: PhotoData | null,
     displayIndex: number,
     copyIndex: number,
+    itemIndex: number,
   ) => React.ReactNode;
 }> = ({
   items,
@@ -109,6 +180,7 @@ const MarqueeTrack: React.FC<{
 
   const [seqWidth, setSeqWidth] = useState(0);
   const [copyCount, setCopyCount] = useState(MIN_TRACK_COPIES);
+  const [shouldAnimate, setShouldAnimate] = useState(true);
 
   const offsetRef = useRef(0);
   const velocityRef = useRef(0);
@@ -122,6 +194,14 @@ const MarqueeTrack: React.FC<{
 
     const roundedSequenceWidth = Math.ceil(sequenceWidth);
     setSeqWidth(roundedSequenceWidth);
+
+    const canAnimate =
+      roundedSequenceWidth > containerWidth * STATIC_TRACK_FIT_THRESHOLD;
+    setShouldAnimate(canAnimate);
+    if (!canAnimate) {
+      setCopyCount(1);
+      return;
+    }
 
     const copiesNeeded =
       Math.ceil(containerWidth / roundedSequenceWidth) + TRACK_COPY_HEADROOM;
@@ -182,6 +262,11 @@ const MarqueeTrack: React.FC<{
     const track = trackRef.current;
     if (!track || seqWidth <= 0) return;
 
+    if (!shouldAnimate) {
+      track.style.transform = "translate3d(0, 0, 0)";
+      return;
+    }
+
     offsetRef.current = ((offsetRef.current % seqWidth) + seqWidth) % seqWidth;
     track.style.transform = `translate3d(-${offsetRef.current}px, 0, 0)`;
 
@@ -214,7 +299,7 @@ const MarqueeTrack: React.FC<{
       }
       lastTimestampRef.current = null;
     };
-  }, [seqWidth, speedPxSec, hoverSpeed, isPaused]);
+  }, [seqWidth, speedPxSec, hoverSpeed, isPaused, shouldAnimate]);
 
   return (
     <div
@@ -223,7 +308,7 @@ const MarqueeTrack: React.FC<{
     >
       <div
         ref={trackRef}
-        className={`flex w-max will-change-transform ${isPaused ? "photo-marquee-paused" : ""}`}
+        className={`flex ${shouldAnimate ? "w-max will-change-transform" : "w-full justify-center"} ${isPaused ? "photo-marquee-paused" : ""}`}
       >
         {Array.from({ length: copyCount }, (_, copyIndex) => (
           <ul
@@ -244,7 +329,7 @@ const MarqueeTrack: React.FC<{
                   className="mr-4 my-1 flex-shrink-0 list-none"
                   style={photo == null ? { width: cardWidthPx } : undefined}
                 >
-                  {renderItem(photo, displayIndex, copyIndex)}
+                  {renderItem(photo, displayIndex, copyIndex, itemIndex)}
                 </li>
               );
             })}
@@ -420,11 +505,18 @@ const PhotoDashboard: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const maxPhotosRef = useRef<number>(12);
   const [hoveredCardKey, setHoveredCardKey] = useState<string | null>(null);
+  const lastPointerActivityRef = useRef<number>(Date.now());
+  const cardRefs = useRef<Map<string, HTMLElement | null>>(new Map());
+  const [activeCardCoords, setActiveCardCoords] = useState<{
+    row: number;
+    col: number;
+  } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [cardWidthPx, setCardWidthPx] = useState<number>(CARD_WIDTH_MD);
   const [tapeNumRows, setTapeNumRows] = useState<number>(3);
   const [kioskNarrowViewport, setKioskNarrowViewport] =
     useState<boolean>(false);
+  const viewport = useWindowSize();
 
   const getCurrentLocalDate = useCallback((): string => {
     const today = new Date();
@@ -438,36 +530,13 @@ const PhotoDashboard: React.FC = () => {
   log.info("Connecting with date:", date);
 
   const getMaxPhotos = useCallback(() => {
-    const { innerWidth: w, innerHeight: h } = window;
-    const aspect = w / h;
-    const ua = navigator.userAgent;
-    const isMobile = /Mobi|Android/i.test(ua);
-    const isTablet = /Tablet|iPad/i.test(ua);
-
-    let max: number;
-    if (isMobile) {
-      max = aspect > 1 ? 6 : 4;
-    } else if (isTablet) {
-      max = aspect > 1 ? 10 : 6;
-    } else if (aspect > 2.2) {
-      max = 28;
-    } else if (aspect > 1.8) {
-      max = 22;
-    } else if (w >= 3840) {
-      max = 24;
-    } else if (w >= 2560) {
-      max = 18;
-    } else if (w >= 1920) {
-      max = 14;
-    } else if (w >= 1280) {
-      max = 10;
-    } else if (w >= 768) {
-      max = 8;
-    } else {
-      max = 6;
-    }
-    return isKiosk ? Math.min(max * 2, 48) : max;
-  }, [isKiosk]);
+    return getMaxPhotosForViewport(
+      viewport.width,
+      viewport.aspectBucket,
+      viewport.resolutionTier,
+      isKiosk,
+    );
+  }, [isKiosk, viewport.width, viewport.aspectBucket, viewport.resolutionTier]);
 
   const updateMaxPhotos = useCallback(() => {
     maxPhotosRef.current = getMaxPhotos();
@@ -528,9 +597,7 @@ const PhotoDashboard: React.FC = () => {
 
   useEffect(() => {
     updateMaxPhotos();
-    window.addEventListener("resize", updateMaxPhotos);
-    return () => window.removeEventListener("resize", updateMaxPhotos);
-  }, [updateMaxPhotos]);
+  }, [updateMaxPhotos, viewport.width, viewport.height]);
 
   useEffect(() => {
     const getViewportSize = (): { w: number; h: number } => {
@@ -555,8 +622,28 @@ const PhotoDashboard: React.FC = () => {
       if (isKioskMode && narrowViewport) {
         cardW = Math.round(cardW * 0.9);
       }
+      if (isKioskMode && w >= 2560) {
+        cardW = Math.min(cardW + 16, CARD_WIDTH_2XL + 20);
+      } else if (isKioskMode && w >= 1920) {
+        cardW = Math.min(cardW + 12, CARD_WIDTH_XL + 16);
+      }
 
-      const rows = getTapeNumRows(h, w, extraBottom, extraTop, headerReserve);
+      const baseRows = getTapeNumRows(
+        h,
+        w,
+        extraBottom,
+        extraTop,
+        headerReserve,
+      );
+      const isSingleRowLandscape = isSingleRowLandscapeViewport(w, h);
+      const preferredRows = isKioskMode
+        ? getPreferredRowsForViewport(w, h)
+        : baseRows;
+      const rows = isSingleRowLandscape
+        ? 1
+        : isKioskMode
+          ? Math.max(baseRows, preferredRows)
+          : baseRows;
       setTapeNumRows(rows);
 
       let heightCapped = false;
@@ -572,8 +659,12 @@ const PhotoDashboard: React.FC = () => {
     };
     updateLayout();
     const el = containerRef.current;
-    const ro = new ResizeObserver(updateLayout);
-    if (el) ro.observe(el);
+    const hasResizeObserver = typeof window.ResizeObserver !== "undefined";
+    let ro: ResizeObserver | null = null;
+    if (hasResizeObserver) {
+      ro = new ResizeObserver(updateLayout);
+      if (el) ro.observe(el);
+    }
     window.addEventListener("resize", updateLayout);
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", updateLayout);
@@ -582,7 +673,9 @@ const PhotoDashboard: React.FC = () => {
     document.addEventListener("fullscreenchange", updateLayout);
     document.addEventListener("webkitfullscreenchange", updateLayout);
     return () => {
-      ro.disconnect();
+      if (ro) {
+        ro.disconnect();
+      }
       window.removeEventListener("resize", updateLayout);
       if (window.visualViewport) {
         window.visualViewport.removeEventListener("resize", updateLayout);
@@ -627,6 +720,38 @@ const PhotoDashboard: React.FC = () => {
       };
     }
   }, [selectedPhoto]);
+
+  useEffect(() => {
+    const touchActivity = () => {
+      lastPointerActivityRef.current = Date.now();
+    };
+    window.addEventListener("mousemove", touchActivity, { passive: true });
+    window.addEventListener("mousedown", touchActivity, { passive: true });
+    window.addEventListener("wheel", touchActivity, { passive: true });
+    window.addEventListener("touchstart", touchActivity, { passive: true });
+    window.addEventListener("touchmove", touchActivity, { passive: true });
+    return () => {
+      window.removeEventListener("mousemove", touchActivity);
+      window.removeEventListener("mousedown", touchActivity);
+      window.removeEventListener("wheel", touchActivity);
+      window.removeEventListener("touchstart", touchActivity);
+      window.removeEventListener("touchmove", touchActivity);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hoveredCardKey || selectedPhoto) return;
+    const timerId = window.setInterval(() => {
+      const inactiveMs = Date.now() - lastPointerActivityRef.current;
+      if (inactiveMs < HOVER_IDLE_RESUME_MS) return;
+      const hasHoveredCard = !!document.querySelector(".photo-item:hover");
+      if (!hasHoveredCard) {
+        setHoveredCardKey(null);
+      }
+    }, 300);
+
+    return () => window.clearInterval(timerId);
+  }, [hoveredCardKey, selectedPhoto]);
 
   const getHints = useCallback(() => {
     if (typeof window === "undefined") return "";
@@ -686,21 +811,48 @@ const PhotoDashboard: React.FC = () => {
   );
 
   const photoRows = useMemo(() => {
-    const numRows = tapeNumRows;
+    const w = viewport.width;
+    const h = viewport.height;
+    const isSingleRowLandscape = isSingleRowLandscapeViewport(w, h);
+    const isKioskMode = isKiosk || isFullscreen;
+    const minCardsPerRow = isSingleRowLandscape
+      ? Number.MAX_SAFE_INTEGER
+      : isKioskMode && viewport.resolutionTier === "uhd"
+        ? 6
+        : isKioskMode && viewport.resolutionTier === "qhd"
+          ? 7
+          : isKioskMode
+            ? 7
+            : 5;
+    const maxRowsByDensity = Math.max(
+      1,
+      Math.floor(photos.length / minCardsPerRow),
+    );
+    const numRows = isSingleRowLandscape
+      ? 1
+      : Math.max(1, Math.min(tapeNumRows, maxRowsByDensity));
     if (numRows <= 0 || photos.length === 0) {
       return [];
     }
-    const perRow = Math.ceil(photos.length / numRows);
-    const rows: (PhotoData | null)[][] = [];
-    for (let r = 0; r < numRows; r++) {
-      const start = r * perRow;
-      const end = Math.min(start + perRow, photos.length);
-      if (start < end) {
-        rows.push(photos.slice(start, end));
-      }
-    }
+
+    const rows: (PhotoData | null)[][] = Array.from(
+      { length: numRows },
+      () => [],
+    );
+    photos.forEach((photo, index) => {
+      rows[index % numRows].push(photo);
+    });
+
     return rows;
-  }, [photos, tapeNumRows]);
+  }, [
+    photos,
+    tapeNumRows,
+    isKiosk,
+    isFullscreen,
+    viewport.width,
+    viewport.height,
+    viewport.resolutionTier,
+  ]);
 
   const tapeCols = Math.ceil(photos.length / tapeNumRows) || 1;
   const marqueeSpeed = useMemo(
@@ -709,22 +861,162 @@ const PhotoDashboard: React.FC = () => {
   );
 
   const renderCardMeta = useCallback((photo: PhotoData) => {
+    const departmentLabel = getLabelForDepartment(photo);
+    const clamp2Lines: React.CSSProperties = {
+      display: "-webkit-box",
+      WebkitLineClamp: 2,
+      WebkitBoxOrient: "vertical",
+      overflow: "hidden",
+    };
+    const clamp1Line: React.CSSProperties = {
+      display: "-webkit-box",
+      WebkitLineClamp: 1,
+      WebkitBoxOrient: "vertical",
+      overflow: "hidden",
+    };
+
     return (
-      <div className="p-3.5 space-y-1.5">
-        <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">
+      <div className="h-[112px] sm:h-[118px] px-3 py-2.5 sm:px-3.5 sm:py-3 flex flex-col">
+        <h2
+          className="min-h-[2.4rem] text-[13px] sm:text-[13.5px] font-semibold leading-[1.2] text-gray-100/95 dark:text-gray-100 tracking-[0.005em]"
+          style={clamp2Lines}
+        >
           {photo.staffFullName}
         </h2>
-        <p className="text-xs text-gray-600 dark:text-gray-300 flex items-center gap-1.5 min-w-0">
-          <FaBuilding className="w-3 h-3 opacity-75 shrink-0" />
-          <span className="truncate">{photo.department}</span>
-        </p>
-        <p className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+        <div className="mt-1.5 h-px w-full bg-white/10 dark:bg-gray-600/40" />
+        <div className="mt-1.5 min-h-[2.15rem] max-h-[2.15rem] flex items-start gap-1.5 min-w-0 text-gray-200/85 dark:text-gray-300">
+          <FaBuilding className="w-3 h-3 opacity-80 shrink-0 mt-[0.15rem]" />
+          <span className="min-w-0 leading-[1.2]">
+            <span
+              className="block text-[10px] sm:text-[10.5px] uppercase tracking-[0.08em] text-gray-300/70 dark:text-gray-400"
+              style={clamp1Line}
+            >
+              {departmentLabel}
+            </span>
+            <span
+              className="block text-[11px] sm:text-[11.5px] leading-[1.15] text-gray-100/85 dark:text-gray-300"
+              style={clamp2Lines}
+            >
+              {photo.department}
+            </span>
+          </span>
+        </div>
+        <p className="mt-auto pt-1 text-[12px] sm:text-[12.5px] text-gray-300/85 dark:text-gray-400 flex items-center gap-1.5 leading-none">
           <FaClock className="w-3 h-3 opacity-75 shrink-0" />
-          <span>{formatTime(photo.attendanceTime)}</span>
+          <span className="tabular-nums">
+            {formatTime(photo.attendanceTime)}
+          </span>
         </p>
       </div>
     );
   }, []);
+
+  const focusCardByCoords = useCallback((row: number, col: number) => {
+    const key = `r${row}-i${col}`;
+    const el = cardRefs.current.get(key);
+    if (el) {
+      el.focus();
+    }
+  }, []);
+
+  const getNextCardCoords = useCallback(
+    (row: number, col: number, key: string): { row: number; col: number } => {
+      const rows = photoRows.length;
+      if (rows === 0) return { row, col };
+      const rowLen = photoRows[row]?.length ?? 0;
+
+      if (key === "ArrowRight") {
+        if (col + 1 < rowLen) return { row, col: col + 1 };
+        const nextRow = (row + 1) % rows;
+        return { row: nextRow, col: 0 };
+      }
+
+      if (key === "ArrowLeft") {
+        if (col - 1 >= 0) return { row, col: col - 1 };
+        const prevRow = (row - 1 + rows) % rows;
+        const prevLen = photoRows[prevRow]?.length ?? 1;
+        return { row: prevRow, col: Math.max(0, prevLen - 1) };
+      }
+
+      if (key === "ArrowDown") {
+        const nextRow = (row + 1) % rows;
+        const nextLen = photoRows[nextRow]?.length ?? 1;
+        return { row: nextRow, col: Math.min(col, Math.max(0, nextLen - 1)) };
+      }
+
+      const prevRow = (row - 1 + rows) % rows;
+      const prevLen = photoRows[prevRow]?.length ?? 1;
+      return { row: prevRow, col: Math.min(col, Math.max(0, prevLen - 1)) };
+    },
+    [photoRows],
+  );
+
+  useEffect(() => {
+    if (photoRows.length === 0) {
+      setActiveCardCoords(null);
+      return;
+    }
+
+    setActiveCardCoords((prev) => {
+      if (!prev) return { row: 0, col: 0 };
+      const row = Math.min(prev.row, photoRows.length - 1);
+      const rowLen = photoRows[row]?.length ?? 0;
+      if (rowLen <= 0) return { row: 0, col: 0 };
+      const col = Math.min(prev.col, rowLen - 1);
+      return { row, col };
+    });
+  }, [photoRows]);
+
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName.toLowerCase();
+      return (
+        target.isContentEditable ||
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select"
+      );
+    };
+
+    const onGlobalKeyDown = (e: KeyboardEvent) => {
+      if (selectedPhoto) return;
+      if (isTypingTarget(e.target)) return;
+      if (photoRows.length === 0) return;
+
+      const hasArrow =
+        e.key === "ArrowRight" ||
+        e.key === "ArrowLeft" ||
+        e.key === "ArrowDown" ||
+        e.key === "ArrowUp";
+      const hasOpenKey = e.key === "Enter" || e.key === " ";
+      if (!hasArrow && !hasOpenKey) return;
+
+      const current = activeCardCoords ?? { row: 0, col: 0 };
+      if (hasArrow) {
+        e.preventDefault();
+        const next = getNextCardCoords(current.row, current.col, e.key);
+        setActiveCardCoords(next);
+        focusCardByCoords(next.row, next.col);
+        return;
+      }
+
+      e.preventDefault();
+      const rowPhoto = photoRows[current.row]?.[current.col];
+      if (rowPhoto) {
+        setSelectedPhoto(rowPhoto);
+      }
+    };
+
+    window.addEventListener("keydown", onGlobalKeyDown);
+    return () => window.removeEventListener("keydown", onGlobalKeyDown);
+  }, [
+    selectedPhoto,
+    photoRows,
+    activeCardCoords,
+    getNextCardCoords,
+    focusCardByCoords,
+  ]);
 
   const renderPhotoCard = useCallback(
     (
@@ -733,6 +1025,7 @@ const PhotoDashboard: React.FC = () => {
       rowIndex: number,
       cardIndex: number,
       isHovered: boolean,
+      isInteractive: boolean,
       kioskCardWidth?: number,
     ) => (
       <motion.article
@@ -749,9 +1042,48 @@ const PhotoDashboard: React.FC = () => {
         onMouseLeave={() => setHoveredCardKey(null)}
         onTouchStart={() => setHoveredCardKey(`r${rowIndex}-i${cardIndex}`)}
         onTouchEnd={() => setHoveredCardKey(null)}
+        onFocus={() => {
+          setHoveredCardKey(`r${rowIndex}-i${cardIndex}`);
+          setActiveCardCoords({ row: rowIndex, col: cardIndex });
+        }}
+        onBlur={() =>
+          setHoveredCardKey((prev) =>
+            prev === `r${rowIndex}-i${cardIndex}` ? null : prev,
+          )
+        }
+        onMouseMove={() => {
+          setActiveCardCoords({ row: rowIndex, col: cardIndex });
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setSelectedPhoto(photo);
+            return;
+          }
+          if (
+            e.key !== "ArrowRight" &&
+            e.key !== "ArrowLeft" &&
+            e.key !== "ArrowDown" &&
+            e.key !== "ArrowUp"
+          ) {
+            return;
+          }
+          e.preventDefault();
+          const next = getNextCardCoords(rowIndex, cardIndex, e.key);
+          focusCardByCoords(next.row, next.col);
+        }}
         role="button"
-        tabIndex={0}
+        tabIndex={isInteractive ? 0 : -1}
+        aria-hidden={isInteractive ? undefined : true}
         aria-label={`${photo.staffFullName}, ${photo.department}`}
+        ref={(el) => {
+          const key = `r${rowIndex}-i${cardIndex}`;
+          if (isInteractive) {
+            cardRefs.current.set(key, el);
+          } else {
+            cardRefs.current.delete(key);
+          }
+        }}
         whileHover={{ y: -4 }}
         whileTap={{ scale: 0.98 }}
       >
@@ -787,15 +1119,13 @@ const PhotoDashboard: React.FC = () => {
         )}
       </motion.article>
     ),
-    [renderCardMeta],
+    [renderCardMeta, focusCardByCoords, getNextCardCoords],
   );
 
   const renderPhotos = () => (
     <div
       className={
-        isKiosk
-          ? "min-h-[100vh] min-h-[100dvh] flex flex-col py-3 sm:py-4 md:py-5"
-          : "py-6"
+        isKiosk ? "min-h-[100dvh] flex flex-col py-3 sm:py-4 md:py-5" : "py-6"
       }
     >
       {photos.length > 0 && hints && !isKiosk && (
@@ -900,70 +1230,78 @@ const PhotoDashboard: React.FC = () => {
       </div>
 
       <div
-        ref={containerRef}
-        className={`[scrollbar-width:none] [-ms-overflow-style:none] ${
-          isKiosk
-            ? "photo-kiosk-marquee-mask flex-1 min-h-0 flex flex-col overflow-x-hidden overflow-y-hidden px-4 sm:px-6 md:px-8 lg:px-10 py-2 sm:py-3 md:py-4 pb-4 sm:pb-5 md:pb-6"
-            : "overflow-x-hidden overflow-y-visible py-4 pb-8 px-4 md:px-6"
+        className={`photo-marquee-lux-edges ${
+          isKiosk || isFullscreen ? "photo-marquee-lux-edges-kiosk" : ""
         }`}
-        style={
-          isKiosk
-            ? {
-                paddingBottom: "max(1rem, env(safe-area-inset-bottom, 0px))",
-              }
-            : undefined
-        }
       >
         <div
-          className={`flex flex-col flex-1 min-h-0 ${isKiosk ? "gap-2 sm:gap-3 md:gap-4 lg:gap-5 py-1 justify-center" : "gap-4 md:gap-5 py-3 md:py-4"}`}
+          ref={containerRef}
+          className={`[scrollbar-width:none] [-ms-overflow-style:none] ${
+            isKiosk
+              ? "photo-kiosk-marquee-mask flex-1 min-h-0 flex flex-col overflow-x-hidden overflow-y-hidden px-4 sm:px-6 md:px-8 lg:px-10 py-2 sm:py-3 md:py-4 pb-4 sm:pb-5 md:pb-6"
+              : "overflow-x-hidden overflow-y-visible py-4 pb-8 px-4 md:px-6"
+          }`}
+          style={
+            isKiosk
+              ? {
+                  paddingBottom: "max(1rem, env(safe-area-inset-bottom, 0px))",
+                }
+              : undefined
+          }
         >
-          {photoRows.map((rowPhotos, rowIndex) => (
-            <div
-              key={rowIndex}
-              className={
-                isKiosk
-                  ? "overflow-x-hidden overflow-y-visible py-2 sm:py-3 md:py-4 lg:py-5"
-                  : "overflow-x-hidden overflow-y-visible py-4 md:py-5"
-              }
-              style={{ minHeight: 1 }}
-            >
-              <MarqueeTrack
-                items={rowPhotos}
-                rowIndex={rowIndex}
-                speedPxSec={marqueeSpeed}
-                isPaused={!!selectedPhoto || !!hoveredCardKey}
-                hoverSpeed={MARQUEE_HOVER_SPEED}
-                cardWidthPx={cardWidthPx}
-                renderItem={(photo, displayIndex, copyIndex) => {
-                  if (photo == null) {
-                    return (
-                      <div
-                        className="flex-shrink-0 rounded-2xl bg-transparent"
-                        style={{
-                          width: cardWidthPx,
-                          height: cardWidthPx + 80,
-                        }}
-                        aria-hidden
-                      />
+          <div
+            className={`flex flex-col flex-1 min-h-0 ${isKiosk ? "gap-2 sm:gap-3 md:gap-4 lg:gap-5 py-1 justify-center" : "gap-4 md:gap-5 py-3 md:py-4"}`}
+          >
+            {photoRows.map((rowPhotos, rowIndex) => (
+              <div
+                key={rowIndex}
+                className={
+                  isKiosk
+                    ? "overflow-x-hidden overflow-y-visible py-2 sm:py-3 md:py-4 lg:py-5"
+                    : "overflow-x-hidden overflow-y-visible py-4 md:py-5"
+                }
+                style={{ minHeight: 1 }}
+                onMouseLeave={() => setHoveredCardKey(null)}
+              >
+                <MarqueeTrack
+                  items={rowPhotos}
+                  rowIndex={rowIndex}
+                  speedPxSec={marqueeSpeed}
+                  isPaused={!!selectedPhoto || !!hoveredCardKey}
+                  hoverSpeed={MARQUEE_HOVER_SPEED}
+                  cardWidthPx={cardWidthPx}
+                  renderItem={(photo, displayIndex, copyIndex, itemIndex) => {
+                    if (photo == null) {
+                      return (
+                        <div
+                          className="flex-shrink-0 rounded-2xl bg-transparent"
+                          style={{
+                            width: cardWidthPx,
+                            height: cardWidthPx + 80,
+                          }}
+                          aria-hidden
+                        />
+                      );
+                    }
+                    const keyIndex =
+                      rowIndex * 1_000_000 + copyIndex * 10_000 + displayIndex;
+                    const cardIndex = itemIndex;
+                    const isHovered =
+                      hoveredCardKey === `r${rowIndex}-i${cardIndex}`;
+                    return renderPhotoCard(
+                      photo,
+                      keyIndex,
+                      rowIndex,
+                      cardIndex,
+                      isHovered,
+                      copyIndex === 0,
+                      kioskNarrowViewport ? cardWidthPx : undefined,
                     );
-                  }
-                  const keyIndex =
-                    rowIndex * 1_000_000 + copyIndex * 10_000 + displayIndex;
-                  const cardIndex = displayIndex;
-                  const isHovered =
-                    hoveredCardKey === `r${rowIndex}-i${cardIndex}`;
-                  return renderPhotoCard(
-                    photo,
-                    keyIndex,
-                    rowIndex,
-                    cardIndex,
-                    isHovered,
-                    kioskNarrowViewport ? cardWidthPx : undefined,
-                  );
-                }}
-              />
-            </div>
-          ))}
+                  }}
+                />
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>

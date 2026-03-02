@@ -106,10 +106,19 @@ export interface AttendanceData {
   last_out: string | null;
   percent_day: number;
   total_minutes: number;
+  effective_work_seconds?: number | null;
+  area_sequence?: Array<{ t: string; area: string }> | null;
   is_weekend: boolean;
   is_remote_work: boolean;
   is_absent_approved: boolean;
   absent_reason: string | null;
+}
+
+export interface AttendanceStatsPresentItem {
+  staff_pin: string;
+  name: string;
+  minutes_present?: number;
+  individual_percentage: number;
 }
 
 export interface AttendanceStats {
@@ -117,12 +126,8 @@ export interface AttendanceStats {
   total_staff_count: number;
   present_staff_count: number;
   absent_staff_count: number;
-  present_between_9_to_18: number;
-  present_data: Array<{
-    staff_pin: string;
-    name: string;
-    individual_percentage: number;
-  }>;
+  present_between_9_to_18?: number;
+  present_data: AttendanceStatsPresentItem[];
   absent_data: Array<{ staff_pin: string; name: string }>;
   data_for_date: string;
 }
