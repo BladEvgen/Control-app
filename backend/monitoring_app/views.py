@@ -1,16 +1,18 @@
 import base64
 import datetime
+import hashlib
 import json
 import logging
 import math
 import os
+import re
 import time
 import zipfile
 from collections import Counter, defaultdict
 from contextlib import AbstractContextManager, contextmanager
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Generator, List, Tuple, cast
+from typing import Any, Generator, List, Optional, Tuple, cast
 
 import monitoring_app.tasks as tasks
 from celery.result import AsyncResult
@@ -120,34 +122,103 @@ LUNCH_BREAK_END = datetime.time(hour=14, minute=5)
 
 CLASS_LOCATION_CACHE_TTL = datetime.timedelta(minutes=60)
 DEPARTMENT_CONFIRMATION_CACHE_TTL = 10 * 60 * 60
+STAFF_PINS_HEADER_NAME = "X-Staff-Pins"
+
+_STAFF_PIN_WRAPPED_RE = re.compile(r"^S\d+S$")
+_STAFF_PIN_NUMERIC_RE = re.compile(r"^\d+$")
+
+
+def _normalize_staff_pin_token(token: Any) -> Optional[str]:
+    raw = str(token or "").strip().upper()
+    if not raw:
+        return None
+    if _STAFF_PIN_NUMERIC_RE.fullmatch(raw):
+        return f"S{raw}S"
+    if _STAFF_PIN_WRAPPED_RE.fullmatch(raw):
+        return raw
+    return None
+
+
+def _parse_staff_pins_header(raw_header_value: Optional[str]) -> List[str]:
+    if raw_header_value is None:
+        return []
+
+    parsed: List[str] = []
+    seen: set[str] = set()
+    for token in raw_header_value.split(","):
+        normalized = _normalize_staff_pin_token(token)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        parsed.append(normalized)
+    return parsed
+
+
+def _build_department_confirmation_cache_key(
+    *,
+    child_department_id: Optional[str],
+    use_range: bool,
+    date_str: Optional[str],
+    date_from_str: Optional[str],
+    date_to_str: Optional[str],
+    use_staff_pins_mode: bool,
+    staff_pins: List[str],
+) -> str:
+    if not use_staff_pins_mode:
+        if use_range:
+            return f"department_confirmation_{child_department_id}_{date_from_str}_{date_to_str}"
+        return f"department_confirmation_{child_department_id}_{date_str}"
+
+    sorted_unique_pins = sorted({str(pin).strip().upper() for pin in staff_pins if pin})
+    digest_source = ",".join(sorted_unique_pins)
+    pins_hash = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()
+    if use_range:
+        return (
+            f"department_confirmation_pins_{pins_hash}_{date_from_str}_{date_to_str}"
+        )
+    return f"department_confirmation_pins_{pins_hash}_{date_str}"
 
 
 def get_confirmable_threshold(total_group: int) -> int:
-    """Вычисляет минимальное число отметившихся в основной локации для подтверждения.
+    """Возвращает минимальный порог присутствующих в основной локации.
 
-    Формула: max(2, ceil(0.20 * n + 0.70 * sqrt(n))), где n — размер группы.
-    Гарантирует, что одна случайная отметка не даёт подтверждение и порог растёт
-    с размером группы.
+    Правило для малых групп фиксированное и более строгое:
+    - ``n == 1`` -> ``1``
+    - ``n == 2`` -> ``2``
+    - ``n == 3`` -> ``2``
+    - ``n == 4`` -> ``3``
+
+    Для групп ``n >= 5`` используется динамический порог:
+    ``max(2, ceil(0.20 * n + 0.70 * sqrt(n)))``.
 
     Args:
-        total_group: Общее количество студентов в группе за дату.
+        total_group (int): Размер группы (общее число студентов).
 
     Returns:
-        Минимальное количество отметившихся в основной локации, при котором
-        подтверждение возможно (не менее 2).
+        int: Минимальное число отметившихся в главной локации, требуемое
+            для подтверждения посещаемости.
     """
     n = max(1, total_group)
+    if n == 1:
+        return 1
+    if n == 2:
+        return 2
+    if n == 3:
+        return 2
+    if n == 4:
+        return 3
     return max(2, math.ceil(0.20 * n + 0.70 * math.sqrt(n)))
 
 
 def get_min_leader_share(total_group: int) -> float:
-    """Возвращает минимальную долю основной локации среди отметившихся за день.
+    """Возвращает минимальную долю главной локации среди отметившихся.
 
     Args:
-        total_group: Общее количество студентов в группе.
+        total_group (int): Размер группы (общее число студентов).
 
     Returns:
-        Минимальная доля (0..1): 0.60 при n <= 5, 0.55 при n <= 12, иначе 0.50.
+        float: Минимальная доля в диапазоне ``0..1``:
+            ``0.60`` при ``n <= 5``, ``0.55`` при ``n <= 12``, иначе ``0.50``.
     """
     if total_group <= 5:
         return 0.60
@@ -161,21 +232,24 @@ def is_main_location_confirmable(
     total_group: int,
     total_with_attendance: int,
 ) -> bool:
-    """Проверяет, может ли первая локация дня считаться подтверждающей.
+    """Определяет, можно ли считать главную локацию подтверждающей.
 
-    Основная локация подтверждает только если: количество в ней не меньше
-    динамического порога и её доля среди отметившихся не ниже минимальной.
+    Подтверждение возможно только при одновременном выполнении условий:
+    1. Есть хотя бы одна отметка посещаемости за день.
+    2. Число студентов в главной локации не меньше порога
+       ``get_confirmable_threshold(total_group)``.
+    3. Доля главной локации среди отметившихся не меньше
+       ``get_min_leader_share(total_group)``.
 
     Args:
-        leader_count: Количество отметившихся в первой (основной) локации.
-        total_group: Размер группы (всего студентов).
-        total_with_attendance: Всего отметившихся за день.
+        leader_count (int): Количество отметившихся в главной локации.
+        total_group (int): Размер группы (общее число студентов).
+        total_with_attendance (int): Общее число отметившихся за день.
 
     Returns:
-        True, если первая локация проходит порог и минимальную долю;
-        False иначе (в т.ч. при одной отметке или недостаточной доле).
+        bool: ``True``, если локация проходит порог и долю; иначе ``False``.
     """
-    if total_with_attendance <= 1:
+    if total_with_attendance <= 0:
         return False
     threshold = get_confirmable_threshold(total_group)
     if leader_count < threshold:
@@ -1527,7 +1601,8 @@ def _build_one_day_from_records(
         "- Основная локация за день — та, где отметилось больше всего человек.\n"
         "- Проценты (pct) по локациям считаются от **числа отметившихся** (распределение пришедших).\n"
         "- Основная локация дня — первая в отсортированном списке (count DESC, address ASC, name ASC). "
-        "Подтверждение только для неё и только если она проходит порог max(2, ceil(0.20*n + 0.70*sqrt(n))) "
+        "Подтверждение только для неё и только если она проходит порог по размеру группы "
+        "(n=1: 1, n=2: 2, n=3: 2, n=4: 3, иначе max(2, ceil(0.20*n + 0.70*sqrt(n)))) "
         "и минимальную долю среди отметившихся (60% при n<=5, 55% при n<=12, 50% иначе). Остальные локации — неподтверждение.\n"
         "- У каждой локации в ответе обязательно есть **name** и **address**.\n"
         "- В **by_pin_short**: **confirmed** = true только у тех, кто был в основной локации; "
@@ -1543,6 +1618,18 @@ def _build_one_day_from_records(
             description="ID подразделения (ChildDepartment), например группа «ЖМ 724 0/б»",
             type=openapi.TYPE_STRING,
             required=True,
+        ),
+        openapi.Parameter(
+            STAFF_PINS_HEADER_NAME,
+            openapi.IN_HEADER,
+            description=(
+                "Опциональный pins-mode: CSV список PIN в формате S{id}S "
+                "(например: S9614S,S30108S). При передаче этого header расчёт "
+                "идёт строго по переданным PIN и не зависит от существования "
+                "child_department_id."
+            ),
+            type=openapi.TYPE_STRING,
+            required=False,
         ),
         openapi.Parameter(
             "date",
@@ -1638,12 +1725,17 @@ def department_attendance_confirmation(request):
     date_str = request.GET.get("date")
     date_from_str = request.GET.get("date_from")
     date_to_str = request.GET.get("date_to")
+    raw_staff_pins_header = request.headers.get(STAFF_PINS_HEADER_NAME)
+    use_staff_pins_mode = raw_staff_pins_header is not None
+    staff_pins = _parse_staff_pins_header(raw_staff_pins_header)
 
-    if not child_department_id:
+    if not child_department_id and not use_staff_pins_mode:
         return Response(
             {"error": "child_department_id is required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if not child_department_id:
+        child_department_id = "pins_mode"
 
     use_range = bool(date_from_str and date_to_str)
     if not use_range and not date_str:
@@ -1680,31 +1772,49 @@ def department_attendance_confirmation(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-    dept = models.ChildDepartment.objects.filter(id=child_department_id).first()
-    if not dept:
-        return Response(
-            {"error": f"ChildDepartment {child_department_id} not found"},
-            status=status.HTTP_404_NOT_FOUND,
-        )
-
-    if use_range:
-        cache_key = f"department_confirmation_{child_department_id}_{date_from_str}_{date_to_str}"
+    dept = None
+    if not use_staff_pins_mode:
+        dept = models.ChildDepartment.objects.filter(id=child_department_id).first()
+        if not dept:
+            return Response(
+                {"error": f"ChildDepartment {child_department_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
     else:
-        cache_key = f"department_confirmation_{child_department_id}_{date_str}"
+        dept = models.ChildDepartment.objects.filter(id=child_department_id).first()
+
+    dept_name = dept.name if dept else ""
+
+    cache_key = _build_department_confirmation_cache_key(
+        child_department_id=child_department_id,
+        use_range=use_range,
+        date_str=date_str,
+        date_from_str=date_from_str,
+        date_to_str=date_to_str,
+        use_staff_pins_mode=use_staff_pins_mode,
+        staff_pins=staff_pins,
+    )
     cached = Cache.get(cache_key)
     if cached is not None:
         return Response(cached, status=status.HTTP_200_OK)
 
-    staff_list = list(
-        models.Staff.objects.filter(department_id=child_department_id).only(
-            "id", "pin", "name", "surname"
+    if use_staff_pins_mode:
+        staff_list = list(
+            models.Staff.objects.filter(pin__in=staff_pins).only(
+                "id", "pin", "name", "surname"
+            )
         )
-    )
+    else:
+        staff_list = list(
+            models.Staff.objects.filter(department_id=child_department_id).only(
+                "id", "pin", "name", "surname"
+            )
+        )
     if not staff_list and not use_range:
         payload = {
             "date": date_str,
             "child_department_id": child_department_id,
-            "child_department_name": dept.name,
+            "child_department_name": dept_name,
             "data_available": False,
             "total": 0,
             "locations": [],
@@ -1728,7 +1838,7 @@ def department_attendance_confirmation(request):
             d += datetime.timedelta(days=1)
         payload = {
             "child_department_id": child_department_id,
-            "child_department_name": dept.name,
+            "child_department_name": dept_name,
             "results": results,
         }
         Cache.set(cache_key, payload, DEPARTMENT_CONFIRMATION_CACHE_TTL)
@@ -1781,7 +1891,7 @@ def department_attendance_confirmation(request):
 
         payload = {
             "child_department_id": child_department_id,
-            "child_department_name": dept.name,
+            "child_department_name": dept_name,
             "results": results,
         }
         Cache.set(cache_key, payload, DEPARTMENT_CONFIRMATION_CACHE_TTL)
@@ -1791,7 +1901,7 @@ def department_attendance_confirmation(request):
     payload = {
         "date": day_payload["date"],
         "child_department_id": child_department_id,
-        "child_department_name": dept.name,
+        "child_department_name": dept_name,
         "data_available": day_payload["data_available"],
         "total": day_payload["total"],
         "locations": day_payload["locations"],
