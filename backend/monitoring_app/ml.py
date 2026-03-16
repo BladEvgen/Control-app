@@ -64,13 +64,19 @@ def load_arcface_model():
         with arcface_lock:
             if arcface_model_holder.instance is None:
                 FaceAnalysis = _get_face_analysis()
-                device_type = "GPU" if torch.cuda.is_available() else "CPU"
+                cuda_available = torch.cuda.is_available()
+                device_type = "GPU" if cuda_available else "CPU"
                 logger.info(f"Using {device_type} for ArcFace model")
+                providers = (
+                    ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                    if cuda_available
+                    else ["CPUExecutionProvider"]
+                )
                 model = FaceAnalysis(
                     name="buffalo_l",
-                    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+                    providers=providers,
                 )
-                ctx_id = 0 if torch.cuda.is_available() else -1
+                ctx_id = 0 if cuda_available else -1
                 model.prepare(ctx_id=ctx_id, det_size=(640, 640))
                 arcface_model_holder.instance = model
 

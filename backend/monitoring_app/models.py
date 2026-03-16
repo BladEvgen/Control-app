@@ -653,6 +653,30 @@ class StaffAttendance(models.Model):
 
 
 class LessonAttendance(models.Model, GeoItem):
+    PHOTO_SPOOF_STATUS_PENDING = "pending"
+    PHOTO_SPOOF_STATUS_CLEAN = "clean"
+    PHOTO_SPOOF_STATUS_REVIEW = "review"
+    PHOTO_SPOOF_STATUS_SUSPICIOUS = "suspicious"
+    PHOTO_SPOOF_STATUS_ERROR = "error"
+
+    PHOTO_SPOOF_STATUS_CHOICES = [
+        (PHOTO_SPOOF_STATUS_PENDING, "Ожидает проверки"),
+        (PHOTO_SPOOF_STATUS_CLEAN, "Нормальное"),
+        (PHOTO_SPOOF_STATUS_REVIEW, "На ручную проверку"),
+        (PHOTO_SPOOF_STATUS_SUSPICIOUS, "Подозрительное (авто)"),
+        (PHOTO_SPOOF_STATUS_ERROR, "Ошибка проверки"),
+    ]
+
+    PHOTO_MANUAL_VERDICT_NONE = "none"
+    PHOTO_MANUAL_VERDICT_CLEAN = "clean"
+    PHOTO_MANUAL_VERDICT_SUSPICIOUS = "suspicious"
+
+    PHOTO_MANUAL_VERDICT_CHOICES = [
+        (PHOTO_MANUAL_VERDICT_NONE, "Нет ручного вердикта"),
+        (PHOTO_MANUAL_VERDICT_CLEAN, "Нормальное"),
+        (PHOTO_MANUAL_VERDICT_SUSPICIOUS, "Подозрительное (ручное)"),
+    ]
+
     staff = models.ForeignKey(
         Staff,
         on_delete=models.CASCADE,
@@ -689,6 +713,68 @@ class LessonAttendance(models.Model, GeoItem):
         verbose_name="Путь к фотографии сотрудника",
         null=True,
         blank=True,
+    )
+    photo_spoof_status = models.CharField(
+        max_length=16,
+        choices=PHOTO_SPOOF_STATUS_CHOICES,
+        default=PHOTO_SPOOF_STATUS_PENDING,
+        db_index=True,
+        verbose_name="Статус антифрод проверки фото",
+    )
+    photo_spoof_score = models.FloatField(
+        null=True,
+        blank=True,
+        verbose_name="Скор антифрод проверки",
+    )
+    photo_spoof_tags = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name="Теги антифрод проверки",
+    )
+    photo_spoof_checked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name="Время последней антифрод проверки",
+    )
+    photo_spoof_model_version = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        db_index=True,
+        verbose_name="Версия антифрод модели",
+    )
+    photo_trust_confirmed = models.BooleanField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name="Итог доверия фото (авто)",
+    )
+    photo_manual_verdict = models.CharField(
+        max_length=16,
+        choices=PHOTO_MANUAL_VERDICT_CHOICES,
+        default=PHOTO_MANUAL_VERDICT_NONE,
+        db_index=True,
+        verbose_name="Ручной вердикт по фото",
+    )
+    photo_manual_comment = models.TextField(
+        blank=True,
+        default="",
+        verbose_name="Комментарий ручного вердикта",
+    )
+    photo_manual_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="lesson_attendance_manual_verdicts",
+        verbose_name="Кто выставил ручной вердикт",
+    )
+    photo_manual_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name="Когда выставлен ручной вердикт",
     )
 
     @property
@@ -735,13 +821,88 @@ class LessonAttendance(models.Model, GeoItem):
     def __str__(self):
         return f"{self.subject_name} ({self.staff}) [{self.date_at}]"
 
+    @property
+    def photo_effective_status(self) -> str:
+        if self.photo_manual_verdict == self.PHOTO_MANUAL_VERDICT_CLEAN:
+            return self.PHOTO_SPOOF_STATUS_CLEAN
+        if self.photo_manual_verdict == self.PHOTO_MANUAL_VERDICT_SUSPICIOUS:
+            return self.PHOTO_SPOOF_STATUS_SUSPICIOUS
+        return self.photo_spoof_status or self.PHOTO_SPOOF_STATUS_PENDING
+
+    @property
+    def photo_can_set_manual_verdict(self) -> bool:
+        if not bool(self.staff_image_path):
+            return False
+        if self.photo_manual_verdict != self.PHOTO_MANUAL_VERDICT_NONE:
+            return False
+        return self.photo_spoof_status in {
+            self.PHOTO_SPOOF_STATUS_PENDING,
+            self.PHOTO_SPOOF_STATUS_REVIEW,
+            self.PHOTO_SPOOF_STATUS_ERROR,
+        }
+
+    @property
+    def photo_effective_trust_confirmed(self) -> Optional[bool]:
+        if self.photo_manual_verdict == self.PHOTO_MANUAL_VERDICT_CLEAN:
+            return True
+        if self.photo_manual_verdict == self.PHOTO_MANUAL_VERDICT_SUSPICIOUS:
+            return False
+        return self.photo_trust_confirmed
+
+    def reset_photo_verdict_state(self) -> None:
+        self.photo_spoof_status = self.PHOTO_SPOOF_STATUS_PENDING
+        self.photo_spoof_score = None
+        self.photo_spoof_tags = []
+        self.photo_spoof_checked_at = None
+        self.photo_spoof_model_version = ""
+        self.photo_trust_confirmed = None
+        self.photo_manual_verdict = self.PHOTO_MANUAL_VERDICT_NONE
+        self.photo_manual_comment = ""
+        self.photo_manual_by = None
+        self.photo_manual_at = None
+
     def save(self, *args, **kwargs):
+        update_fields = kwargs.get("update_fields")
+        update_fields_set = set(update_fields) if update_fields is not None else None
+
+        photo_path_changed = False
+        if self.pk and not self._state.adding:
+            original = (
+                LessonAttendance.objects.filter(pk=self.pk)
+                .only("staff_image_path")
+                .first()
+            )
+            photo_path_changed = bool(
+                original and original.staff_image_path != self.staff_image_path
+            )
+            if photo_path_changed:
+                self.reset_photo_verdict_state()
+                if update_fields_set is not None:
+                    update_fields_set.update(
+                        {
+                            "photo_spoof_status",
+                            "photo_spoof_score",
+                            "photo_spoof_tags",
+                            "photo_spoof_checked_at",
+                            "photo_spoof_model_version",
+                            "photo_trust_confirmed",
+                            "photo_manual_verdict",
+                            "photo_manual_comment",
+                            "photo_manual_by",
+                            "photo_manual_at",
+                        }
+                    )
+
         if self.first_in is not None and self.last_out is not None:
             start = cast(datetime, self.first_in)
             end = cast(datetime, self.last_out)
             self.duration_seconds = int((end - start).total_seconds())
         else:
             self.duration_seconds = None
+
+        if update_fields_set is not None:
+            kwargs["update_fields"] = list(update_fields_set)
+
         super().save(*args, **kwargs)
 
     class Meta:

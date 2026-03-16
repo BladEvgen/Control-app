@@ -44,6 +44,7 @@ def _send_photo_event(instance, *, op, state_code):
         {
             "type": event_type,
             "attendance_id": instance.id,
+            "attendance_ids": [instance.id],
             "op": op,
             "stateCode": state_code,
             "versionTs": timezone.now().isoformat(),

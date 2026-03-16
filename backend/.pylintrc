@@ -1,6 +1,7 @@
 [MASTER]
 load-plugins = pylint_django
 init-hook = "import sys, os; sys.path.insert(0, os.path.abspath('backend')); os.environ.setdefault('DJANGO_SETTINGS_MODULE','django_settings.settings')"
+extension-pkg-allow-list = cv2
 
 ignore = migrations
 ignore-patterns = (^|.*/)(migrations|venv|\.venv|node_modules|build|dist)(/|$)
@@ -30,7 +31,6 @@ disable =
     wrong-import-position,
     superfluous-parens,
     use-maxsplit-arg,
-    no-member,
     consider-using-from-import,
     too-many-instance-attributes,
     too-few-public-methods,
