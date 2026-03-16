@@ -141,10 +141,36 @@ export interface LocationData {
 }
 
 export interface PhotoData {
+  id?: number;
+  hasPhoto?: boolean;
   staffPin: string;
   staffFullName: string;
   department: string;
   photoUrl: string;
   attendanceTime: string;
   tutorInfo: string;
+  stateCode?: PhotoStateCode;
+  versionTs?: string;
+  op?: PhotoWsOp;
+}
+
+export type PhotoStateCode =
+  | "SNAPSHOT"
+  | "CREATED_NO_PHOTO"
+  | "PHOTO_ATTACHED"
+  | "UPDATED_META"
+  | "DELETED";
+
+export type PhotoWsOp = "snapshot" | "created" | "updated" | "deleted";
+
+export interface PhotoWsMessage {
+  type?: "initial_photos" | "photos_updated" | "heartbeat" | "ping" | "pong";
+  protocol?: string;
+  batchId?: string;
+  chunkIndex?: number;
+  totalChunks?: number;
+  sentAt?: string;
+  events?: PhotoData[];
+  photos?: PhotoData[];
+  newPhoto?: PhotoData;
 }

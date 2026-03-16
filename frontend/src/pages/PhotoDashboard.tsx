@@ -16,7 +16,7 @@ import {
   FaBuilding,
   FaRegCalendarAlt,
 } from "react-icons/fa";
-import { PhotoData } from "../schemas/IData";
+import { PhotoData, PhotoWsMessage } from "../schemas/IData";
 import { apiUrl } from "../../apiConfig";
 import { motion, AnimatePresence } from "framer-motion";
 import { log } from "../api";
@@ -35,6 +35,11 @@ const TRACK_COPY_HEADROOM = 2;
 const STATIC_TRACK_FIT_THRESHOLD = 1.05;
 const HOVER_IDLE_RESUME_MS = 2500;
 const STORAGE_KEY_SHOW_ALL_PHOTOS = "photoDashboard_showAllPhotos";
+const WS_MERGE_BUFFER_MS = 180;
+const WS_BATCH_FAILSAFE_MS = 300;
+const STAGED_INSERT_COMMIT_MS = 1200;
+const STAGED_INSERT_MAX_ITEMS = 8;
+const CREATED_NO_PHOTO_MIN_VISIBLE_MS = 2500;
 
 const getStoredShowAllPhotos = (): boolean => {
   try {
@@ -47,6 +52,23 @@ const getStoredShowAllPhotos = (): boolean => {
 
 const getLabelForDepartment = (photo: PhotoData): string =>
   photo.tutorInfo ? "Группа" : "Отдел";
+
+const timezoneIsoNow = (): string => new Date().toISOString();
+
+const stableHash = (value: string): number => {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 33) ^ value.charCodeAt(i);
+  }
+  return Math.abs(hash >>> 0);
+};
+
+const getStableRowKey = (photo: PhotoData, fallbackIndex: number): string => {
+  if (photo.id != null) {
+    return `id:${photo.id}`;
+  }
+  return `pin:${photo.staffPin}|time:${photo.attendanceTime}|i:${fallbackIndex}`;
+};
 
 const formatTime = (iso: string): string => {
   const d = new Date(iso);
@@ -200,7 +222,6 @@ const MarqueeTrack: React.FC<{
   const rafRef = useRef<number | null>(null);
   const seqWidthRef = useRef(0);
   const itemsChangedTimeRef = useRef(0);
-  const prevItemsLengthRef = useRef(items.length);
 
   const updateDimensions = useCallback(() => {
     const containerWidth = containerRef.current?.clientWidth ?? 0;
@@ -216,6 +237,13 @@ const MarqueeTrack: React.FC<{
       recentlyChanged
     ) {
       return;
+    }
+    const previousWidth = seqWidthRef.current;
+    if (previousWidth > 0 && roundedSequenceWidth > 0) {
+      const normalizedProgress =
+        (((offsetRef.current % previousWidth) + previousWidth) % previousWidth) /
+        previousWidth;
+      offsetRef.current = normalizedProgress * roundedSequenceWidth;
     }
     seqWidthRef.current = roundedSequenceWidth;
     setSeqWidth(roundedSequenceWidth);
@@ -234,11 +262,6 @@ const MarqueeTrack: React.FC<{
   }, []);
 
   useEffect(() => {
-    const prevLen = prevItemsLengthRef.current;
-    prevItemsLengthRef.current = items.length;
-    if (items.length > prevLen * 1.5) {
-      offsetRef.current = 0;
-    }
     itemsChangedTimeRef.current = Date.now();
     updateDimensions();
   }, [updateDimensions, items, rowIndex]);
@@ -357,7 +380,7 @@ const MarqueeTrack: React.FC<{
               const displayIndex = copyIndex * items.length + itemIndex;
               const key =
                 photo != null
-                  ? `row-${rowIndex}-${copyIndex}-${photo.photoUrl}-${photo.attendanceTime}-${itemIndex}`
+                  ? `row-${rowIndex}-${copyIndex}-${photo.id ?? `${photo.staffPin}-${photo.attendanceTime}`}`
                   : `row-${rowIndex}-${copyIndex}-empty-${itemIndex}`;
               return (
                 <li
@@ -391,6 +414,14 @@ interface DocumentElementWithFullscreen extends HTMLElement {
   msRequestFullscreen?: () => Promise<void> | void;
 }
 
+interface WsBatchBucket {
+  messageType: "initial_photos" | "photos_updated";
+  totalChunks: number;
+  receivedChunks: Set<number>;
+  events: PhotoData[];
+  timeoutId: number;
+}
+
 const PhotoDashboard: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -401,6 +432,7 @@ const PhotoDashboard: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isFullscreenBusy, setIsFullscreenBusy] = useState(false);
   const [photos, setPhotos] = useState<PhotoData[]>([]);
+  const photosRef = useRef<PhotoData[]>([]);
   const [selectedPhoto, setSelectedPhoto] = useState<PhotoData | null>(null);
   const selectedPhotoRef = useRef<PhotoData | null>(null);
   const keepKioskOnFullscreenExitRef = useRef(false);
@@ -420,6 +452,10 @@ const PhotoDashboard: React.FC = () => {
   useEffect(() => {
     selectedPhotoRef.current = selectedPhoto;
   }, [selectedPhoto]);
+
+  useEffect(() => {
+    photosRef.current = photos;
+  }, [photos]);
 
   const handleFullscreenChange = useCallback(() => {
     const newState = !!getFullscreenElement();
@@ -565,6 +601,16 @@ const PhotoDashboard: React.FC = () => {
   const [kioskNarrowViewport, setKioskNarrowViewport] =
     useState<boolean>(false);
   const viewport = useWindowSize();
+  const wsMergeBufferRef = useRef<PhotoData[]>([]);
+  const wsMergeTimerRef = useRef<number | null>(null);
+  const wsBatchBucketsRef = useRef<Map<string, WsBatchBucket>>(new Map());
+  const stagedInsertQueueRef = useRef<PhotoData[]>([]);
+  const stagedInsertByIdRef = useRef<Map<number, number>>(new Map());
+  const stagedInsertTimerRef = useRef<number | null>(null);
+  const noPhotoFirstSeenRef = useRef<Map<number, number>>(new Map());
+  const delayedPhotoAttachTimersRef = useRef<Map<number, number>>(new Map());
+  const lastVersionByIdRef = useRef<Map<number, string>>(new Map());
+  const enqueueWsEventsRef = useRef<(events: PhotoData[]) => void>(() => {});
 
   const getCurrentLocalDate = useCallback((): string => {
     const today = new Date();
@@ -594,24 +640,320 @@ const PhotoDashboard: React.FC = () => {
     maxPhotosRef.current = getMaxPhotos();
   }, [getMaxPhotos]);
 
-  const handleWebSocketMessage = useCallback((event: MessageEvent) => {
-    try {
-      const data = JSON.parse(event.data);
-      if (data.type === "ping" || data.type === "heartbeat") return;
-
-      if (data.photos) {
-        if (!initialLoadDoneRef.current) {
-          setPhotos([...data.photos].reverse());
-          setLoading(false);
-          initialLoadDoneRef.current = true;
-        }
-      } else if (data.newPhoto) {
-        setPhotos((prev) => [data.newPhoto, ...prev]);
-      }
-    } catch (error) {
-      log.error("Error processing WebSocket message:", error);
-    }
+  const extractEventsFromMessage = useCallback((data: PhotoWsMessage): PhotoData[] => {
+    if (Array.isArray(data.events)) return data.events;
+    if (Array.isArray(data.photos)) return data.photos;
+    if (data.newPhoto) return [data.newPhoto];
+    return [];
   }, []);
+
+  const normalizeWsEvent = useCallback((eventData: PhotoData): PhotoData => {
+    const normalizedOp =
+      eventData.op ??
+      (eventData.stateCode === "DELETED"
+        ? "deleted"
+        : eventData.stateCode === "SNAPSHOT"
+          ? "snapshot"
+          : "updated");
+    const normalizedState =
+      eventData.stateCode ??
+      (normalizedOp === "snapshot"
+        ? "SNAPSHOT"
+        : normalizedOp === "deleted"
+          ? "DELETED"
+          : normalizedOp === "created" && eventData.hasPhoto === false
+            ? "CREATED_NO_PHOTO"
+            : eventData.hasPhoto
+              ? "PHOTO_ATTACHED"
+              : "UPDATED_META");
+    return {
+      id: eventData.id,
+      hasPhoto: eventData.hasPhoto,
+      staffPin: eventData.staffPin ?? "",
+      staffFullName: eventData.staffFullName ?? "",
+      department: eventData.department ?? "",
+      photoUrl: eventData.photoUrl ?? "",
+      attendanceTime: eventData.attendanceTime ?? timezoneIsoNow(),
+      tutorInfo: eventData.tutorInfo ?? "",
+      op: normalizedOp,
+      stateCode: normalizedState,
+      versionTs: eventData.versionTs,
+    };
+  }, []);
+
+  const rebuildStagedInsertIndex = useCallback(() => {
+    stagedInsertByIdRef.current.clear();
+    stagedInsertQueueRef.current.forEach((item, idx) => {
+      if (item.id != null) {
+        stagedInsertByIdRef.current.set(item.id, idx);
+      }
+    });
+  }, []);
+
+  const scheduleStagedInsertCommit = useCallback(() => {
+    if (stagedInsertTimerRef.current != null) return;
+    stagedInsertTimerRef.current = window.setTimeout(() => {
+      stagedInsertTimerRef.current = null;
+      const queue = stagedInsertQueueRef.current;
+      if (queue.length === 0) return;
+      const chunk = queue.splice(0, STAGED_INSERT_MAX_ITEMS);
+      rebuildStagedInsertIndex();
+
+      const base = photosRef.current;
+      const next = [...base];
+      for (let i = chunk.length - 1; i >= 0; i -= 1) {
+        const item = chunk[i];
+        if (item.id != null) {
+          const idx = next.findIndex((x) => x.id === item.id);
+          if (idx >= 0) {
+            next[idx] = { ...next[idx], ...item };
+            continue;
+          }
+        }
+        next.unshift(item);
+      }
+      photosRef.current = next;
+      startTransition(() => setPhotos(next));
+
+      if (queue.length > 0) {
+        scheduleStagedInsertCommit();
+      }
+    }, STAGED_INSERT_COMMIT_MS);
+  }, [rebuildStagedInsertIndex]);
+
+  const enqueueStagedInsert = useCallback(
+    (photo: PhotoData) => {
+      if (photo.id != null) {
+        const existingQueueIndex = stagedInsertByIdRef.current.get(photo.id);
+        if (existingQueueIndex != null) {
+          stagedInsertQueueRef.current[existingQueueIndex] = {
+            ...stagedInsertQueueRef.current[existingQueueIndex],
+            ...photo,
+          };
+          return;
+        }
+        stagedInsertByIdRef.current.set(photo.id, stagedInsertQueueRef.current.length);
+      }
+      stagedInsertQueueRef.current.push(photo);
+      scheduleStagedInsertCommit();
+    },
+    [scheduleStagedInsertCommit],
+  );
+
+  const applyInitialSnapshot = useCallback(
+    (events: PhotoData[]) => {
+      const normalized = events
+        .map(normalizeWsEvent)
+        .filter((item) => item.stateCode !== "DELETED");
+      noPhotoFirstSeenRef.current.clear();
+      delayedPhotoAttachTimersRef.current.forEach((timerId) =>
+        window.clearTimeout(timerId),
+      );
+      delayedPhotoAttachTimersRef.current.clear();
+      lastVersionByIdRef.current.clear();
+      stagedInsertQueueRef.current = [];
+      stagedInsertByIdRef.current.clear();
+      if (stagedInsertTimerRef.current != null) {
+        window.clearTimeout(stagedInsertTimerRef.current);
+        stagedInsertTimerRef.current = null;
+      }
+      normalized.forEach((item) => {
+        if (item.id != null && item.versionTs) {
+          lastVersionByIdRef.current.set(item.id, item.versionTs);
+        }
+        if (item.id != null && item.stateCode === "CREATED_NO_PHOTO") {
+          noPhotoFirstSeenRef.current.set(item.id, Date.now());
+        }
+      });
+      photosRef.current = normalized;
+      startTransition(() => {
+        setPhotos(normalized);
+        setLoading(false);
+      });
+      initialLoadDoneRef.current = true;
+    },
+    [normalizeWsEvent],
+  );
+
+  const flushWsMergeBuffer = useCallback(() => {
+    wsMergeTimerRef.current = null;
+    const buffered = wsMergeBufferRef.current;
+    if (buffered.length === 0) return;
+    wsMergeBufferRef.current = [];
+
+    const dedupById = new Map<number, PhotoData>();
+    const withoutId: PhotoData[] = [];
+    buffered.forEach((evt) => {
+      if (evt.id == null) {
+        withoutId.push(evt);
+        return;
+      }
+      dedupById.set(evt.id, evt);
+    });
+    const events = [...withoutId, ...Array.from(dedupById.values())];
+
+    const next = [...photosRef.current];
+    for (const rawEvent of events) {
+      const eventData = normalizeWsEvent(rawEvent);
+      const eventId = eventData.id;
+      if (eventId != null && eventData.versionTs) {
+        const lastVersion = lastVersionByIdRef.current.get(eventId);
+        if (lastVersion && eventData.versionTs < lastVersion) {
+          continue;
+        }
+        lastVersionByIdRef.current.set(eventId, eventData.versionTs);
+      }
+      if (eventData.stateCode === "DELETED" || eventData.op === "deleted") {
+        if (eventId != null) {
+          const idx = next.findIndex((x) => x.id === eventId);
+          if (idx >= 0) next.splice(idx, 1);
+          noPhotoFirstSeenRef.current.delete(eventId);
+          lastVersionByIdRef.current.delete(eventId);
+        }
+        continue;
+      }
+      if (eventData.id != null && eventData.stateCode === "CREATED_NO_PHOTO") {
+        if (!noPhotoFirstSeenRef.current.has(eventData.id)) {
+          noPhotoFirstSeenRef.current.set(eventData.id, Date.now());
+        }
+      }
+      if (eventData.id != null && eventData.stateCode === "PHOTO_ATTACHED") {
+        const seenAt = noPhotoFirstSeenRef.current.get(eventData.id);
+        if (seenAt != null) {
+          const elapsed = Date.now() - seenAt;
+          if (elapsed < CREATED_NO_PHOTO_MIN_VISIBLE_MS) {
+            const pendingTimer = delayedPhotoAttachTimersRef.current.get(eventData.id);
+            if (pendingTimer != null) window.clearTimeout(pendingTimer);
+            const waitMs = CREATED_NO_PHOTO_MIN_VISIBLE_MS - elapsed;
+            const timerId = window.setTimeout(() => {
+              delayedPhotoAttachTimersRef.current.delete(eventData.id!);
+              enqueueWsEventsRef.current([eventData]);
+            }, waitMs);
+            delayedPhotoAttachTimersRef.current.set(eventData.id, timerId);
+            continue;
+          }
+          noPhotoFirstSeenRef.current.delete(eventData.id);
+        }
+      }
+      if (eventId != null) {
+        const idx = next.findIndex((x) => x.id === eventId);
+        if (idx >= 0) {
+          next[idx] = { ...next[idx], ...eventData };
+        } else {
+          enqueueStagedInsert(eventData);
+        }
+      } else {
+        enqueueStagedInsert(eventData);
+      }
+    }
+
+    photosRef.current = next;
+    startTransition(() => setPhotos(next));
+  }, [enqueueStagedInsert, normalizeWsEvent]);
+
+  const enqueueWsEvents = useCallback(
+    (events: PhotoData[]) => {
+      if (!events.length) return;
+      wsMergeBufferRef.current.push(...events);
+      if (wsMergeTimerRef.current != null) return;
+      wsMergeTimerRef.current = window.setTimeout(
+        flushWsMergeBuffer,
+        WS_MERGE_BUFFER_MS,
+      );
+    },
+    [flushWsMergeBuffer],
+  );
+
+  useEffect(() => {
+    enqueueWsEventsRef.current = enqueueWsEvents;
+  }, [enqueueWsEvents]);
+
+  const collectChunkedEvents = useCallback(
+    (
+      messageType: "initial_photos" | "photos_updated",
+      data: PhotoWsMessage,
+      events: PhotoData[],
+    ): PhotoData[] | null => {
+      const totalChunks = Math.max(1, Number(data.totalChunks) || 1);
+      if (totalChunks <= 1) return events;
+      const chunkIndex = Math.max(1, Number(data.chunkIndex) || 1);
+      const batchId =
+        data.batchId ??
+        `${messageType}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      let bucket = wsBatchBucketsRef.current.get(batchId);
+      if (!bucket) {
+        const timeoutId = window.setTimeout(() => {
+          const timedOut = wsBatchBucketsRef.current.get(batchId);
+          if (!timedOut) return;
+          wsBatchBucketsRef.current.delete(batchId);
+          if (timedOut.messageType === "initial_photos") {
+            if (!initialLoadDoneRef.current) {
+              applyInitialSnapshot(timedOut.events);
+            }
+          } else {
+            enqueueWsEventsRef.current(timedOut.events);
+          }
+        }, WS_BATCH_FAILSAFE_MS);
+        bucket = {
+          messageType,
+          totalChunks,
+          receivedChunks: new Set<number>(),
+          events: [],
+          timeoutId,
+        };
+        wsBatchBucketsRef.current.set(batchId, bucket);
+      }
+      if (!bucket.receivedChunks.has(chunkIndex)) {
+        bucket.receivedChunks.add(chunkIndex);
+        bucket.events.push(...events);
+      }
+      if (bucket.receivedChunks.size >= bucket.totalChunks) {
+        wsBatchBucketsRef.current.delete(batchId);
+        window.clearTimeout(bucket.timeoutId);
+        return bucket.events;
+      }
+      return null;
+    },
+    [applyInitialSnapshot],
+  );
+
+  const handleWebSocketMessage = useCallback(
+    (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as PhotoWsMessage;
+        if (data.type === "ping" || data.type === "heartbeat") return;
+        const events = extractEventsFromMessage(data);
+
+        if (data.type === "initial_photos" || data.type == null) {
+          const snapshotEvents = collectChunkedEvents("initial_photos", data, events);
+          if (snapshotEvents == null) return;
+          if (!initialLoadDoneRef.current) {
+            applyInitialSnapshot(snapshotEvents);
+          }
+          return;
+        }
+
+        if (data.type === "photos_updated") {
+          const chunkEvents = collectChunkedEvents("photos_updated", data, events);
+          if (chunkEvents == null) return;
+          enqueueWsEvents(chunkEvents);
+          return;
+        }
+
+        if (events.length > 0) {
+          enqueueWsEvents(events);
+        }
+      } catch (error) {
+        log.error("Error processing WebSocket message:", error);
+      }
+    },
+    [
+      applyInitialSnapshot,
+      collectChunkedEvents,
+      enqueueWsEvents,
+      extractEventsFromMessage,
+    ],
+  );
 
   const wsUrl = useMemo(() => {
     const urlObj = new URL(apiUrl);
@@ -633,6 +975,33 @@ const PhotoDashboard: React.FC = () => {
     pingInterval: PING_INTERVAL,
     pongTimeout: PONG_TIMEOUT,
   });
+
+  const clearWsRuntimeBuffers = useCallback(() => {
+    if (wsMergeTimerRef.current != null) {
+      window.clearTimeout(wsMergeTimerRef.current);
+      wsMergeTimerRef.current = null;
+    }
+    if (stagedInsertTimerRef.current != null) {
+      window.clearTimeout(stagedInsertTimerRef.current);
+      stagedInsertTimerRef.current = null;
+    }
+
+    const delayedTimers = delayedPhotoAttachTimersRef.current;
+    delayedTimers.forEach((timerId) => window.clearTimeout(timerId));
+    delayedTimers.clear();
+
+    const batchBuckets = wsBatchBucketsRef.current;
+    batchBuckets.forEach((bucket) => {
+      window.clearTimeout(bucket.timeoutId);
+    });
+    batchBuckets.clear();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearWsRuntimeBuffers();
+    };
+  }, [clearWsRuntimeBuffers]);
 
   useEffect(() => {
     const onVisible = () => {
@@ -902,7 +1271,9 @@ const PhotoDashboard: React.FC = () => {
       () => [],
     );
     displayPhotos.forEach((photo, index) => {
-      rows[index % numRows].push(photo);
+      const stableKey = getStableRowKey(photo, index);
+      const rowIndex = stableHash(stableKey) % numRows;
+      rows[rowIndex].push(photo);
     });
 
     return rows;
@@ -1091,7 +1462,11 @@ const PhotoDashboard: React.FC = () => {
       kioskCardWidth?: number,
     ) => (
       <motion.article
-        key={`${photo.photoUrl}-${photo.attendanceTime}-${keyIndex}`}
+        key={
+          photo.id != null
+            ? `photo-${photo.id}`
+            : `${photo.photoUrl}-${photo.attendanceTime}-${keyIndex}`
+        }
         initial={false}
         className={`photo-item group relative flex-shrink-0 w-[220px] sm:w-[260px] md:w-[280px] lg:w-[300px] rounded-2xl md:rounded-3xl cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60 focus-visible:ring-offset-2 flex flex-col transition-all duration-300 ${
           isHovered
@@ -1154,13 +1529,24 @@ const PhotoDashboard: React.FC = () => {
             <div className="photo-electric-border-inner flex flex-col flex-1 overflow-hidden rounded-2xl relative">
               <div className="photo-shine-overlay" aria-hidden />
               <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
-                <img
-                  src={`${apiUrl}${photo.photoUrl}`}
-                  alt={photo.staffFullName}
-                  className="w-full h-full object-contain transition-opacity duration-300"
-                  loading="lazy"
-                  draggable={false}
-                />
+                {photo.hasPhoto === false ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
+                      <FaImage className="h-7 w-7" />
+                    </div>
+                    <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white shadow-md backdrop-blur-sm">
+                      Фото не загружено
+                    </span>
+                  </div>
+                ) : (
+                  <img
+                    src={`${apiUrl}${photo.photoUrl}`}
+                    alt={photo.staffFullName}
+                    className="w-full h-full object-contain transition-opacity duration-300"
+                    loading="lazy"
+                    draggable={false}
+                  />
+                )}
               </div>
               {renderCardMeta(photo)}
             </div>
@@ -1168,13 +1554,24 @@ const PhotoDashboard: React.FC = () => {
         ) : (
           <>
             <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
-              <img
-                src={`${apiUrl}${photo.photoUrl}`}
-                alt={photo.staffFullName}
-                className="w-full h-full object-contain transition-opacity duration-300"
-                loading="lazy"
-                draggable={false}
-              />
+              {photo.hasPhoto === false ? (
+                <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
+                    <FaImage className="h-7 w-7" />
+                  </div>
+                  <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white shadow-md backdrop-blur-sm">
+                    Фото не загружено
+                  </span>
+                </div>
+              ) : (
+                <img
+                  src={`${apiUrl}${photo.photoUrl}`}
+                  alt={photo.staffFullName}
+                  className="w-full h-full object-contain transition-opacity duration-300"
+                  loading="lazy"
+                  draggable={false}
+                />
+              )}
             </div>
             {renderCardMeta(photo)}
           </>
@@ -1416,12 +1813,24 @@ const PhotoDashboard: React.FC = () => {
 
             <div className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain [@media(orientation:landscape)]:flex-row [@media(orientation:landscape)]:overflow-hidden">
               <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex-shrink-0 max-h-[50vh] [@media(orientation:landscape)]:max-h-none [@media(orientation:landscape)]:w-[min(42%,85vh)] [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:aspect-square [@media(orientation:landscape)]:shrink-0">
-                <img
-                  src={`${apiUrl}${selectedPhoto.photoUrl}`}
-                  alt={selectedPhoto.staffFullName}
-                  className="w-full h-full object-contain"
-                  draggable={false}
-                />
+                {selectedPhoto.hasPhoto === false ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
+                    <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
+                      <FaImage className="h-10 w-10" />
+                    </div>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-black/60 px-3 py-1.5 text-xs font-medium text-white shadow-md backdrop-blur-sm">
+                      <FaImage className="h-4 w-4" />
+                      Фото не загружено
+                    </span>
+                  </div>
+                ) : (
+                  <img
+                    src={`${apiUrl}${selectedPhoto.photoUrl}`}
+                    alt={selectedPhoto.staffFullName}
+                    className="w-full h-full object-contain"
+                    draggable={false}
+                  />
+                )}
               </div>
 
               <div className="p-5 sm:p-6 md:p-7 flex flex-col gap-3 flex-shrink-0 [@media(orientation:landscape)]:flex-1 [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:overflow-y-auto [@media(orientation:landscape)]:justify-center">
