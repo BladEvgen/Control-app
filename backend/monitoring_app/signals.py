@@ -7,6 +7,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
+from django.utils import timezone
 
 from .cache_conf import invalidate_cache, invalidate_cache_pattern
 from .lesson_locations_conf import (
@@ -23,25 +24,58 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+STATE_CREATED_NO_PHOTO = "CREATED_NO_PHOTO"
+STATE_PHOTO_ATTACHED = "PHOTO_ATTACHED"
+STATE_UPDATED_META = "UPDATED_META"
+STATE_DELETED = "DELETED"
 
 
 def sanitize_group_name(name):
     return re.sub(r"[^a-zA-Z0-9_\-\.]", "_", name)[:100]
 
 
-@receiver(post_save, sender=LessonAttendance)
-def send_new_photo(sender, instance, created, **kwargs):
+def _send_photo_event(instance, *, op, state_code):
+    """Шлёт событие по LessonAttendance в группу по дате записи."""
+    channel_layer = get_channel_layer()
+    group_name = sanitize_group_name(f"photos_{instance.date_at.isoformat()}")
+    event_type = "attendance_deleted" if op == "deleted" else "new_photo"
+    async_to_sync(channel_layer.group_send)(
+        group_name,
+        {
+            "type": event_type,
+            "attendance_id": instance.id,
+            "op": op,
+            "stateCode": state_code,
+            "versionTs": timezone.now().isoformat(),
+        },
+    )
+    logger.info(
+        "Sent photo event to group %s for attendance_id %s op=%s state=%s",
+        group_name,
+        instance.id,
+        op,
+        state_code,
+    )
+
+
+def _resolve_state_code(instance, *, created, update_fields):
     if created:
-        channel_layer = get_channel_layer()
-        group_name = sanitize_group_name(f"photos_{instance.date_at.isoformat()}")
-        async_to_sync(channel_layer.group_send)(
-            group_name, {"type": "new_photo", "attendance_id": instance.id}
-        )
-        logger.info(
-            f"Sent new_photo event to group {group_name} for attendance_id {instance.id}"
-        )
-        invalidate_cache_pattern(f"map_location_{instance.date_at}*")
-        invalidate_cache_pattern(f"staff_attendance_stats_{instance.date_at}*")
+        return STATE_PHOTO_ATTACHED if instance.staff_image_path else STATE_CREATED_NO_PHOTO
+    if update_fields and "staff_image_path" in update_fields:
+        return STATE_PHOTO_ATTACHED if instance.staff_image_path else STATE_UPDATED_META
+    return STATE_UPDATED_META
+
+
+def _invalidate_lesson_attendance_cache(instance):
+    from django.core.cache import cache
+
+    cache.delete(f"photos_for_{instance.date_at}")
+    invalidate_cache_pattern(f"map_location_{instance.date_at}*")
+    invalidate_cache_pattern(f"staff_attendance_stats_{instance.date_at}*")
+    invalidate_cache_pattern("department_confirmation_pins_*")
+
+
+def _invalidate_lesson_staff_cache(instance):
     row = (
         Staff.objects.filter(pk=instance.staff_id)
         .values_list("department_id", "pin")
@@ -53,6 +87,30 @@ def send_new_photo(sender, instance, created, **kwargs):
             invalidate_cache_pattern(f"department_confirmation_{dept_id}_*")
         if pin:
             invalidate_cache_pattern(f"staff_detail_{pin}*")
+
+
+@receiver(post_save, sender=LessonAttendance)
+def send_new_photo(sender, instance, created, **kwargs):
+    _ = sender
+    update_fields = kwargs.get("update_fields")
+    state_code = _resolve_state_code(
+        instance,
+        created=created,
+        update_fields=update_fields,
+    )
+    op = "created" if created else "updated"
+    _invalidate_lesson_attendance_cache(instance)
+    _send_photo_event(instance, op=op, state_code=state_code)
+    _invalidate_lesson_staff_cache(instance)
+
+
+@receiver(post_delete, sender=LessonAttendance)
+def send_deleted_photo(sender, instance, **kwargs):
+    _ = sender
+    _ = kwargs
+    _invalidate_lesson_attendance_cache(instance)
+    _send_photo_event(instance, op="deleted", state_code=STATE_DELETED)
+    _invalidate_lesson_staff_cache(instance)
 
 
 @receiver([post_save, post_delete], sender=StaffAttendance)

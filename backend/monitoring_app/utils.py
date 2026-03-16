@@ -2,6 +2,7 @@ import datetime
 import json
 import logging
 import math
+import os
 import re
 from collections import Counter, defaultdict
 from difflib import get_close_matches
@@ -29,6 +30,23 @@ from sklearn.neighbors import KDTree
 DAYS = settings.DAYS
 
 logger = logging.getLogger("django")
+
+
+def get_lesson_attendance_photo_path(staff_pin: str):
+    """
+    Возвращает (base_dir, full_file_path) для сохранения фото посещаемости.
+    base_dir нужно создать (makedirs); full_file_path — куда писать файл.
+    """
+    date_path = timezone.now().strftime("%Y-%m-%d")
+    timestamp = int(timezone.now().timestamp())
+    if settings.DEBUG:
+        base_dir = os.path.join(
+            settings.MEDIA_ROOT, "control_image", staff_pin, date_path
+        )
+    else:
+        base_dir = os.path.join(settings.ATTENDANCE_ROOT, staff_pin, date_path)
+    filename = f"{staff_pin}_{timestamp}.jpg"
+    return base_dir, os.path.join(base_dir, filename)
 
 
 def merge_work_intervals_to_total_seconds(

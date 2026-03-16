@@ -9,6 +9,8 @@ from django.utils import timezone
 from monitoring_app import models, utils
 
 logger = logging.getLogger(__name__)
+DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY = "department_confirmation_epoch_hour"
+DEPARTMENT_CONFIRMATION_EPOCH_TTL = 5 * 60 * 60
 
 
 @shared_task
@@ -169,7 +171,7 @@ def update_lesson_attendance_last_out():
 
 
 @shared_task
-def process_lesson_attendance_batch(attendance_data, image_name, image_content):
+def process_lesson_attendance_batch(attendance_data, _image_name, image_content):
     """
     Асинхронная задача для создания записей посещаемости с сохранением фотографий сотрудников.
 
@@ -178,15 +180,10 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
     логирования для отслеживания ошибок и предупреждений.
 
     Args:
-        attendance_data (list): Данные посещаемости, где каждый элемент содержит:
-            - staff_pin (str): Уникальный PIN сотрудника.
-            - tutor_id (int): Идентификатор преподавателя.
-            - tutor (str): ФИО преподавателя.
-            - first_in (str): Дата и время начала занятия в формате ISO 8601.
-            - latitude (float): Географическая широта места занятия.
-            - longitude (float): Географическая долгота места занятия.
-        image_name (str): Название файла для сохранения фотографии.
-        image_content (bytes): Содержимое изображения в формате байтов.
+        attendance_data (list): Данные посещаемости (staff_pin, tutor_id, tutor,
+            first_in, latitude, longitude, опционально subject_name).
+        _image_name: Не используется; имя файла генерируется внутри (staff_pin + timestamp).
+        image_content (bytes | None): Содержимое фото; при None записи создаются без фото.
 
     Returns:
         dict: Результат обработки задачи с информацией об успешных и неудачных записях:
@@ -222,37 +219,28 @@ def process_lesson_attendance_batch(attendance_data, image_name, image_content):
             longitude = record.get("longitude")
             subject_name = record.get("subject_name") or ""
 
-            timestamp = int(timezone.now().timestamp())
-            image_name = f"{staff_pin}_{timestamp}.jpg"
-
             staff = models.Staff.objects.get(pin=staff_pin)
 
-            date_path = timezone.now().strftime("%Y-%m-%d")
-            base_path = (
-                f"{settings.MEDIA_ROOT}/control_image/{staff_pin}/{date_path}"
-                if settings.DEBUG
-                else f"{settings.ATTENDANCE_ROOT}/{staff_pin}/{date_path}"
-            )
-
-            os.makedirs(base_path, exist_ok=True)
-            file_path = os.path.join(base_path, image_name)
-
-            try:
-                with open(file_path, "wb") as destination:
-                    destination.write(image_content)
-            except OSError as e:
-                logger.error(
-                    "%s image_save_failed staff_pin=%s path=%s errno=%s error=%s",
-                    log_prefix,
-                    staff_pin,
-                    file_path,
-                    getattr(e, "errno", None),
-                    str(e),
-                )
-                error_records.append(
-                    {"staff_pin": staff_pin, "error": f"Image save failed: {e}"}
-                )
-                continue
+            file_path = None
+            if image_content:
+                base_dir, file_path = utils.get_lesson_attendance_photo_path(staff_pin)
+                os.makedirs(base_dir, exist_ok=True)
+                try:
+                    with open(file_path, "wb") as destination:
+                        destination.write(image_content)
+                except OSError as e:
+                    logger.error(
+                        "%s image_save_failed staff_pin=%s path=%s errno=%s error=%s",
+                        log_prefix,
+                        staff_pin,
+                        file_path,
+                        getattr(e, "errno", None),
+                        str(e),
+                    )
+                    error_records.append(
+                        {"staff_pin": staff_pin, "error": f"Image save failed: {e}"}
+                    )
+                    continue
 
             lesson_attendance = models.LessonAttendance.objects.create(
                 staff=staff,
@@ -549,3 +537,27 @@ def warmup_cache_task(force: bool = False, keys=None):
         f"Cache warmup task completed. Success: {sum(1 for r in results.values() if r.get('status') == 'success')}/{len(results)}"
     )
     return results
+
+
+@shared_task(name="monitoring_app.tasks.rotate_department_confirmation_cache_epoch")
+def rotate_department_confirmation_cache_epoch():
+    """
+    Почасовая ротация кэша подтверждений посещаемости:
+    1) ставит epoch-ключ текущего часа;
+    2) очищает старые ключи department_confirmation_*.
+    """
+    from monitoring_app.cache_conf import Cache, invalidate_cache_pattern
+
+    epoch_hour = timezone.localtime().strftime("%Y%m%d%H")
+    Cache.set(
+        DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY,
+        epoch_hour,
+        DEPARTMENT_CONFIRMATION_EPOCH_TTL,
+    )
+    deleted_count = invalidate_cache_pattern("department_confirmation_*")
+    logger.info(
+        "rotate_department_confirmation_cache_epoch: epoch=%s deleted=%s",
+        epoch_hour,
+        deleted_count,
+    )
+    return {"epoch": epoch_hour, "deleted_keys": deleted_count}
