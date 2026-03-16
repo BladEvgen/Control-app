@@ -1,5 +1,17 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { MapContainer, TileLayer, useMap, useMapEvents, ZoomControl } from "react-leaflet";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
+import {
+  MapContainer,
+  TileLayer,
+  useMap,
+  useMapEvents,
+  ZoomControl,
+} from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L, { Map as LeafletMap } from "leaflet";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -11,7 +23,13 @@ import AdaptiveLocationPopup from "../components/map/AdaptiveLocationPopup";
 import { BaseAction } from "../schemas/BaseAction";
 import { LocationData } from "../schemas/IData";
 import { FaCalendarAlt, FaCompress, FaExpand } from "react-icons/fa";
-import { FiClock, FiCrosshair, FiMapPin, FiMaximize2, FiUsers } from "react-icons/fi";
+import {
+  FiClock,
+  FiCrosshair,
+  FiMapPin,
+  FiMaximize2,
+  FiUsers,
+} from "react-icons/fi";
 import { motion, Variants } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
 import EditableDateField from "../components/EditableDateField";
@@ -55,6 +73,8 @@ const MAP_FIRST_FOCUS_MAX_ZOOM = 16.2;
 const MAP_COLOR_BASE_RADIUS_METERS = 64;
 const MAP_RETRY_SYNC_ATTEMPTS = 30;
 const MAP_RETRY_SYNC_INTERVAL_MS = 120;
+const MAP_AUTO_DATE_HOUR_FROM = 8;
+const MAP_AUTO_DATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const NUMBER_FORMATTER = new Intl.NumberFormat("ru-RU");
 const MOBILE_DOCK_QUERY = 'nav[aria-label="Навигация"]';
 const MOBILE_DOCK_FALLBACK_HEIGHT = 58;
@@ -163,7 +183,7 @@ const DISTINCT_HEX_COLORS_DARK = [
   "#FCD34D",
 ];
 
-const getFormattedDateAt = (): string => {
+const getDefaultMapDate = (): string => {
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   return yesterday.toISOString().split("T")[0];
@@ -348,10 +368,7 @@ const assignHighContrastColors = (
 };
 
 const normalizeLocationKeyPart = (value: string): string =>
-  value
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
+  value.trim().toLowerCase().replace(/\s+/g, " ");
 
 const buildLocationStableKey = (location: LocationData): string =>
   [
@@ -519,7 +536,7 @@ const MapDashboard: React.FC = () => {
   const [mapReadyVersion, setMapReadyVersion] = useState(0);
   const [mapFocusMode, setMapFocusMode] = useState<MapFocusMode>("first");
   const [assignedColors, setAssignedColors] = useState<string[]>([]);
-  const [dateAt, setDateAt] = useState<string>(getFormattedDateAt());
+  const [dateAt, setDateAt] = useState<string>(getDefaultMapDate());
   const [lastRequestAt, setLastRequestAt] = useState<Date | null>(null);
   const [mapViewportHeight, setMapViewportHeight] = useState(560);
   const [mapZoom, setMapZoom] = useState(MAP_DEFAULT_ZOOM);
@@ -544,6 +561,8 @@ const MapDashboard: React.FC = () => {
   const mapFocusModeRef = useRef<MapFocusMode>("first");
   const popupOpenTimerRef = useRef<number | null>(null);
   const initialViewportAlignedRef = useRef(false);
+  const userPickedDateRef = useRef(false);
+  const dateAtRef = useRef(dateAt);
 
   const selectedPalette = useMemo(
     () => (isDarkTheme ? MAP_PALETTE_DARK : MAP_PALETTE_LIGHT),
@@ -652,10 +671,10 @@ const MapDashboard: React.FC = () => {
       isMapPriorityLayout
         ? "1-я"
         : isKiosk && isPhoneLandscapeViewport && !isFullscreen
-        ? "1-я"
-        : isPhoneLandscapeViewport || isUltraNarrowViewport
-        ? "Первая"
-        : "Первая точка",
+          ? "1-я"
+          : isPhoneLandscapeViewport || isUltraNarrowViewport
+            ? "Первая"
+            : "Первая точка",
     [
       isFullscreen,
       isKiosk,
@@ -670,12 +689,12 @@ const MapDashboard: React.FC = () => {
       isMapPriorityLayout
         ? "Все"
         : isKiosk && isPhoneLandscapeViewport && !isFullscreen
-        ? "Все"
-        : isPhoneLandscapeViewport
-        ? "Все точки"
-        : isUltraNarrowViewport
-          ? "Карта"
-          : "Полная карта",
+          ? "Все"
+          : isPhoneLandscapeViewport
+            ? "Все точки"
+            : isUltraNarrowViewport
+              ? "Карта"
+              : "Полная карта",
     [
       isFullscreen,
       isKiosk,
@@ -685,15 +704,12 @@ const MapDashboard: React.FC = () => {
     ],
   );
 
-  const zoomControlPosition = useMemo<"topright" | "bottomright">(
-    () => {
-      if (isPhoneLandscapeViewport) {
-        return isKiosk ? "bottomright" : "topright";
-      }
-      return isMobileViewport ? "topright" : "bottomright";
-    },
-    [isKiosk, isMobileViewport, isPhoneLandscapeViewport],
-  );
+  const zoomControlPosition = useMemo<"topright" | "bottomright">(() => {
+    if (isPhoneLandscapeViewport) {
+      return isKiosk ? "bottomright" : "topright";
+    }
+    return isMobileViewport ? "topright" : "bottomright";
+  }, [isKiosk, isMobileViewport, isPhoneLandscapeViewport]);
 
   const dispatch = useCallback((action: BaseAction<MapDispatchPayload>) => {
     switch (action.type) {
@@ -772,6 +788,37 @@ const MapDashboard: React.FC = () => {
     return () => clearInterval(id);
   }, [dateAt, reportsAutoRefreshMinutes, fetchLocations]);
 
+  useEffect(() => {
+    dateAtRef.current = dateAt;
+  }, [dateAt]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+
+    const trySyncToDefaultDate = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = new Date();
+      if (now.getHours() < MAP_AUTO_DATE_HOUR_FROM) return;
+      if (userPickedDateRef.current) return;
+      const defaultDate = getDefaultMapDate();
+      if (dateAtRef.current === defaultDate) return;
+      setDateAt(defaultDate);
+    };
+
+    const onVisibilityChange = () => trySyncToDefaultDate();
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    const intervalId = window.setInterval(
+      trySyncToDefaultDate,
+      MAP_AUTO_DATE_CHECK_INTERVAL_MS,
+    );
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      clearInterval(intervalId);
+    };
+  }, []);
+
   const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedDate = event.target.value;
     const today = new Date().toISOString().split("T")[0];
@@ -781,11 +828,13 @@ const MapDashboard: React.FC = () => {
     pendingPopupOpenKeyRef.current = null;
     setVisiblePopupKey(null);
 
+    const effectiveDate = selectedDate > today ? today : selectedDate;
     if (selectedDate > today) {
       setDateAt(today);
     } else {
       setDateAt(selectedDate);
     }
+    userPickedDateRef.current = effectiveDate !== getDefaultMapDate();
   };
 
   useEffect(() => {
@@ -807,7 +856,11 @@ const MapDashboard: React.FC = () => {
 
   useEffect(() => {
     setAssignedColors(
-      assignHighContrastColors(locations, selectedPalette, selectedPaletteDistance),
+      assignHighContrastColors(
+        locations,
+        selectedPalette,
+        selectedPaletteDistance,
+      ),
     );
   }, [locations, selectedPalette, selectedPaletteDistance]);
 
@@ -944,16 +997,22 @@ const MapDashboard: React.FC = () => {
         }))
         .sort((a, b) => a.distanceM - b.distanceM);
 
-      const nearLocations = sortedNeighbors.slice(0, 3).map((item) => item.location);
+      const nearLocations = sortedNeighbors
+        .slice(0, 3)
+        .map((item) => item.location);
       const focusLocations = [firstLocation, ...nearLocations];
 
       const map = mapRef.current;
       if (map) {
         const focusBounds = L.latLngBounds(
-          focusLocations.map((item) => [item.lat, item.lng] as [number, number]),
+          focusLocations.map(
+            (item) => [item.lat, item.lng] as [number, number],
+          ),
         );
         const allBounds = L.latLngBounds(
-          sourceLocations.map((item) => [item.lat, item.lng] as [number, number]),
+          sourceLocations.map(
+            (item) => [item.lat, item.lng] as [number, number],
+          ),
         );
 
         if (focusBounds.isValid() && allBounds.isValid()) {
@@ -1039,8 +1098,9 @@ const MapDashboard: React.FC = () => {
       }
 
       const bounds = L.latLngBounds(
-        sourceEntries.map((entry) =>
-          [entry.location.lat, entry.location.lng] as [number, number],
+        sourceEntries.map(
+          (entry) =>
+            [entry.location.lat, entry.location.lng] as [number, number],
         ),
       );
       if (!bounds.isValid()) return false;
@@ -1193,7 +1253,9 @@ const MapDashboard: React.FC = () => {
 
   const getMobileDockHeight = useCallback((): number => {
     if (typeof document === "undefined") return MOBILE_DOCK_FALLBACK_HEIGHT;
-    const dock = document.querySelector(MOBILE_DOCK_QUERY) as HTMLElement | null;
+    const dock = document.querySelector(
+      MOBILE_DOCK_QUERY,
+    ) as HTMLElement | null;
     if (!dock) return MOBILE_DOCK_FALLBACK_HEIGHT;
     const dockHeight = Math.round(dock.getBoundingClientRect().height);
     return Math.max(MOBILE_DOCK_FALLBACK_HEIGHT, dockHeight);
@@ -1291,12 +1353,7 @@ const MapDashboard: React.FC = () => {
     }, 60);
 
     return () => window.clearTimeout(id);
-  }, [
-    isFullscreen,
-    isMobileViewport,
-    isPhoneLandscapeViewport,
-    loading,
-  ]);
+  }, [isFullscreen, isMobileViewport, isPhoneLandscapeViewport, loading]);
 
   useEffect(() => {
     initialViewportAlignedRef.current = false;
@@ -1358,11 +1415,16 @@ const MapDashboard: React.FC = () => {
       safeInvalidateMapSize();
 
       if (shouldSyncFocusRef.current) {
-        const synced = syncMapFocusMode(false, mapFocusModeRef.current, keyedLocations);
+        const synced = syncMapFocusMode(
+          false,
+          mapFocusModeRef.current,
+          keyedLocations,
+        );
         if (synced) {
           shouldSyncFocusRef.current = false;
           if (mapFocusModeRef.current === "first") {
-            const keyToOpen = pendingPopupOpenKeyRef.current ?? keyedLocations[0]?.key;
+            const keyToOpen =
+              pendingPopupOpenKeyRef.current ?? keyedLocations[0]?.key;
             schedulePopupOpenAfterMove(keyToOpen ?? null);
           }
         }
@@ -1393,13 +1455,18 @@ const MapDashboard: React.FC = () => {
     let attempts = 0;
 
     const trySyncFocus = () => {
-      const synced = syncMapFocusMode(false, mapFocusModeRef.current, keyedLocations);
+      const synced = syncMapFocusMode(
+        false,
+        mapFocusModeRef.current,
+        keyedLocations,
+      );
       if (!synced) return false;
 
       shouldSyncFocusRef.current = false;
 
       if (mapFocusModeRef.current === "first") {
-        const targetKey = pendingPopupOpenKeyRef.current ?? keyedLocations[0]?.key;
+        const targetKey =
+          pendingPopupOpenKeyRef.current ?? keyedLocations[0]?.key;
         schedulePopupOpenAfterMove(targetKey ?? null);
       } else {
         setVisiblePopupKey(null);
@@ -1421,7 +1488,12 @@ const MapDashboard: React.FC = () => {
     }, MAP_RETRY_SYNC_INTERVAL_MS);
 
     return () => window.clearInterval(id);
-  }, [keyedLocations, mapReadyVersion, schedulePopupOpenAfterMove, syncMapFocusMode]);
+  }, [
+    keyedLocations,
+    mapReadyVersion,
+    schedulePopupOpenAfterMove,
+    syncMapFocusMode,
+  ]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -1431,11 +1503,16 @@ const MapDashboard: React.FC = () => {
         safeInvalidateMapSize();
 
         if (shouldSyncFocusRef.current) {
-          const synced = syncMapFocusMode(false, mapFocusModeRef.current, keyedLocations);
+          const synced = syncMapFocusMode(
+            false,
+            mapFocusModeRef.current,
+            keyedLocations,
+          );
           if (synced) {
             shouldSyncFocusRef.current = false;
             if (mapFocusModeRef.current === "first") {
-              const targetKey = pendingPopupOpenKeyRef.current ?? keyedLocations[0]?.key;
+              const targetKey =
+                pendingPopupOpenKeyRef.current ?? keyedLocations[0]?.key;
               schedulePopupOpenAfterMove(targetKey ?? null);
             }
           }
@@ -1494,11 +1571,20 @@ const MapDashboard: React.FC = () => {
       window.removeEventListener("resize", handleViewportMutation);
       window.removeEventListener("orientationchange", handleViewportMutation);
       if (window.visualViewport) {
-        window.visualViewport.removeEventListener("resize", handleViewportMutation);
-        window.visualViewport.removeEventListener("scroll", handleViewportMutation);
+        window.visualViewport.removeEventListener(
+          "resize",
+          handleViewportMutation,
+        );
+        window.visualViewport.removeEventListener(
+          "scroll",
+          handleViewportMutation,
+        );
       }
       document.removeEventListener("fullscreenchange", handleViewportMutation);
-      document.removeEventListener("webkitfullscreenchange", handleViewportMutation);
+      document.removeEventListener(
+        "webkitfullscreenchange",
+        handleViewportMutation,
+      );
     };
   }, [mapReadyVersion, safeInvalidateMapSize, updateMapViewportHeight]);
 
@@ -1538,7 +1624,8 @@ const MapDashboard: React.FC = () => {
     setVisiblePopupKey(null);
   }, []);
 
-  const isKioskLandscapePhone = isKiosk && isPhoneLandscapeViewport && !isFullscreen;
+  const isKioskLandscapePhone =
+    isKiosk && isPhoneLandscapeViewport && !isFullscreen;
   const isPhoneLandscapeCompact = isPhoneLandscapeViewport && !isFullscreen;
   const isPackedHeaderViewport =
     !isMapPriorityLayout &&
@@ -1556,87 +1643,87 @@ const MapDashboard: React.FC = () => {
       : "px-2 sm:px-3 pt-2 pb-2"
     : isMapPriorityLayout
       ? "px-1.5 pt-0 pb-0"
-    : isKioskLandscapePhone
-      ? "px-1.5 pt-0.5 pb-0"
-    : isPhoneLandscapeCompact
-      ? "px-2 pt-0.5 pb-0.5"
-    : isKioskMobileViewport
-      ? isDenseHeaderViewport
-        ? "px-2 pt-1 pb-0.5"
-        : "px-2.5 pt-1.5 pb-1"
-    : isKiosk
-      ? isDenseHeaderViewport
-        ? "px-2.5 sm:px-4 pt-2 sm:pt-3 pb-1.5"
-        : "px-2.5 sm:px-4 pt-3 sm:pt-4 pb-2"
-      : isDenseHeaderViewport
-        ? "px-2.5 sm:px-4 pt-2 sm:pt-3 pb-1.5"
-        : "px-3 sm:px-4 pt-3 sm:pt-5 pb-2 sm:pb-3";
+      : isKioskLandscapePhone
+        ? "px-1.5 pt-0.5 pb-0"
+        : isPhoneLandscapeCompact
+          ? "px-2 pt-0.5 pb-0.5"
+          : isKioskMobileViewport
+            ? isDenseHeaderViewport
+              ? "px-2 pt-1 pb-0.5"
+              : "px-2.5 pt-1.5 pb-1"
+            : isKiosk
+              ? isDenseHeaderViewport
+                ? "px-2.5 sm:px-4 pt-2 sm:pt-3 pb-1.5"
+                : "px-2.5 sm:px-4 pt-3 sm:pt-4 pb-2"
+              : isDenseHeaderViewport
+                ? "px-2.5 sm:px-4 pt-2 sm:pt-3 pb-1.5"
+                : "px-3 sm:px-4 pt-3 sm:pt-5 pb-2 sm:pb-3";
 
   const controlsFrameClass = isKioskLandscapePhone
     ? "rounded-md shadow-sm"
     : isMapPriorityLayout
       ? "rounded-md shadow-sm"
-    : isPhoneLandscapeCompact
-      ? "rounded-lg shadow-md"
-      : "rounded-2xl";
+      : isPhoneLandscapeCompact
+        ? "rounded-lg shadow-md"
+        : "rounded-2xl";
 
   const panelPaddingClass = isPhoneLandscapeCompact
     ? isKioskLandscapePhone
       ? "px-1.5 py-0.5 gap-0.5"
       : "px-2 py-1 gap-1"
     : isMapPriorityLayout
-    ? "px-1.5 py-0.5 gap-0.5"
-    : isPackedHeaderViewport
-    ? "px-2.5 sm:px-3 py-1.5 gap-1.5"
-    : isKioskMobileViewport
-    ? isDenseHeaderViewport
-      ? "px-2 py-1.5 gap-1.5"
-      : "px-2.5 py-2 gap-2"
-    : isDenseHeaderViewport
-    ? "px-2.5 sm:px-3 py-2 sm:py-2.5 gap-2"
-    : "px-3 sm:px-4 py-2.5 sm:py-3 gap-3";
+      ? "px-1.5 py-0.5 gap-0.5"
+      : isPackedHeaderViewport
+        ? "px-2.5 sm:px-3 py-1.5 gap-1.5"
+        : isKioskMobileViewport
+          ? isDenseHeaderViewport
+            ? "px-2 py-1.5 gap-1.5"
+            : "px-2.5 py-2 gap-2"
+          : isDenseHeaderViewport
+            ? "px-2.5 sm:px-3 py-2 sm:py-2.5 gap-2"
+            : "px-3 sm:px-4 py-2.5 sm:py-3 gap-3";
 
   const summaryTextClass = isPhoneLandscapeCompact
     ? "text-[9px]"
     : isDenseHeaderViewport
-    ? "text-[10px]"
-    : "text-[11px] sm:text-xs";
+      ? "text-[10px]"
+      : "text-[11px] sm:text-xs";
 
   const summaryChipClass = isPhoneLandscapeCompact
     ? "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5"
     : isDenseHeaderViewport
-    ? "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5"
-    : "inline-flex items-center gap-1 rounded-full border px-2 py-0.5";
+      ? "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5"
+      : "inline-flex items-center gap-1 rounded-full border px-2 py-0.5";
 
   const metaChipClass = isPhoneLandscapeCompact
     ? "inline-flex h-6 items-center gap-1 rounded-md border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 px-1.5 text-[9px] text-gray-700 dark:text-gray-300"
     : isMapPriorityLayout
-    ? "inline-flex h-6 items-center gap-1 rounded-md border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 px-1.5 text-[9px] text-gray-700 dark:text-gray-300"
-    : isPackedHeaderViewport
-    ? "inline-flex h-7 items-center gap-1 rounded-md border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 px-2 text-[10px] text-gray-700 dark:text-gray-300"
-    : isDenseHeaderViewport
-    ? "inline-flex h-8 items-center gap-1 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 px-2 text-[10px] text-gray-700 dark:text-gray-300"
-    : "inline-flex h-10 items-center gap-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 px-3 text-[11px] sm:text-xs text-gray-700 dark:text-gray-300";
+      ? "inline-flex h-6 items-center gap-1 rounded-md border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 px-1.5 text-[9px] text-gray-700 dark:text-gray-300"
+      : isPackedHeaderViewport
+        ? "inline-flex h-7 items-center gap-1 rounded-md border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 px-2 text-[10px] text-gray-700 dark:text-gray-300"
+        : isDenseHeaderViewport
+          ? "inline-flex h-8 items-center gap-1 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 px-2 text-[10px] text-gray-700 dark:text-gray-300"
+          : "inline-flex h-10 items-center gap-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 px-3 text-[11px] sm:text-xs text-gray-700 dark:text-gray-300";
 
   const actionButtonClass = isPhoneLandscapeCompact
     ? isKioskLandscapePhone
       ? "inline-flex h-6 items-center justify-center gap-1 px-1 rounded-md text-[9px] font-semibold border transition-colors"
       : "inline-flex h-7 items-center justify-center gap-1 px-1.5 rounded-md text-[9px] font-semibold border transition-colors"
     : isMapPriorityLayout
-    ? "inline-flex h-7 items-center justify-center gap-1 px-1.5 rounded-md text-[10px] font-semibold border transition-colors"
-    : isPackedHeaderViewport
-    ? "inline-flex h-8 items-center justify-center gap-1.5 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors"
-    : isDenseHeaderViewport
-    ? "inline-flex h-9 items-center justify-center gap-1.5 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors"
-    : "inline-flex h-10 items-center justify-center gap-2 px-3.5 rounded-lg text-xs sm:text-sm font-semibold border transition-colors";
+      ? "inline-flex h-7 items-center justify-center gap-1 px-1.5 rounded-md text-[10px] font-semibold border transition-colors"
+      : isPackedHeaderViewport
+        ? "inline-flex h-8 items-center justify-center gap-1.5 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors"
+        : isDenseHeaderViewport
+          ? "inline-flex h-9 items-center justify-center gap-1.5 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors"
+          : "inline-flex h-10 items-center justify-center gap-2 px-3.5 rounded-lg text-xs sm:text-sm font-semibold border transition-colors";
 
   const buttonIconClass = isKioskLandscapePhone
     ? "w-3 h-3"
     : isMapPriorityLayout
       ? "w-3 h-3"
-    : isDenseHeaderViewport
-      ? "w-3.5 h-3.5"
-      : "w-4 h-4";
+      : isDenseHeaderViewport
+        ? "w-3.5 h-3.5"
+        : "w-4 h-4";
 
   const fullscreenButtonLabel = isFullscreenBusy
     ? isFullscreen
@@ -1704,7 +1791,9 @@ const MapDashboard: React.FC = () => {
       exit="exit"
       style={pageContainerStyle}
     >
-      <div className={`relative z-20 mx-auto w-full max-w-[1600px] ${topContainerClass}`}>
+      <div
+        className={`relative z-20 mx-auto w-full max-w-[1600px] ${topContainerClass}`}
+      >
         <motion.div
           ref={controlsRef}
           className={`border shadow-lg backdrop-blur-md flex flex-col ${panelPaddingClass} ${
@@ -1721,8 +1810,8 @@ const MapDashboard: React.FC = () => {
               isPackedHeaderViewport
                 ? "gap-1.5 md:flex-row md:items-start md:justify-between"
                 : isDenseHeaderViewport
-                ? "gap-2"
-                : "gap-3 xl:flex-row xl:items-center xl:justify-between"
+                  ? "gap-2"
+                  : "gap-3 xl:flex-row xl:items-center xl:justify-between"
             }`}
           >
             {showHeaderTitleBlock && (
@@ -1803,7 +1892,9 @@ const MapDashboard: React.FC = () => {
 
                   <div className={metaChipClass}>
                     <FaCalendarAlt className="text-primary-600 dark:text-primary-400" />
-                    <span className="text-gray-500 dark:text-gray-400">Дата:</span>
+                    <span className="text-gray-500 dark:text-gray-400">
+                      Дата:
+                    </span>
                     <EditableDateField
                       value={dateAt}
                       onChange={handleDateChange}
@@ -1853,11 +1944,13 @@ const MapDashboard: React.FC = () => {
                     ? "grid w-full grid-cols-3 gap-0.5"
                     : isMapPriorityLayout
                       ? "grid w-full grid-cols-3 gap-0.5"
-                    : isPhoneLandscapeViewport
-                      ? "grid w-full grid-cols-3 gap-1"
-                    : `grid w-full gap-2 ${
-                        isUltraNarrowViewport ? "grid-cols-1" : "grid-cols-2"
-                      } sm:flex sm:w-auto sm:flex-wrap sm:justify-end`
+                      : isPhoneLandscapeViewport
+                        ? "grid w-full grid-cols-3 gap-1"
+                        : `grid w-full gap-2 ${
+                            isUltraNarrowViewport
+                              ? "grid-cols-1"
+                              : "grid-cols-2"
+                          } sm:flex sm:w-auto sm:flex-wrap sm:justify-end`
                 }
               >
                 <motion.button
@@ -1938,17 +2031,17 @@ const MapDashboard: React.FC = () => {
             ? "max-w-none px-2 sm:px-3 pb-2 sm:pb-3"
             : isMapPriorityLayout
               ? "max-w-[1600px] px-1.5 pb-0"
-            : isKioskLandscapePhone
-              ? "max-w-[1600px] px-1.5 pb-0"
-            : isPhoneLandscapeCompact
-              ? "max-w-[1600px] px-2 pb-0.5"
-            : isKioskMobileViewport
-              ? isDenseHeaderViewport
-                ? "max-w-[1600px] px-2 pb-0.5"
-                : "max-w-[1600px] px-2.5 pb-1"
-            : isDenseHeaderViewport
-              ? "max-w-[1600px] px-2.5 sm:px-4 pb-1.5 sm:pb-3"
-              : "max-w-[1600px] px-3 sm:px-4 pb-2 sm:pb-4"
+              : isKioskLandscapePhone
+                ? "max-w-[1600px] px-1.5 pb-0"
+                : isPhoneLandscapeCompact
+                  ? "max-w-[1600px] px-2 pb-0.5"
+                  : isKioskMobileViewport
+                    ? isDenseHeaderViewport
+                      ? "max-w-[1600px] px-2 pb-0.5"
+                      : "max-w-[1600px] px-2.5 pb-1"
+                    : isDenseHeaderViewport
+                      ? "max-w-[1600px] px-2.5 sm:px-4 pb-1.5 sm:pb-3"
+                      : "max-w-[1600px] px-3 sm:px-4 pb-2 sm:pb-4"
         } transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]`}
         style={{ height: `${mapViewportHeight}px` }}
       >
@@ -2017,10 +2110,7 @@ const MapDashboard: React.FC = () => {
                 onMapViewportChange={setMapZoom}
               />
 
-              <TileLayer
-                key="osm-standard"
-                url={OSM_TILE_URL}
-              />
+              <TileLayer key="osm-standard" url={OSM_TILE_URL} />
 
               {keyedLocations.map((entry) => (
                 <AnimatedMarker
