@@ -149,10 +149,22 @@ export interface PhotoData {
   photoUrl: string;
   attendanceTime: string;
   tutorInfo: string;
+  photoSpoofStatus?: PhotoSpoofStatus;
+  photoManualVerdict?: PhotoManualVerdict;
+  photoCanSetManualVerdict?: boolean;
   stateCode?: PhotoStateCode;
   versionTs?: string;
   op?: PhotoWsOp;
 }
+
+export type PhotoSpoofStatus =
+  | "pending"
+  | "clean"
+  | "review"
+  | "suspicious"
+  | "error";
+
+export type PhotoManualVerdict = "none" | "clean" | "suspicious";
 
 export type PhotoStateCode =
   | "SNAPSHOT"

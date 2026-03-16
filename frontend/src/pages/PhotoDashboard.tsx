@@ -15,11 +15,17 @@ import {
   FaClock,
   FaBuilding,
   FaRegCalendarAlt,
+  FaShieldAlt,
 } from "react-icons/fa";
-import { PhotoData, PhotoWsMessage } from "../schemas/IData";
+import {
+  PhotoData,
+  PhotoManualVerdict,
+  PhotoSpoofStatus,
+  PhotoWsMessage,
+} from "../schemas/IData";
 import { apiUrl } from "../../apiConfig";
 import { motion, AnimatePresence } from "framer-motion";
-import { log } from "../api";
+import apiClient, { log } from "../api";
 import useWebSocket from "../hooks/useWebSocket";
 import LoaderComponent from "../components/LoaderComponent";
 import { Toggle } from "../components/Toggle";
@@ -41,6 +47,50 @@ const STAGED_INSERT_COMMIT_MS = 1200;
 const STAGED_INSERT_MAX_ITEMS = 8;
 const CREATED_NO_PHOTO_MIN_VISIBLE_MS = 2500;
 
+type PhotoUiStatus =
+  | "clean"
+  | "check"
+  | "suspicious_auto"
+  | "suspicious_manual";
+
+const PHOTO_STATUS_STYLE: Record<
+  PhotoUiStatus,
+  {
+    borderClass: string;
+    badgeClass: string;
+    label: string;
+    sourceLabel?: string;
+    showBadgeOnCard: boolean;
+  }
+> = {
+  clean: {
+    borderClass: "",
+    badgeClass: "bg-slate-700/85 text-slate-100 border border-slate-400/50",
+    label: "Нормальное",
+    showBadgeOnCard: false,
+  },
+  check: {
+    borderClass: "photo-electric-border--review",
+    badgeClass: "bg-amber-500/90 text-amber-50 border border-amber-300/70",
+    label: "Проверить",
+    showBadgeOnCard: true,
+  },
+  suspicious_auto: {
+    borderClass: "photo-electric-border--suspicious-auto",
+    badgeClass: "bg-rose-600/90 text-rose-50 border border-rose-300/60",
+    label: "Подозрительное",
+    sourceLabel: "авто",
+    showBadgeOnCard: true,
+  },
+  suspicious_manual: {
+    borderClass: "photo-electric-border--suspicious-manual",
+    badgeClass: "bg-fuchsia-600/90 text-fuchsia-50 border border-fuchsia-300/65",
+    label: "Подозрительное",
+    sourceLabel: "ручное",
+    showBadgeOnCard: true,
+  },
+};
+
 const getStoredShowAllPhotos = (): boolean => {
   try {
     const v = localStorage.getItem(STORAGE_KEY_SHOW_ALL_PHOTOS);
@@ -54,6 +104,41 @@ const getLabelForDepartment = (photo: PhotoData): string =>
   photo.tutorInfo ? "Группа" : "Отдел";
 
 const timezoneIsoNow = (): string => new Date().toISOString();
+
+const resolvePhotoEffectiveStatus = (
+  photo: Partial<PhotoData>,
+): PhotoSpoofStatus => {
+  if (photo.photoManualVerdict === "clean") return "clean";
+  if (photo.photoManualVerdict === "suspicious") return "suspicious";
+  return photo.photoSpoofStatus ?? "pending";
+};
+
+const resolvePhotoUiStatus = (photo: Partial<PhotoData>): PhotoUiStatus => {
+  const manualVerdict = photo.photoManualVerdict ?? "none";
+  const effectiveStatus = resolvePhotoEffectiveStatus(photo);
+  if (manualVerdict === "suspicious") return "suspicious_manual";
+  if (effectiveStatus === "suspicious") return "suspicious_auto";
+  if (
+    effectiveStatus === "review" ||
+    effectiveStatus === "pending" ||
+    effectiveStatus === "error"
+  ) {
+    return "check";
+  }
+  return "clean";
+};
+
+const isManualReviewRequiredByBackend = (
+  photo: Partial<PhotoData>,
+): boolean => {
+  if (typeof photo.photoCanSetManualVerdict === "boolean") {
+    return photo.photoCanSetManualVerdict;
+  }
+  const manualVerdict = photo.photoManualVerdict ?? "none";
+  if (manualVerdict !== "none") return false;
+  const status = photo.photoSpoofStatus ?? "pending";
+  return status === "pending" || status === "review" || status === "error";
+};
 
 const stableHash = (value: string): number => {
   let hash = 5381;
@@ -422,6 +507,8 @@ interface WsBatchBucket {
   timeoutId: number;
 }
 
+type PhotoVerdictAction = "manual_suspicious" | "manual_clean" | "manual_reset";
+
 const PhotoDashboard: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -435,6 +522,8 @@ const PhotoDashboard: React.FC = () => {
   const photosRef = useRef<PhotoData[]>([]);
   const [selectedPhoto, setSelectedPhoto] = useState<PhotoData | null>(null);
   const selectedPhotoRef = useRef<PhotoData | null>(null);
+  const [isVerdictSubmitting, setIsVerdictSubmitting] = useState(false);
+  const [verdictError, setVerdictError] = useState("");
   const keepKioskOnFullscreenExitRef = useRef(false);
   const fullscreenToggleLockRef = useRef(false);
 
@@ -452,6 +541,10 @@ const PhotoDashboard: React.FC = () => {
   useEffect(() => {
     selectedPhotoRef.current = selectedPhoto;
   }, [selectedPhoto]);
+
+  useEffect(() => {
+    setVerdictError("");
+  }, [selectedPhoto?.id]);
 
   useEffect(() => {
     photosRef.current = photos;
@@ -666,6 +759,8 @@ const PhotoDashboard: React.FC = () => {
             : eventData.hasPhoto
               ? "PHOTO_ATTACHED"
               : "UPDATED_META");
+    const normalizedManualVerdict = eventData.photoManualVerdict ?? "none";
+    const normalizedSpoofStatus = eventData.photoSpoofStatus ?? "pending";
     return {
       id: eventData.id,
       hasPhoto: eventData.hasPhoto,
@@ -675,6 +770,15 @@ const PhotoDashboard: React.FC = () => {
       photoUrl: eventData.photoUrl ?? "",
       attendanceTime: eventData.attendanceTime ?? timezoneIsoNow(),
       tutorInfo: eventData.tutorInfo ?? "",
+      photoSpoofStatus: normalizedSpoofStatus,
+      photoManualVerdict: normalizedManualVerdict,
+      photoCanSetManualVerdict:
+        typeof eventData.photoCanSetManualVerdict === "boolean"
+          ? eventData.photoCanSetManualVerdict
+          : isManualReviewRequiredByBackend({
+              photoManualVerdict: normalizedManualVerdict,
+              photoSpoofStatus: normalizedSpoofStatus,
+            }),
       op: normalizedOp,
       stateCode: normalizedState,
       versionTs: eventData.versionTs,
@@ -1209,6 +1313,87 @@ const PhotoDashboard: React.FC = () => {
     return () => window.removeEventListener("resize", onResize);
   }, [getHints]);
 
+  const applySinglePhotoUpdate = useCallback(
+    (incomingPhoto: PhotoData) => {
+      const normalized = normalizeWsEvent({
+        ...incomingPhoto,
+        op: incomingPhoto.op ?? "updated",
+        stateCode: incomingPhoto.stateCode ?? "UPDATED_META",
+        versionTs: incomingPhoto.versionTs ?? timezoneIsoNow(),
+      });
+      const normalizedId = normalized.id;
+      if (normalizedId == null) {
+        return;
+      }
+
+      const next = [...photosRef.current];
+      const existingIdx = next.findIndex((item) => item.id === normalizedId);
+      if (existingIdx >= 0) {
+        next[existingIdx] = { ...next[existingIdx], ...normalized };
+      } else {
+        next.unshift(normalized);
+      }
+      photosRef.current = next;
+      startTransition(() => setPhotos(next));
+      setSelectedPhoto((prev) =>
+        prev && prev.id === normalizedId ? { ...prev, ...normalized } : prev,
+      );
+    },
+    [normalizeWsEvent],
+  );
+
+  const submitManualVerdict = useCallback(
+    async (action: PhotoVerdictAction) => {
+      const currentPhoto = selectedPhotoRef.current;
+      if (!currentPhoto?.id) {
+        return;
+      }
+      setVerdictError("");
+      setIsVerdictSubmitting(true);
+      try {
+        const response = await apiClient.post(
+          `/lesson_attendance/${currentPhoto.id}/photo_verdict/`,
+          { action },
+        );
+        const updatedCount = Number(response.data?.updated_count ?? 0);
+        const skippedIds = Array.isArray(response.data?.skipped_ids)
+          ? response.data.skipped_ids.map((id: unknown) => Number(id))
+          : [];
+        const updatedRecord = Array.isArray(response.data?.results)
+          ? (response.data.results[0] as PhotoData | undefined)
+          : undefined;
+        if (updatedRecord) {
+          applySinglePhotoUpdate(updatedRecord);
+        } else if (updatedCount === 0 && skippedIds.includes(currentPhoto.id)) {
+          setVerdictError("Для этой записи ручной вердикт сейчас недоступен.");
+        }
+      } catch (error) {
+        log.error("Failed to update manual photo verdict", error);
+        const responseError = error as {
+          response?: { status?: number; data?: { detail?: string; error?: string } };
+        };
+        const statusCode = responseError.response?.status ?? 0;
+        const detail = responseError.response?.data?.detail;
+        const fallbackError = responseError.response?.data?.error;
+        const serverMessage =
+          (typeof detail === "string" && detail.trim()) ||
+          (typeof fallbackError === "string" && fallbackError.trim()) ||
+          "";
+        if (statusCode === 401 || statusCode === 403) {
+          setVerdictError(
+            serverMessage ||
+              "Нет доступа к сохранению. Обновите страницу и войдите заново.",
+          );
+        } else {
+          setVerdictError(serverMessage || "Не удалось сохранить ручной вердикт.");
+        }
+      } finally {
+        setIsVerdictSubmitting(false);
+      }
+    },
+    [applySinglePhotoUpdate],
+  );
+
   const renderLoading = () => (
     <div className="flex flex-col justify-center items-center py-24 text-gray-700 dark:text-gray-300">
       <LoaderComponent />
@@ -1311,30 +1496,30 @@ const PhotoDashboard: React.FC = () => {
     return (
       <div className="h-[112px] sm:h-[118px] px-3 py-2.5 sm:px-3.5 sm:py-3 flex flex-col">
         <h2
-          className="min-h-[2.4rem] text-[13px] sm:text-[13.5px] font-semibold leading-[1.2] text-gray-100/95 dark:text-gray-100 tracking-[0.005em]"
+          className="min-h-[2.4rem] text-[13px] sm:text-[13.5px] font-semibold leading-[1.2] text-gray-800 dark:text-gray-100 tracking-[0.005em]"
           style={clamp2Lines}
         >
           {photo.staffFullName}
         </h2>
-        <div className="mt-1.5 h-px w-full bg-white/10 dark:bg-gray-600/40" />
-        <div className="mt-1.5 min-h-[2.15rem] max-h-[2.15rem] flex items-start gap-1.5 min-w-0 text-gray-200/85 dark:text-gray-300">
+        <div className="mt-1.5 h-px w-full bg-gray-200 dark:bg-gray-600/40" />
+        <div className="mt-1.5 min-h-[2.15rem] max-h-[2.15rem] flex items-start gap-1.5 min-w-0 text-gray-600 dark:text-gray-300">
           <FaBuilding className="w-3 h-3 opacity-80 shrink-0 mt-[0.15rem]" />
           <span className="min-w-0 leading-[1.2]">
             <span
-              className="block text-[10px] sm:text-[10.5px] uppercase tracking-[0.08em] text-gray-300/70 dark:text-gray-400"
+              className="block text-[10px] sm:text-[10.5px] uppercase tracking-[0.08em] text-gray-500 dark:text-gray-400"
               style={clamp1Line}
             >
               {departmentLabel}
             </span>
             <span
-              className="block text-[11px] sm:text-[11.5px] leading-[1.15] text-gray-100/85 dark:text-gray-300"
+              className="block text-[11px] sm:text-[11.5px] leading-[1.15] text-gray-700 dark:text-gray-300"
               style={clamp2Lines}
             >
               {photo.department}
             </span>
           </span>
         </div>
-        <p className="mt-auto pt-1 text-[12px] sm:text-[12.5px] text-gray-300/85 dark:text-gray-400 flex items-center gap-1.5 leading-none">
+        <p className="mt-auto pt-1 text-[12px] sm:text-[12.5px] text-gray-600 dark:text-gray-400 flex items-center gap-1.5 leading-none">
           <FaClock className="w-3 h-3 opacity-75 shrink-0" />
           <span className="tabular-nums">
             {formatTime(photo.attendanceTime)}
@@ -1457,78 +1642,95 @@ const PhotoDashboard: React.FC = () => {
       keyIndex: number,
       rowIndex: number,
       cardIndex: number,
-      isHovered: boolean,
       isInteractive: boolean,
       kioskCardWidth?: number,
-    ) => (
-      <motion.article
-        key={
-          photo.id != null
-            ? `photo-${photo.id}`
-            : `${photo.photoUrl}-${photo.attendanceTime}-${keyIndex}`
-        }
-        initial={false}
-        className={`photo-item group relative flex-shrink-0 w-[220px] sm:w-[260px] md:w-[280px] lg:w-[300px] rounded-2xl md:rounded-3xl cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60 focus-visible:ring-offset-2 flex flex-col transition-all duration-300 ${
-          isHovered
-            ? ""
-            : "overflow-hidden bg-white/95 dark:bg-gray-800/95 ring-1 ring-white/80 dark:ring-gray-700/90 shadow-[0_12px_30px_-20px_rgba(15,23,42,0.7)] hover:shadow-[0_20px_45px_-25px_rgba(37,99,235,0.55)] hover:ring-primary-300/70 dark:hover:ring-primary-400/45"
-        }`}
-        style={kioskCardWidth != null ? { width: kioskCardWidth } : undefined}
-        onClick={() => setSelectedPhoto(photo)}
-        onMouseEnter={() => setHoveredCardKey(`r${rowIndex}-i${cardIndex}`)}
-        onMouseLeave={() => setHoveredCardKey(null)}
-        onTouchStart={() => setHoveredCardKey(`r${rowIndex}-i${cardIndex}`)}
-        onTouchEnd={() => setHoveredCardKey(null)}
-        onFocus={() => {
-          setHoveredCardKey(`r${rowIndex}-i${cardIndex}`);
-          setActiveCardCoords({ row: rowIndex, col: cardIndex });
-        }}
-        onBlur={() =>
-          setHoveredCardKey((prev) =>
-            prev === `r${rowIndex}-i${cardIndex}` ? null : prev,
-          )
-        }
-        onMouseMove={() => {
-          setActiveCardCoords({ row: rowIndex, col: cardIndex });
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
+    ) => {
+      const uiStatus = resolvePhotoUiStatus(photo);
+      const statusMeta = PHOTO_STATUS_STYLE[uiStatus];
+      const hasSuspiciousFrame = statusMeta.borderClass.length > 0;
+      const isCheckCard = uiStatus === "check";
+      const frameClassName = hasSuspiciousFrame
+        ? `photo-electric-border ${statusMeta.borderClass} w-full flex-1 flex flex-col min-h-0 rounded-2xl`
+        : "w-full flex-1 flex flex-col min-h-0 rounded-2xl";
+      const innerClassName = hasSuspiciousFrame
+        ? "photo-electric-border-inner flex flex-col flex-1 overflow-hidden rounded-2xl relative"
+        : "flex flex-col flex-1 overflow-hidden rounded-2xl relative bg-white dark:bg-gray-800";
+      return (
+        <motion.article
+          key={
+            photo.id != null
+              ? `photo-${photo.id}`
+              : `${photo.photoUrl}-${photo.attendanceTime}-${keyIndex}`
+          }
+          initial={false}
+          className={`photo-item group relative flex-shrink-0 w-[220px] sm:w-[260px] md:w-[280px] lg:w-[300px] rounded-2xl md:rounded-3xl cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60 focus-visible:ring-offset-2 flex flex-col transition-all duration-300 overflow-hidden bg-white/95 dark:bg-gray-800/95 ring-1 ring-white/80 dark:ring-gray-700/90 shadow-[0_12px_30px_-20px_rgba(15,23,42,0.7)] hover:shadow-[0_20px_45px_-25px_rgba(37,99,235,0.55)] hover:ring-primary-300/70 dark:hover:ring-primary-400/45 ${
+            isCheckCard
+              ? "ring-2 ring-amber-300/85 dark:ring-amber-400/50 shadow-[0_16px_34px_-22px_rgba(245,158,11,0.78)]"
+              : ""
+          }`}
+          style={kioskCardWidth != null ? { width: kioskCardWidth } : undefined}
+          onClick={() => setSelectedPhoto(photo)}
+          onMouseEnter={() => setHoveredCardKey(`r${rowIndex}-i${cardIndex}`)}
+          onMouseLeave={() => setHoveredCardKey(null)}
+          onTouchStart={() => setHoveredCardKey(`r${rowIndex}-i${cardIndex}`)}
+          onTouchEnd={() => setHoveredCardKey(null)}
+          onFocus={() => {
+            setHoveredCardKey(`r${rowIndex}-i${cardIndex}`);
+            setActiveCardCoords({ row: rowIndex, col: cardIndex });
+          }}
+          onBlur={() =>
+            setHoveredCardKey((prev) =>
+              prev === `r${rowIndex}-i${cardIndex}` ? null : prev,
+            )
+          }
+          onMouseMove={() => {
+            setActiveCardCoords({ row: rowIndex, col: cardIndex });
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setSelectedPhoto(photo);
+              return;
+            }
+            if (
+              e.key !== "ArrowRight" &&
+              e.key !== "ArrowLeft" &&
+              e.key !== "ArrowDown" &&
+              e.key !== "ArrowUp"
+            ) {
+              return;
+            }
             e.preventDefault();
-            setSelectedPhoto(photo);
-            return;
-          }
-          if (
-            e.key !== "ArrowRight" &&
-            e.key !== "ArrowLeft" &&
-            e.key !== "ArrowDown" &&
-            e.key !== "ArrowUp"
-          ) {
-            return;
-          }
-          e.preventDefault();
-          const next = getNextCardCoords(rowIndex, cardIndex, e.key);
-          focusCardByCoords(next.row, next.col);
-        }}
-        role="button"
-        tabIndex={isInteractive ? 0 : -1}
-        aria-hidden={isInteractive ? undefined : true}
-        aria-label={`${photo.staffFullName}, ${photo.department}`}
-        ref={(el) => {
-          const key = `r${rowIndex}-i${cardIndex}`;
-          if (isInteractive) {
-            cardRefs.current.set(key, el);
-          } else {
-            cardRefs.current.delete(key);
-          }
-        }}
-        whileHover={{ y: -4 }}
-        whileTap={{ scale: 0.98 }}
-      >
-        {isHovered ? (
-          <div className="photo-electric-border w-full flex-1 flex flex-col min-h-0 rounded-2xl">
-            <div className="photo-electric-border-inner flex flex-col flex-1 overflow-hidden rounded-2xl relative">
-              <div className="photo-shine-overlay" aria-hidden />
+            const next = getNextCardCoords(rowIndex, cardIndex, e.key);
+            focusCardByCoords(next.row, next.col);
+          }}
+          role="button"
+          tabIndex={isInteractive ? 0 : -1}
+          aria-hidden={isInteractive ? undefined : true}
+          aria-label={`${photo.staffFullName}, ${photo.department}`}
+          ref={(el) => {
+            const key = `r${rowIndex}-i${cardIndex}`;
+            if (isInteractive) {
+              cardRefs.current.set(key, el);
+            } else {
+              cardRefs.current.delete(key);
+            }
+          }}
+          whileHover={{ y: -4 }}
+          whileTap={{ scale: 0.98 }}
+        >
+          <div className={frameClassName}>
+            <div className={innerClassName}>
               <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
+                <div className="photo-shine-overlay" aria-hidden />
+                {statusMeta.showBadgeOnCard && (
+                  <div
+                    className={`absolute left-2 top-2 z-20 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold shadow-md backdrop-blur-sm ${statusMeta.badgeClass}`}
+                  >
+                    <FaShieldAlt className="h-3 w-3" />
+                    <span>{statusMeta.label}</span>
+                  </div>
+                )}
                 {photo.hasPhoto === false ? (
                   <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
                     <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
@@ -1551,33 +1753,9 @@ const PhotoDashboard: React.FC = () => {
               {renderCardMeta(photo)}
             </div>
           </div>
-        ) : (
-          <>
-            <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
-              {photo.hasPhoto === false ? (
-                <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
-                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
-                    <FaImage className="h-7 w-7" />
-                  </div>
-                  <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white shadow-md backdrop-blur-sm">
-                    Фото не загружено
-                  </span>
-                </div>
-              ) : (
-                <img
-                  src={`${apiUrl}${photo.photoUrl}`}
-                  alt={photo.staffFullName}
-                  className="w-full h-full object-contain transition-opacity duration-300"
-                  loading="lazy"
-                  draggable={false}
-                />
-              )}
-            </div>
-            {renderCardMeta(photo)}
-          </>
-        )}
-      </motion.article>
-    ),
+        </motion.article>
+      );
+    },
     [renderCardMeta, focusCardByCoords, getNextCardCoords],
   );
 
@@ -1763,14 +1941,11 @@ const PhotoDashboard: React.FC = () => {
                     const keyIndex =
                       rowIndex * 1_000_000 + copyIndex * 10_000 + displayIndex;
                     const cardIndex = itemIndex;
-                    const isHovered =
-                      hoveredCardKey === `r${rowIndex}-i${cardIndex}`;
                     return renderPhotoCard(
                       photo,
                       keyIndex,
                       rowIndex,
                       cardIndex,
-                      isHovered,
                       copyIndex === 0,
                       kioskNarrowViewport ? cardWidthPx : undefined,
                     );
@@ -1784,8 +1959,17 @@ const PhotoDashboard: React.FC = () => {
     </div>
   );
 
-  const renderSelectedPhoto = () =>
-    selectedPhoto && (
+  const renderSelectedPhoto = () => {
+    if (!selectedPhoto) return null;
+    const uiStatus = resolvePhotoUiStatus(selectedPhoto);
+    const statusMeta = PHOTO_STATUS_STYLE[uiStatus];
+    const isSuspicious =
+      uiStatus === "suspicious_auto" || uiStatus === "suspicious_manual";
+    const showCheckBadge = uiStatus === "check";
+    const manualVerdict: PhotoManualVerdict =
+      selectedPhoto.photoManualVerdict ?? "none";
+    const canSetManualVerdict = isManualReviewRequiredByBackend(selectedPhoto);
+    return (
       <AnimatePresence>
         <motion.div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 sm:p-5 md:p-6"
@@ -1856,10 +2040,49 @@ const PhotoDashboard: React.FC = () => {
                       {formatTime(selectedPhoto.attendanceTime)}
                     </span>
                   </p>
+                  {(isSuspicious || showCheckBadge) && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${statusMeta.badgeClass}`}
+                      >
+                        <FaShieldAlt className="h-3.5 w-3.5" />
+                        {statusMeta.label}
+                      </span>
+                    </div>
+                  )}
                   {selectedPhoto.tutorInfo && (
                     <p className="text-gray-500 dark:text-gray-400 text-xs mt-1 leading-relaxed">
                       {selectedPhoto.tutorInfo}
                     </p>
+                  )}
+                  {canSetManualVerdict && (
+                    <>
+                      <div className="mt-4 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={
+                            isVerdictSubmitting || manualVerdict === "suspicious"
+                          }
+                          onClick={() => void submitManualVerdict("manual_suspicious")}
+                          className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-rose-50 transition-colors hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Подозрительная
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isVerdictSubmitting || manualVerdict === "clean"}
+                          onClick={() => void submitManualVerdict("manual_clean")}
+                          className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-50 transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Подтвердить
+                        </button>
+                      </div>
+                      {verdictError && (
+                        <p className="text-xs text-rose-600 dark:text-rose-300">
+                          {verdictError}
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -1868,6 +2091,7 @@ const PhotoDashboard: React.FC = () => {
         </motion.div>
       </AnimatePresence>
     );
+  };
 
   return (
     <div>

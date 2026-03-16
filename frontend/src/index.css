@@ -219,7 +219,9 @@ select {
 
 .photo-electric-border {
   --electric-angle: 0deg;
+  --electric-glow: rgba(59, 130, 246, 0.34);
   position: relative;
+  isolation: isolate;
   padding: 2px;
   border-radius: 14px;
   background: conic-gradient(
@@ -231,6 +233,84 @@ select {
     #3b82f6
   );
   animation: electricBorderRotate 2.5s linear infinite;
+  box-shadow: 0 10px 26px -22px rgba(30, 41, 59, 0.65);
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.photo-electric-border::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at 50% 50%,
+    var(--electric-glow) 0%,
+    transparent 70%
+  );
+  filter: blur(10px);
+  opacity: 0.35;
+  z-index: -1;
+  animation: electricGlowPulse 2.6s ease-in-out infinite;
+}
+
+.photo-electric-border--suspicious,
+.photo-electric-border--suspicious-auto {
+  --electric-glow: rgba(244, 63, 94, 0.56);
+  background: conic-gradient(
+    from var(--electric-angle),
+    #dc2626,
+    #ef4444,
+    #f97316,
+    #fb7185,
+    #dc2626
+  );
+  animation: electricBorderRotate 1.95s linear infinite;
+  box-shadow: 0 12px 26px -20px rgba(225, 29, 72, 0.68);
+}
+
+.photo-electric-border--suspicious-manual {
+  --electric-glow: rgba(217, 70, 239, 0.6);
+  background: conic-gradient(
+    from var(--electric-angle),
+    #86198f,
+    #a21caf,
+    #ec4899,
+    #f43f5e,
+    #86198f
+  );
+  animation: electricBorderRotate 1.78s linear infinite;
+  box-shadow: 0 12px 26px -20px rgba(192, 38, 211, 0.65);
+}
+
+.photo-electric-border--review {
+  --electric-glow: rgba(245, 158, 11, 0.5);
+  background: conic-gradient(
+    from var(--electric-angle),
+    #d97706,
+    #f97316,
+    #facc15,
+    #f59e0b,
+    #d97706
+  );
+  animation: electricBorderRotate 2.35s linear infinite;
+  box-shadow: 0 12px 24px -20px rgba(245, 158, 11, 0.6);
+}
+
+.photo-electric-border--muted {
+  animation: none;
+  --electric-glow: transparent;
+  background: linear-gradient(
+    135deg,
+    rgba(100, 116, 139, 0.45),
+    rgba(100, 116, 139, 0.25)
+  );
+  box-shadow: none;
+}
+
+.photo-electric-border--muted::before {
+  animation: none;
+  opacity: 0;
 }
 
 .photo-electric-border-inner {
@@ -249,6 +329,18 @@ select {
 @keyframes electricBorderRotate {
   to {
     --electric-angle: 360deg;
+  }
+}
+
+@keyframes electricGlowPulse {
+  0%,
+  100% {
+    opacity: 0.22;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.03);
   }
 }
 
@@ -284,6 +376,14 @@ select {
 @keyframes photoShine {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .photo-electric-border,
+  .photo-electric-border::before,
+  .photo-shine-overlay {
+    animation: none !important;
+  }
 }
 
 .photo-kiosk-marquee-mask {
