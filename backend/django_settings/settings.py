@@ -508,6 +508,10 @@ CELERY_BEAT_SCHEDULE = (
             "schedule": crontab(minute="0"),
             "kwargs": {"force": False},
         },
+        "rotate-department-confirmation-cache-hourly": {
+            "task": "monitoring_app.tasks.rotate_department_confirmation_cache_epoch",
+            "schedule": crontab(minute="5"),
+        },
         "warmup-cache-hot-daily": {
             "task": "monitoring_app.tasks.warmup_cache_task",
             "schedule": crontab(hour="6", minute="0"),

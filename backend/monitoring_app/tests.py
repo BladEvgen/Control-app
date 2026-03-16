@@ -1,13 +1,27 @@
+import base64
+import tempfile
+import time
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional
 from unittest.mock import AsyncMock, patch
 
+from asgiref.sync import async_to_sync
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from monitoring_app.attendance_fetcher import _compute_attendance_from_events
+from monitoring_app.consumers import (
+    PHOTO_WS_PROTOCOL,
+    STATE_CREATED_NO_PHOTO,
+    STATE_DELETED,
+    STATE_PHOTO_ATTACHED,
+    PhotoConsumer,
+)
 from monitoring_app.models import APIKey, LessonAttendance, RemoteWork, Staff
+from monitoring_app import signals as lesson_signals, tasks as monitoring_tasks
 from monitoring_app.views import get_staff_detail
 from rest_framework import status
 from rest_framework.authtoken.models import Token
@@ -16,7 +30,6 @@ from rest_framework.test import APITestCase
 User = get_user_model()
 
 
-# Unit Test for RemoteWorkAdmin
 class RemoteWorkAdminTest(TestCase):
     def setUp(self):
         self.staff = Staff.objects.create(name="John", surname="Doe")
@@ -30,7 +43,6 @@ class RemoteWorkAdminTest(TestCase):
         )
 
 
-# Integration Test for get_staff_detail
 class StaffDetailTest(TestCase):
     def setUp(self):
         self.staff = Staff.objects.create(name="John", surname="Doe")
@@ -43,7 +55,6 @@ class StaffDetailTest(TestCase):
         self.assertIn("salary", detail)
 
 
-# API Test for check_lesson_task_status
 class LessonTaskStatusTest(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="testuser", password="12345")
@@ -317,10 +328,9 @@ class AttendanceFetcherExitResolutionTest(TestCase):
     def test_first_event_on_exit_device_is_not_exit(self):
         events = [self._event(9, 0, "QJT3244400440", "Переход в пристройку")]
         _, _, _, area_sequence, _, _, _, stats = _compute_attendance_from_events(events)
-        self.assertTrue(area_sequence)
-        if not area_sequence:
+        first_item = next(iter(area_sequence or []), None)
+        if first_item is None:
             self.fail("Expected non-empty area_sequence")
-        first_item = area_sequence[0]
         self.assertNotIn("is_exit", first_item)
         self.assertNotIn("exit_candidate", first_item)
         self.assertEqual(stats["ambiguous_exit_candidates"], 0)
@@ -337,3 +347,357 @@ class AttendanceFetcherExitResolutionTest(TestCase):
         _, _, effective, _, intervals, _, _, _ = _compute_attendance_from_events(events)
         self.assertEqual(effective, 8 * 3600)
         self.assertEqual(len(intervals or []), 2)
+
+
+_FIXTURE_PHOTO = Path(__file__).resolve().parent / "fixtures" / "test_photo.jpg"
+_MINIMAL_JPEG = (
+    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    b"\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c"
+    b"\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c"
+    b"\x1c \x24.' \",#\x1c\x1c(7),0144\x1f';=82<.32"
+    b"\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00"
+    b"\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00"
+    b"\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?"
+    b"\x00{\x1f+\x0f\xf0\xff\xd9"
+)
+
+
+@override_settings(
+    CELERY_TASK_ALWAYS_EAGER=True,
+    DEBUG=True,
+    MEDIA_ROOT=tempfile.gettempdir(),
+)
+class LessonAttendanceCreateThenPutPhotoTest(APITestCase):
+    """
+    Интеграционный сценарий "POST создать -> GET task_status -> PUT добавить фото".
+    Для теста берём существующие данные БД:
+    - первый активный staff-пользователь;
+    - первый активный APIKey;
+    - Staff с pin=T861T и его фото.
+    Запуск одного теста: ...LessonAttendanceCreateThenPutPhotoTest.test_create_then_put_photo_base64
+    или ...LessonAttendanceCreateThenPutPhotoTest.test_create_then_put_photo_file
+    """
+
+    LAT = 43.26498756460276
+    LON = 76.93992733955383
+
+    def setUp(self):
+        self.user = (
+            User.objects.filter(is_staff=True, is_active=True).order_by("id").first()
+        )
+        self.assertIsNotNone(self.user, "Нужен активный User с is_staff=True в БД")
+        self.api_key = (
+            APIKey.objects.filter(is_active=True, created_by=self.user)
+            .order_by("id")
+            .first()
+            or APIKey.objects.filter(is_active=True).order_by("id").first()
+        )
+        self.assertIsNotNone(self.api_key, "Нужен активный APIKey в БД")
+        self.staff = Staff.objects.filter(pin__iexact="T861T").first()
+        self.assertIsNotNone(self.staff, "Нужен Staff с pin=T861T в БД")
+        if self.staff and self.staff.avatar:
+            with self.staff.avatar.open("rb") as f:
+                self._photo_bytes = f.read()
+        elif _FIXTURE_PHOTO.exists():
+            self._photo_bytes = _FIXTURE_PHOTO.read_bytes()
+        else:
+            self._photo_bytes = _MINIMAL_JPEG
+        self.assertTrue(self._photo_bytes, "Не удалось прочитать фото для теста")
+        self.client.credentials(HTTP_X_API_KEY=self.api_key.key)
+
+    def _post_attendance_get_lesson_id(self):
+        first_in = timezone.now().isoformat()
+        payload = {
+            "attendance_data": [
+                {
+                    "staff_pin": self.staff.pin,
+                    "subject_name": "Matrix 101: Красная таблетка",
+                    "tutor_id": 101,
+                    "tutor": "Морфеус",
+                    "first_in": first_in,
+                    "latitude": self.LAT,
+                    "longitude": self.LON,
+                }
+            ]
+        }
+        response = self.client.post(
+            reverse("create_lesson_attendance_json"),
+            payload,
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED, response.data)
+        task_id = response.data["task_id"]
+        task_status_url = reverse(
+            "check_lesson_task_status", kwargs={"task_id": task_id}
+        )
+        for _ in range(10):
+            response = self.client.get(task_status_url)
+            if (
+                response.status_code == status.HTTP_200_OK
+                and response.data.get("status") == "Success"
+            ):
+                break
+            if response.status_code == status.HTTP_202_ACCEPTED:
+                time.sleep(0.2)
+                continue
+            self.fail(
+                f"Неожиданный ответ check_lesson_task_status: "
+                f"{response.status_code} {response.data}"
+            )
+        else:
+            self.fail(f"task_id={task_id} не перешёл в Success за отведённое время")
+
+        lesson_ids = response.data.get("lesson_ids") or []
+        self.assertGreaterEqual(len(lesson_ids), 1, response.data)
+        self.assertIn("id", lesson_ids[0], response.data)
+        return lesson_ids[0]["id"]
+
+    def test_create_then_put_photo_base64(self):
+        lesson_id = self._post_attendance_get_lesson_id()
+        image_b64 = base64.b64encode(self._photo_bytes).decode("ascii")
+        response = self.client.put(
+            reverse("update_lesson_attendance", kwargs={"id": lesson_id}),
+            {"image": image_b64},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data.get("lesson_id"), lesson_id)
+        record = LessonAttendance.objects.get(id=lesson_id)
+        self.assertTrue(bool(record.staff_image_path))
+
+    def test_create_then_put_photo_file(self):
+        lesson_id = self._post_attendance_get_lesson_id()
+        photo_file = SimpleUploadedFile(
+            "photo.jpg",
+            self._photo_bytes,
+            content_type="image/jpeg",
+        )
+        response = self.client.put(
+            reverse("update_lesson_attendance", kwargs={"id": lesson_id}),
+            {"image": photo_file},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data.get("lesson_id"), lesson_id)
+        record = LessonAttendance.objects.get(id=lesson_id)
+        self.assertTrue(bool(record.staff_image_path))
+
+
+class TestablePhotoConsumer(PhotoConsumer):
+    async def send_batched_events_for_test(self, *, message_type, events):
+        await self._send_batched_events(message_type=message_type, events=events)
+
+    def set_update_buffer_for_test(self, buffer_payload):
+        self._photo_update_buffer = buffer_payload
+
+    async def flush_photo_updates_for_test(self):
+        await self._flush_photo_updates()
+
+
+class PhotoConsumerProtocolTest(SimpleTestCase):
+    def test_batched_events_are_chunked_and_versioned(self):
+        consumer = TestablePhotoConsumer()
+        consumer.send_json = AsyncMock()
+        events = [
+            {
+                "id": idx + 1,
+                "hasPhoto": False,
+                "staffPin": f"T{idx + 1:04d}",
+                "staffFullName": f"User {idx + 1}",
+                "department": "Dept",
+                "photoUrl": "",
+                "attendanceTime": timezone.now().isoformat(),
+                "tutorInfo": "Morpheus (TutorID: 101)",
+                "op": "updated",
+                "stateCode": "UPDATED_META",
+                "versionTs": timezone.now().isoformat(),
+            }
+            for idx in range(401)
+        ]
+
+        async_to_sync(consumer.send_batched_events_for_test)(
+            message_type="photos_updated",
+            events=events,
+        )
+
+        self.assertEqual(consumer.send_json.await_count, 3)
+        payloads = [call.args[0] for call in consumer.send_json.await_args_list]
+        batch_ids = {payload["batchId"] for payload in payloads}
+        self.assertEqual(len(batch_ids), 1)
+        self.assertEqual([payload["chunkIndex"] for payload in payloads], [1, 2, 3])
+        self.assertTrue(all(payload["totalChunks"] == 3 for payload in payloads))
+        self.assertTrue(all(payload["protocol"] == PHOTO_WS_PROTOCOL for payload in payloads))
+
+    def test_deleted_event_is_sent_without_photo_payload(self):
+        consumer = TestablePhotoConsumer()
+        consumer.send_json = AsyncMock()
+        consumer.get_photo_data_bulk = AsyncMock(return_value=[])
+        consumer.set_update_buffer_for_test(
+            {
+                42: {
+                    "id": 42,
+                    "op": "deleted",
+                    "stateCode": STATE_DELETED,
+                    "versionTs": timezone.now().isoformat(),
+                }
+            }
+        )
+
+        async_to_sync(consumer.flush_photo_updates_for_test)()
+
+        self.assertEqual(consumer.send_json.await_count, 1)
+        payload = consumer.send_json.await_args_list[0].args[0]
+        self.assertEqual(payload["type"], "photos_updated")
+        self.assertEqual(payload["events"][0]["id"], 42)
+        self.assertEqual(payload["events"][0]["stateCode"], STATE_DELETED)
+        self.assertEqual(payload["events"][0]["op"], "deleted")
+        self.assertEqual(payload["photos"], [])
+
+
+class LessonAttendanceSignalStateTest(SimpleTestCase):
+    @patch("monitoring_app.signals._invalidate_lesson_staff_cache")
+    @patch("monitoring_app.signals._invalidate_lesson_attendance_cache")
+    @patch("monitoring_app.signals._send_photo_event")
+    def test_send_new_photo_created_without_image_emits_created_no_photo(
+        self,
+        mock_send_photo_event,
+        mock_invalidate_attendance_cache,
+        mock_invalidate_staff_cache,
+    ):
+        _ = mock_invalidate_attendance_cache
+        _ = mock_invalidate_staff_cache
+
+        class DummyLesson:
+            def __init__(self, lesson_id, staff_image_path=None):
+                self.id = lesson_id
+                self.date_at = timezone.now().date()
+                self.staff_image_path = staff_image_path
+                self.staff_id = 1
+
+        created_lesson = DummyLesson(lesson_id=1001, staff_image_path=None)
+        lesson_signals.send_new_photo(
+            sender=LessonAttendance,
+            instance=created_lesson,
+            created=True,
+            update_fields=None,
+        )
+        mock_send_photo_event.assert_called_once_with(
+            created_lesson,
+            op="created",
+            state_code=STATE_CREATED_NO_PHOTO,
+        )
+
+    @patch("monitoring_app.signals._invalidate_lesson_staff_cache")
+    @patch("monitoring_app.signals._invalidate_lesson_attendance_cache")
+    @patch("monitoring_app.signals._send_photo_event")
+    def test_send_new_photo_with_image_update_emits_photo_attached(
+        self,
+        mock_send_photo_event,
+        mock_invalidate_attendance_cache,
+        mock_invalidate_staff_cache,
+    ):
+        _ = mock_invalidate_attendance_cache
+        _ = mock_invalidate_staff_cache
+
+        class DummyLesson:
+            def __init__(self, lesson_id, staff_image_path=None):
+                self.id = lesson_id
+                self.date_at = timezone.now().date()
+                self.staff_image_path = staff_image_path
+                self.staff_id = 1
+
+        updated_lesson = DummyLesson(lesson_id=1002, staff_image_path="/tmp/ws1002.jpg")
+        lesson_signals.send_new_photo(
+            sender=LessonAttendance,
+            instance=updated_lesson,
+            created=False,
+            update_fields={"staff_image_path"},
+        )
+        mock_send_photo_event.assert_called_once_with(
+            updated_lesson,
+            op="updated",
+            state_code=STATE_PHOTO_ATTACHED,
+        )
+
+    @patch("monitoring_app.signals._invalidate_lesson_staff_cache")
+    @patch("monitoring_app.signals._invalidate_lesson_attendance_cache")
+    @patch("monitoring_app.signals._send_photo_event")
+    def test_send_deleted_photo_emits_deleted_state(
+        self,
+        mock_send_photo_event,
+        mock_invalidate_attendance_cache,
+        mock_invalidate_staff_cache,
+    ):
+        _ = mock_invalidate_attendance_cache
+        _ = mock_invalidate_staff_cache
+
+        class DummyLesson:
+            def __init__(self, lesson_id, staff_image_path=None):
+                self.id = lesson_id
+                self.date_at = timezone.now().date()
+                self.staff_image_path = staff_image_path
+                self.staff_id = 1
+
+        deleted_lesson = DummyLesson(lesson_id=1003, staff_image_path="/tmp/ws1003.jpg")
+        lesson_signals.send_deleted_photo(
+            sender=LessonAttendance,
+            instance=deleted_lesson,
+        )
+        mock_send_photo_event.assert_called_once_with(
+            deleted_lesson,
+            op="deleted",
+            state_code=STATE_DELETED,
+        )
+
+    @patch("monitoring_app.signals._invalidate_lesson_staff_cache")
+    @patch("monitoring_app.signals._invalidate_lesson_attendance_cache")
+    @patch("monitoring_app.signals._send_photo_event")
+    def test_send_new_photo_meta_update_without_image_emits_updated_meta(
+        self,
+        mock_send_photo_event,
+        mock_invalidate_attendance_cache,
+        mock_invalidate_staff_cache,
+    ):
+        _ = mock_invalidate_attendance_cache
+        _ = mock_invalidate_staff_cache
+
+        class DummyLesson:
+            def __init__(self, lesson_id, staff_image_path=None):
+                self.id = lesson_id
+                self.date_at = timezone.now().date()
+                self.staff_image_path = staff_image_path
+                self.staff_id = 1
+
+        updated_lesson = DummyLesson(lesson_id=1004, staff_image_path=None)
+        lesson_signals.send_new_photo(
+            sender=LessonAttendance,
+            instance=updated_lesson,
+            created=False,
+            update_fields={"first_in"},
+        )
+        mock_send_photo_event.assert_called_once_with(
+            updated_lesson,
+            op="updated",
+            state_code="UPDATED_META",
+        )
+
+
+class DepartmentConfirmationCacheRotationTaskTest(SimpleTestCase):
+    @patch("monitoring_app.cache_conf.invalidate_cache_pattern", return_value=17)
+    @patch("monitoring_app.cache_conf.Cache.set")
+    def test_rotate_department_confirmation_cache_epoch_sets_epoch_and_invalidates(
+        self,
+        mock_cache_set,
+        mock_invalidate_pattern,
+    ):
+        result = monitoring_tasks.rotate_department_confirmation_cache_epoch()
+
+        self.assertIn("epoch", result)
+        self.assertRegex(result["epoch"], r"^\d{10}$")
+        self.assertEqual(result["deleted_keys"], 17)
+        mock_cache_set.assert_called_once_with(
+            monitoring_tasks.DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY,
+            result["epoch"],
+            monitoring_tasks.DEPARTMENT_CONFIRMATION_EPOCH_TTL,
+        )
+        mock_invalidate_pattern.assert_called_once_with("department_confirmation_*")
