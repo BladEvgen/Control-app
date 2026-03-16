@@ -9,8 +9,6 @@ from operator import or_
 from typing import cast
 
 from django.conf import settings
-
-logger = logging.getLogger("monitoring_app.admin")
 from django.contrib import admin
 from django.contrib.admin import SimpleListFilter
 from django.contrib.admin.models import LogEntry
@@ -21,17 +19,10 @@ from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Avg, Count, F, Q
-from django.shortcuts import redirect
-
-
-def _db_atomic() -> AbstractContextManager[None]:
-    """Типизированная обёртка над transaction.atomic() для статического анализа."""
-    return cast(AbstractContextManager[None], transaction.atomic())
-
-
 from django.db.models.functions import TruncMonth
 from django.db.utils import DatabaseError, OperationalError
 from django.http import HttpResponse, JsonResponse
+from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils import timezone
@@ -69,7 +60,13 @@ from monitoring_app.models import (
     UserProfile,
 )
 
+logger = logging.getLogger("monitoring_app.admin")
 _MARKER = object()
+
+
+def _db_atomic() -> AbstractContextManager[None]:
+    """Типизированная обёртка над transaction.atomic() для статического анализа."""
+    return cast(AbstractContextManager[None], transaction.atomic())
 
 
 # ===== Admin Site Configuration =====
@@ -200,7 +197,7 @@ class MonitoringAdminSite(admin.AdminSite):
     def app_index(self, request, app_label, extra_context=None):
         """При клике на «Система мониторинга» в хлебных крошках — на главную с дашбордом."""
         if app_label == "monitoring_app":
-            return redirect(reverse("%s:index" % self.name))
+            return redirect(reverse(f"{self.name}:index"))
         return super().app_index(request, app_label, extra_context)
 
     def get_urls(self):
@@ -1747,7 +1744,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         if not intervals or not isinstance(intervals, list):
             return format_html("<span style='color: #999;'>Нет данных</span>")
         lines = []
-        for idx, item in enumerate(intervals[:20], 1):
+        for item in intervals[:20]:
             if not isinstance(item, dict):
                 continue
             start_s = item.get("start") or ""
@@ -2017,6 +2014,84 @@ class LessonAttendanceAdmin(ModelAdmin):
     )
 
     ordering = ("-date_at", "-first_in")
+
+    @staticmethod
+    def _is_deletable_attendance_photo_path(file_path: str) -> bool:
+        if not file_path or file_path == "/static/media/images/no-avatar.png":
+            return False
+        normalized = os.path.abspath(str(file_path))
+        attendance_root = os.path.abspath(str(settings.ATTENDANCE_ROOT))
+        media_control_root = os.path.abspath(
+            os.path.join(str(settings.MEDIA_ROOT), "control_image")
+        )
+        allowed_roots = (attendance_root, media_control_root)
+        return any(
+            normalized == root or normalized.startswith(f"{root}{os.sep}")
+            for root in allowed_roots
+        )
+
+    @classmethod
+    def _collect_candidate_photo_paths(cls, queryset):
+        raw_paths = (
+            queryset.exclude(staff_image_path__isnull=True)
+            .exclude(staff_image_path="")
+            .values_list("staff_image_path", flat=True)
+        )
+        candidate_paths = set()
+        for stored_file_path in raw_paths:
+            if cls._is_deletable_attendance_photo_path(stored_file_path):
+                candidate_paths.add(os.path.abspath(str(stored_file_path)))
+        return candidate_paths
+
+    @staticmethod
+    def _delete_orphaned_photo_paths(candidate_paths, deleted_ids):
+        if not candidate_paths:
+            return 0
+        referenced_elsewhere = set(
+            LessonAttendance.objects.filter(staff_image_path__in=candidate_paths)
+            .exclude(id__in=deleted_ids)
+            .values_list("staff_image_path", flat=True)
+        )
+        deleted_files = 0
+        for file_path in candidate_paths:
+            if file_path in referenced_elsewhere:
+                continue
+            if not os.path.isfile(file_path):
+                continue
+            try:
+                os.remove(file_path)
+                deleted_files += 1
+            except OSError as exc:
+                logger.warning(
+                    "Failed to delete lesson attendance photo file path=%s error=%s",
+                    file_path,
+                    exc,
+                )
+        return deleted_files
+
+    def delete_model(self, request, obj):
+        deleted_ids = [obj.id] if obj.id is not None else []
+        candidate_paths = set()
+        if obj.staff_image_path and self._is_deletable_attendance_photo_path(
+            obj.staff_image_path
+        ):
+            candidate_paths.add(os.path.abspath(str(obj.staff_image_path)))
+        super().delete_model(request, obj)
+        deleted_files = self._delete_orphaned_photo_paths(candidate_paths, deleted_ids)
+        if deleted_files:
+            self.message_user(
+                request, f"Удалено файлов фотографий с диска: {deleted_files}."
+            )
+
+    def delete_queryset(self, request, queryset):
+        deleted_ids = list(queryset.values_list("id", flat=True))
+        candidate_paths = self._collect_candidate_photo_paths(queryset)
+        super().delete_queryset(request, queryset)
+        deleted_files = self._delete_orphaned_photo_paths(candidate_paths, deleted_ids)
+        if deleted_files:
+            self.message_user(
+                request, f"Удалено файлов фотографий с диска: {deleted_files}."
+            )
 
     def formatted_duration_seconds(self, obj):
         """Показывает duration_seconds в виде «N сек (X ч Y мин)»."""
