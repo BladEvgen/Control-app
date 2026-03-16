@@ -4,6 +4,7 @@ import React, {
   useRef,
   useCallback,
   useMemo,
+  startTransition,
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
@@ -21,6 +22,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { log } from "../api";
 import useWebSocket from "../hooks/useWebSocket";
 import LoaderComponent from "../components/LoaderComponent";
+import { Toggle } from "../components/Toggle";
 import useWindowSize from "../hooks/useWindowSize";
 
 const PING_INTERVAL = 15000;
@@ -32,6 +34,16 @@ const MIN_TRACK_COPIES = 2;
 const TRACK_COPY_HEADROOM = 2;
 const STATIC_TRACK_FIT_THRESHOLD = 1.05;
 const HOVER_IDLE_RESUME_MS = 2500;
+const STORAGE_KEY_SHOW_ALL_PHOTOS = "photoDashboard_showAllPhotos";
+
+const getStoredShowAllPhotos = (): boolean => {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY_SHOW_ALL_PHOTOS);
+    return v === "true";
+  } catch {
+    return false;
+  }
+};
 
 const getLabelForDepartment = (photo: PhotoData): string =>
   photo.tutorInfo ? "Группа" : "Отдел";
@@ -186,6 +198,9 @@ const MarqueeTrack: React.FC<{
   const velocityRef = useRef(0);
   const lastTimestampRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
+  const seqWidthRef = useRef(0);
+  const itemsChangedTimeRef = useRef(0);
+  const prevItemsLengthRef = useRef(items.length);
 
   const updateDimensions = useCallback(() => {
     const containerWidth = containerRef.current?.clientWidth ?? 0;
@@ -193,6 +208,16 @@ const MarqueeTrack: React.FC<{
     if (sequenceWidth <= 0) return;
 
     const roundedSequenceWidth = Math.ceil(sequenceWidth);
+    const now = Date.now();
+    const recentlyChanged = now - itemsChangedTimeRef.current < 500;
+    if (
+      roundedSequenceWidth < seqWidthRef.current &&
+      seqWidthRef.current > 0 &&
+      recentlyChanged
+    ) {
+      return;
+    }
+    seqWidthRef.current = roundedSequenceWidth;
     setSeqWidth(roundedSequenceWidth);
 
     const canAnimate =
@@ -209,6 +234,12 @@ const MarqueeTrack: React.FC<{
   }, []);
 
   useEffect(() => {
+    const prevLen = prevItemsLengthRef.current;
+    prevItemsLengthRef.current = items.length;
+    if (items.length > prevLen * 1.5) {
+      offsetRef.current = 0;
+    }
+    itemsChangedTimeRef.current = Date.now();
     updateDimensions();
   }, [updateDimensions, items, rowIndex]);
 
@@ -267,7 +298,10 @@ const MarqueeTrack: React.FC<{
       return;
     }
 
-    offsetRef.current = ((offsetRef.current % seqWidth) + seqWidth) % seqWidth;
+    const safeSeqWidth =
+      Number.isFinite(seqWidth) && seqWidth > 0 ? seqWidth : 1;
+    offsetRef.current =
+      ((offsetRef.current % safeSeqWidth) + safeSeqWidth) % safeSeqWidth;
     track.style.transform = `translate3d(-${offsetRef.current}px, 0, 0)`;
 
     const animate = (timestamp: number) => {
@@ -283,8 +317,10 @@ const MarqueeTrack: React.FC<{
       velocityRef.current +=
         (targetVelocity - velocityRef.current) * easingFactor;
 
+      const safeSeqWidth =
+        Number.isFinite(seqWidth) && seqWidth > 0 ? seqWidth : 1;
       let nextOffset = offsetRef.current + velocityRef.current * dt;
-      nextOffset = ((nextOffset % seqWidth) + seqWidth) % seqWidth;
+      nextOffset = ((nextOffset % safeSeqWidth) + safeSeqWidth) % safeSeqWidth;
       offsetRef.current = nextOffset;
 
       track.style.transform = `translate3d(-${nextOffset}px, 0, 0)`;
@@ -503,7 +539,19 @@ const PhotoDashboard: React.FC = () => {
     : "Актуальные отметки за текущий день";
 
   const [loading, setLoading] = useState<boolean>(true);
+  const initialLoadDoneRef = useRef<boolean>(false);
   const maxPhotosRef = useRef<number>(12);
+  const [showAllPhotos, setShowAllPhotos] = useState<boolean>(
+    getStoredShowAllPhotos,
+  );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_SHOW_ALL_PHOTOS, String(showAllPhotos));
+    } catch {
+      // ignore storage errors
+    }
+  }, [showAllPhotos]);
   const [hoveredCardKey, setHoveredCardKey] = useState<string | null>(null);
   const lastPointerActivityRef = useRef<number>(Date.now());
   const cardRefs = useRef<Map<string, HTMLElement | null>>(new Map());
@@ -529,6 +577,10 @@ const PhotoDashboard: React.FC = () => {
   const date = getCurrentLocalDate();
   log.info("Connecting with date:", date);
 
+  useEffect(() => {
+    initialLoadDoneRef.current = false;
+  }, [date]);
+
   const getMaxPhotos = useCallback(() => {
     return getMaxPhotosForViewport(
       viewport.width,
@@ -540,7 +592,6 @@ const PhotoDashboard: React.FC = () => {
 
   const updateMaxPhotos = useCallback(() => {
     maxPhotosRef.current = getMaxPhotos();
-    setPhotos((prev) => prev.slice(0, maxPhotosRef.current));
   }, [getMaxPhotos]);
 
   const handleWebSocketMessage = useCallback((event: MessageEvent) => {
@@ -549,15 +600,13 @@ const PhotoDashboard: React.FC = () => {
       if (data.type === "ping" || data.type === "heartbeat") return;
 
       if (data.photos) {
-        const newPhotos = [...data.photos]
-          .reverse()
-          .slice(0, maxPhotosRef.current);
-        setPhotos(newPhotos);
-        setLoading(false);
+        if (!initialLoadDoneRef.current) {
+          setPhotos([...data.photos].reverse());
+          setLoading(false);
+          initialLoadDoneRef.current = true;
+        }
       } else if (data.newPhoto) {
-        setPhotos((prev) =>
-          [data.newPhoto, ...prev].slice(0, maxPhotosRef.current),
-        );
+        setPhotos((prev) => [data.newPhoto, ...prev]);
       }
     } catch (error) {
       log.error("Error processing WebSocket message:", error);
@@ -598,6 +647,19 @@ const PhotoDashboard: React.FC = () => {
   useEffect(() => {
     updateMaxPhotos();
   }, [updateMaxPhotos, viewport.width, viewport.height]);
+
+  const displayPhotos = useMemo(
+    () => (showAllPhotos ? photos : photos.slice(0, getMaxPhotos())),
+    [photos, showAllPhotos, getMaxPhotos],
+  );
+
+  const toggleLabel = useMemo(
+    () =>
+      showAllPhotos
+        ? "Все фото"
+        : `Только свежие (${displayPhotos.length} из ${photos.length})`,
+    [showAllPhotos, displayPhotos.length, photos.length],
+  );
 
   useEffect(() => {
     const getViewportSize = (): { w: number; h: number } => {
@@ -826,12 +888,12 @@ const PhotoDashboard: React.FC = () => {
             : 5;
     const maxRowsByDensity = Math.max(
       1,
-      Math.floor(photos.length / minCardsPerRow),
+      Math.floor(displayPhotos.length / minCardsPerRow),
     );
     const numRows = isSingleRowLandscape
       ? 1
       : Math.max(1, Math.min(tapeNumRows, maxRowsByDensity));
-    if (numRows <= 0 || photos.length === 0) {
+    if (numRows <= 0 || displayPhotos.length === 0) {
       return [];
     }
 
@@ -839,13 +901,13 @@ const PhotoDashboard: React.FC = () => {
       { length: numRows },
       () => [],
     );
-    photos.forEach((photo, index) => {
+    displayPhotos.forEach((photo, index) => {
       rows[index % numRows].push(photo);
     });
 
     return rows;
   }, [
-    photos,
+    displayPhotos,
     tapeNumRows,
     isKiosk,
     isFullscreen,
@@ -854,7 +916,7 @@ const PhotoDashboard: React.FC = () => {
     viewport.resolutionTier,
   ]);
 
-  const tapeCols = Math.ceil(photos.length / tapeNumRows) || 1;
+  const tapeCols = Math.ceil(displayPhotos.length / tapeNumRows) || 1;
   const marqueeSpeed = useMemo(
     () => MARQUEE_SPEED + Math.min(Math.max(tapeCols, 1), 10) * 2,
     [tapeCols],
@@ -1128,7 +1190,7 @@ const PhotoDashboard: React.FC = () => {
         isKiosk ? "min-h-[100dvh] flex flex-col py-3 sm:py-4 md:py-5" : "py-6"
       }
     >
-      {photos.length > 0 && hints && !isKiosk && (
+      {displayPhotos.length > 0 && hints && !isKiosk && (
         <p className="text-gray-500 dark:text-gray-400 text-xs sm:text-sm mb-3">
           {hints}
         </p>
@@ -1174,6 +1236,24 @@ const PhotoDashboard: React.FC = () => {
                 : "gap-2 sm:gap-3 md:gap-4"
             }`}
           >
+            {photos.length > 0 && (
+              <Toggle
+                checked={showAllPhotos}
+                onChange={(v) => startTransition(() => setShowAllPhotos(v))}
+                labelPosition="left"
+                label={toggleLabel}
+                ariaLabel={
+                  showAllPhotos
+                    ? "Показать только последние фото"
+                    : "Показать все фото за день"
+                }
+                className={
+                  isFullscreen || isKiosk
+                    ? "text-[10px] sm:text-xs lg:text-sm"
+                    : "text-xs sm:text-sm"
+                }
+              />
+            )}
             <motion.button
               onClick={handleFullscreenToggle}
               disabled={isFullscreenBusy}
