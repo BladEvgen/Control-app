@@ -115,13 +115,13 @@ def atomic_block() -> Generator[None, None, None]:
         yield
 
 
-# Окно «обед»: обеденный перерыв учитывается только при проходе через турникет выхода в этом интервале (см. фетчер).
-# В fallback (без событий) обед не вычитаем — считаем, что сотрудник не выходил (обедал на месте).
 LUNCH_BREAK_START = datetime.time(hour=12, minute=55)
 LUNCH_BREAK_END = datetime.time(hour=14, minute=5)
 
 CLASS_LOCATION_CACHE_TTL = datetime.timedelta(minutes=60)
-DEPARTMENT_CONFIRMATION_CACHE_TTL = 10 * 60 * 60
+DEPARTMENT_CONFIRMATION_CACHE_TTL = 4 * 60 * 60
+DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY = "department_confirmation_epoch_hour"
+DEPARTMENT_CONFIRMATION_EPOCH_TTL = DEPARTMENT_CONFIRMATION_CACHE_TTL + 60 * 60
 STAFF_PINS_HEADER_NAME = "X-Staff-Pins"
 
 _STAFF_PIN_WRAPPED_RE = re.compile(r"^S\d+S$")
@@ -154,6 +154,21 @@ def _parse_staff_pins_header(raw_header_value: Optional[str]) -> List[str]:
     return parsed
 
 
+def _department_confirmation_hour_bucket(now_dt: Optional[datetime.datetime] = None) -> str:
+    current = now_dt or timezone.localtime()
+    fallback = current.strftime("%Y%m%d%H")
+    epoch = Cache.get(DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY)
+    if epoch is not None:
+        return str(epoch)
+    # Fallback path when beat has not yet populated epoch key.
+    Cache.set(
+        DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY,
+        fallback,
+        DEPARTMENT_CONFIRMATION_EPOCH_TTL,
+    )
+    return fallback
+
+
 def _build_department_confirmation_cache_key(
     *,
     child_department_id: Optional[str],
@@ -163,20 +178,26 @@ def _build_department_confirmation_cache_key(
     date_to_str: Optional[str],
     use_staff_pins_mode: bool,
     staff_pins: List[str],
+    hour_bucket: str,
 ) -> str:
+    suffix = f"hour_{hour_bucket}"
     if not use_staff_pins_mode:
         if use_range:
-            return f"department_confirmation_{child_department_id}_{date_from_str}_{date_to_str}"
-        return f"department_confirmation_{child_department_id}_{date_str}"
+            return (
+                f"department_confirmation_{child_department_id}_{date_from_str}_"
+                f"{date_to_str}_{suffix}"
+            )
+        return f"department_confirmation_{child_department_id}_{date_str}_{suffix}"
 
     sorted_unique_pins = sorted({str(pin).strip().upper() for pin in staff_pins if pin})
     digest_source = ",".join(sorted_unique_pins)
     pins_hash = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()
     if use_range:
         return (
-            f"department_confirmation_pins_{pins_hash}_{date_from_str}_{date_to_str}"
+            f"department_confirmation_pins_{pins_hash}_{date_from_str}_"
+            f"{date_to_str}_{suffix}"
         )
-    return f"department_confirmation_pins_{pins_hash}_{date_str}"
+    return f"department_confirmation_pins_{pins_hash}_{date_str}_{suffix}"
 
 
 def get_confirmable_threshold(total_group: int) -> int:
@@ -963,7 +984,6 @@ class StaffAttendanceStatsView(APIView):
             record.staff.pin: record for record in present_staff_records
         }
 
-        # Студенты могут быть только по LessonAttendance (удалённые локации) — учитываем как присутствующих.
         lesson_staff_ids = set(
             models.LessonAttendance.objects.filter(
                 date_at=target_date,
@@ -1070,7 +1090,6 @@ class StaffAttendanceStatsView(APIView):
             attendance = attendance_by_pin.get(staff.pin)
 
             if attendance:
-                # Есть запись StaffAttendance — считаем время и процент.
                 if getattr(attendance, "effective_work_seconds", None) is not None:
                     minutes_present = attendance.effective_work_seconds / 60.0
                 elif attendance.first_in and attendance.last_out:
@@ -1244,7 +1263,7 @@ def map_location(request):
 
 
 def _build_one_day_confirmation(
-    _dept: models.ChildDepartment,
+    _dept: Optional[models.ChildDepartment],
     target_date: datetime.date,
     staff_list: list,
     location_searcher=None,
@@ -1292,6 +1311,7 @@ def _build_one_day_confirmation(
         .exclude(staff_id__in=staff_with_sa)
         .values("staff_id", "first_in", "latitude", "longitude")
     )
+    la_records = list(la_qs)
 
     if location_searcher is None or name_to_address is None or address_to_name is None:
         location_cache = get_class_location_cache()
@@ -1322,7 +1342,7 @@ def _build_one_day_confirmation(
             staff_first_in[sa["staff_id"]] = fi
 
     la_by_staff: dict[int, list[dict]] = defaultdict(list)
-    for la in la_qs:
+    for la in la_records:
         la_by_staff[la["staff_id"]].append(la)
     for sid, records in la_by_staff.items():
         earliest = min(
@@ -1349,7 +1369,7 @@ def _build_one_day_confirmation(
         if addr:
             location_counts[addr].append(staff.pin)
 
-    data_available = bool(staff_to_location)
+    data_available = bool(staff_to_location) or bool(la_records)
     if not data_available:
         data_available = (
             models.StaffAttendance.objects.filter(date_at=data_insert_date)
@@ -1509,7 +1529,7 @@ def _build_one_day_from_records(
 
     if dates_with_any_sa is not None:
         data_insert_date = target_date + datetime.timedelta(days=1)
-        data_available = bool(staff_to_location) or (
+        data_available = bool(staff_to_location) or bool(la_records) or (
             data_insert_date in dates_with_any_sa
         )
     elif data_available is None:
@@ -1793,6 +1813,7 @@ def department_attendance_confirmation(request):
         date_to_str=date_to_str,
         use_staff_pins_mode=use_staff_pins_mode,
         staff_pins=staff_pins,
+        hour_bucket=_department_confirmation_hour_bucket(),
     )
     cached = Cache.get(cache_key)
     if cached is not None:
@@ -1849,7 +1870,6 @@ def department_attendance_confirmation(request):
         sa_by_event_date, la_by_event_date = fetch_attendance_by_event_dates(
             staff_ids, date_from, date_to
         )
-        # data_available по дню: есть ли SA с date_at = event_date + 1 (дата выгрузки)
         dates_with_any_sa = {ed + datetime.timedelta(days=1) for ed in sa_by_event_date}
 
         location_cache = get_class_location_cache()
@@ -1869,7 +1889,6 @@ def department_attendance_confirmation(request):
         name_to_address = {loc["name"]: loc["address"] for loc in class_locations}
         address_to_name = {loc["address"]: loc["name"] for loc in class_locations}
 
-        # По каждой дате — свой расчёт: locations, pct и main_address считаются только по этому дню.
         results = []
         d = date_from
         while d <= date_to:
@@ -4280,11 +4299,15 @@ def update_percent_for_period(
 
 @swagger_auto_schema(
     method="get",
-    operation_summary="Проверка статуса задачи создания записей посещаемости",
+    operation_summary="Статус задачи посещаемости",
     operation_description=(
-        "Проверяет статус задачи, созданной POST /api/lesson_attendance/ (task_id из ответа 202). "
-        "Возвращает: Pending (202) — задача в очереди; Success (200) — lesson_ids созданных записей; "
-        "Failure (500) — error с текстом ошибки. Остальные состояния — 200 с полем status."
+        "Как использовать:\n"
+        "1. Возьмите task_id из POST /api/lesson_attendance/ или POST /api/lesson_attendance/json/.\n"
+        "2. Подставьте task_id в URL и выполните GET.\n\n"
+        "Коды ответа:\n"
+        "202 - задача в очереди.\n"
+        "200 - задача выполнена, вернутся lesson_ids.\n"
+        "500 - ошибка выполнения."
     ),
     tags=["Lesson Attendance"],
     manual_parameters=[
@@ -4298,7 +4321,7 @@ def update_percent_for_period(
         openapi.Parameter(
             "task_id",
             openapi.IN_PATH,
-            description="ID задачи, полученный при создании записей посещаемости",
+            description="ID задачи из ответа 202",
             type=openapi.TYPE_STRING,
             required=True,
         ),
@@ -4489,30 +4512,42 @@ def _lesson_attendance_responses():
     }
 
 
+LESSON_ATTENDANCE_RECORD_EXAMPLE = {
+    "staff_pin": "T861T",
+    "tutor_id": 101,
+    "tutor": "Нео Андерсон",
+    "first_in": "2026-03-16T10:00:00+05:00",
+    "latitude": 43.2389,
+    "longitude": 76.8897,
+    "subject_name": "Матрица и Морбиус",
+}
+LESSON_ATTENDANCE_ARRAY_EXAMPLE_TEXT = json.dumps(
+    [LESSON_ATTENDANCE_RECORD_EXAMPLE], ensure_ascii=False, indent=2
+)
+LESSON_ATTENDANCE_JSON_BODY_EXAMPLE = {
+    "attendance_data": [LESSON_ATTENDANCE_RECORD_EXAMPLE],
+    "image": "<base64>",
+}
+LESSON_ATTENDANCE_JSON_BODY_EXAMPLE_TEXT = json.dumps(
+    LESSON_ATTENDANCE_JSON_BODY_EXAMPLE, ensure_ascii=False, indent=2
+)
+
+
 @swagger_auto_schema(
     method="post",
     auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
-    operation_summary="Создание записей посещаемости (multipart/form-data)",
+    operation_summary="Создать записи посещаемости (multipart)",
     operation_description=(
-        "**Как заполнять запрос**\n\n"
-        "1. В поле **attendance_data** вставьте одну строку — JSON-массив с записями посещаемости. "
-        "Одна запись — один объект с полями ниже. Несколько записей — несколько объектов в массиве.\n\n"
-        "2. В поле **image** нажмите «Choose File» и выберите файл фотографии (JPG или PNG).\n\n"
-        "**Формат одной записи в attendance_data** (все поля обязательны, кроме subject_name):\n"
-        "- **staff_pin** (строка) — PIN сотрудника из справочника, например `s00260s`\n"
-        "- **tutor_id** (число) — ID преподавателя, можно 0\n"
-        "- **tutor** (строка) — ФИО преподавателя, например `Иванов И.И.`\n"
-        "- **first_in** (строка) — дата и время начала занятия в формате ISO 8601 с таймзоной, например `2024-10-06T14:24:24+05:00`\n"
-        "- **latitude** (число) — широта, можно 0\n"
-        "- **longitude** (число) — долгота, можно 0\n"
-        "- **subject_name** (строка, необязательно) — название предмета\n\n"
-        "**Пример значения для attendance_data** (скопируйте и при необходимости отредактируйте):\n"
-        "```\n"
-        '[{"staff_pin":"s00260s","tutor_id":1,"tutor":"Иванов И.И.",'
-        '"first_in":"2024-10-06T14:24:24+05:00","latitude":43.21,"longitude":76.85,"subject_name":"Математика"}]\n'
-        "```\n\n"
-        "**Ответ:** 202 Accepted, в теле — `task_id`. Результат создания записей смотрите в **GET** `/api/lesson_attendance/task_status/{task_id}/`.\n\n"
-        "Вариант с JSON в теле и фото в Base64: **POST** `/api/lesson_attendance/json/`."
+        "Try it out (в Swagger):\n"
+        "1. Нажмите Try it out.\n"
+        "2. В поле attendance_data уже подставлен рабочий шаблон. "
+        "Скопируйте его и замените staff_pin, tutor, first_in и координаты под ваш кейс.\n"
+        "3. Если нужна фотофиксация, в поле image выберите файл через Choose File.\n"
+        "4. Нажмите Execute.\n\n"
+        "Обязательные поля записи: staff_pin, tutor_id, tutor, first_in, latitude, longitude.\n"
+        "subject_name - опционально.\n\n"
+        "Ответ: 202 + task_id.\n"
+        "Проверка статуса: GET /api/lesson_attendance/task_status/{task_id}/."
     ),
     tags=["Lesson Attendance"],
     manual_parameters=[
@@ -4528,14 +4563,20 @@ def _lesson_attendance_responses():
             in_=openapi.IN_FORM,
             type=openapi.TYPE_STRING,
             required=True,
-            description="Строка JSON: массив объектов. В каждом объекте: staff_pin, tutor_id, tutor, first_in, latitude, longitude; по желанию subject_name. Пример см. в описании операции.",
+            description=(
+                "JSON-строка с массивом записей.\n"
+                "Что обычно меняют: staff_pin, tutor, first_in, latitude, longitude.\n"
+                "Готовый шаблон (скопируйте как есть):\n"
+                f"{LESSON_ATTENDANCE_ARRAY_EXAMPLE_TEXT}"
+            ),
+            default=LESSON_ATTENDANCE_ARRAY_EXAMPLE_TEXT,
         ),
         openapi.Parameter(
             name="image",
             in_=openapi.IN_FORM,
             type=openapi.TYPE_FILE,
-            required=True,
-            description="Файл фотографии (JPG, PNG). Нажмите «Choose File» и выберите файл.",
+            required=False,
+            description="Файл фотографии (JPG/PNG), опционально. Загружайте через Choose File.",
         ),
     ],
     request_body=no_body,
@@ -4554,7 +4595,7 @@ def create_lesson_attendance(request):
 
     **1. multipart/form-data** (форма с файлом, в т.ч. в Swagger «Try it out»):
     - Поле **attendance_data**: строка, содержащая JSON-массив объектов. Каждый объект — одна запись посещаемости.
-    - Поле **image**: файл изображения (JPG/PNG).
+    - Поле **image**: файл изображения (JPG/PNG), опционально.
 
     Обязательные поля в каждом объекте массива attendance_data:
     - staff_pin (str): PIN сотрудника из справочника Staff.
@@ -4567,16 +4608,29 @@ def create_lesson_attendance(request):
     Необязательное поле: subject_name (str).
 
     Пример значения для attendance_data (одна запись):
-        [{"staff_pin":"s00260","tutor_id":1,"tutor":"Иванов И.И.","first_in":"2024-10-06T14:24:24+05:00","latitude":43.21,"longitude":76.85}]
+        [
+          {
+            "staff_pin": "s00260",
+            "tutor_id": 1,
+            "tutor": "Иванов И.И.",
+            "first_in": "2024-10-06T14:24:24+05:00",
+            "latitude": 43.21,
+            "longitude": 76.85
+          }
+        ]
 
     **2. application/json** (предпочтительно отправлять на POST /api/lesson_attendance/json/):
-    - Тело: {"attendance_data": [ {...}, ... ], "image": "<base64-строка>"}.
-    - Структура объектов в attendance_data — та же, image — фото в Base64 без префикса data:...
+    - Тело:
+      {
+        "attendance_data": [ {...}, ... ],
+        "image": "<base64-строка>" (опционально)
+      }.
+    - Структура объектов в attendance_data — та же, image — фото в Base64 без префикса data:... (опционально).
 
     Ответ
     -----
     - 202: в теле {"message": "Task accepted", "task_id": "<uuid>"}. Результат проверять в GET /api/lesson_attendance/task_status/<task_id>/.
-    - 400: ошибка валидации (нет полей, неверный JSON, нет фото и т.п.).
+    - 400: ошибка валидации (нет полей, неверный JSON и т.п.).
     - 500: ошибка сервера при постановке задачи в очередь.
     """
     ip_address = request.META.get("REMOTE_ADDR", "Неизвестный IP")
@@ -4721,18 +4775,6 @@ def create_lesson_attendance(request):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        if not image_content:
-            lesson_attendance_logger.warning(
-                "%s BAD_REQUEST image_missing ip=%s records_count=%s (expected multipart image or JSON image base64)",
-                log_prefix,
-                ip_address,
-                len(attendance_data),
-            )
-            return Response(
-                {"error": "Image is missing"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         task = tasks.process_lesson_attendance_batch.apply_async(
             args=[attendance_data, image_name, image_content]
         )
@@ -4742,7 +4784,7 @@ def create_lesson_attendance(request):
             task.id,
             ip_address,
             len(attendance_data),
-            len(image_content),
+            len(image_content) if image_content else 0,
         )
 
         return Response(
@@ -4765,8 +4807,9 @@ def create_lesson_attendance(request):
 
 _lesson_attendance_json_schema = openapi.Schema(
     type=openapi.TYPE_OBJECT,
-    required=["attendance_data", "image"],
-    description="Тело запроса: массив записей и фото в Base64.",
+    required=["attendance_data"],
+    description="Тело запроса: массив записей посещаемости; фото в Base64 опционально.",
+    example=LESSON_ATTENDANCE_JSON_BODY_EXAMPLE,
     properties={
         "attendance_data": openapi.Schema(
             type=openapi.TYPE_ARRAY,
@@ -4808,7 +4851,7 @@ _lesson_attendance_json_schema = openapi.Schema(
         ),
         "image": openapi.Schema(
             type=openapi.TYPE_STRING,
-            description="Фото в Base64 (без префикса data:image/...;base64,).",
+            description="Фото в Base64 (без префикса data:image/...;base64,). Опционально.",
         ),
     },
 )
@@ -4816,13 +4859,16 @@ _lesson_attendance_json_schema = openapi.Schema(
 
 @swagger_auto_schema(
     method="post",
-    operation_summary="Создание записей посещаемости (application/json)",
+    operation_summary="Создать записи посещаемости (JSON)",
     operation_description=(
-        "Вариант с JSON в теле запроса и фото в Base64. Ответ 202 + task_id; "
-        "результат: GET /api/lesson_attendance/task_status/{task_id}/.\n\n"
-        'Тело: { "attendance_data": [ {...}, ... ], "image": "<base64>" }. '
-        "Обязательные поля в каждой записи: staff_pin, tutor_id, tutor, first_in, latitude, longitude; "
-        "опционально subject_name. Для загрузки файла используйте операцию **POST .../lesson_attendance/** (multipart) выше."
+        "Формат запроса: application/json.\n"
+        "Тело запроса:\n"
+        f"{LESSON_ATTENDANCE_JSON_BODY_EXAMPLE_TEXT}\n"
+        "image - опционально.\n\n"
+        "Обязательные поля записи: staff_pin, tutor_id, tutor, first_in, latitude, longitude.\n"
+        "subject_name - опционально.\n\n"
+        "Ответ: 202 + task_id.\n"
+        "Проверка статуса: GET /api/lesson_attendance/task_status/{task_id}/."
     ),
     tags=["Lesson Attendance"],
     manual_parameters=[
@@ -4846,8 +4892,21 @@ def create_lesson_attendance_json(request):
 
 @swagger_auto_schema(
     method="put",
-    operation_summary="Обновление записи посещаемости занятия",
-    operation_description="Обновляет существующую запись посещаемости занятия по её ID. Параметр `last_out` обязателен, так как он указывает время окончания занятия. Параметры `first_in`, `latitude` и `longitude` могут быть обновлены опционально.",
+    auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
+    operation_summary="Обновить запись посещаемости",
+    operation_description=(
+        "Try it out (в Swagger):\n"
+        "1. Укажите id записи в path-параметре.\n"
+        "2. Заполните только те поля, которые хотите изменить.\n"
+        "3. Для фото используйте только поле image (кнопка Choose File).\n"
+        "4. Нажмите Execute.\n\n"
+        "Пример JSON (для Postman/curl):\n"
+        "{\n"
+        "  \"last_out\": \"2026-03-16T11:40:00+05:00\",\n"
+        "  \"latitude\": 43.2389,\n"
+        "  \"longitude\": 76.8897\n"
+        "}"
+    ),
     tags=["Lesson Attendance"],
     manual_parameters=[
         openapi.Parameter(
@@ -4864,37 +4923,48 @@ def create_lesson_attendance_json(request):
             type=openapi.TYPE_INTEGER,
             required=True,
         ),
+        openapi.Parameter(
+            "first_in",
+            openapi.IN_FORM,
+            description="Начало занятия (ISO 8601). Пример: 2026-03-16T10:00:00+05:00",
+            type=openapi.TYPE_STRING,
+            required=False,
+            default="2026-03-16T10:00:00+05:00",
+        ),
+        openapi.Parameter(
+            "last_out",
+            openapi.IN_FORM,
+            description="Окончание занятия (ISO 8601). Пример: 2026-03-16T11:40:00+05:00",
+            type=openapi.TYPE_STRING,
+            required=False,
+            default="2026-03-16T11:40:00+05:00",
+        ),
+        openapi.Parameter(
+            "latitude",
+            openapi.IN_FORM,
+            description="Широта. Пример: 43.2389",
+            type=openapi.TYPE_NUMBER,
+            required=False,
+            default=43.2389,
+        ),
+        openapi.Parameter(
+            "longitude",
+            openapi.IN_FORM,
+            description="Долгота. Пример: 76.8897",
+            type=openapi.TYPE_NUMBER,
+            required=False,
+            default=76.8897,
+        ),
+        openapi.Parameter(
+            name="image",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_FILE,
+            required=False,
+            description="Фото сотрудника (jpg/png). Загружайте через Choose File.",
+        ),
     ],
-    request_body=openapi.Schema(
-        type=openapi.TYPE_OBJECT,
-        required=["last_out"],
-        properties={
-            "first_in": openapi.Schema(
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_DATETIME,
-                description="Время начала занятия в формате ISO 8601 с часовым поясом. Опционально",
-                example="2024-09-16T17:28:24+05:00",
-            ),
-            "last_out": openapi.Schema(
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_DATETIME,
-                description="Время окончания занятия в формате ISO 8601 с часовым поясом. Обязательно",
-                example="2024-09-16T18:28:24+05:00",
-            ),
-            "latitude": openapi.Schema(
-                type=openapi.TYPE_NUMBER,
-                format=openapi.FORMAT_FLOAT,
-                description="Широта места проведения. Опционально",
-                example=43.222,
-            ),
-            "longitude": openapi.Schema(
-                type=openapi.TYPE_NUMBER,
-                format=openapi.FORMAT_FLOAT,
-                description="Долгота места проведения. Опционально",
-                example=76.851,
-            ),
-        },
-    ),
+    request_body=no_body,
+    consumes=["multipart/form-data"],
     responses={
         200: openapi.Response(
             description="Запись успешно обновлена",
@@ -4913,7 +4983,7 @@ def create_lesson_attendance_json(request):
             ),
         ),
         400: openapi.Response(
-            description="Неверные данные или отсутствует обязательный параметр `last_out`",
+            description="Неверные данные в теле запроса",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
@@ -4943,7 +5013,7 @@ def create_lesson_attendance_json(request):
 )
 @api_view(["PUT"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
-def update_lesson_attendance(request, attendance_id):
+def update_lesson_attendance(request, attendance_id=None, **kwargs):
     """
     Обновление записи посещаемости занятия.
 
@@ -4951,50 +5021,83 @@ def update_lesson_attendance(request, attendance_id):
         id (int): ID записи для обновления.
         request (Request): HTTP запрос, содержащий данные для обновления записи.
 
-    Ожидаемые параметры:
-        last_out (str): Время окончания занятия в формате ISO 8601 с часовым поясом (обязательно).
-        first_in (str): Время начала занятия в формате ISO 8601 с часовым поясом (опционально).
-        latitude (float): Широта места проведения (опционально).
-        longitude (float): Долгота места проведения (опционально).
-
-    Returns:
-        Response: Возвращает сообщение об успешном обновлении записи.
+    Все поля в теле запроса опциональны: можно изменить время начала/окончания,
+    координаты и/или добавить/обновить фото (image: файл в multipart или Base64 в JSON).
     """
     ip_address = request.META.get("REMOTE_ADDR", "Неизвестный IP")
     log_prefix = "[lesson_attendance]"
+    attendance_id = attendance_id if attendance_id is not None else kwargs.get("id")
+    if attendance_id is None:
+        return Response(
+            {"error": "Attendance id is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     try:
         lesson_attendance = get_object_or_404(models.LessonAttendance, id=attendance_id)
+
+        image_content = None
+        if request.FILES.get("image"):
+            image_content = request.FILES["image"].read()
+        elif request.data.get("image"):
+            try:
+                image_content = base64.b64decode(request.data.get("image"))
+            except Exception as e:
+                lesson_attendance_logger.warning(
+                    "%s PUT BAD_REQUEST image_base64_decode_failed id=%s error=%s",
+                    log_prefix,
+                    attendance_id,
+                    str(e),
+                )
+                return Response(
+                    {"error": "Invalid Base64 image format"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         first_in = request.data.get("first_in", lesson_attendance.first_in)
         last_out = request.data.get("last_out")
         latitude = request.data.get("latitude", lesson_attendance.latitude)
         longitude = request.data.get("longitude", lesson_attendance.longitude)
 
-        if not last_out:
-            lesson_attendance_logger.warning(
-                "%s PUT BAD_REQUEST last_out_required id=%s ip=%s",
-                log_prefix,
-                attendance_id,
-                ip_address,
-            )
-            return Response(
-                {"error": "'last_out' is required for updating."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        if last_out is None:
+            last_out = lesson_attendance.last_out
+
+        update_fields = ["first_in", "last_out", "latitude", "longitude"]
+        if image_content:
+            staff_pin = lesson_attendance.staff.pin
+            base_dir, file_path = utils.get_lesson_attendance_photo_path(staff_pin)
+            os.makedirs(base_dir, exist_ok=True)
+            try:
+                with open(file_path, "wb") as destination:
+                    destination.write(image_content)
+            except OSError as e:
+                lesson_attendance_logger.error(
+                    "%s PUT image_save_failed id=%s path=%s error=%s",
+                    log_prefix,
+                    attendance_id,
+                    file_path,
+                    str(e),
+                )
+                return Response(
+                    {"error": f"Image save failed: {e}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            lesson_attendance.staff_image_path = file_path
+            update_fields.append("staff_image_path")
 
         lesson_attendance.first_in = first_in
         lesson_attendance.last_out = last_out
         lesson_attendance.latitude = latitude
         lesson_attendance.longitude = longitude
-        lesson_attendance.save()
+        lesson_attendance.save(update_fields=update_fields)
 
         lesson_attendance_logger.info(
-            "%s PUT OK lesson_id=%s ip=%s last_out=%s",
+            "%s PUT OK lesson_id=%s ip=%s last_out=%s has_photo=%s",
             log_prefix,
             lesson_attendance.id,
             ip_address,
             last_out,
+            bool(image_content),
         )
         return Response(
             {
