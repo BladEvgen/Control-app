@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import tempfile
 import time
 from datetime import datetime
@@ -552,6 +553,23 @@ class PhotoConsumerProtocolTest(SimpleTestCase):
         self.assertEqual(payload["events"][0]["stateCode"], STATE_DELETED)
         self.assertEqual(payload["events"][0]["op"], "deleted")
         self.assertEqual(payload["photos"], [])
+
+    def test_queue_photo_event_supports_attendance_ids_bulk(self):
+        consumer = TestablePhotoConsumer()
+        event = {
+            "attendance_ids": [11, "12", 12, "bad", 13],
+            "op": "updated",
+            "stateCode": "UPDATED_META",
+            "versionTs": timezone.now().isoformat(),
+        }
+
+        async def _run():
+            consumer._queue_photo_event(event)
+            await asyncio.sleep(0)
+
+        async_to_sync(_run)()
+
+        self.assertEqual(sorted(consumer._photo_update_buffer.keys()), [11, 12, 13])
 
 
 class LessonAttendanceSignalStateTest(SimpleTestCase):

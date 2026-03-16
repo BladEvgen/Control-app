@@ -53,6 +53,16 @@ urlpatterns = [
         name="update_lesson_attendance",
     ),
     path(
+        "api/lesson_attendance/photo_verdicts/",
+        views.lesson_attendance_photo_verdicts,
+        name="lesson_attendance_photo_verdicts",
+    ),
+    path(
+        "api/lesson_attendance/<int:attendance_id>/photo_verdict/",
+        views.lesson_attendance_photo_verdicts,
+        name="lesson_attendance_photo_verdict_single",
+    ),
+    path(
         "api/lesson_attendance/task_status/<str:task_id>/",
         views.check_lesson_task_status,
         name="check_lesson_task_status",

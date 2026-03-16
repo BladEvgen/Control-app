@@ -14,6 +14,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, List, Optional, Tuple, cast
 
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 import monitoring_app.tasks as tasks
 from celery.result import AsyncResult
 from django.conf import settings
@@ -160,7 +162,6 @@ def _department_confirmation_hour_bucket(now_dt: Optional[datetime.datetime] = N
     epoch = Cache.get(DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY)
     if epoch is not None:
         return str(epoch)
-    # Fallback path when beat has not yet populated epoch key.
     Cache.set(
         DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY,
         fallback,
@@ -5126,6 +5127,523 @@ def update_lesson_attendance(request, attendance_id=None, **kwargs):
             str(e),
         )
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+PHOTO_VERDICT_ACTION_MANUAL_CLEAN = "manual_clean"
+PHOTO_VERDICT_ACTION_MANUAL_SUSPICIOUS = "manual_suspicious"
+PHOTO_VERDICT_ACTION_MANUAL_RESET = "manual_reset"
+PHOTO_VERDICT_ACTION_RESCAN = "rescan"
+PHOTO_VERDICT_ACTIONS = {
+    PHOTO_VERDICT_ACTION_MANUAL_CLEAN,
+    PHOTO_VERDICT_ACTION_MANUAL_SUSPICIOUS,
+    PHOTO_VERDICT_ACTION_MANUAL_RESET,
+    PHOTO_VERDICT_ACTION_RESCAN,
+}
+PHOTO_VERDICT_MAX_IDS_PER_REQUEST = 2000
+PHOTO_VERDICT_DEFAULT_LIMIT = 200
+PHOTO_VERDICT_MAX_LIMIT = 1000
+PHOTO_VERDICT_ONLY_FIELDS = (
+    "id",
+    "date_at",
+    "first_in",
+    "staff_image_path",
+    "tutor",
+    "tutor_id",
+    "subject_name",
+    "photo_spoof_status",
+    "photo_spoof_score",
+    "photo_spoof_tags",
+    "photo_spoof_checked_at",
+    "photo_spoof_model_version",
+    "photo_trust_confirmed",
+    "photo_manual_verdict",
+    "photo_manual_comment",
+    "photo_manual_by_id",
+    "photo_manual_at",
+    "staff__pin",
+    "staff__surname",
+    "staff__name",
+    "staff__department__name",
+    "photo_manual_by__username",
+)
+
+
+def _photo_verdict_choices_payload() -> dict[str, Any]:
+    return {
+        "photo_spoof_statuses": [
+            {"value": value, "label": label}
+            for value, label in models.LessonAttendance.PHOTO_SPOOF_STATUS_CHOICES
+        ],
+        "photo_manual_verdicts": [
+            {"value": value, "label": label}
+            for value, label in models.LessonAttendance.PHOTO_MANUAL_VERDICT_CHOICES
+        ],
+        "actions": [
+            {
+                "value": PHOTO_VERDICT_ACTION_MANUAL_CLEAN,
+                "label": "Ручной вердикт: нормальное",
+            },
+            {
+                "value": PHOTO_VERDICT_ACTION_MANUAL_SUSPICIOUS,
+                "label": "Ручной вердикт: подозрительное",
+            },
+            {
+                "value": PHOTO_VERDICT_ACTION_MANUAL_RESET,
+                "label": "Сбросить ручной вердикт",
+            },
+            {
+                "value": PHOTO_VERDICT_ACTION_RESCAN,
+                "label": "Пересканировать автоматически",
+            },
+        ],
+    }
+
+
+def _parse_positive_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return default
+    numeric = max(minimum, numeric)
+    return min(maximum, numeric)
+
+
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    lowered = str(value).strip().lower()
+    if lowered in {"1", "true", "yes", "y", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _parse_photo_record_ids(raw_ids: Any) -> list[int]:
+    if raw_ids is None:
+        return []
+
+    raw_items: list[Any]
+    if isinstance(raw_ids, (list, tuple, set)):
+        raw_items = list(raw_ids)
+    elif isinstance(raw_ids, str):
+        raw_items = [part.strip() for part in raw_ids.split(",")]
+    else:
+        raw_items = [raw_ids]
+
+    parsed: list[int] = []
+    seen: set[int] = set()
+    for item in raw_items:
+        token = str(item).strip()
+        if not token:
+            continue
+        if not token.isdigit():
+            raise ValidationError(f"Некорректный id: {token}")
+        value = int(token)
+        if value <= 0 or value in seen:
+            continue
+        seen.add(value)
+        parsed.append(value)
+    if len(parsed) > PHOTO_VERDICT_MAX_IDS_PER_REQUEST:
+        raise ValidationError(
+            f"Слишком много id. Максимум за запрос: {PHOTO_VERDICT_MAX_IDS_PER_REQUEST}."
+        )
+    return parsed
+
+
+def _extract_photo_ids_from_request(request, attendance_id: Optional[int]) -> list[int]:
+    if attendance_id is not None:
+        return [int(attendance_id)]
+    payload = request.data if isinstance(request.data, dict) else {}
+    if "ids" in payload:
+        return _parse_photo_record_ids(payload.get("ids"))
+    if "id" in payload:
+        return _parse_photo_record_ids(payload.get("id"))
+    if request.query_params.get("ids"):
+        return _parse_photo_record_ids(request.query_params.get("ids"))
+    if request.query_params.get("id"):
+        return _parse_photo_record_ids(request.query_params.get("id"))
+    return []
+
+
+def _serialize_lesson_attendance_photo(record: models.LessonAttendance) -> dict[str, Any]:
+    checked_at = (
+        timezone.localtime(record.photo_spoof_checked_at).isoformat()
+        if record.photo_spoof_checked_at
+        else None
+    )
+    manual_at = (
+        timezone.localtime(record.photo_manual_at).isoformat()
+        if record.photo_manual_at
+        else None
+    )
+    manual_by_username = ""
+    manual_by = getattr(record, "photo_manual_by", None)
+    if manual_by is not None:
+        manual_by_username = str(getattr(manual_by, "username", "") or "")
+
+    return {
+        "id": record.id,
+        "dateAt": record.date_at.isoformat(),
+        "hasPhoto": bool(record.staff_image_path),
+        "staffPin": record.staff.pin,
+        "staffFullName": f"{record.staff.surname} {record.staff.name}",
+        "department": (
+            record.staff.department.name if record.staff.department else "Unknown"
+        ),
+        "photoUrl": record.image_url,
+        "attendanceTime": timezone.localtime(record.first_in).isoformat(),
+        "tutorInfo": record.tutor_info,
+        "photoSpoofStatus": record.photo_spoof_status,
+        "photoSpoofScore": record.photo_spoof_score,
+        "photoSpoofTags": list(record.photo_spoof_tags or []),
+        "photoSpoofCheckedAt": checked_at,
+        "photoSpoofModelVersion": record.photo_spoof_model_version,
+        "photoTrustConfirmed": record.photo_trust_confirmed,
+        "photoManualVerdict": record.photo_manual_verdict,
+        "photoManualComment": record.photo_manual_comment or "",
+        "photoManualBy": record.photo_manual_by_id,
+        "photoManualByUsername": manual_by_username,
+        "photoManualAt": manual_at,
+        "photoEffectiveStatus": record.photo_effective_status,
+        "photoEffectiveTrustConfirmed": record.photo_effective_trust_confirmed,
+        "photoCanSetManualVerdict": record.photo_can_set_manual_verdict,
+    }
+
+
+def _effective_status_filter(status_value: str) -> Q:
+    lesson = models.LessonAttendance
+    if status_value == lesson.PHOTO_SPOOF_STATUS_CLEAN:
+        return Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_CLEAN) | (
+            Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_NONE)
+            & Q(photo_spoof_status=lesson.PHOTO_SPOOF_STATUS_CLEAN)
+        )
+    if status_value == lesson.PHOTO_SPOOF_STATUS_SUSPICIOUS:
+        return Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_SUSPICIOUS) | (
+            Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_NONE)
+            & Q(photo_spoof_status=lesson.PHOTO_SPOOF_STATUS_SUSPICIOUS)
+        )
+    return Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_NONE) & Q(
+        photo_spoof_status=status_value
+    )
+
+
+def _sanitize_photo_group_name(name: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_\\-\\.]", "_", name)[:100]
+
+
+def _invalidate_photo_cache_for_records(records: List[models.LessonAttendance]) -> None:
+    if not records:
+        return
+    unique_dates = {record.date_at for record in records}
+    for lesson_date in unique_dates:
+        cache.delete(f"photos_for_{lesson_date}")
+
+
+def _broadcast_photo_updates(records: List[models.LessonAttendance]) -> None:
+    if not records:
+        return
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
+    version_ts = timezone.now().isoformat()
+    grouped_ids: dict[str, list[int]] = {}
+    for record in records:
+        key = record.date_at.isoformat()
+        grouped_ids.setdefault(key, []).append(record.id)
+
+    for iso_date, raw_ids in grouped_ids.items():
+        group_name = _sanitize_photo_group_name(f"photos_{iso_date}")
+        unique_ids = list(dict.fromkeys(raw_ids))
+        try:
+            for start in range(0, len(unique_ids), 200):
+                chunk = unique_ids[start : start + 200]
+                payload = {
+                    "type": "new_photo",
+                    "attendance_ids": chunk,
+                    "op": "updated",
+                    "stateCode": "UPDATED_META",
+                    "versionTs": version_ts,
+                }
+                if len(chunk) == 1:
+                    payload["attendance_id"] = chunk[0]
+                async_to_sync(channel_layer.group_send)(group_name, payload)
+        except Exception:
+            logger.exception(
+                "Failed to broadcast lesson attendance photo bulk update ids=%s date=%s",
+                unique_ids[:10],
+                iso_date,
+            )
+
+
+@api_view(["GET", "POST", "PUT", "PATCH"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def lesson_attendance_photo_verdicts(request, attendance_id=None):
+    """GET — список/детали PAD статусов; POST/PUT/PATCH — ручные и bulk-вердикты."""
+    attendance_id = int(attendance_id) if attendance_id is not None else None
+    base_qs = (
+        models.LessonAttendance.objects.select_related("staff__department", "photo_manual_by")
+        .only(*PHOTO_VERDICT_ONLY_FIELDS)
+        .order_by("-first_in", "-id")
+    )
+
+    if request.method == "GET":
+        ids = _extract_photo_ids_from_request(request, attendance_id)
+        qs = base_qs
+        if ids:
+            qs = qs.filter(id__in=ids)
+            records = list(qs)
+            by_id = {record.id: record for record in records}
+            ordered = [by_id[id_value] for id_value in ids if id_value in by_id]
+            return Response(
+                {
+                    "choices": _photo_verdict_choices_payload(),
+                    "count": len(ordered),
+                    "limit": len(ordered),
+                    "offset": 0,
+                    "results": [
+                        _serialize_lesson_attendance_photo(record) for record in ordered
+                    ],
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        date_str = request.query_params.get("date")
+        if date_str:
+            try:
+                filter_date = datetime.date.fromisoformat(date_str)
+            except ValueError:
+                raise ValidationError("Неверный формат date. Используй YYYY-MM-DD.")
+        else:
+            filter_date = timezone.localdate()
+        qs = qs.filter(date_at=filter_date)
+
+        staff_pin = str(request.query_params.get("staff_pin") or "").strip().upper()
+        if staff_pin:
+            qs = qs.filter(staff__pin__iexact=staff_pin)
+
+        auto_status = str(request.query_params.get("photo_spoof_status") or "").strip()
+        if auto_status:
+            allowed_auto_statuses = {
+                value
+                for value, _ in models.LessonAttendance.PHOTO_SPOOF_STATUS_CHOICES
+            }
+            if auto_status not in allowed_auto_statuses:
+                raise ValidationError(
+                    f"Некорректный photo_spoof_status={auto_status}."
+                )
+            qs = qs.filter(photo_spoof_status=auto_status)
+
+        manual_verdict = str(request.query_params.get("photo_manual_verdict") or "").strip()
+        if manual_verdict:
+            allowed_manual_verdicts = {
+                value
+                for value, _ in models.LessonAttendance.PHOTO_MANUAL_VERDICT_CHOICES
+            }
+            if manual_verdict not in allowed_manual_verdicts:
+                raise ValidationError(
+                    f"Некорректный photo_manual_verdict={manual_verdict}."
+                )
+            qs = qs.filter(photo_manual_verdict=manual_verdict)
+
+        effective_status = str(
+            request.query_params.get("photo_effective_status") or ""
+        ).strip()
+        if effective_status:
+            allowed_effective_statuses = {
+                value
+                for value, _ in models.LessonAttendance.PHOTO_SPOOF_STATUS_CHOICES
+            }
+            if effective_status not in allowed_effective_statuses:
+                raise ValidationError(
+                    f"Некорректный photo_effective_status={effective_status}."
+                )
+            qs = qs.filter(_effective_status_filter(effective_status))
+
+        has_photo_param = request.query_params.get("has_photo")
+        if has_photo_param is not None:
+            has_photo = _parse_bool(has_photo_param, default=True)
+            if has_photo:
+                qs = qs.filter(staff_image_path__isnull=False).exclude(staff_image_path="")
+            else:
+                qs = qs.filter(Q(staff_image_path__isnull=True) | Q(staff_image_path=""))
+
+        limit = _parse_positive_int(
+            request.query_params.get("limit"),
+            default=PHOTO_VERDICT_DEFAULT_LIMIT,
+            minimum=1,
+            maximum=PHOTO_VERDICT_MAX_LIMIT,
+        )
+        offset = _parse_positive_int(
+            request.query_params.get("offset"),
+            default=0,
+            minimum=0,
+            maximum=200000,
+        )
+
+        total = qs.count()
+        records = list(qs[offset : offset + limit])
+        return Response(
+            {
+                "choices": _photo_verdict_choices_payload(),
+                "count": total,
+                "limit": limit,
+                "offset": offset,
+                "results": [
+                    _serialize_lesson_attendance_photo(record) for record in records
+                ],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    ids = _extract_photo_ids_from_request(request, attendance_id)
+    if not ids:
+        raise ValidationError("Передай id или ids для изменения вердикта.")
+
+    payload = request.data if isinstance(request.data, dict) else {}
+    action = str(payload.get("action") or "").strip().lower()
+    manual_verdict = str(payload.get("manual_verdict") or "").strip().lower()
+    if not action and manual_verdict:
+        if manual_verdict == models.LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN:
+            action = PHOTO_VERDICT_ACTION_MANUAL_CLEAN
+        elif manual_verdict == models.LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS:
+            action = PHOTO_VERDICT_ACTION_MANUAL_SUSPICIOUS
+        elif manual_verdict == models.LessonAttendance.PHOTO_MANUAL_VERDICT_NONE:
+            action = PHOTO_VERDICT_ACTION_MANUAL_RESET
+
+    if action not in PHOTO_VERDICT_ACTIONS:
+        raise ValidationError(
+            "Некорректный action. Используй one of: "
+            f"{', '.join(sorted(PHOTO_VERDICT_ACTIONS))}."
+        )
+
+    records = list(base_qs.filter(id__in=ids))
+    if not records:
+        return Response(
+            {"detail": "Записи не найдены."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    by_id = {record.id: record for record in records}
+    ordered_records = [by_id[id_value] for id_value in ids if id_value in by_id]
+    resolved_ids = [record.id for record in ordered_records]
+
+    changed_records: list[models.LessonAttendance] = []
+    skipped_ids: list[int] = []
+    error_items: list[dict[str, Any]] = []
+
+    if action in {
+        PHOTO_VERDICT_ACTION_MANUAL_CLEAN,
+        PHOTO_VERDICT_ACTION_MANUAL_SUSPICIOUS,
+        PHOTO_VERDICT_ACTION_MANUAL_RESET,
+    }:
+        now_dt = timezone.now()
+        actor = request.user if getattr(request.user, "is_authenticated", False) else None
+        actor_id = actor.id if actor is not None else None
+        manual_comment = str(payload.get("manual_comment") or "").strip()
+
+        if action == PHOTO_VERDICT_ACTION_MANUAL_CLEAN:
+            verdict = models.LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN
+            manual_at = now_dt
+            db_comment = manual_comment
+        elif action == PHOTO_VERDICT_ACTION_MANUAL_SUSPICIOUS:
+            verdict = models.LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS
+            manual_at = now_dt
+            db_comment = manual_comment
+        else:
+            verdict = models.LessonAttendance.PHOTO_MANUAL_VERDICT_NONE
+            manual_at = None
+            db_comment = ""
+            actor_id = None
+            actor = None
+
+        updatable_records = ordered_records
+        if action in {
+            PHOTO_VERDICT_ACTION_MANUAL_CLEAN,
+            PHOTO_VERDICT_ACTION_MANUAL_SUSPICIOUS,
+        }:
+            updatable_records = [
+                record for record in ordered_records if record.photo_can_set_manual_verdict
+            ]
+            skipped_ids.extend(
+                record.id
+                for record in ordered_records
+                if not record.photo_can_set_manual_verdict
+            )
+
+        updatable_ids = [record.id for record in updatable_records]
+        if not updatable_ids:
+            updatable_records = []
+
+        models.LessonAttendance.objects.filter(id__in=updatable_ids).update(
+            photo_manual_verdict=verdict,
+            photo_manual_comment=db_comment,
+            photo_manual_by_id=actor_id,
+            photo_manual_at=manual_at,
+        )
+        for record in updatable_records:
+            record.photo_manual_verdict = verdict
+            record.photo_manual_comment = db_comment
+            record.photo_manual_by_id = actor_id
+            record.photo_manual_at = manual_at
+            record.photo_manual_by = actor
+        changed_records = updatable_records
+
+    elif action == PHOTO_VERDICT_ACTION_RESCAN:
+        from monitoring_app.photo_pad import MANUAL_NONE, check_photo, normalize_device
+
+        force_manual = _parse_bool(payload.get("force_manual"), default=False)
+        device = normalize_device(payload.get("device"))
+        for record in ordered_records:
+            image_path = record.staff_image_path
+            if not image_path:
+                error_items.append({"id": record.id, "error": "no_photo"})
+                continue
+            if (
+                not force_manual
+                and record.photo_manual_verdict != MANUAL_NONE
+            ):
+                skipped_ids.append(record.id)
+                continue
+            try:
+                result = check_photo(image_path=image_path, device=device)
+            except Exception as exc:
+                logger.exception(
+                    "lesson_attendance_photo_verdicts rescan failed id=%s path=%s",
+                    record.id,
+                    image_path,
+                )
+                error_items.append({"id": record.id, "error": str(exc)})
+                continue
+
+            update_kwargs = result.to_update_kwargs()
+            models.LessonAttendance.objects.filter(id=record.id).update(**update_kwargs)
+            record.photo_trust_confirmed = update_kwargs["photo_trust_confirmed"]
+            record.photo_spoof_status = update_kwargs["photo_spoof_status"]
+            record.photo_spoof_score = update_kwargs["photo_spoof_score"]
+            record.photo_spoof_tags = update_kwargs["photo_spoof_tags"]
+            record.photo_spoof_checked_at = update_kwargs["photo_spoof_checked_at"]
+            record.photo_spoof_model_version = update_kwargs["photo_spoof_model_version"]
+            changed_records.append(record)
+
+    _invalidate_photo_cache_for_records(changed_records)
+    _broadcast_photo_updates(changed_records)
+
+    return Response(
+        {
+            "action": action,
+            "updated_count": len(changed_records),
+            "skipped_ids": skipped_ids,
+            "errors": error_items,
+            "results": [
+                _serialize_lesson_attendance_photo(record) for record in changed_records
+            ],
+            "choices": _photo_verdict_choices_payload(),
+        },
+        status=status.HTTP_200_OK,
+    )
 
 
 @swagger_auto_schema(

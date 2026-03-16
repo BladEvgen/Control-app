@@ -6,10 +6,10 @@ from contextlib import AbstractContextManager
 from datetime import timedelta
 from functools import reduce
 from operator import or_
-from typing import cast
+from typing import Any, cast
 
 from django.conf import settings
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.contrib.admin import SimpleListFilter
 from django.contrib.admin.models import LogEntry
 from django.contrib.admin.views.decorators import staff_member_required
@@ -27,7 +27,7 @@ from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
 from django_admin_geomap import ModelAdmin
 from monitoring_app import utils as monitoring_utils
 from monitoring_app.lesson_locations_conf import (
@@ -1913,8 +1913,53 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         js = ("admin/js/attendance_admin.js",)
 
 
+class PhotoEffectiveStatusFilter(SimpleListFilter):
+    title = "Эффективный фото-статус"
+    parameter_name = "photo_effective_status"
+
+    def lookups(self, request, model_admin):
+        _ = request
+        _ = model_admin
+        return (
+            (LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN, "Нормальное"),
+            (LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW, "На ручную проверку"),
+            (LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS, "Подозрительное"),
+            (LessonAttendance.PHOTO_SPOOF_STATUS_PENDING, "Ожидает проверки"),
+            (LessonAttendance.PHOTO_SPOOF_STATUS_ERROR, "Ошибка проверки"),
+        )
+
+    def queryset(self, request, queryset):
+        _ = request
+        value = self.value()
+        if value is None:
+            return queryset
+
+        if value == LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN:
+            return queryset.filter(
+                Q(photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN)
+                | (
+                    Q(photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE)
+                    & Q(photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN)
+                )
+            )
+
+        if value == LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS:
+            return queryset.filter(
+                Q(photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS)
+                | (
+                    Q(photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE)
+                    & Q(photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS)
+                )
+            )
+
+        return queryset.filter(
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+            photo_spoof_status=value,
+        )
+
+
 class LessonAttendanceAdmin(ModelAdmin):
-    change_list_template = "admin/change_list_filter_sidebar.html"
+    change_list_template = "admin/lessonattendance_change_list.html"
     geomap_field_longitude = "id_longitude"
     geomap_field_latitude = "id_latitude"
     geomap_show_map_on_list = False
@@ -1937,11 +1982,26 @@ class LessonAttendanceAdmin(ModelAdmin):
         "location_map",
         "lesson_duration",
         "formatted_duration_seconds",
+        "photo_effective_status_badge",
+        "photo_verdict_summary",
+        "photo_spoof_score_short",
+        "photo_spoof_checked_at",
+        "photo_spoof_status_badge",
+        "photo_manual_verdict_badge",
+        "photo_manual_by",
+        "photo_manual_at",
     )
     date_hierarchy = "date_at"
-    actions = ["export_lesson_data", "cleanup_old_photos"]
+    actions = [
+        "export_lesson_data",
+        "cleanup_old_photos",
+        "mark_photo_manual_clean",
+        "mark_photo_manual_suspicious",
+        "reset_photo_manual_verdict",
+        "rescan_selected_photos",
+    ]
     show_full_result_count = False
-    list_select_related = ("staff", "staff__department")
+    list_select_related = ("staff", "staff__department", "photo_manual_by")
 
     fieldsets = (
         (
@@ -1958,6 +2018,43 @@ class LessonAttendanceAdmin(ModelAdmin):
                     "date_at",
                 ),
                 "classes": ("wide",),
+            },
+        ),
+        (
+            "Проверка фото",
+            {
+                "fields": ("photo_effective_status_badge", "photo_verdict_summary"),
+                "classes": ("wide",),
+            },
+        ),
+        (
+            "Ручное решение",
+            {
+                "fields": (
+                    ("photo_manual_verdict", "photo_manual_verdict_badge"),
+                    ("photo_manual_by", "photo_manual_at"),
+                ),
+                "classes": ("wide",),
+            },
+        ),
+        (
+            "Автоматическая проверка",
+            {
+                "fields": (
+                    (
+                        "photo_spoof_status_badge",
+                        "photo_spoof_score_short",
+                    ),
+                    "photo_spoof_checked_at",
+                ),
+                "classes": ("wide", "grp-collapse", "grp-closed"),
+            },
+        ),
+        (
+            "Комментарий ручной проверки",
+            {
+                "fields": ("photo_manual_comment",),
+                "classes": ("wide", "grp-collapse", "grp-closed"),
             },
         ),
         (
@@ -1993,15 +2090,18 @@ class LessonAttendanceAdmin(ModelAdmin):
         "lesson_duration",
         "date_at",
         "has_photo",
+        "photo_effective_status_badge",
+        "photo_spoof_score_short",
     )
     list_per_page = 50
+    list_display_links = ("staff", "photo_effective_status_badge")
 
     list_filter = (
+        PhotoEffectiveStatusFilter,
         DateRangeFilter,
         monitoring_utils.HierarchicalDepartmentFilter,
-        "subject_name",
-        ("first_in", admin.DateFieldListFilter),
-        ("last_out", admin.DateFieldListFilter),
+        "photo_manual_verdict",
+        "photo_spoof_status",
     )
 
     search_fields = (
@@ -2194,6 +2294,13 @@ class LessonAttendanceAdmin(ModelAdmin):
             "staff_image_path",
             "latitude",
             "longitude",
+            "photo_spoof_status",
+            "photo_spoof_score",
+            "photo_spoof_checked_at",
+            "photo_manual_verdict",
+            "photo_manual_comment",
+            "photo_manual_by",
+            "photo_manual_at",
         )
 
         photo_expired = request.GET.get("photo_expired")
@@ -2213,6 +2320,251 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     has_photo.boolean = True
     has_photo.short_description = "Фотография"
+
+    @staticmethod
+    def _format_photo_status_badge(status_value: str, source: str):
+        status_map = {
+            LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN: ("#2e7d32", "Нормальное"),
+            LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW: ("#f57c00", "На проверку"),
+            LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS: ("#c62828", "Подозрительное"),
+            LessonAttendance.PHOTO_SPOOF_STATUS_PENDING: ("#6d6d6d", "Ожидает"),
+            LessonAttendance.PHOTO_SPOOF_STATUS_ERROR: ("#616161", "Ошибка"),
+        }
+        color, label = status_map.get(status_value, ("#616161", status_value or "Неизвестно"))
+        return format_html(
+            "<span style='color:{}; font-weight:600;'>{}</span><br><small style='color:#666;'>{}</small>",
+            color,
+            label,
+            source,
+        )
+
+    def photo_effective_status_badge(self, obj):
+        if obj.photo_manual_verdict == LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN:
+            return self._format_photo_status_badge(
+                LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN, "ручное"
+            )
+        if obj.photo_manual_verdict == LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS:
+            return self._format_photo_status_badge(
+                LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS, "ручное"
+            )
+        return self._format_photo_status_badge(obj.photo_spoof_status, "авто")
+
+    photo_effective_status_badge.short_description = "Фото-вердикт"
+
+    def photo_manual_verdict_badge(self, obj):
+        verdict_map = {
+            LessonAttendance.PHOTO_MANUAL_VERDICT_NONE: ("#6b7280", "Нет ручного вердикта"),
+            LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN: ("#2e7d32", "Нормальное"),
+            LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS: ("#ad1457", "Подозрительное (ручное)"),
+        }
+        color, label = verdict_map.get(
+            obj.photo_manual_verdict,
+            ("#6b7280", obj.get_photo_manual_verdict_display()),
+        )
+        return format_html(
+            "<span style='color:{}; font-weight:600;'>{}</span>",
+            color,
+            label,
+        )
+
+    photo_manual_verdict_badge.short_description = "Ручной вердикт"
+
+    def photo_spoof_status_badge(self, obj):
+        return self._format_photo_status_badge(obj.photo_spoof_status, "авто")
+
+    photo_spoof_status_badge.short_description = "Авто-статус"
+
+    def photo_spoof_score_short(self, obj):
+        if obj.photo_spoof_score is None:
+            return format_html("<span style='color:#9ca3af;'>—</span>")
+        score = float(obj.photo_spoof_score)
+        score_text = f"{score:.3f}"
+        if score >= 0.75:
+            color = "#c62828"
+        elif score >= 0.50:
+            color = "#ef6c00"
+        else:
+            color = "#455a64"
+        return format_html(
+            "<span style='color:{}; font-weight:600;'>{}</span>",
+            color,
+            score_text,
+        )
+
+    photo_spoof_score_short.short_description = "PAD score"
+
+    def photo_spoof_tags_pretty(self, obj):
+        tags = obj.photo_spoof_tags or []
+        if not tags:
+            return format_html("<span style='color:#999;'>—</span>")
+        if isinstance(tags, list):
+            return format_html_join(
+                "",
+                "<span class='la-tag'>{}</span> ",
+                ((str(tag),) for tag in tags),
+            )
+        return format_html(str(tags))
+
+    photo_spoof_tags_pretty.short_description = "PAD теги"
+
+    def photo_status_details_short(self, obj):
+        manual_label = obj.get_photo_manual_verdict_display()
+        auto_label = obj.get_photo_spoof_status_display()
+        score = (
+            "—"
+            if obj.photo_spoof_score is None
+            else f"{float(obj.photo_spoof_score):.3f}"
+        )
+        return format_html(
+            "<span style='color:#4b5563;'>manual:</span> {}<br>"
+            "<span style='color:#4b5563;'>auto:</span> {}<br>"
+            "<span style='color:#4b5563;'>score:</span> {}",
+            manual_label,
+            auto_label,
+            score,
+        )
+
+    photo_status_details_short.short_description = "Антифрод детали"
+
+    def photo_verdict_summary(self, obj):
+        effective_source = (
+            "ручное"
+            if obj.photo_manual_verdict != LessonAttendance.PHOTO_MANUAL_VERDICT_NONE
+            else "авто"
+        )
+        checked_at = (
+            timezone.localtime(obj.photo_spoof_checked_at).strftime("%d.%m.%Y %H:%M:%S")
+            if obj.photo_spoof_checked_at
+            else "—"
+        )
+        manual_at = (
+            timezone.localtime(obj.photo_manual_at).strftime("%d.%m.%Y %H:%M:%S")
+            if obj.photo_manual_at
+            else "—"
+        )
+        score = "—" if obj.photo_spoof_score is None else f"{float(obj.photo_spoof_score):.3f}"
+        manual_display = obj.get_photo_manual_verdict_display()
+        auto_display = obj.get_photo_spoof_status_display()
+        need_review = obj.photo_spoof_status in {
+            LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
+            LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+            LessonAttendance.PHOTO_SPOOF_STATUS_ERROR,
+        }
+        return format_html(
+            "<div class='la-verdict-summary'>"
+            "  <div class='la-summary-row'><span class='la-k'>Эффективный вердикт:</span><span class='la-v'>{}</span></div>"
+            "  <div class='la-summary-row'><span class='la-k'>Источник:</span><span class='la-v'>{}</span></div>"
+            "  <div class='la-summary-row'><span class='la-k'>Авто-статус:</span><span class='la-v'>{}</span></div>"
+            "  <div class='la-summary-row'><span class='la-k'>Ручной вердикт:</span><span class='la-v'>{}</span></div>"
+            "  <div class='la-summary-row'><span class='la-k'>PAD score:</span><span class='la-v'>{}</span></div>"
+            "  <div class='la-summary-row'><span class='la-k'>Проверено авто:</span><span class='la-v'>{}</span></div>"
+            "  <div class='la-summary-row'><span class='la-k'>Проверено вручную:</span><span class='la-v'>{}</span></div>"
+            "  <div class='la-summary-row'><span class='la-k'>Нужна ручная проверка:</span><span class='la-v'>{}</span></div>"
+            "</div>",
+            self.photo_effective_status_badge(obj),
+            effective_source,
+            auto_display,
+            manual_display,
+            score,
+            checked_at,
+            manual_at,
+            "Да" if need_review else "Нет",
+        )
+
+    photo_verdict_summary.short_description = "Сводка антифрод-вердикта"
+
+    @staticmethod
+    def _manual_verdict_update(
+        request,
+        queryset,
+        verdict: str,
+        comment: str,
+    ) -> int:
+        return queryset.update(
+            photo_manual_verdict=verdict,
+            photo_manual_comment=comment,
+            photo_manual_by=request.user,
+            photo_manual_at=timezone.now(),
+        )
+
+    def mark_photo_manual_clean(self, request, queryset):
+        updated = self._manual_verdict_update(
+            request=request,
+            queryset=queryset,
+            verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN,
+            comment="Manual clean via admin action",
+        )
+        self.message_user(request, f"Ручной вердикт «Нормальное» установлен: {updated}.")
+
+    mark_photo_manual_clean.short_description = "Отметить как нормальное (manual)"
+
+    def mark_photo_manual_suspicious(self, request, queryset):
+        updated = self._manual_verdict_update(
+            request=request,
+            queryset=queryset,
+            verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS,
+            comment="Manual suspicious via admin action",
+        )
+        self.message_user(
+            request,
+            f"Ручной вердикт «Подозрительное (ручное)» установлен: {updated}.",
+        )
+
+    mark_photo_manual_suspicious.short_description = "Отметить как подозрительное (manual)"
+
+    def reset_photo_manual_verdict(self, request, queryset):
+        updated = queryset.update(
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+            photo_manual_comment="",
+            photo_manual_by=None,
+            photo_manual_at=None,
+        )
+        self.message_user(request, f"Ручной вердикт сброшен: {updated}.")
+
+    reset_photo_manual_verdict.short_description = "Сбросить ручной вердикт фото"
+
+    def rescan_selected_photos(self, request, queryset):
+        from monitoring_app.tasks import rescan_lesson_attendance_photo_ids
+
+        selected_ids = list(queryset.values_list("id", flat=True))
+        if not selected_ids:
+            self.message_user(
+                request,
+                "Не выбраны записи для перескана.",
+                level=messages.WARNING,
+            )
+            return
+        try:
+            rescan_task = cast(Any, rescan_lesson_attendance_photo_ids)
+            task = rescan_task.delay(
+                attendance_ids=selected_ids,
+                device=getattr(settings, "PHOTO_PAD_DEVICE", "auto"),
+                force_manual=False,
+                batch_size=getattr(settings, "PHOTO_PAD_HOURLY_BATCH_SIZE", 100),
+            )
+        except Exception as exc:
+            logger.exception(
+                "PAD rescan queue failed in admin action ids=%s error=%s",
+                selected_ids[:20],
+                exc,
+            )
+            self.message_user(
+                request,
+                "Не удалось поставить перескан в очередь. Проверь Celery/Rabbit/Redis.",
+                level=messages.ERROR,
+            )
+            return
+
+        self.message_user(
+            request,
+            (
+                f"Перескан поставлен в очередь: {len(selected_ids)} записей. "
+                f"Task ID: {task.id}"
+            ),
+            level=messages.SUCCESS,
+        )
+
+    rescan_selected_photos.short_description = "Пересканировать выбранные фото (auto)"
 
     def closest_location(self, obj):
         if obj.latitude is None or obj.longitude is None:
@@ -2300,6 +2652,16 @@ class LessonAttendanceAdmin(ModelAdmin):
         self.message_user(request, f"Удалены старые фотографии для {count} занятий.")
 
     cleanup_old_photos.short_description = "Удалить старые фотографии"
+
+    def save_model(self, request, obj, form, change):
+        if change and "photo_manual_verdict" in form.changed_data:
+            if obj.photo_manual_verdict == LessonAttendance.PHOTO_MANUAL_VERDICT_NONE:
+                obj.photo_manual_by = None
+                obj.photo_manual_at = None
+            else:
+                obj.photo_manual_by = request.user
+                obj.photo_manual_at = timezone.now()
+        super().save_model(request, obj, form, change)
 
     class Media:
         css = {"all": ("admin/css/custom_admin.css",)}
