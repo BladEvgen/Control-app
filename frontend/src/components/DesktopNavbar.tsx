@@ -19,8 +19,8 @@ import {
 import { ImCamera } from "react-icons/im";
 import { FaMapLocationDot } from "react-icons/fa6";
 import { MdDashboard } from "react-icons/md";
-import { useUserContext } from "../context/UserContext";
-import { logoutUser, isAuthenticated } from "../utils/authHelpers";
+import { useAuth } from "../store/hooks";
+import { isAuthenticated } from "../utils/authHelpers";
 
 type DesktopNavbarProps = {
   toggleTheme: () => void;
@@ -32,7 +32,7 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
   currentTheme,
 }) => {
   const navigate = useNavigate();
-  const { user, setUser } = useUserContext();
+  const { user, logout } = useAuth();
 
   const isAuth = isAuthenticated() && Boolean(user);
   const username = user ? user.username : "";
@@ -50,44 +50,43 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
   const profileButtonRef = useRef<HTMLButtonElement>(null);
 
   const handleLogout = useCallback(() => {
-    logoutUser(navigate, () => {
-      setUser(null);
-      setIsDropdownOpen(false);
-      setIsStatsDropdownOpen(false);
-    });
-  }, [navigate, setUser]);
+    logout();
+    setIsDropdownOpen(false);
+    setIsStatsDropdownOpen(false);
+    navigate("/login");
+  }, [navigate, logout]);
 
-  let dropdownCloseTimeoutRef: number | null = null;
-  let statsDropdownCloseTimeoutRef: number | null = null;
+  const dropdownCloseTimeoutRef = useRef<number | null>(null);
+  const statsDropdownCloseTimeoutRef = useRef<number | null>(null);
 
-  const handleMouseEnter = () => {
-    if (dropdownCloseTimeoutRef) {
-      clearTimeout(dropdownCloseTimeoutRef);
-      dropdownCloseTimeoutRef = null;
+  const handleMouseEnter = useCallback(() => {
+    if (dropdownCloseTimeoutRef.current) {
+      clearTimeout(dropdownCloseTimeoutRef.current);
+      dropdownCloseTimeoutRef.current = null;
     }
     setIsDropdownOpen(true);
-  };
+  }, []);
 
-  const handleMouseLeave = () => {
-    dropdownCloseTimeoutRef = window.setTimeout(() => {
+  const handleMouseLeave = useCallback(() => {
+    dropdownCloseTimeoutRef.current = window.setTimeout(() => {
       setIsDropdownOpen(false);
       setIsStatsDropdownOpen(false);
     }, 200);
-  };
+  }, []);
 
-  const handleStatsMouseEnter = () => {
-    if (statsDropdownCloseTimeoutRef) {
-      clearTimeout(statsDropdownCloseTimeoutRef);
-      statsDropdownCloseTimeoutRef = null;
+  const handleStatsMouseEnter = useCallback(() => {
+    if (statsDropdownCloseTimeoutRef.current) {
+      clearTimeout(statsDropdownCloseTimeoutRef.current);
+      statsDropdownCloseTimeoutRef.current = null;
     }
     setIsStatsDropdownOpen(true);
-  };
+  }, []);
 
-  const handleStatsMouseLeave = () => {
-    statsDropdownCloseTimeoutRef = window.setTimeout(() => {
+  const handleStatsMouseLeave = useCallback(() => {
+    statsDropdownCloseTimeoutRef.current = window.setTimeout(() => {
       setIsStatsDropdownOpen(false);
     }, 200);
-  };
+  }, []);
 
   useEffect(() => {
     const handleUserLoggedOut = () => {
@@ -232,6 +231,8 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
       toggleTheme,
       currentTheme,
       handleLogout,
+      handleStatsMouseEnter,
+      handleStatsMouseLeave,
     ]
   );
 
@@ -255,7 +256,7 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
         {isDropdownOpen && DropdownMenu}
       </div>
     ),
-    [DropdownMenu, isDropdownOpen, username]
+    [DropdownMenu, isDropdownOpen, username, handleMouseEnter, handleMouseLeave]
   );
 
   const UnauthenticatedMenu = useMemo(

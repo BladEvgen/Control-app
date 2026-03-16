@@ -1,8 +1,8 @@
 import os
 
+from django.core.management.base import BaseCommand
 from django.utils import timezone
 from monitoring_app.models import LessonAttendance
-from django.core.management.base import BaseCommand
 
 
 class Command(BaseCommand):
@@ -10,7 +10,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **kwargs):
         cutoff_date = timezone.now().date() - timezone.timedelta(days=31)
-        records = LessonAttendance.objects.filter(date_at__lt=cutoff_date)
+        records = LessonAttendance.objects.filter(date_at__lt=cutoff_date).only(
+            "id", "date_at", "staff_image_path"
+        )
 
         for record in records:
             if record.staff_image_path and os.path.exists(record.staff_image_path):

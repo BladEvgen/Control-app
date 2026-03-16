@@ -10,6 +10,153 @@
 
 <body>
   <div id="root"></div>
+  <div id="boot-loading"
+    style="display:flex;padding:2rem;text-align:center;font-family:system-ui,sans-serif;max-width:560px;margin:2rem auto;border:1px solid #dbeafe;background:#f8fbff;border-radius:16px;align-items:center;justify-content:center;gap:0.75rem;color:#1f2937;">
+    <span style="display:inline-block;width:14px;height:14px;border:2px solid #93c5fd;border-top-color:#2563eb;border-radius:9999px;animation:boot-spin 0.8s linear infinite;"></span>
+    <span>Загрузка приложения...</span>
+  </div>
+  <div id="load-error"
+    style="display:none;padding:2rem;text-align:center;font-family:system-ui,sans-serif;max-width:560px;margin:2rem auto;border:1px solid #dbeafe;background:#eff6ff;border-radius:16px;">
+    <h2 id="load-error-title" style="margin-bottom:1rem;color:#1e40af;">Страница не загрузилась</h2>
+    <p id="load-error-text" style="margin-bottom:1rem;color:#1f2937;">
+      Браузер не поддерживает приложение или произошла ошибка загрузки.
+    </p>
+    <p id="load-error-details" style="margin-bottom:1rem;color:#4b5563;font-size:0.92rem;">
+      Обновите браузер/прошивку. Если не помогло, откройте дашборд на компьютере или телефоне.
+    </p>
+    <ul style="text-align:left;margin:0 auto 1.25rem auto;max-width:420px;color:#374151;font-size:0.9rem;padding-left:1rem;">
+      <li>Сделайте полную перезагрузку страницы (Hard Reload).</li>
+      <li>Проверьте дату и время на устройстве.</li>
+      <li>Попробуйте другой браузер или другое устройство.</li>
+    </ul>
+    <button type="button" onclick="location.reload()"
+      style="padding:0.55rem 1rem;font-size:0.98rem;cursor:pointer;background:#2563eb;color:white;border:none;border-radius:8px;">Обновить</button>
+  </div>
+  <noscript>
+    <p style="padding:2rem;text-align:center;font-family:system-ui">Для работы приложения необходим JavaScript. Включите его в настройках браузера.</p>
+  </noscript>
+  <style>
+    @keyframes boot-spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+  </style>
+  <script>
+    (function () {
+      var shown = false;
+      var booted = false;
+      var unloading = false;
+      var root = document.getElementById("root");
+      var loadingBox = document.getElementById("boot-loading");
+      var errorBox = document.getElementById("load-error");
+      var titleEl = document.getElementById("load-error-title");
+      var textEl = document.getElementById("load-error-text");
+      var detailsEl = document.getElementById("load-error-details");
+      var ua = navigator.userAgent || "";
+      var isTvBrowser = /TV|SmartTV|Tizen|WebOS|NetCast|HbbTV|Viera|BRAVIA/i.test(ua);
+      var abortLikeErrorRe = /\bAbortError\b|\bNS_BINDING_ABORTED\b|\bThe operation was aborted\b|\bThe user aborted a request\b/i;
+      var moduleLikeErrorRe = /\b(chunk|module script|dynamically imported module|importing a module)\b/i;
+
+      function updateText(reason, details) {
+        if (!titleEl || !textEl || !detailsEl) return;
+        titleEl.textContent = "Страница не загрузилась";
+        if (reason === "missing-features") {
+          textEl.textContent =
+            "Браузер слишком старый и не поддерживает необходимые функции приложения.";
+          detailsEl.textContent =
+            details || "Обновите браузер или откройте дашборд на другом устройстве.";
+          return;
+        }
+        if (reason === "tv-browser") {
+          textEl.textContent =
+            "Встроенный браузер телевизора ограничен и не смог загрузить приложение.";
+          detailsEl.textContent =
+            "Обновите ПО телевизора/браузера. Если не помогло, используйте ПК или смартфон.";
+          return;
+        }
+        if (reason === "no-root") {
+          textEl.textContent = "Ошибка инициализации интерфейса (#root не найден).";
+          detailsEl.textContent = "Перезагрузите страницу или обратитесь в техподдержку.";
+          return;
+        }
+        textEl.textContent = "Произошла ошибка загрузки приложения.";
+        detailsEl.textContent =
+          details || "Попробуйте полную перезагрузку страницы (Hard Reload).";
+      }
+
+      function show(reason, details) {
+        if (shown) return;
+        if (unloading) return;
+        if (root && root.querySelector("*")) return;
+        shown = true;
+        updateText(reason || (isTvBrowser ? "tv-browser" : "load-error"), details);
+        if (loadingBox) loadingBox.style.display = "none";
+        if (root) root.style.display = "none";
+        if (errorBox) errorBox.style.display = "block";
+      }
+
+      function checkRequiredFeatures() {
+        var missing = [];
+        if (!window.Promise) missing.push("Promise");
+        if (!window.fetch) missing.push("fetch");
+        if (!window.WebSocket) missing.push("WebSocket");
+        if (!window.Map) missing.push("Map");
+        if (!window.Set) missing.push("Set");
+        if (!window.Symbol || !Symbol.iterator) missing.push("Symbol");
+        if (!Array.prototype.includes) missing.push("Array.prototype.includes");
+        if (!window.URL || !window.URLSearchParams)
+          missing.push("URL/URLSearchParams");
+        return missing;
+      }
+
+      var missingFeatures = checkRequiredFeatures();
+      if (missingFeatures.length > 0) {
+        show("missing-features", "Отсутствуют: " + missingFeatures.join(", "));
+      }
+
+      window.__APP_BOOT__ = {
+        markMounted: function () {
+          booted = true;
+          if (loadingBox) loadingBox.style.display = "none";
+          if (root) root.style.display = "";
+          if (errorBox) errorBox.style.display = "none";
+        },
+        showFallback: function (reason, details) {
+          show(reason, details);
+        }
+      };
+
+      window.addEventListener("beforeunload", function () {
+        unloading = true;
+      });
+      window.addEventListener("pagehide", function () {
+        unloading = true;
+      });
+
+      window.addEventListener("error", function (event) {
+        if (booted || unloading) return;
+        var msg = String((event && (event.message || event.error && event.error.message)) || "");
+        if (abortLikeErrorRe.test(msg)) return;
+        if (!moduleLikeErrorRe.test(msg)) return;
+        show(isTvBrowser ? "tv-browser" : "load-error");
+      });
+      window.addEventListener("unhandledrejection", function (event) {
+        if (booted || unloading) return;
+        var reason = event && event.reason;
+        var msg = String((reason && (reason.message || reason)) || "");
+        if (abortLikeErrorRe.test(msg)) return;
+        if (!moduleLikeErrorRe.test(msg)) return;
+        show(isTvBrowser ? "tv-browser" : "load-error");
+      });
+
+      setTimeout(function () {
+        if (!booted && !unloading && root && !root.querySelector("*")) {
+          show(isTvBrowser ? "tv-browser" : "timeout");
+        }
+      }, 12000);
+    })();
+  </script>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 

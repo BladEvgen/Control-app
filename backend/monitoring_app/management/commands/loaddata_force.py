@@ -1,5 +1,5 @@
-import os
 import json
+import os
 
 from django.apps import apps
 from django.core.management import call_command

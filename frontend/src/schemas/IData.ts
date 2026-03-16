@@ -30,11 +30,11 @@ export interface IUserDetails {
     email: string;
     first_name: string;
     last_name: string;
-    date_joined: string;  
-    last_login: string | null;  
+    date_joined: string;
+    last_login: string | null;
     phonenumber: string;
     is_banned: boolean;
-    last_login_ip: string | null;  
+    last_login_ip: string | null;
   };
 }
 
@@ -59,11 +59,17 @@ export interface IChildDepartment {
   has_child_departments: boolean;
 }
 
+export interface IBreadcrumbPathItem {
+  id: string;
+  name: string;
+}
+
 export interface IData {
   name: string;
   date_of_creation: string;
   child_departments: IChildDepartment[];
   total_staff_count: number;
+  breadcrumb_path?: IBreadcrumbPathItem[];
 }
 
 export interface IStaffData {
@@ -78,6 +84,7 @@ export interface IChildDepartmentData {
   child_department: IChildDepartment;
   staff_count: number;
   staff_data: IStaffData;
+  breadcrumb_path?: IBreadcrumbPathItem[];
 }
 
 export interface StaffData {
@@ -99,10 +106,19 @@ export interface AttendanceData {
   last_out: string | null;
   percent_day: number;
   total_minutes: number;
+  effective_work_seconds?: number | null;
+  area_sequence?: Array<{ t: string; area: string }> | null;
   is_weekend: boolean;
   is_remote_work: boolean;
   is_absent_approved: boolean;
   absent_reason: string | null;
+}
+
+export interface AttendanceStatsPresentItem {
+  staff_pin: string;
+  name: string;
+  minutes_present?: number;
+  individual_percentage: number;
 }
 
 export interface AttendanceStats {
@@ -110,14 +126,10 @@ export interface AttendanceStats {
   total_staff_count: number;
   present_staff_count: number;
   absent_staff_count: number;
-  present_between_9_to_18: number;
-  present_data: Array<{
-    staff_pin: string;
-    name: string;
-    individual_percentage: number;
-  }>;
+  present_between_9_to_18?: number;
+  present_data: AttendanceStatsPresentItem[];
   absent_data: Array<{ staff_pin: string; name: string }>;
-  data_for_date : string;
+  data_for_date: string;
 }
 
 export interface LocationData {
@@ -129,10 +141,36 @@ export interface LocationData {
 }
 
 export interface PhotoData {
+  id?: number;
+  hasPhoto?: boolean;
   staffPin: string;
   staffFullName: string;
   department: string;
   photoUrl: string;
   attendanceTime: string;
   tutorInfo: string;
+  stateCode?: PhotoStateCode;
+  versionTs?: string;
+  op?: PhotoWsOp;
+}
+
+export type PhotoStateCode =
+  | "SNAPSHOT"
+  | "CREATED_NO_PHOTO"
+  | "PHOTO_ATTACHED"
+  | "UPDATED_META"
+  | "DELETED";
+
+export type PhotoWsOp = "snapshot" | "created" | "updated" | "deleted";
+
+export interface PhotoWsMessage {
+  type?: "initial_photos" | "photos_updated" | "heartbeat" | "ping" | "pong";
+  protocol?: string;
+  batchId?: string;
+  chunkIndex?: number;
+  totalChunks?: number;
+  sentAt?: string;
+  events?: PhotoData[];
+  photos?: PhotoData[];
+  newPhoto?: PhotoData;
 }

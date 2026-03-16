@@ -1,37 +1,27 @@
-# generate_face_masks.py
 import logging
 import traceback
-from django.core.management.base import BaseCommand
+
 from django.core.exceptions import ObjectDoesNotExist
-from monitoring_app.models import Staff, StaffFaceMask
-from monitoring_app.augment import run_albu_augmentation_for_all_staff
+from django.core.management.base import BaseCommand
+
+from monitoring_app.augment import run_dali_augmentation_for_all_staff
 from monitoring_app.ml import (
-    train_general_model,
     create_face_encoding,
     train_face_recognition_model,
+    train_general_model,
 )
+from monitoring_app.models import Staff, StaffFaceMask
 
 logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
     help = (
-        "Create/refresh masks, augment images, update embeddings, and optionally train models"
+        "Create masks for staff, augment images, generate embeddings, and train models"
     )
 
-    def add_arguments(self, parser):
-        parser.add_argument("--all", action="store_true", help="Process all staff")
-        parser.add_argument("--only-updated", action="store_true", help="Process only needs_training=True (default)")
-        parser.add_argument("--rebuild-index", action="store_true", help="Rebuild ANN index (no-op for sklearn)")
-        parser.add_argument("--skip-train", action="store_true", help="Skip MLP training stage")
-
     def handle(self, *args, **kwargs):
-        only_updated = kwargs.get("only_updated", True) and not kwargs.get("all", False)
-        # Step 1: Create masks for staff without them
-        base_qs = Staff.objects.filter(avatar__isnull=False)
-        if only_updated:
-            base_qs = base_qs.filter(needs_training=True)
-        staffs_without_mask = base_qs.exclude(
+        staffs_without_mask = Staff.objects.filter(avatar__isnull=False).exclude(
             face_mask__isnull=False
         )
 
@@ -91,29 +81,28 @@ class Command(BaseCommand):
                 )
             )
 
-        # Step 2: Augment images and train models for staff needing training
-        staff_needing_training = base_qs
+        staff_needing_training = Staff.objects.filter(
+            needs_training=True, avatar__isnull=False
+        )
 
         if staff_needing_training.exists():
             self.stdout.write(
                 self.style.SUCCESS("Starting image augmentation and training...")
             )
             try:
-                run_albu_augmentation_for_all_staff()
+                run_dali_augmentation_for_all_staff()
                 for staff in staff_needing_training:
                     self.stdout.write(
                         f"Training model for {staff.name} {staff.surname} (PIN: {staff.pin})"
                     )
                     try:
-                        # Check if avatar exists before training
                         if not staff.avatar or not staff.avatar.path:
                             logger.warning(
                                 f"Staff {staff.pin} has no associated avatar file. Skipping training."
                             )
                             continue
 
-                        if not kwargs.get("skip_train", False):
-                            train_face_recognition_model(staff)
+                        train_face_recognition_model(staff)
                         staff.needs_training = False
                         staff.save()
                         logger.info(f"Successfully trained model for {staff.pin}")

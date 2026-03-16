@@ -1,27 +1,37 @@
-import { Link, useNavigate } from "../RouterUtils";
-import { useState, useEffect } from "react";
+import { useNavigate } from "../RouterUtils";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  memo,
+  lazy,
+  Suspense,
+} from "react";
 import { useParams } from "react-router-dom";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { IChildDepartmentData } from "../schemas/IData";
 import { formatDepartmentName } from "../utils/utils";
+import { cacheManager } from "../utils/cache";
 import {
   FaUserCheck,
   FaUserTimes,
-  FaArrowLeft,
-  FaHome,
   FaBuilding,
   FaUsers,
+  FaChartBar,
+  FaChevronDown,
+  FaChevronUp,
 } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
-import FloatingButton from "../components/FloatingButton";
-
-import DesktopNavigation from "../components/DesktopNavigation";
+import Breadcrumbs from "../components/Breadcrumbs";
 import DateFilterBar from "../components/DateFilterBar";
 import SearchInput from "../components/SearchInput";
 import WaitNotification from "../components/WaitNotification";
 import useWaitNotification from "../hooks/useWaitNotification";
+
+const LazyDashboard = lazy(() => import("./Dashboard"));
 
 class BaseAction<T> {
   static SET_LOADING = "SET_LOADING";
@@ -57,12 +67,15 @@ const ChildDepartmentPage = () => {
   const today = new Date().toISOString().split("T")[0];
 
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
+  const [showDashboard, setShowDashboard] = useState<boolean>(false);
   const navigate = useNavigate();
 
   const { showWaitMessage, startWaitNotification, clearWaitNotification } =
     useWaitNotification();
 
-  const dispatch = (action: BaseAction<any>) => {
+  const dispatch = (
+    action: BaseAction<boolean | IChildDepartmentData | string | null>,
+  ) => {
     switch (action.type) {
       case BaseAction.SET_LOADING:
         setIsLoading(action.payload as boolean);
@@ -81,24 +94,38 @@ const ChildDepartmentPage = () => {
   };
 
   useEffect(() => {
-    const fetchData = async () => {
+    const fetchData = async (forceRefresh = false) => {
+      if (!id) return;
+
+      const cacheKey = `child_department_${id}`;
+      if (!forceRefresh) {
+        const cachedData = cacheManager.get<IChildDepartmentData>(cacheKey);
+        if (cachedData) {
+          dispatch(new BaseAction(BaseAction.SET_DATA, cachedData));
+          return;
+        }
+      } else {
+        cacheManager.invalidate(cacheKey);
+      }
+
       dispatch(new BaseAction(BaseAction.SET_LOADING, true));
       try {
         const res = await axiosInstance.get(
-          `${apiUrl}/api/child_department/${id}/`
+          `${apiUrl}/api/child_department/${id}/`,
         );
+        cacheManager.set(cacheKey, res.data);
         dispatch(new BaseAction(BaseAction.SET_DATA, res.data));
       } catch (err) {
         console.error("Error:", err);
         dispatch(
           new BaseAction(
             BaseAction.SET_ERROR,
-            "Не удалось загрузить данные. Пожалуйста, попробуйте еще раз."
-          )
+            "Не удалось загрузить данные. Пожалуйста, попробуйте еще раз.",
+          ),
         );
       }
     };
-    fetchData();
+    if (id) fetchData();
   }, [id]);
 
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -116,13 +143,48 @@ const ChildDepartmentPage = () => {
     }
   };
 
-  const navigateToChildDepartment = () => {
+  const navigateToParent = useCallback(() => {
     if (data?.child_department.parent) {
       navigate(`/department/${data.child_department.parent}`);
+    } else {
+      navigate("/");
     }
-  };
+  }, [data?.child_department.parent, navigate]);
 
-  const handleDownload = async () => {
+  const handleRowClick = useCallback(
+    (pin: string) => {
+      navigate(`/staffDetail/${pin}`);
+    },
+    [navigate],
+  );
+
+  const breadcrumbs = useMemo(() => {
+    const path = data?.breadcrumb_path;
+    if (path && path.length > 0) {
+      return path.map((item, idx) => {
+        const isLast = idx === path.length - 1;
+        return {
+          label: formatDepartmentName(item.name),
+          path: isLast ? undefined : `/department/${item.id}`,
+        };
+      });
+    }
+    const items: Array<{ label: string; path?: string; onClick?: () => void }> =
+      [];
+    if (data?.child_department.parent) {
+      items.push({
+        label: "Отделы",
+        onClick: navigateToParent,
+      });
+    }
+    if (data?.child_department?.name) {
+      items.push({ label: formatDepartmentName(data.child_department.name) });
+    }
+    return items;
+  }, [data?.child_department, data?.breadcrumb_path, navigateToParent]);
+
+  const handleDownload = useCallback(async () => {
+    if (!id) return;
     setIsDownloading(true);
     startWaitNotification();
 
@@ -133,7 +195,7 @@ const ChildDepartmentPage = () => {
           params: { startDate, endDate },
           responseType: "blob",
           timeout: 600000,
-        }
+        },
       );
       clearWaitNotification();
       setIsDownloading(false);
@@ -156,31 +218,48 @@ const ChildDepartmentPage = () => {
       clearWaitNotification();
       setIsDownloading(false);
     }
-  };
+  }, [
+    id,
+    startDate,
+    endDate,
+    data,
+    startWaitNotification,
+    clearWaitNotification,
+  ]);
 
   const isDownloadDisabled = !startDate || !endDate;
 
-  const filteredStaff = data?.staff_data
-    ? Object.entries(data.staff_data).filter(([, staff]) =>
-        staff.FIO.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : [];
+  const filteredStaff = useMemo(
+    () =>
+      data?.staff_data
+        ? Object.entries(data.staff_data).filter(([, staff]) =>
+            staff.FIO.toLowerCase().includes(searchQuery.toLowerCase()),
+          )
+        : [],
+    [data?.staff_data, searchQuery],
+  );
 
-  const containerVariants = {
-    hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: {
-        staggerChildren: 0.1,
-        delayChildren: 0.2,
+  const containerVariants = useMemo(
+    () => ({
+      hidden: { opacity: 0 },
+      visible: {
+        opacity: 1,
+        transition: {
+          staggerChildren: 0.1,
+          delayChildren: 0.2,
+        },
       },
-    },
-  };
+    }),
+    [],
+  );
 
-  const itemVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: { opacity: 1, y: 0 },
-  };
+  const itemVariants = useMemo(
+    () => ({
+      hidden: { opacity: 0, y: 10 },
+      visible: { opacity: 1, y: 0 },
+    }),
+    [],
+  );
 
   return (
     <AnimatePresence mode="sync">
@@ -204,28 +283,26 @@ const ChildDepartmentPage = () => {
             <h2 className="text-2xl font-bold text-red-600 dark:text-red-400 mb-4">
               {error}
             </h2>
-            <Link to="/" className="btn-primary mt-4">
+            <motion.button
+              onClick={() => navigate("/")}
+              className="btn-primary mt-4"
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
               Вернуться на главную
-            </Link>
+            </motion.button>
           </motion.div>
         ) : (
           <>
-            <motion.div
-              className="mb-8 flex items-center"
-              variants={itemVariants}
-            >
-              <FaBuilding className="text-primary-600 dark:text-primary-400 mr-3 text-2xl md:text-3xl" />
-              <h1 className="section-title mb-0">
-                {data?.child_department?.name &&
-                  formatDepartmentName(data.child_department.name)}
-              </h1>
-            </motion.div>
-
-            <motion.div variants={itemVariants}>
-              <DesktopNavigation
-                onHomeClick={() => navigate("/")}
-                onBackClick={navigateToChildDepartment}
-              />
+            <motion.div className="mb-6 space-y-4" variants={itemVariants}>
+              <div className="flex items-center">
+                <FaBuilding className="text-primary-600 dark:text-primary-400 mr-3 text-2xl md:text-3xl" />
+                <h1 className="section-title mb-0">
+                  {data?.child_department?.name &&
+                    formatDepartmentName(data.child_department.name)}
+                </h1>
+              </div>
+              <Breadcrumbs items={breadcrumbs} />
             </motion.div>
 
             <motion.div variants={itemVariants} className="mt-6 mb-6">
@@ -239,6 +316,44 @@ const ChildDepartmentPage = () => {
                 isDownloadDisabled={isDownloadDisabled}
                 today={today}
               />
+            </motion.div>
+
+            <motion.div variants={itemVariants} className="mb-6">
+              <button
+                type="button"
+                onClick={() => setShowDashboard((v) => !v)}
+                className="flex items-center justify-between w-full card p-4 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors rounded-lg border border-gray-200 dark:border-gray-700"
+                aria-expanded={showDashboard}
+              >
+                <span className="flex items-center gap-2 font-medium text-primary-700 dark:text-primary-300">
+                  <FaChartBar className="text-lg" />
+                  {showDashboard
+                    ? "Свернуть график посещаемости за день"
+                    : "Показать график посещаемости за день"}
+                </span>
+                {showDashboard ? (
+                  <FaChevronUp className="text-gray-500" />
+                ) : (
+                  <FaChevronDown className="text-gray-500" />
+                )}
+              </button>
+              <AnimatePresence>
+                {showDashboard && id && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-4 border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50/50 dark:bg-gray-900/30">
+                      <Suspense fallback={<LoaderComponent />}>
+                        <LazyDashboard pin={id} />
+                      </Suspense>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </motion.div>
 
             {showWaitMessage && (
@@ -280,6 +395,8 @@ const ChildDepartmentPage = () => {
             <motion.div
               className="block md:hidden space-y-4"
               variants={containerVariants}
+              initial="hidden"
+              animate="visible"
             >
               {filteredStaff.length === 0 ? (
                 <motion.div
@@ -295,15 +412,13 @@ const ChildDepartmentPage = () => {
                     variants={itemVariants}
                     whileHover={{ scale: 1.02 }}
                     transition={{ duration: 0.2 }}
-                    className="card p-5"
+                    className="card p-5 cursor-pointer"
+                    onClick={() => handleRowClick(pin)}
                   >
                     <div className="flex justify-between items-start">
-                      <Link
-                        to={`/staffDetail/${pin}`}
-                        className="text-primary-700 hover:text-primary-900 dark:text-primary-400 dark:hover:text-primary-300 font-semibold text-lg transition-colors"
-                      >
+                      <span className="text-primary-700 hover:text-primary-900 dark:text-primary-400 dark:hover:text-primary-300 font-semibold text-lg transition-colors">
                         {staff.FIO}
-                      </Link>
+                      </span>
                       <div className="p-1">
                         {staff.avatar ? (
                           <FaUserCheck
@@ -338,7 +453,7 @@ const ChildDepartmentPage = () => {
                           </span>{" "}
                           <span className="text-gray-800 dark:text-gray-200">
                             {new Date(
-                              staff.date_of_creation
+                              staff.date_of_creation,
                             ).toLocaleDateString()}
                           </span>
                         </div>
@@ -400,15 +515,13 @@ const ChildDepartmentPage = () => {
                     filteredStaff.map(([pin, staff]) => (
                       <tr
                         key={pin}
-                        className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors duration-150"
+                        className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors duration-150 cursor-pointer"
+                        onClick={() => handleRowClick(pin)}
                       >
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <Link
-                            to={`/staffDetail/${pin}`}
-                            className="text-primary-700 hover:text-primary-900 dark:text-primary-400 dark:hover:text-primary-300 font-medium transition-colors"
-                          >
+                          <span className="text-primary-700 hover:text-primary-900 dark:text-primary-400 dark:hover:text-primary-300 font-medium transition-colors">
                             {staff.FIO}
-                          </Link>
+                          </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           {staff.positions.length > 2 ? (
@@ -424,7 +537,7 @@ const ChildDepartmentPage = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400 font-mono">
                           {new Date(
-                            staff.date_of_creation
+                            staff.date_of_creation,
                           ).toLocaleDateString()}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -439,12 +552,9 @@ const ChildDepartmentPage = () => {
                           )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
-                          <Link
-                            to={`/staffDetail/${pin}`}
-                            className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-lg bg-primary-100 text-primary-700 hover:bg-primary-200 dark:bg-primary-900/30 dark:text-primary-400 dark:hover:bg-primary-800/50"
-                          >
+                          <span className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-lg bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400">
                             Показать детали
-                          </Link>
+                          </span>
                         </td>
                       </tr>
                     ))
@@ -455,26 +565,8 @@ const ChildDepartmentPage = () => {
           </>
         )}
       </motion.div>
-
-      {/* Floating buttons for mobile */}
-      {!isLoading && !error && (
-        <div className="block md:hidden">
-          <FloatingButton
-            variant="back"
-            icon={<FaArrowLeft size={20} />}
-            onClick={navigateToChildDepartment}
-            position="left"
-          />
-          <FloatingButton
-            variant="home"
-            icon={<FaHome size={20} />}
-            to="/"
-            position="right"
-          />
-        </div>
-      )}
     </AnimatePresence>
   );
 };
 
-export default ChildDepartmentPage;
+export default memo(ChildDepartmentPage);

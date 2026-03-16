@@ -1,40 +1,34 @@
-<footer class="text-text-dark py-6">
-  <div class="container mx-auto px-4">
-    <!-- Навигационные ссылки -->
-    <div class="flex flex-col md:flex-row justify-center items-center border-b border-text-dark pb-4 mb-4">
-      <div class="mr-0 md:mr-6 mb-2 md:mb-0">
-        <a href="{% url 'react_app' %}" class="text-text-dark hover:text-primary flex items-center">
-          <i class="fas fa-home mr-2"></i> Home
-        </a>
-      </div>
-      <div class="mr-0 md:mr-6 mb-2 md:mb-0">
-        <a href="https://new.krmu.edu.kz" class="text-text-dark hover:text-primary flex items-center">
-          <i class="fas fa-question-circle mr-2"></i> KRMU
-        </a>
-      </div>
-      <div>
-        <a href="https://new.krmu.edu.kz/%D0%9E_%D0%BD%D0%B0%D1%81/%D0%9E%D0%B1_%D1%83%D0%BD%D0%B8%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%82%D0%B5%D1%82%D0%B5/" class="text-text-dark hover:text-primary flex items-center">
-          <i class="fas fa-info-circle mr-2"></i> About Us
-        </a>
-      </div>
-    </div>
-    <!-- Социальные иконки -->
-    <div class="flex justify-center space-x-6 mb-4">
-      <a href="https://www.facebook.com/KazakhRussianMedicalUniversity/" target="_blank" class="text-text-dark hover:text-primary">
-        <i class="fab fa-facebook-f fa-lg"></i>
+<footer class="staff-footer mt-auto border-t border-gray-200 bg-white/90 backdrop-blur-sm">
+  <div class="container mx-auto px-4 py-8">
+    <div class="flex flex-col md:flex-row justify-center items-center gap-6 md:gap-10 border-b border-gray-100 pb-6 mb-6">
+      <a href="{% url 'react_app' %}" class="flex items-center gap-2 text-gray-600 hover:text-primary-600 font-medium transition-colors duration-200 rounded-lg px-2 py-1">
+        <i class="fas fa-home text-primary-500"></i>
+        Главная
       </a>
-      <a href="https://t.me/KRMU_dekanat_bot" target="_blank" class="text-text-dark hover:text-primary">
-        <i class="fab fa-telegram fa-lg"></i>
+      <a href="https://new.krmu.edu.kz" target="_blank" rel="noopener" class="flex items-center gap-2 text-gray-600 hover:text-primary-600 font-medium transition-colors duration-200 rounded-lg px-2 py-1">
+        <i class="fas fa-university text-primary-500"></i>
+        KRMU
       </a>
-      <a href="https://www.instagram.com/medkrmu/" target="_blank" class="text-text-dark hover:text-primary">
-        <i class="fab fa-instagram fa-lg"></i>
-      </a>
-      <a href="https://www.youtube.com/channel/UCzYZvFS8rkcvahXegpxtVAQ" target="_blank" class="text-text-dark hover:text-primary">
-        <i class="fab fa-youtube fa-lg"></i>
+      <a href="https://new.krmu.edu.kz/%D0%9E_%D0%BD%D0%B0%D1%81/%D0%9E%D0%B1_%D1%83%D0%BD%D0%B8%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%82%D0%B5%D1%82%D0%B5/" target="_blank" rel="noopener" class="flex items-center gap-2 text-gray-600 hover:text-primary-600 font-medium transition-colors duration-200 rounded-lg px-2 py-1">
+        <i class="fas fa-info-circle text-primary-500"></i>
+        О нас
       </a>
     </div>
-    <!-- Копирайт -->
-    <p class="text-center text-sm">
+    <div class="flex justify-center gap-4 mb-6">
+      <a href="https://www.facebook.com/KazakhRussianMedicalUniversity/" target="_blank" rel="noopener" class="flex h-10 w-10 items-center justify-center rounded-xl text-gray-500 hover:text-primary-600 hover:bg-primary-50 transition-all duration-200" aria-label="Facebook">
+        <i class="fab fa-facebook-f"></i>
+      </a>
+      <a href="https://t.me/KRMU_dekanat_bot" target="_blank" rel="noopener" class="flex h-10 w-10 items-center justify-center rounded-xl text-gray-500 hover:text-primary-600 hover:bg-primary-50 transition-all duration-200" aria-label="Telegram">
+        <i class="fab fa-telegram"></i>
+      </a>
+      <a href="https://www.instagram.com/medkrmu/" target="_blank" rel="noopener" class="flex h-10 w-10 items-center justify-center rounded-xl text-gray-500 hover:text-primary-600 hover:bg-primary-50 transition-all duration-200" aria-label="Instagram">
+        <i class="fab fa-instagram"></i>
+      </a>
+      <a href="https://www.youtube.com/channel/UCzYZvFS8rkcvahXegpxtVAQ" target="_blank" rel="noopener" class="flex h-10 w-10 items-center justify-center rounded-xl text-gray-500 hover:text-primary-600 hover:bg-primary-50 transition-all duration-200" aria-label="YouTube">
+        <i class="fab fa-youtube"></i>
+      </a>
+    </div>
+    <p class="text-center text-sm text-gray-500">
       © {{ current_year }}. Все права защищены.
     </p>
   </div>

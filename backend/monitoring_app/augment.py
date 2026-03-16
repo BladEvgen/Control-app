@@ -1,27 +1,60 @@
-import os
 import logging
+import os
+from typing import Any, Callable, Dict, cast
 
 import cv2
+import nvidia.dali.fn as fn
 from django.conf import settings
-import numpy as np
-import albumentations as A
+from nvidia.dali.auto_aug import augmentations
+from nvidia.dali.auto_aug.core import signed_bin
+from nvidia.dali.pipeline import pipeline_def
 
-from monitoring_app import models, ml
+from monitoring_app import ml, models
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-def _build_albu_pipeline():
-    return A.Compose(
-        [
-            A.HorizontalFlip(p=0.5),
-            A.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.03, p=0.5),
-            A.Affine(scale=(0.98, 1.02), rotate=(-10, 10), shear=(-3, 3), translate_percent=(0.0, 0.02), p=0.3),
-            A.GaussianBlur(blur_limit=(3, 5), p=0.1),
-            A.ImageCompression(quality_lower=80, quality_upper=95, p=0.2),
-            A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.3),
-        ]
-    )
+StaticAugmentFn = Callable[[Any], Any]
+
+
+def _apply_auto_aug(func: Any, images: Any, **kwargs: Any) -> Any:
+    callable_func = cast(Callable[..., Any], func)
+    return callable_func(images, **kwargs)
+
+
+static_augmentations_list: Dict[str, StaticAugmentFn] = {
+    "brightness_dark": lambda images: _apply_auto_aug(
+        augmentations.brightness,
+        images,
+        magnitude_bin=signed_bin(3),
+        num_magnitude_bins=10,
+    ),
+    "brightness_light": lambda images: _apply_auto_aug(
+        augmentations.brightness,
+        images,
+        magnitude_bin=signed_bin(8),
+        num_magnitude_bins=10,
+    ),
+    "contrast": lambda images: _apply_auto_aug(
+        augmentations.contrast,
+        images,
+        magnitude_bin=signed_bin(5),
+        num_magnitude_bins=10,
+    ),
+    "color": lambda images: _apply_auto_aug(
+        augmentations.color,
+        images,
+        magnitude_bin=signed_bin(9),
+        num_magnitude_bins=10,
+    ),
+    "sharpness": lambda images: _apply_auto_aug(
+        augmentations.sharpness,
+        images,
+        magnitude_bin=signed_bin(7),
+        num_magnitude_bins=40,
+    ),
+    "flip": lambda images: fn.flip(images, horizontal=1),
+}
 
 
 def expand_face_bbox(
@@ -43,26 +76,23 @@ def expand_face_bbox(
     return x_min_expanded, y_min_expanded, x_max_expanded, y_max_expanded
 
 
-def _is_quality_ok(face_bgr):
-    try:
-        min_size = getattr(settings, "FACE_MIN_SIZE_PX", 80)
-        blur_thr = getattr(settings, "FACE_MIN_BLUR_VAR", 50.0)
-        h, w = face_bgr.shape[:2]
-        if min(h, w) < int(min_size):
-            return False
-        gray = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2GRAY)
-        var_lap = cv2.Laplacian(gray, cv2.CV_64F).var()
-        if var_lap < float(blur_thr):
-            return False
-        mean_val = float(np.mean(gray))
-        if mean_val < 20 or mean_val > 235:
-            return False
-        return True
-    except Exception:
-        return False
+@pipeline_def
+def dali_augmentation_pipeline(
+    image_data,
+):
+    images = fn.external_source(
+        source=image_data, batch=True, device="gpu", layout="HWC"
+    )
+
+    static_aug_images = []
+    for aug_name, aug_fn in static_augmentations_list.items():
+        logger.info(f"Applying static augmentation: {aug_name}")
+        static_aug_images.append(aug_fn(images))
+
+    return tuple(static_aug_images)
 
 
-def run_albu_augmentation_for_all_staff():
+def run_dali_augmentation_for_all_staff():
     try:
         staff_members = (
             models.Staff.objects.filter(needs_training=True)
@@ -104,63 +134,36 @@ def run_albu_augmentation_for_all_staff():
             )
             logger.info(f"Expanded face coordinates: {expanded_face_coords}")
 
-            x_min, y_min, x_max, y_max = expanded_face_coords
-            face_crop_bgr = test_image[y_min:y_max, x_min:x_max]
-            if face_crop_bgr.size == 0:
-                logger.warning("Empty crop encountered; skipping")
-                continue
-            # Align to 112x112 via ml alignment helper if possible
-            try:
-                from monitoring_app import ml as mlmod
+            def image_data():
+                yield [test_image_rgb]
 
-                mlmod.load_arcface_model()
-                faces = mlmod.arcface_model.get(test_image)
-                if faces:
-                    face = faces[0]
-                    aligned = mlmod.align_face_with_landmarks(test_image, face.kps)
-                    if aligned is not None:
-                        face_crop_bgr = aligned
-            except Exception:
-                pass
-
-            if not _is_quality_ok(face_crop_bgr):
-                logger.warning("Base face crop failed quality gates; skipping")
-                continue
-
-            augmenter = _build_albu_pipeline()
+            pipe = dali_augmentation_pipeline(
+                image_data,
+                batch_size=1,
+                num_threads=1,
+                device_id=0,
+            )
+            pipe.build()
+            logger.info(
+                f"Running DALI pipeline for staff member {staff_member}'s avatar image augmentation"
+            )
             augment_root = str(settings.AUGMENT_ROOT).format(staff_pin=staff_member.pin)
             os.makedirs(augment_root, exist_ok=True)
-            num_variants = int(getattr(settings, "MAX_AUG_VARIANTS", 12))
-            saved = 0
-            for i in range(num_variants):
-                aug = augmenter(image=face_crop_bgr[:, :, ::-1])
-                aug_img_rgb = aug["image"]
-                aug_bgr = aug_img_rgb[:, :, ::-1]
-                if not _is_quality_ok(aug_bgr):
-                    continue
-                # identity-consistency gate vs original aligned/crop
-                try:
-                    from monitoring_app import ml as mlmod
-                    orig_emb = mlmod.create_face_encoding(face_crop_bgr)
-                    aug_emb = mlmod.create_face_encoding(aug_bgr)
-                    if orig_emb is None or aug_emb is None:
-                        continue
-                    orig_emb = np.asarray(orig_emb, dtype=np.float32)
-                    aug_emb = np.asarray(aug_emb, dtype=np.float32)
-                    orig_emb = orig_emb / (np.linalg.norm(orig_emb) + 1e-8)
-                    aug_emb = aug_emb / (np.linalg.norm(aug_emb) + 1e-8)
-                    sim = float(np.dot(orig_emb, aug_emb))
-                    if sim < float(getattr(settings, "IDENTITY_GATE_THRESHOLD", 0.9)):
-                        continue
-                except Exception:
-                    pass
+            output = pipe.run()
+            for i, aug_output in enumerate(output):
+                processed_images = aug_output.as_cpu().as_array()
+                logger.debug(
+                    f"Processing augmented image {i + 1} for staff member {staff_member}"
+                )
+                aug_image = processed_images[0]
                 augmented_path = os.path.join(
                     augment_root,
                     f"{staff_member.pin}_augmented_{i + 1}{original_extension}",
                 )
-                cv2.imwrite(augmented_path, aug_bgr)
-                saved += 1
-            logger.info(f"Saved {saved}/{num_variants} augmented variants for {staff_member.pin}")
+                cv2.imwrite(augmented_path, cv2.cvtColor(aug_image, cv2.COLOR_RGB2BGR))
+                logger.debug(
+                    f"Augmented image saved to: {augmented_path} for staff member {staff_member}"
+                )
     except Exception as e:
         logger.error(f"An error occurred during the augmentation process: {e}")
         raise
@@ -187,4 +190,4 @@ def get_face_bbox(image):
 
 
 if __name__ == "__main__":
-    run_albu_augmentation_for_all_staff()
+    run_dali_augmentation_for_all_staff()

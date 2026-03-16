@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Авторизация — API</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+          colors: {
+            primary: {
+              100: '#DBEAFE',
+              500: '#3B82F6',
+              600: '#2563EB',
+              700: '#1D4ED8',
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .input-field { border: 1.5px solid #e5e7eb; border-radius: 1rem; transition: all 0.2s ease; }
+    .input-field:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2); }
+  </style>
+</head>
+<body class="min-h-screen bg-gray-50 flex items-center justify-center p-4 antialiased">
+  <div class="w-full max-w-md bg-white rounded-2xl shadow-xl border border-gray-200 overflow-hidden">
+    <div class="bg-primary-900 px-6 py-10 text-center">
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-white/15 mb-4">
+        <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+        </svg>
+      </div>
+      <h1 class="text-2xl font-bold text-white tracking-tight">Авторизация</h1>
+      <p class="text-primary-100 mt-1 text-sm font-medium">Войдите для доступа к API документации</p>
+    </div>
+
+    <div class="p-6 sm:p-8">
+      <div id="error" class="hidden bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-2xl mb-4 text-sm font-medium flex items-center gap-2">
+        <svg class="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/></svg>
+        <span></span>
+      </div>
+      <div id="success" class="hidden bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-2xl mb-4 text-sm font-medium flex items-center gap-2">
+        <svg class="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+        <span></span>
+      </div>
+
+      <form id="loginForm" class="space-y-5">
+        <div>
+          <label for="username" class="block text-gray-700 text-sm font-semibold mb-2">Имя пользователя</label>
+          <input type="text" id="username" name="username" required autocomplete="username" autofocus
+            class="input-field w-full px-4 py-3.5 text-gray-900 placeholder-gray-400 bg-white"
+            placeholder="Введите имя пользователя">
+        </div>
+        <div>
+          <label for="password" class="block text-gray-700 text-sm font-semibold mb-2">Пароль</label>
+          <input type="password" id="password" name="password" required autocomplete="current-password"
+            class="input-field w-full px-4 py-3.5 text-gray-900 placeholder-gray-400 bg-white"
+            placeholder="Введите пароль">
+        </div>
+        <button type="submit" id="submitBtn"
+          class="w-full bg-primary-600 hover:bg-primary-700 text-white font-semibold py-3.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-all disabled:opacity-60 disabled:cursor-not-allowed">
+          <span id="btnText" class="flex items-center justify-center gap-2">
+            <span id="loadingSpinner" class="hidden w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+            Войти в систему
+          </span>
+        </button>
+      </form>
+
+      <p class="mt-6 pt-6 border-t border-gray-100 text-xs text-gray-500 text-center">
+        Используйте учётные данные для доступа к API документации
+      </p>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const errorDiv = document.getElementById('error');
+    const successDiv = document.getElementById('success');
+    const submitBtn = document.getElementById('submitBtn');
+    const btnText = document.getElementById('btnText');
+    const loadingSpinner = document.getElementById('loadingSpinner');
+
+    function showError(msg) {
+      errorDiv.querySelector('span').textContent = msg;
+      errorDiv.classList.remove('hidden');
+      successDiv.classList.add('hidden');
+    }
+
+    function showSuccess(msg) {
+      successDiv.querySelector('span').textContent = msg;
+      successDiv.classList.remove('hidden');
+      errorDiv.classList.add('hidden');
+    }
+
+    function setLoading(loading) {
+      submitBtn.disabled = loading;
+      if (loading) {
+        loadingSpinner.classList.remove('hidden');
+        btnText.innerHTML = '<span class="inline-block w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></span> Выполняется вход...';
+      } else {
+        loadingSpinner.classList.add('hidden');
+        btnText.innerHTML = 'Войти в систему';
+      }
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      setLoading(true);
+      errorDiv.classList.add('hidden');
+      successDiv.classList.add('hidden');
+
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+
+      if (!username || !password) {
+        showError('Заполните все поля');
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const formData = new FormData();
+        formData.append('username', username);
+        formData.append('password', password);
+
+        const response = await fetch('/api/swagger-login/', {
+          method: 'POST',
+          credentials: 'include',
+          body: formData,
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          const errorMsg = data.detail || data.error || 'Ошибка входа. Проверьте учётные данные';
+          showError(errorMsg);
+          setLoading(false);
+          return;
+        }
+
+        if (data.success) {
+          showSuccess('Авторизация успешна. Перенаправление...');
+          setTimeout(() => { window.location.href = window.location.pathname; }, 500);
+        } else {
+          showError('Неверный формат ответа от сервера');
+          setLoading(false);
+        }
+      } catch (err) {
+        showError('Ошибка сети: ' + err.message);
+        setLoading(false);
+      }
+    });
+  </script>
+</body>
+</html>

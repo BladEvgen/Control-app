@@ -2,187 +2,170 @@
 {% load static %}
 {% load django_app_filters_and_tags %}
 
-{% block title %}Upload File{% endblock %}
+{% block title %}Загрузка файлов — Staff App{% endblock %}
 
 {% block main %}
-<div class="flex items-center justify-center min-h-screen p-4 sm:p-6 lg:p-8">
+<div class="flex items-center justify-center min-h-[calc(100vh-280px)] py-10 sm:py-14 px-4">
+  {% if user.is_authenticated %}
+  <div class="form-card w-full max-w-lg bg-white rounded-2xl border border-gray-200 shadow-card-lg p-6 sm:p-8 animate-enter">
+    <div class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary-100 text-primary-600 mb-4">
+        <i class="fas fa-cloud-upload-alt text-2xl"></i>
+      </div>
+      <h2 class="text-2xl sm:text-3xl font-bold text-gray-800 tracking-tight">Загрузка файлов</h2>
+      <p class="text-gray-500 mt-1 text-sm font-medium">Выберите шаблон и загрузите документ</p>
+    </div>
 
-    {% if user.is_authenticated %}
-    <form id="upload-form" enctype="multipart/form-data"
-        class="space-y-6 p-8 bg-white rounded-xl shadow-xl max-w-lg w-full transition ease-in-out duration-150 transform hover:shadow-2xl"
-        method="post">
-        {% csrf_token %}
-        <div class="text-center">
-            <h2 class="text-2xl font-bold text-gray-800 mb-6">Загрузка файлов</h2>
-        </div>
+    <form id="upload-form" enctype="multipart/form-data" method="post" class="space-y-6">
+      {% csrf_token %}
 
-        <div>
-            <label for="category" class="block text-gray-700 font-medium mb-2">Шаблоны</label>
-            <div class="relative">
-                <select name="category" id="category"
-                    class="appearance-none border border-gray-300 rounded-lg w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm transition ease-in-out duration-150 transform hover:scale-105 hover:border-blue-500">
-                    <option value="" disabled selected>Выберите шаблон</option>
-                    {% for category in categories %}
-                    <option value="{{ category.slug }}">{{ category.name }}</option>
-                    {% endfor %}
-                </select>
-                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd"
-                            d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
-                            clip-rule="evenodd" />
-                    </svg>
-                </div>
-            </div>
+      <div>
+        <label for="category" class="block text-sm font-semibold text-gray-700 mb-2">Шаблон</label>
+        <div class="relative">
+          <select name="category" id="category"
+            class="input-field block w-full pl-4 pr-10 py-3.5 text-gray-900 bg-white appearance-none hover:border-gray-300">
+            <option value="" disabled selected>Выберите шаблон</option>
+            {% for category in categories %}
+            <option value="{{ category.slug }}">{{ category.name }}</option>
+            {% endfor %}
+          </select>
+          <div class="select-icon-wrap">
+            <i class="fas fa-chevron-down text-gray-400"></i>
+          </div>
         </div>
+      </div>
 
-        <div id="parent-department-container" class="hidden">
-            <label for="parent_department" class="block text-gray-700 font-medium mb-2">Где удалить</label>
-            <div class="relative">
-                <select name="parent_department" id="parent_department"
-                    class="appearance-none border border-gray-300 rounded-lg w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm transition ease-in-out duration-150 transform hover:scale-105 hover:border-blue-500">
-                    <option value="" disabled selected>Выберите откуда удалить</option>
-                    {% for parent in parent_departments %}
-                    <option value="{{ parent.id }}">{{ parent.name }}</option>
-                    {% endfor %}
-                </select>
-                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd"
-                            d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
-                            clip-rule="evenodd" />
-                    </svg>
-                </div>
-            </div>
+      <div id="parent-department-container" class="hidden">
+        <label for="parent_department" class="block text-sm font-semibold text-gray-700 mb-2">Откуда удалить</label>
+        <div class="relative">
+          <select name="parent_department" id="parent_department"
+            class="input-field block w-full pl-4 pr-10 py-3.5 text-gray-900 bg-white appearance-none hover:border-gray-300">
+            <option value="" disabled selected>Выберите родительский отдел</option>
+            {% for parent in parent_departments %}
+            <option value="{{ parent.id }}">{{ parent.name }}</option>
+            {% endfor %}
+          </select>
+          <div class="select-icon-wrap">
+            <i class="fas fa-chevron-down text-gray-400"></i>
+          </div>
         </div>
+      </div>
 
-        <div class="file-upload">
-            <label for="file" class="block text-gray-700 font-medium mb-2">Загрузить файл</label>
-            <div id="drop-area"
-                class="border-2 border-dashed border-gray-300 rounded-lg cursor-pointer bg-gray-50 text-gray-400 hover:bg-blue-50 p-8 flex flex-col items-center justify-center transition ease-in-out duration-150 hover:border-blue-500">
-                <input type="file" name="file" id="file" accept=".xlsx, .zip" class="hidden" />
-                <p id="drop-text" class="text-center">Перетащите или нажмите чтобы добавить файл</p>
-            </div>
+      <div>
+        <label for="file" class="block text-sm font-semibold text-gray-700 mb-2">Файл</label>
+        <div id="drop-area"
+          class="drop-zone border-2 border-dashed border-gray-200 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer bg-gray-50 hover:bg-primary-50 hover:border-primary-300 transition-all duration-200">
+          <input type="file" name="file" id="file" accept=".xlsx, .zip" class="hidden" />
+          <i class="fas fa-file-excel text-4xl text-gray-400 mb-3"></i>
+          <p id="drop-text" class="text-center text-gray-500 font-medium">Перетащите файл сюда или нажмите для выбора</p>
+          <p class="text-xs text-gray-400 mt-1">Поддерживаются .xlsx и .zip</p>
         </div>
+      </div>
 
-        <div class="flex flex-col space-y-4">
-            <button type="submit" id="submit-btn"
-                class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg focus:outline-none focus:shadow-outline transition ease-in-out duration-150 transform hover:scale-105 inline-flex items-center justify-center">
-                Загрузить <i class="fas fa-upload ml-2"></i>
-            </button>
-            <a href="{% url 'download_examples_zip' %}"
-                class="bg-green-500 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg focus:outline-none focus:shadow-outline transition ease-in-out duration-150 transform hover:scale-105 inline-flex items-center justify-center">
-                Скачать примеры <i class="fas fa-download ml-2"></i>
-            </a>
-        </div>
+      <div class="flex flex-col sm:flex-row gap-4">
+        <button type="submit" id="submit-btn" class="flex-1 btn-primary-solid">
+          <i class="fas fa-upload"></i>
+          Загрузить
+        </button>
+        <a href="{% url 'download_examples_zip' %}" class="flex-1 btn-success-solid text-center">
+          <i class="fas fa-download"></i>
+          Скачать примеры
+        </a>
+      </div>
     </form>
 
     {% if messages %}
-    <ul class="messages fixed top-20 right-4 space-y-2 z-50">
-        {% for message in messages %}
-        <li class="text-center p-4 rounded-lg shadow-lg max-w-xs w-full transition transform duration-500 ease-in-out opacity-0 scale-90 
-                        {% if message.tags == 'error' %}
-                            bg-red-100 border border-red-400 text-red-700
-                        {% elif message.tags == 'success' %}
-                            bg-green-100 border border-green-400 text-green-700
-                        {% elif message.tags == 'warning' %}
-                            bg-yellow-100 border border-yellow-400 text-yellow-700
-                        {% elif message.tags == 'info' %}
-                            bg-blue-100 border border-blue-400 text-blue-700
-                        {% endif %}
-                    ">
-            {{ message }}
-        </li>
-        {% endfor %}
+    <ul class="messages fixed top-24 right-4 z-50 space-y-2 max-w-sm w-full">
+      {% for message in messages %}
+      <li class="p-4 rounded-2xl shadow-lg border transition-all duration-300
+        {% if message.tags == 'error' %}bg-red-50 border-red-200 text-red-800
+        {% elif message.tags == 'success' %}bg-emerald-50 border-emerald-200 text-emerald-800
+        {% elif message.tags == 'warning' %}bg-amber-50 border-amber-200 text-amber-800
+        {% else %}bg-primary-50 border-primary-200 text-primary-800{% endif %}">
+        <div class="flex items-center gap-2 font-medium">
+          <i class="fas fa-{% if message.tags == 'error' %}exclamation-circle{% elif message.tags == 'success' %}check-circle{% elif message.tags == 'warning' %}exclamation-triangle{% else %}info-circle{% endif %}"></i>
+          <span>{{ message }}</span>
+        </div>
+      </li>
+      {% endfor %}
     </ul>
     {% endif %}
+  </div>
 
-    {% else %}
-    <div class="text-center p-8 bg-white rounded-xl shadow-xl max-w-lg w-full">
-        <h2 class="text-2xl font-bold text-gray-800 mb-6">Вы не авторизованы</h2>
-        <p class="text-gray-600">Для загрузки файлов, пожалуйста, <a href="{% url 'login_view' %}"
-                class="text-blue-500 underline">войдите в аккаунт</a>.</p>
+  {% else %}
+  <div class="form-card w-full max-w-lg bg-white rounded-2xl border border-gray-200 shadow-card-lg p-8 sm:p-12 text-center animate-enter">
+    <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-amber-100 text-amber-600 mb-6">
+      <i class="fas fa-lock text-2xl"></i>
     </div>
-    {% endif %}
+    <h2 class="text-2xl font-bold text-gray-800 mb-3">Требуется авторизация</h2>
+    <p class="text-gray-600 mb-6 font-medium">Для загрузки файлов необходимо войти в аккаунт</p>
+    <a href="{% url 'login_view' %}" class="btn-primary-solid inline-flex">
+      <i class="fas fa-sign-in-alt"></i>
+      Войти
+    </a>
+  </div>
+  {% endif %}
 </div>
 
-
 <script>
-    document.addEventListener('DOMContentLoaded', function () {
-        var categorySelect = document.getElementById('category');
-        var parentDepartmentContainer = document.getElementById('parent-department-container');
-        var fileInput = document.getElementById('file');
-        var dropArea = document.getElementById('drop-area');
-        var dropText = document.getElementById('drop-text');
-        var uploadForm = document.getElementById('upload-form');
+  document.addEventListener('DOMContentLoaded', function() {
+    var categorySelect = document.getElementById('category');
+    var parentDepartmentContainer = document.getElementById('parent-department-container');
+    var fileInput = document.getElementById('file');
+    var dropArea = document.getElementById('drop-area');
+    var dropText = document.getElementById('drop-text');
 
+    if (categorySelect) {
+      categorySelect.addEventListener('change', function() {
+        parentDepartmentContainer.classList.toggle('hidden', categorySelect.value !== 'delete_staff');
+      });
+    }
 
-        categorySelect.addEventListener('change', function () {
-            if (categorySelect.value === "delete_staff") {
-                parentDepartmentContainer.classList.remove('hidden');
-            } else {
-                parentDepartmentContainer.classList.add('hidden');
-            }
+    if (dropArea && fileInput) {
+      dropArea.addEventListener('click', () => fileInput.click());
+
+      ['dragenter', 'dragover'].forEach(ev => {
+        dropArea.addEventListener(ev, function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          dropArea.classList.add('drag-over');
+          dropText.textContent = 'Отпустите файл';
         });
+      });
 
-
-        dropArea.addEventListener('click', function () {
-            fileInput.click();
+      ['dragleave', 'drop'].forEach(ev => {
+        dropArea.addEventListener(ev, function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          dropArea.classList.remove('drag-over');
+          dropText.textContent = 'Перетащите файл сюда или нажмите для выбора';
         });
+      });
 
-        ['dragenter', 'dragover'].forEach(eventName => {
-            dropArea.addEventListener(eventName, function (e) {
-                preventDefaults(e);
-                dropArea.classList.add('border-blue-500', 'bg-blue-50');
-                dropText.textContent = 'Отпустите файл сюда';
-            }, false);
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            dropArea.addEventListener(eventName, function (e) {
-                preventDefaults(e);
-                dropArea.classList.remove('border-blue-500', 'bg-blue-50');
-                dropText.textContent = 'Перетащите или нажмите чтобы добавить файл';
-            }, false);
-        });
-
-        function preventDefaults(e) {
-            e.preventDefault();
-            e.stopPropagation();
+      dropArea.addEventListener('drop', function(e) {
+        var files = e.dataTransfer.files;
+        if (files.length) {
+          fileInput.files = files;
+          dropText.textContent = files[0].name;
+          dropText.classList.remove('text-slate-500');
+          dropText.classList.add('text-emerald-600', 'font-semibold');
         }
+      });
 
-        dropArea.addEventListener('drop', function (e) {
-            let dt = e.dataTransfer;
-            let files = dt.files;
+      fileInput.addEventListener('change', function() {
+        if (this.files.length) {
+          dropText.textContent = this.files[0].name;
+          dropText.classList.remove('text-slate-500');
+          dropText.classList.add('text-emerald-600', 'font-semibold');
+        }
+      });
+    }
 
-            fileInput.files = files;
-
-            var fileName = files[0].name;
-            dropText.textContent = fileName;
-            dropText.classList.remove('text-gray-400');
-            dropText.classList.add('text-green-500', 'font-bold');
-        });
-
-        fileInput.addEventListener('change', function (e) {
-            var fileName = e.target.files[0].name;
-            dropText.textContent = fileName;
-            dropText.classList.remove('text-gray-400');
-            dropText.classList.add('text-green-500', 'font-bold');
-        });
-
-
-        var messages = document.querySelectorAll('.messages li');
-        messages.forEach(function (message) {
-
-            setTimeout(function () {
-                message.classList.add('opacity-100', 'scale-100');
-            }, 100);
-
-            setTimeout(function () {
-                message.classList.remove('opacity-100', 'scale-100');
-                message.classList.add('opacity-0', 'scale-90');
-            }, 5000);
-        });
+    var messages = document.querySelectorAll('.messages li');
+    messages.forEach(function(msg, i) {
+      setTimeout(function() { msg.classList.remove('opacity-0', 'scale-95'); msg.classList.add('opacity-100'); msg.style.transform = 'scale(1)'; }, 100 + i * 100);
+      setTimeout(function() { msg.style.opacity = '0'; msg.style.transform = 'scale(0.95)'; setTimeout(function() { msg.remove(); }, 300); }, 5000);
     });
+  });
 </script>
 {% endblock %}

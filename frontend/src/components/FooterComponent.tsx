@@ -1,5 +1,7 @@
 import { motion } from "framer-motion";
 import { Link } from "../RouterUtils";
+
+const FOOTER_SPACER_CLASS = "md:hidden h-16";
 import {
   FaSpotify,
   FaInstagram,
@@ -11,6 +13,7 @@ const FooterComponent = () => {
   const currentYear = new Date().getFullYear();
 
   return (
+    <>
     <motion.footer
       className="py-6 text-text-dark dark:text-text-light"
       initial={{ opacity: 0, y: 20 }}
@@ -113,6 +116,9 @@ const FooterComponent = () => {
         </motion.p>
       </div>
     </motion.footer>
+      {/* Spacer: dock bar не перекрывает footer на мобильных */}
+      <div className={FOOTER_SPACER_CLASS} aria-hidden />
+    </>
   );
 };
 

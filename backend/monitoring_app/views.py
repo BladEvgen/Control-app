@@ -1,43 +1,37 @@
 import base64
 import datetime
+import hashlib
 import json
 import logging
+import math
 import os
+import re
 import time
 import zipfile
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from collections import Counter, defaultdict
+from contextlib import AbstractContextManager, contextmanager
 from io import BytesIO
 from pathlib import Path
+from typing import Any, Generator, List, Optional, Tuple, cast
 
-from asgiref.sync import sync_to_async
+import monitoring_app.tasks as tasks
 from celery.result import AsyncResult
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import authenticate, login, logout
-from django.contrib.auth.models import User
+from django.contrib.auth import authenticate, get_user_model, login, logout
+from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Q
+from django.db.models import Count, Prefetch, Q
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.template import TemplateDoesNotExist
 from django.utils import timezone
+from django.views.decorators.cache import never_cache
 from django.views.generic import View
 from drf_yasg import openapi
-from drf_yasg.utils import swagger_auto_schema
-from openpyxl import load_workbook
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import ValidationError
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import (
-    AllowAny,
-    IsAdminUser,
-    IsAuthenticated,
-)
-from rest_framework.response import Response
-from rest_framework.views import APIView
-
+from drf_yasg.inspectors import SwaggerAutoSchema
+from drf_yasg.utils import merge_params, no_body, swagger_auto_schema
 from monitoring_app import (
     async_logic,
     attendance_fetcher,
@@ -45,18 +39,591 @@ from monitoring_app import (
     models,
     permissions,
     serializers,
-    tasks,
     utils,
 )
 from monitoring_app.cache_conf import Cache, get_cache
+from monitoring_app.lesson_locations_conf import (
+    ACCEPTANCE_R_CLUSTER,
+    ACCEPTANCE_R_SAME_POINT,
+    ACCEPTANCE_R_STANDALONE,
+    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+    CLASS_LOCATION_LIST_CACHE_KEY,
+    CLASS_LOCATION_LIST_CACHE_TTL,
+    CLUSTER_THRESHOLD_M,
+    DEFAULT_ACCEPTANCE_RADIUS_M,
+    SAME_POINT_THRESHOLD_M,
+)
+from monitoring_app.signals import invalidate_class_location_cache_impl
+from openpyxl import load_workbook
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.authentication import JWTAuthentication
+
+
+def _db_atomic() -> AbstractContextManager[None]:
+    """Типизированная обёртка над transaction.atomic() для статического анализа."""
+    return cast(AbstractContextManager[None], transaction.atomic())
+
+
+def _get_manual_parameters_for_inspector(view, method, overrides):
+    """manual_parameters из overrides или из _swagger_auto_schema исходной функции (для @api_view)."""
+    manual = overrides.get("manual_parameters") or []
+    if not manual and method:
+        action_method = getattr(view, method.lower(), None)
+        if action_method:
+            func = getattr(action_method, "__func__", action_method)
+            schema = getattr(func, "_swagger_auto_schema", None)
+            if isinstance(schema, dict):
+                method_data = schema.get(method.lower()) or schema.get(method.upper())
+                if isinstance(method_data, dict):
+                    manual = method_data.get("manual_parameters") or []
+    return manual
+
+
+class FormOnlySwaggerAutoSchema(SwaggerAutoSchema):
+    """Инспектор: при наличии form-параметров в manual_parameters не допускает body (исправляет 500 при генерации схемы)."""
+
+    def add_manual_parameters(self, parameters):
+        manual = _get_manual_parameters_for_inspector(
+            self.view, self.method, self.overrides
+        )
+        has_form = any(getattr(p, "in_", None) == openapi.IN_FORM for p in manual)
+        if has_form:
+            parameters = [
+                p for p in parameters if getattr(p, "in_", None) != openapi.IN_BODY
+            ]
+            return merge_params(parameters, manual)
+        return super().add_manual_parameters(parameters)
+
 
 logger = logging.getLogger(__name__)
+lesson_attendance_logger = logging.getLogger("monitoring_app.lesson_attendance")
 
-try:
-    from PIL import Image, UnidentifiedImageError
-except Exception:
-    Image = None
-    UnidentifiedImageError = Exception
+ExcelRow = Tuple[Any, ...]
+User = get_user_model()
+
+
+@contextmanager
+def atomic_block() -> Generator[None, None, None]:
+    with transaction.atomic():  # type: ignore[misc]
+        yield
+
+
+LUNCH_BREAK_START = datetime.time(hour=12, minute=55)
+LUNCH_BREAK_END = datetime.time(hour=14, minute=5)
+
+CLASS_LOCATION_CACHE_TTL = datetime.timedelta(minutes=60)
+DEPARTMENT_CONFIRMATION_CACHE_TTL = 4 * 60 * 60
+DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY = "department_confirmation_epoch_hour"
+DEPARTMENT_CONFIRMATION_EPOCH_TTL = DEPARTMENT_CONFIRMATION_CACHE_TTL + 60 * 60
+STAFF_PINS_HEADER_NAME = "X-Staff-Pins"
+
+_STAFF_PIN_WRAPPED_RE = re.compile(r"^S\d+S$")
+_STAFF_PIN_NUMERIC_RE = re.compile(r"^\d+$")
+
+
+def _normalize_staff_pin_token(token: Any) -> Optional[str]:
+    raw = str(token or "").strip().upper()
+    if not raw:
+        return None
+    if _STAFF_PIN_NUMERIC_RE.fullmatch(raw):
+        return f"S{raw}S"
+    if _STAFF_PIN_WRAPPED_RE.fullmatch(raw):
+        return raw
+    return None
+
+
+def _parse_staff_pins_header(raw_header_value: Optional[str]) -> List[str]:
+    if raw_header_value is None:
+        return []
+
+    parsed: List[str] = []
+    seen: set[str] = set()
+    for token in raw_header_value.split(","):
+        normalized = _normalize_staff_pin_token(token)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        parsed.append(normalized)
+    return parsed
+
+
+def _department_confirmation_hour_bucket(now_dt: Optional[datetime.datetime] = None) -> str:
+    current = now_dt or timezone.localtime()
+    fallback = current.strftime("%Y%m%d%H")
+    epoch = Cache.get(DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY)
+    if epoch is not None:
+        return str(epoch)
+    # Fallback path when beat has not yet populated epoch key.
+    Cache.set(
+        DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY,
+        fallback,
+        DEPARTMENT_CONFIRMATION_EPOCH_TTL,
+    )
+    return fallback
+
+
+def _build_department_confirmation_cache_key(
+    *,
+    child_department_id: Optional[str],
+    use_range: bool,
+    date_str: Optional[str],
+    date_from_str: Optional[str],
+    date_to_str: Optional[str],
+    use_staff_pins_mode: bool,
+    staff_pins: List[str],
+    hour_bucket: str,
+) -> str:
+    suffix = f"hour_{hour_bucket}"
+    if not use_staff_pins_mode:
+        if use_range:
+            return (
+                f"department_confirmation_{child_department_id}_{date_from_str}_"
+                f"{date_to_str}_{suffix}"
+            )
+        return f"department_confirmation_{child_department_id}_{date_str}_{suffix}"
+
+    sorted_unique_pins = sorted({str(pin).strip().upper() for pin in staff_pins if pin})
+    digest_source = ",".join(sorted_unique_pins)
+    pins_hash = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()
+    if use_range:
+        return (
+            f"department_confirmation_pins_{pins_hash}_{date_from_str}_"
+            f"{date_to_str}_{suffix}"
+        )
+    return f"department_confirmation_pins_{pins_hash}_{date_str}_{suffix}"
+
+
+def get_confirmable_threshold(total_group: int) -> int:
+    """Возвращает минимальный порог присутствующих в основной локации.
+
+    Правило для малых групп фиксированное и более строгое:
+    - ``n == 1`` -> ``1``
+    - ``n == 2`` -> ``2``
+    - ``n == 3`` -> ``2``
+    - ``n == 4`` -> ``3``
+
+    Для групп ``n >= 5`` используется динамический порог:
+    ``max(2, ceil(0.20 * n + 0.70 * sqrt(n)))``.
+
+    Args:
+        total_group (int): Размер группы (общее число студентов).
+
+    Returns:
+        int: Минимальное число отметившихся в главной локации, требуемое
+            для подтверждения посещаемости.
+    """
+    n = max(1, total_group)
+    if n == 1:
+        return 1
+    if n == 2:
+        return 2
+    if n == 3:
+        return 2
+    if n == 4:
+        return 3
+    return max(2, math.ceil(0.20 * n + 0.70 * math.sqrt(n)))
+
+
+def get_min_leader_share(total_group: int) -> float:
+    """Возвращает минимальную долю главной локации среди отметившихся.
+
+    Args:
+        total_group (int): Размер группы (общее число студентов).
+
+    Returns:
+        float: Минимальная доля в диапазоне ``0..1``:
+            ``0.60`` при ``n <= 5``, ``0.55`` при ``n <= 12``, иначе ``0.50``.
+    """
+    if total_group <= 5:
+        return 0.60
+    if total_group <= 12:
+        return 0.55
+    return 0.50
+
+
+def is_main_location_confirmable(
+    leader_count: int,
+    total_group: int,
+    total_with_attendance: int,
+) -> bool:
+    """Определяет, можно ли считать главную локацию подтверждающей.
+
+    Подтверждение возможно только при одновременном выполнении условий:
+    1. Есть хотя бы одна отметка посещаемости за день.
+    2. Число студентов в главной локации не меньше порога
+       ``get_confirmable_threshold(total_group)``.
+    3. Доля главной локации среди отметившихся не меньше
+       ``get_min_leader_share(total_group)``.
+
+    Args:
+        leader_count (int): Количество отметившихся в главной локации.
+        total_group (int): Размер группы (общее число студентов).
+        total_with_attendance (int): Общее число отметившихся за день.
+
+    Returns:
+        bool: ``True``, если локация проходит порог и долю; иначе ``False``.
+    """
+    if total_with_attendance <= 0:
+        return False
+    threshold = get_confirmable_threshold(total_group)
+    if leader_count < threshold:
+        return False
+    leader_share = leader_count / total_with_attendance
+    if leader_share < get_min_leader_share(total_group):
+        return False
+    return True
+
+
+CLASS_LOCATION_CACHE = {
+    "expires_at": None,
+    "kd_tree": None,
+    "class_names": [],
+    "searcher_payload": [],
+    "searcher": None,
+}
+
+
+def get_class_location_cache():
+    """
+    Кэш локаций: KDTree, LocationSearcher, location_acceptance_radius_m.
+    R_loc (60–80 м по умолчанию или acceptance_radius_m из БД) — в Redis и in-memory;
+    Celery Beat / warmup_class_location_buffers обновляют.
+    """
+    now = timezone.now()
+    cache_expired = (
+        CLASS_LOCATION_CACHE["expires_at"] is None
+        or CLASS_LOCATION_CACHE["expires_at"] <= now
+    )
+
+    if cache_expired:
+        try:
+            locations = list(
+                models.ClassLocation.objects.only(
+                    "id", "name", "latitude", "longitude", "acceptance_radius_m"
+                )
+            )
+            payload = [
+                {
+                    "name": loc.name,
+                    "latitude": loc.latitude,
+                    "longitude": loc.longitude,
+                }
+                for loc in locations
+                if loc.latitude is not None and loc.longitude is not None
+            ]
+
+            kd_tree = None
+            class_names = []
+            if payload:
+                try:
+                    from sklearn.neighbors import KDTree
+
+                    coords = [(item["latitude"], item["longitude"]) for item in payload]
+                    kd_tree = KDTree(coords, metric="euclidean")
+                    class_names = [item["name"] for item in payload]
+                except Exception as exc:
+                    logger.warning(f"KDTree initialization failed: {exc}")
+                    kd_tree = None
+                    class_names = []
+
+            searcher = None
+            if payload:
+                try:
+                    searcher = utils.LocationSearcher(payload)
+                except Exception as exc:
+                    logger.warning(f"LocationSearcher initialization failed: {exc}")
+
+            locs_with_coords = [
+                loc
+                for loc in locations
+                if loc.latitude is not None and loc.longitude is not None
+            ]
+            location_acceptance_radius_m = Cache.get(
+                CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY
+            )
+            if location_acceptance_radius_m is None:
+                location_acceptance_radius_m = (
+                    utils.compute_class_location_acceptance_radii(
+                        locs_with_coords,
+                        r_same_point=ACCEPTANCE_R_SAME_POINT,
+                        r_cluster=ACCEPTANCE_R_CLUSTER,
+                        r_standalone=ACCEPTANCE_R_STANDALONE,
+                        same_point_threshold=SAME_POINT_THRESHOLD_M,
+                        cluster_threshold=CLUSTER_THRESHOLD_M,
+                    )
+                )
+                Cache.set(
+                    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+                    location_acceptance_radius_m,
+                    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+                )
+
+            CLASS_LOCATION_CACHE.update(
+                {
+                    "expires_at": now + CLASS_LOCATION_CACHE_TTL,
+                    "kd_tree": kd_tree,
+                    "class_names": class_names,
+                    "searcher_payload": payload,
+                    "searcher": searcher,
+                    "location_acceptance_radius_m": location_acceptance_radius_m,
+                }
+            )
+        except Exception as exc:
+            logger.exception("get_class_location_cache failed: %s", exc)
+            CLASS_LOCATION_CACHE["expires_at"] = None
+            raise
+
+    return CLASS_LOCATION_CACHE
+
+
+def _to_date(dt):
+    """Normalize date_at from DB (date or datetime) to date.
+
+    Args:
+        dt: Value from date_at field (date or datetime).
+
+    Returns:
+        date or None: The calendar date, or None if dt is None.
+    """
+    if dt is None:
+        return None
+    return dt.date() if hasattr(dt, "date") and callable(getattr(dt, "date")) else dt
+
+
+def fetch_attendance_by_event_dates(staff_ids, date_from, date_to):
+    """Загружает StaffAttendance и LessonAttendance по датам событий одним проходом.
+
+    StaffAttendance.date_at — день выгрузки (следующий за рабочим днём).
+    LessonAttendance.date_at — календарный день занятия. Результаты используются
+    в api/staff/{pin}/ и api/attendance/department-confirmation/.
+
+    Args:
+        staff_ids: Список id сотрудников (первичные ключи Staff).
+        date_from: Начало диапазона дат событий (включительно), date.
+        date_to: Конец диапазона дат событий (включительно), date.
+
+    Returns:
+        Кортеж (sa_by_event_date, la_by_event_date): каждый элемент — словарь
+        {event_date: list[dict]} с записями из .values().
+    """
+    date_from_plus1 = date_from + datetime.timedelta(days=1)
+    date_to_plus1 = date_to + datetime.timedelta(days=1)
+    one_day = datetime.timedelta(days=1)
+
+    sa_by_event_date = defaultdict(list)
+    for r in models.StaffAttendance.objects.filter(
+        staff_id__in=staff_ids,
+        date_at__gte=date_from_plus1,
+        date_at__lte=date_to_plus1,
+    ).values(
+        "staff_id",
+        "date_at",
+        "first_in",
+        "last_out",
+        "area_name_in",
+        "area_name_out",
+        "effective_work_seconds",
+        "area_sequence",
+        "effective_work_intervals",
+    ):
+        d = _to_date(r["date_at"])
+        if d is not None:
+            sa_by_event_date[d - one_day].append(r)
+
+    la_by_event_date = defaultdict(list)
+    for r in models.LessonAttendance.objects.filter(
+        staff_id__in=staff_ids,
+        date_at__gte=date_from,
+        date_at__lte=date_to,
+    ).values(
+        "staff_id",
+        "date_at",
+        "first_in",
+        "last_out",
+        "latitude",
+        "longitude",
+        "duration_seconds",
+    ):
+        d = _to_date(r["date_at"])
+        if d is not None:
+            la_by_event_date[d].append(r)
+
+    return dict(sa_by_event_date), dict(la_by_event_date)
+
+
+def _resolve_la_location(lat, lon, kd_tree, class_names):
+    """Определяет название локации по координатам через KD-дерево.
+
+    Args:
+        lat: Широта (float или None).
+        lon: Долгота (float или None).
+        kd_tree: KDTree для поиска по координатам или None.
+        class_names: Список названий локаций по индексам дерева.
+
+    Returns:
+        Название локации (str) или None при отсутствии данных или ошибке.
+    """
+    if not kd_tree or not class_names or lat is None or lon is None:
+        return None
+    try:
+        _distances, indices = kd_tree.query([[lat, lon]], k=1)
+        if hasattr(indices, "ndim") and indices.ndim > 1:
+            indices = indices.flatten()
+        return class_names[int(indices[0])] if len(indices) > 0 else None
+    except Exception as e:
+        logger.warning("Error resolving LA location: %s", e)
+        return None
+
+
+def _merge_attendance_for_date(sa_records, la_records, kd_tree, class_names):
+    """Объединяет StaffAttendance и LessonAttendance за одну дату событий.
+
+    Границы first_in/last_out берутся по минимуму/максимуму из SA и LA; при
+    совпадении приоритет у SA. Зоны для LA определяются по координатам через
+    kd_tree. effective_work_seconds считается объединением интервалов SA и LA
+    с вычитанием пересечений (merge_work_intervals_to_total_seconds). area_sequence
+    возвращается только когда обе границы из SA.
+
+    Args:
+        sa_records: Список словарей SA (staff_id, first_in, last_out,
+            area_name_in, area_name_out, effective_work_seconds, effective_work_intervals).
+        la_records: Список словарей LA (staff_id, first_in, last_out,
+            latitude, longitude, duration_seconds).
+        kd_tree: KDTree для поиска локации по координатам или None.
+        class_names: Список названий локаций по индексам дерева.
+
+    Returns:
+        Словарь: first_in, last_out, area_name_in, area_name_out,
+        first_in_source, last_out_source, effective_work_seconds, area_sequence.
+    """
+    combined: dict[str, Any] = {
+        "first_in": None,
+        "last_out": None,
+        "area_name_in": None,
+        "area_name_out": None,
+        "first_in_source": None,
+        "last_out_source": None,
+        "effective_work_seconds": None,
+        "area_sequence": None,
+    }
+    if sa_records:
+        first_sa = sa_records[0]
+        combined["effective_work_seconds"] = first_sa.get("effective_work_seconds")
+        combined["area_sequence"] = first_sa.get("area_sequence")
+    for r in sa_records:
+        if r.get("first_in") and (
+            combined["first_in"] is None or r["first_in"] < combined["first_in"]
+        ):
+            combined["first_in"] = r["first_in"]
+            combined["first_in_source"] = "staff_attendance"
+            if r.get("area_name_in"):
+                combined["area_name_in"] = (
+                    utils.resolve_area_address(r["area_name_in"]) or r["area_name_in"]
+                )
+        if r.get("last_out") and (
+            combined["last_out"] is None or r["last_out"] > combined["last_out"]
+        ):
+            combined["last_out"] = r["last_out"]
+            combined["last_out_source"] = "staff_attendance"
+            if r.get("area_name_out"):
+                combined["area_name_out"] = (
+                    utils.resolve_area_address(r["area_name_out"]) or r["area_name_out"]
+                )
+
+    earliest_la = None
+    latest_la = None
+    for r in la_records:
+        if r.get("first_in"):
+            if earliest_la is None:
+                earliest_la = r
+            elif r["first_in"] < earliest_la["first_in"]:
+                earliest_la = r
+        if r.get("last_out"):
+            if latest_la is None:
+                latest_la = r
+            elif r["last_out"] > latest_la["last_out"]:
+                latest_la = r
+
+    if earliest_la is not None and (
+        combined["first_in"] is None or earliest_la["first_in"] < combined["first_in"]
+    ):
+        combined["first_in"] = earliest_la["first_in"]
+        combined["first_in_source"] = "lesson_attendance"
+        name = _resolve_la_location(
+            earliest_la.get("latitude"),
+            earliest_la.get("longitude"),
+            kd_tree,
+            class_names,
+        )
+        if name:
+            combined["area_name_in"] = name
+    if latest_la is not None and (
+        combined["last_out"] is None or latest_la["last_out"] > combined["last_out"]
+    ):
+        combined["last_out"] = latest_la["last_out"]
+        combined["last_out_source"] = "lesson_attendance"
+        name = _resolve_la_location(
+            latest_la.get("latitude"), latest_la.get("longitude"), kd_tree, class_names
+        )
+        if name:
+            combined["area_name_out"] = name
+
+    intervals: List[Tuple[datetime.datetime, datetime.datetime]] = []
+    if sa_records:
+        for raw in sa_records[0].get("effective_work_intervals") or []:
+            try:
+                s = raw.get("start") and datetime.datetime.fromisoformat(
+                    raw["start"].replace("Z", "+00:00")
+                )
+                e = raw.get("end") and datetime.datetime.fromisoformat(
+                    raw["end"].replace("Z", "+00:00")
+                )
+                if s is not None and e is not None and e > s:
+                    intervals.append((s, e))
+            except (ValueError, TypeError, AttributeError):
+                continue
+    for la in la_records:
+        fi, lo = la.get("first_in"), la.get("last_out")
+        if fi is not None and lo is not None and lo > fi:
+            intervals.append((fi, lo))
+    total_effective = utils.merge_work_intervals_to_total_seconds(intervals)
+    combined["effective_work_seconds"] = (
+        total_effective if total_effective > 0 else None
+    )
+    if (
+        combined["first_in_source"] != "staff_attendance"
+        or combined["last_out_source"] != "staff_attendance"
+    ):
+        combined["area_sequence"] = None
+
+    return combined
+
+
+def calculate_effective_minutes_with_lunch(first_in, last_out):
+    """Считает минуты между первым входом и последним выходом (fallback без событий СКУД).
+
+    Обед не вычитается: обеденный перерыв учитывается только при наличии события
+    выхода через турникет в окне 12:55–14:05 (логика в фетчере — effective_work_seconds).
+    Без событий считаем, что сотрудник не выходил (обедал на месте / работал).
+    """
+    if not first_in or not last_out:
+        return 0.0
+
+    current_tz = timezone.get_current_timezone()
+    start = timezone.localtime(first_in, current_tz)
+    end = timezone.localtime(last_out, current_tz)
+
+    if end <= start:
+        return 0.0
+
+    return (end - start).total_seconds() / 60
 
 
 class StaffAttendancePagination(PageNumberPagination):
@@ -74,29 +641,41 @@ token_param_config = openapi.Parameter(
 
 
 @permission_classes([AllowAny])
+@never_cache
 def home(request):
-    return render(
+    response = render(
         request,
         "index.html",
     )
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    return response
 
 
 @permission_classes([AllowAny])
+@never_cache
 def react_app(request):
-    def render_react_app():
-        try:
-            return render(request, "index.html")
-        except Exception as error:
-            logger.error(f"React App {str(error)}")
-            return None
+    try:
+        response = render(request, "index.html")
+    except TemplateDoesNotExist:
+        logger.exception("React app template index.html not found")
+        return HttpResponse(
+            b"Error loading React app",
+            status=500,
+            content_type="text/plain; charset=utf-8",
+        )
+    except Exception:
+        logger.exception("React app render failed")
+        return HttpResponse(
+            b"Error loading React app",
+            status=500,
+            content_type="text/plain; charset=utf-8",
+        )
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        future = executor.submit(render_react_app)
-        response = future.result()
-
-    if response is None:
-        return HttpResponse("Error loading React app", status=500)
-
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
     return response
 
 
@@ -134,6 +713,7 @@ class StaffAttendanceStatsView(APIView):
     @swagger_auto_schema(
         operation_summary="Получить список людей об их присутствии",
         operation_description="View для получения статистики о посещаемости персонала.",
+        tags=["Attendance & Statistics"],
         responses={
             200: openapi.Response(
                 description="Successful response",
@@ -186,6 +766,13 @@ class StaffAttendanceStatsView(APIView):
         },
         manual_parameters=[
             openapi.Parameter(
+                name="X-API-KEY",
+                in_=openapi.IN_HEADER,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="API ключ для аутентификации (альтернатива JWT токену).",
+            ),
+            openapi.Parameter(
                 "date",
                 openapi.IN_QUERY,
                 description="Date in 'YYYY-MM-DD' format.",
@@ -220,11 +807,13 @@ class StaffAttendanceStatsView(APIView):
             cached_data = get_cache(
                 cache_key,
                 query=lambda: self.query_data(target_date, next_date, pin_param),
-                timeout=1 * 5 * 60,
+                timeout=6 * 3600,
             )
 
             logger.info("Successfully retrieved staff attendance data.")
-            return Response(cached_data)
+            response = Response(cached_data)
+            response["Cache-Control"] = "public, max-age=21600"
+            return response
 
         except Exception as e:
             logger.error(f"Error while processing request: {str(e)}")
@@ -244,12 +833,17 @@ class StaffAttendanceStatsView(APIView):
         """
         logger.debug(f"Calculating last working day for date: {date}")
 
-        holidays = get_cache(
-            "public_holidays",
-            query=lambda: list(models.PublicHoliday.objects.all()),
-            timeout=10 * 6,
+        holidays = (
+            get_cache(
+                "public_holidays",
+                query=lambda: list(models.PublicHoliday.objects.all()),
+                timeout=10 * 6,
+            )
+            or []
         )
-        holiday_dates = {holiday.date: holiday.is_working_day for holiday in holidays}
+        holiday_dates = {
+            holiday.date: holiday.is_working_day for holiday in holidays if holiday
+        }
 
         while date.weekday() >= 5 or (
             date in holiday_dates and not holiday_dates[date]
@@ -263,7 +857,7 @@ class StaffAttendanceStatsView(APIView):
     def query_data(
         self,
         target_date: datetime.date,
-        next_date: datetime.date,
+        _next_date: datetime.date,
         pin_param: str | None,
     ) -> dict:
         """
@@ -284,8 +878,16 @@ class StaffAttendanceStatsView(APIView):
         department_name = "Unknown Department"
         staff_queryset = None
 
-        parent_department = models.ParentDepartment.objects.filter(id=pin_param).first()
-        child_department = models.ChildDepartment.objects.filter(id=pin_param).first()
+        parent_department = (
+            models.ParentDepartment.objects.filter(id=pin_param)
+            .only("id", "name")
+            .first()
+        )
+        child_department = (
+            models.ChildDepartment.objects.filter(id=pin_param)
+            .only("id", "name")
+            .first()
+        )
 
         match (parent_department, child_department):
             case (parent, None) if parent:
@@ -293,40 +895,159 @@ class StaffAttendanceStatsView(APIView):
                     department__parent_id=parent.id
                 ).select_related("department")
                 department_name = parent.name
+                logger.info(
+                    "StaffAttendanceStatsView: pin_param=%s → ParentDepartment id=%s, name=%s",
+                    pin_param,
+                    parent.id,
+                    department_name,
+                )
             case (None, child) if child:
                 staff_queryset = models.Staff.objects.filter(
                     department=child
                 ).select_related("department")
                 department_name = child.name
+                logger.info(
+                    "StaffAttendanceStatsView: pin_param=%s → ChildDepartment id=%s, name=%s",
+                    pin_param,
+                    child.id,
+                    department_name,
+                )
             case _:
                 staff_queryset = models.Staff.objects.filter(
                     Q(department__parent__name__icontains="AUP")
                     | Q(department__parent__name__icontains="АУП")
-                ).select_related("department")
-                department_name = (
-                    staff_queryset.first().department.parent.name
-                    if staff_queryset.exists()
-                    else "Unknown Department"
+                ).select_related("department__parent")
+                logger.info(
+                    "StaffAttendanceStatsView: pin_param=%s → fallback AUP/АУП branch",
+                    pin_param,
                 )
 
         target_date_for_filter = target_date + datetime.timedelta(days=1)
-        staff_attendance_queryset = models.StaffAttendance.objects.filter(
-            date_at=target_date_for_filter, staff__in=staff_queryset
-        ).select_related("staff")
+        staff_queryset = (
+            staff_queryset.select_related("department__parent")
+            .prefetch_related(
+                Prefetch(
+                    "positions",
+                    queryset=models.Position.objects.only("name"),
+                )
+            )
+            .only(
+                "id",
+                "pin",
+                "name",
+                "surname",
+                "department_id",
+                "department__name",
+                "department__parent__name",
+            )
+        )
+        staff_members = list(staff_queryset)
+        if department_name == "Unknown Department" and staff_members:
+            parent = getattr(staff_members[0].department, "parent", None)
+            if parent is not None:
+                department_name = getattr(parent, "name", None) or department_name
 
-        total_staff_count = staff_queryset.count()
-        present_staff = staff_attendance_queryset.exclude(first_in__isnull=True)
-        present_staff_pins = set(present_staff.values_list("staff__pin", flat=True))
-        absent_staff_count = total_staff_count - len(present_staff_pins)
-        present_between_9_to_18 = present_staff.filter(
-            first_in__time__range=["08:00", "19:00"]
-        ).count()
+        if not staff_members:
+            return {
+                "department_name": department_name,
+                "total_staff_count": 0,
+                "present_staff_count": 0,
+                "absent_staff_count": 0,
+                "present_between_9_to_18": 0,
+                "present_data": [],
+                "absent_data": [],
+                "data_for_date": target_date.strftime("%Y-%m-%d"),
+            }
 
-        present_data, absent_data = self.get_attendance_data(
-            staff_queryset, present_staff_pins, present_staff
+        staff_ids = [s.id for s in staff_members]
+        staff_id_to_pin = {s.id: s.pin for s in staff_members}
+
+        staff_attendance_queryset = (
+            models.StaffAttendance.objects.filter(
+                date_at=target_date_for_filter,
+                staff_id__in=staff_ids,
+                first_in__isnull=False,
+            )
+            .select_related("staff")
+            .only(
+                "first_in",
+                "last_out",
+                "effective_work_seconds",
+                "staff_id",
+                "staff__pin",
+                "staff__name",
+                "staff__surname",
+            )
+        )
+        present_staff_records = list(staff_attendance_queryset)
+        attendance_by_pin = {
+            record.staff.pin: record for record in present_staff_records
+        }
+
+        lesson_staff_ids = set(
+            models.LessonAttendance.objects.filter(
+                date_at=target_date,
+                staff_id__in=staff_ids,
+            )
+            .values_list("staff_id", flat=True)
+            .distinct()
+        )
+        present_pins_from_lessons = {
+            staff_id_to_pin[sid] for sid in lesson_staff_ids if sid in staff_id_to_pin
+        }
+
+        logger.info(
+            "StaffAttendanceStatsView: target_date=%s, target_date_for_filter(SA)=%s, "
+            "staff_count=%s, staff_ids_sample=%s, "
+            "StaffAttendance(present)=%s, LessonAttendance(staff_ids)=%s, present_pins_from_lessons=%s",
+            target_date,
+            target_date_for_filter,
+            len(staff_members),
+            staff_ids[:5] if len(staff_ids) > 5 else staff_ids,
+            len(present_staff_records),
+            len(lesson_staff_ids),
+            len(present_pins_from_lessons),
         )
 
-        logger.info(f"Data query successful for department: {department_name}")
+        total_staff_count = len(staff_members)
+
+        present_between_9_to_18 = 0
+        for record in present_staff_records:
+            first_in_time = record.first_in.time()
+            if datetime.time(8, 0) <= first_in_time <= datetime.time(19, 0):
+                present_between_9_to_18 += 1
+
+        employee_position_name = "Сотрудник"
+        employee_pins = {
+            s.pin
+            for s in staff_members
+            if any(p.name == employee_position_name for p in s.positions.all())
+        }
+        logger.info(
+            "StaffAttendanceStatsView: employee_pins(count)=%s, non_employee(count)=%s",
+            len(employee_pins),
+            total_staff_count - len(employee_pins),
+        )
+        present_data, absent_data = self.get_attendance_data(
+            staff_members,
+            attendance_by_pin,
+            present_pins_from_lessons=present_pins_from_lessons,
+            employee_pins=employee_pins,
+        )
+        absent_staff_count = total_staff_count - len(present_data)
+
+        present_from_sa = sum(
+            1 for p in present_data if attendance_by_pin.get(p["staff_pin"])
+        )
+        present_from_la_only = len(present_data) - present_from_sa
+        logger.info(
+            "StaffAttendanceStatsView: present_data=%s (from SA=%s, from LA only=%s), absent_data=%s, department=%s",
+            len(present_data),
+            present_from_sa,
+            present_from_la_only,
+            len(absent_data),
+            department_name,
+        )
 
         return {
             "department_name": department_name,
@@ -339,20 +1060,48 @@ class StaffAttendanceStatsView(APIView):
             "data_for_date": target_date.strftime("%Y-%m-%d"),
         }
 
-    def get_attendance_data(self, staff_queryset, present_staff_pins, present_staff):
+    def get_attendance_data(
+        self,
+        staff_members,
+        attendance_by_pin,
+        present_pins_from_lessons=None,
+        employee_pins=None,
+    ):
+        """Формирует present_data и absent_data.
+
+        Сотрудники (должность «Сотрудник»): только StaffAttendance, процент по времени.
+        Студенты и др.: присутствие по StaffAttendance или LessonAttendance (удалённые локации),
+        процент — факт присутствия (100%).
+        """
+        if present_pins_from_lessons is None:
+            present_pins_from_lessons = set()
+        if employee_pins is None:
+            employee_pins = {
+                s.pin
+                for s in staff_members
+                if any(p.name == "Сотрудник" for p in s.positions.all())
+            }
         logger.debug("Generating attendance data.")
         present_data = []
         absent_data = []
         total_minutes = 8 * 60
-        for staff in staff_queryset:
-            if staff.pin in present_staff_pins:
-                attendance = present_staff.get(staff__pin=staff.pin)
-                minutes_present = (
-                    (attendance.last_out - attendance.first_in).total_seconds() / 60
-                    if attendance.last_out
-                    else 0
-                )
-                individual_percentage = (minutes_present / total_minutes) * 100
+        for staff in staff_members:
+            is_employee = staff.pin in employee_pins
+            attendance = attendance_by_pin.get(staff.pin)
+
+            if attendance:
+                if getattr(attendance, "effective_work_seconds", None) is not None:
+                    minutes_present = attendance.effective_work_seconds / 60.0
+                elif attendance.first_in and attendance.last_out:
+                    minutes_present = (
+                        attendance.last_out - attendance.first_in
+                    ).total_seconds() / 60
+                else:
+                    minutes_present = 0
+                if is_employee:
+                    individual_percentage = (minutes_present / total_minutes) * 100
+                else:
+                    individual_percentage = 100.0
                 present_data.append(
                     {
                         "staff_pin": staff.pin,
@@ -361,13 +1110,25 @@ class StaffAttendanceStatsView(APIView):
                         "individual_percentage": round(individual_percentage, 2),
                     }
                 )
-            else:
-                absent_data.append(
+                continue
+
+            if not is_employee and staff.pin in present_pins_from_lessons:
+                present_data.append(
                     {
                         "staff_pin": staff.pin,
                         "name": f"{staff.surname} {staff.name}",
+                        "minutes_present": 0,
+                        "individual_percentage": 100.0,
                     }
                 )
+                continue
+
+            absent_data.append(
+                {
+                    "staff_pin": staff.pin,
+                    "name": f"{staff.surname} {staff.name}",
+                }
+            )
 
         logger.info("Attendance data generation complete.")
         return present_data, absent_data
@@ -380,7 +1141,15 @@ class StaffAttendanceStatsView(APIView):
         "Эндпоинт для получения данных локаций с информацией о посещениях для заданной даты."
         " Опционально можно получить данные о сотрудниках, если задан параметр `employees=true`."
     ),
+    tags=["Locations"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             name="date_at",
             in_=openapi.IN_QUERY,
@@ -463,16 +1232,25 @@ def map_location(request):
 
         logger.info(f"Using date: {date_at}")
 
-        locations = models.ClassLocation.objects.only(
-            "address", "name", "latitude", "longitude"
+        cache_key = f"map_location_{date_at}_{employees_required}"
+
+        def generate_map_data():
+            locations = models.ClassLocation.objects.only(
+                "address", "name", "latitude", "longitude"
+            )
+            return utils.generate_map_data(
+                locations,
+                date_at,
+                search_staff_attendance=employees_required,
+                filter_empty=not employees_required,
+            )
+
+        result = get_cache(
+            cache_key,
+            query=generate_map_data,
+            timeout=5 * 60,
         )
 
-        result = utils.generate_map_data(
-            locations,
-            date_at,
-            search_staff_attendance=employees_required,
-            filter_empty=not employees_required,
-        )
         logger.info(f"Generated map data with employees: {result}")
         return Response(result, status=status.HTTP_200_OK)
 
@@ -484,10 +1262,1488 @@ def map_location(request):
         )
 
 
+def _build_one_day_confirmation(
+    _dept: Optional[models.ChildDepartment],
+    target_date: datetime.date,
+    staff_list: list,
+    location_searcher=None,
+    name_to_address=None,
+    address_to_name=None,
+) -> dict[str, Any]:
+    """Формирует ответ подтверждения посещаемости по отделу за один день (одиночный запрос по дате).
+
+    Собирает отметки из StaffAttendance и LessonAttendance, строит список локаций
+    (сортировка: по количеству отметившихся DESC, затем address ASC, name ASC).
+    Основная локация дня — первая в списке. Подтверждение (confirmed=True) только
+    у студентов из основной локации и только если она проходит динамический порог
+    и минимальную долю среди отметившихся. pct считается от total_with_attendance.
+    При отсутствии данных за день всем ставится waiting=True.
+
+    Args:
+        _dept: Экземпляр ChildDepartment (не используется, оставлен для совместимости API).
+        target_date: Дата события (рабочий день).
+        staff_list: Список сотрудников (объекты с id, pin).
+        location_searcher: Опционально LocationSearcher для привязки LA к локациям.
+        name_to_address: Опционально словарь название -> адрес.
+        address_to_name: Опционально словарь адрес -> название.
+
+    Returns:
+        Словарь с ключами: date, data_available, total, locations (name, address, count, pct, pins_short),
+        by_pin_short (confirmed, waiting, location, location_address, first_in по pin_short).
+    """
+    date_str = target_date.strftime("%Y-%m-%d")
+    staff_ids = [s.id for s in staff_list]
+    data_insert_date = target_date + datetime.timedelta(days=1)
+
+    sa_qs = models.StaffAttendance.objects.filter(
+        staff_id__in=staff_ids,
+        date_at=data_insert_date,
+        first_in__isnull=False,
+    ).values("staff_id", "first_in", "area_name_in")
+    sa_records = list(sa_qs)
+    staff_with_sa = {r["staff_id"] for r in sa_records}
+
+    la_qs = (
+        models.LessonAttendance.objects.filter(
+            staff_id__in=staff_ids,
+            date_at=target_date,
+        )
+        .exclude(staff_id__in=staff_with_sa)
+        .values("staff_id", "first_in", "latitude", "longitude")
+    )
+    la_records = list(la_qs)
+
+    if location_searcher is None or name_to_address is None or address_to_name is None:
+        location_cache = get_class_location_cache()
+        location_searcher = location_cache.get("searcher")
+        if location_searcher is None and location_cache.get("searcher_payload"):
+            try:
+                location_searcher = utils.LocationSearcher(
+                    location_cache["searcher_payload"]
+                )
+            except Exception:
+                location_searcher = None
+        class_locations = list(
+            models.ClassLocation.objects.only("name", "address").values(
+                "name", "address"
+            )
+        )
+        name_to_address = {loc["name"]: loc["address"] for loc in class_locations}
+        address_to_name = {loc["address"]: loc["name"] for loc in class_locations}
+
+    staff_to_location: dict[int, str] = {}
+    staff_first_in: dict[int, datetime.datetime] = {}
+    for sa in sa_records:
+        addr = utils.resolve_area_address(sa.get("area_name_in"))
+        if addr:
+            staff_to_location[sa["staff_id"]] = addr
+        fi = sa.get("first_in")
+        if fi:
+            staff_first_in[sa["staff_id"]] = fi
+
+    la_by_staff: dict[int, list[dict]] = defaultdict(list)
+    for la in la_records:
+        la_by_staff[la["staff_id"]].append(la)
+    for sid, records in la_by_staff.items():
+        earliest = min(
+            (r for r in records if r.get("first_in")),
+            key=lambda r: r["first_in"],
+            default=None,
+        )
+        if (
+            earliest
+            and location_searcher
+            and earliest.get("latitude") is not None
+            and earliest.get("longitude") is not None
+        ):
+            nearest_name = location_searcher.find_nearest(
+                earliest["latitude"], earliest["longitude"], radius=200
+            )
+            if nearest_name != "Unknown Area" and nearest_name in name_to_address:
+                staff_to_location[sid] = name_to_address[nearest_name]
+                staff_first_in[sid] = earliest["first_in"]
+
+    location_counts: dict[str, list[str]] = defaultdict(list)
+    for staff in staff_list:
+        addr = staff_to_location.get(staff.id)
+        if addr:
+            location_counts[addr].append(staff.pin)
+
+    data_available = bool(staff_to_location) or bool(la_records)
+    if not data_available:
+        data_available = (
+            models.StaffAttendance.objects.filter(date_at=data_insert_date)
+            .only("id")
+            .exists()
+        )
+
+    total_with_attendance = sum(len(pins) for _, pins in location_counts.items())
+    total_group = len(staff_list)
+    locations_sorted = sorted(
+        location_counts.items(),
+        key=lambda x: (-len(x[1]), x[0], (address_to_name.get(x[0]) or x[0])),
+    )
+    main_address = locations_sorted[0][0] if locations_sorted else None
+    first_count = len(locations_sorted[0][1]) if locations_sorted else 0
+    confirmable_main_address = (
+        main_address
+        if main_address
+        and is_main_location_confirmable(
+            first_count, total_group, total_with_attendance
+        )
+        else None
+    )
+
+    locations_payload = []
+    for addr, pins in locations_sorted:
+        pct = (
+            round(100.0 * len(pins) / total_with_attendance, 2)
+            if total_with_attendance
+            else 0
+        )
+        pins_short = [utils.pin_to_external_format(p) for p in pins]
+        locations_payload.append(
+            {
+                "name": address_to_name.get(addr) or addr,
+                "address": addr,
+                "count": len(pins),
+                "pct": pct,
+                "pins_short": pins_short,
+            }
+        )
+
+    by_pin_short: dict[str, dict[str, Any]] = {}
+    for s in staff_list:
+        addr = staff_to_location.get(s.id)
+        if not data_available:
+            confirmed = False
+            waiting = True
+        else:
+            waiting = False
+            if addr is None:
+                confirmed = False
+            elif confirmable_main_address is None:
+                confirmed = False
+            elif addr == confirmable_main_address:
+                confirmed = True
+            else:
+                confirmed = False
+
+        fi = staff_first_in.get(s.id)
+        first_in_iso = (
+            fi.astimezone(timezone.get_current_timezone()).isoformat() if fi else None
+        )
+        pin_short = utils.pin_to_external_format(s.pin)
+        location_name = (address_to_name.get(addr) or addr) if addr else None
+        by_pin_short[pin_short] = {
+            "confirmed": confirmed,
+            "waiting": waiting,
+            "location": location_name,
+            "location_address": addr if addr else None,
+            "first_in": first_in_iso,
+        }
+
+    return {
+        "date": date_str,
+        "data_available": data_available,
+        "total": total_group,
+        "locations": locations_payload,
+        "by_pin_short": by_pin_short,
+    }
+
+
+def _build_one_day_from_records(
+    target_date: datetime.date,
+    staff_list: list,
+    sa_records: list,
+    la_records: list,
+    data_available: bool | None,
+    location_searcher,
+    name_to_address: dict,
+    address_to_name: dict,
+    dates_with_any_sa: set | None = None,
+) -> dict[str, Any]:
+    """Формирует ответ подтверждения за один день по уже загруженным SA/LA (без обращений к БД).
+
+    Логика совпадает с _build_one_day_confirmation: основная локация — первая после
+    сортировки (count DESC, address ASC, name ASC); подтверждение только для неё
+    и только при прохождении динамического порога и минимальной доли. pct от числа
+    отметившихся. Если передан dates_with_any_sa, data_available вычисляется как
+    (есть отметки за день) или (data_insert_date в dates_with_any_sa).
+
+    Args:
+        target_date: Дата события (рабочий день).
+        staff_list: Список сотрудников (id, pin).
+        sa_records: Записи StaffAttendance за этот день (date_at = target_date + 1).
+        la_records: Записи LessonAttendance за этот день.
+        data_available: Используется только при dates_with_any_sa is None.
+        location_searcher: LocationSearcher для привязки координат LA к локациям.
+        name_to_address: Словарь название -> адрес.
+        address_to_name: Словарь адрес -> название.
+        dates_with_any_sa: Множество дат выгрузки, по которым есть хотя бы одна SA (опционально).
+
+    Returns:
+        Словарь: date, data_available, total, locations, by_pin_short.
+    """
+    date_str = target_date.strftime("%Y-%m-%d")
+    staff_with_sa = frozenset(r["staff_id"] for r in sa_records if r.get("first_in"))
+
+    staff_to_location: dict[int, str] = {}
+    staff_first_in: dict[int, datetime.datetime] = {}
+    for sa in sa_records:
+        addr = utils.resolve_area_address(sa.get("area_name_in"))
+        if addr:
+            staff_to_location[sa["staff_id"]] = addr
+        fi = sa.get("first_in")
+        if fi:
+            staff_first_in[sa["staff_id"]] = fi
+
+    la_by_staff: dict[int, list[dict]] = defaultdict(list)
+    for la in la_records:
+        if la["staff_id"] not in staff_with_sa:
+            la_by_staff[la["staff_id"]].append(la)
+    for sid, records in la_by_staff.items():
+        earliest = min(
+            (r for r in records if r.get("first_in")),
+            key=lambda r: r["first_in"],
+            default=None,
+        )
+        if (
+            earliest
+            and location_searcher
+            and earliest.get("latitude") is not None
+            and earliest.get("longitude") is not None
+        ):
+            nearest_name = location_searcher.find_nearest(
+                earliest["latitude"], earliest["longitude"], radius=200
+            )
+            if nearest_name != "Unknown Area" and nearest_name in name_to_address:
+                staff_to_location[sid] = name_to_address[nearest_name]
+                staff_first_in[sid] = earliest["first_in"]
+
+    location_counts: dict[str, list[str]] = defaultdict(list)
+    for staff in staff_list:
+        addr = staff_to_location.get(staff.id)
+        if addr:
+            location_counts[addr].append(staff.pin)
+
+    if dates_with_any_sa is not None:
+        data_insert_date = target_date + datetime.timedelta(days=1)
+        data_available = bool(staff_to_location) or bool(la_records) or (
+            data_insert_date in dates_with_any_sa
+        )
+    elif data_available is None:
+        data_available = False
+
+    total_with_attendance = sum(len(pins) for _, pins in location_counts.items())
+    total_group = len(staff_list)
+    locations_sorted = sorted(
+        location_counts.items(),
+        key=lambda x: (-len(x[1]), x[0], (address_to_name.get(x[0]) or x[0])),
+    )
+    main_address = locations_sorted[0][0] if locations_sorted else None
+    first_count = len(locations_sorted[0][1]) if locations_sorted else 0
+    confirmable_main_address = (
+        main_address
+        if main_address
+        and is_main_location_confirmable(
+            first_count, total_group, total_with_attendance
+        )
+        else None
+    )
+
+    locations_payload = []
+    for addr, pins in locations_sorted:
+        pct = (
+            round(100.0 * len(pins) / total_with_attendance, 2)
+            if total_with_attendance
+            else 0
+        )
+        pins_short = [utils.pin_to_external_format(p) for p in pins]
+        locations_payload.append(
+            {
+                "name": address_to_name.get(addr) or addr,
+                "address": addr,
+                "count": len(pins),
+                "pct": pct,
+                "pins_short": pins_short,
+            }
+        )
+
+    by_pin_short: dict[str, dict[str, Any]] = {}
+    for s in staff_list:
+        addr = staff_to_location.get(s.id)
+        if not data_available:
+            confirmed = False
+            waiting = True
+        else:
+            waiting = False
+            if addr is None:
+                confirmed = False
+            elif confirmable_main_address is None:
+                confirmed = False
+            elif addr == confirmable_main_address:
+                confirmed = True
+            else:
+                confirmed = False
+
+        fi = staff_first_in.get(s.id)
+        first_in_iso = (
+            fi.astimezone(timezone.get_current_timezone()).isoformat() if fi else None
+        )
+        pin_short = utils.pin_to_external_format(s.pin)
+        location_name = (address_to_name.get(addr) or addr) if addr else None
+        by_pin_short[pin_short] = {
+            "confirmed": confirmed,
+            "waiting": waiting,
+            "location": location_name,
+            "location_address": addr if addr else None,
+            "first_in": first_in_iso,
+        }
+
+    return {
+        "date": date_str,
+        "data_available": data_available,
+        "total": total_group,
+        "locations": locations_payload,
+        "by_pin_short": by_pin_short,
+    }
+
+
+@swagger_auto_schema(
+    method="GET",
+    operation_summary="Подтверждение оценок по посещаемости (отдел)",
+    operation_description=(
+        "Эндпоинт для интеграции с системой оценок: по отделу (группе) и дате возвращает, "
+        "кто из сотрудников был на «основной» локации (где большинство отметившихся), а кто — нет.\n\n"
+        "**Логика:**\n"
+        "- Собираются отметки посещаемости за день (StaffAttendance и LessonAttendance).\n"
+        "- Основная локация за день — та, где отметилось больше всего человек.\n"
+        "- Проценты (pct) по локациям считаются от **числа отметившихся** (распределение пришедших).\n"
+        "- Основная локация дня — первая в отсортированном списке (count DESC, address ASC, name ASC). "
+        "Подтверждение только для неё и только если она проходит порог по размеру группы "
+        "(n=1: 1, n=2: 2, n=3: 2, n=4: 3, иначе max(2, ceil(0.20*n + 0.70*sqrt(n)))) "
+        "и минимальную долю среди отметившихся (60% при n<=5, 55% при n<=12, 50% иначе). Остальные локации — неподтверждение.\n"
+        "- У каждой локации в ответе обязательно есть **name** и **address**.\n"
+        "- В **by_pin_short**: **confirmed** = true только у тех, кто был в основной локации; "
+        "из другой локации или без отметки — confirmed = false. **waiting** = данные ещё не выгружены.\n\n"
+        "**Поиск по сотруднику:** ключи by_pin_short — PIN без обёртки S/T (S9614S → 9614). "
+        "Оценка разрешена, если у pin_short **confirmed** = true."
+    ),
+    tags=["Attendance & Statistics"],
+    manual_parameters=[
+        openapi.Parameter(
+            "child_department_id",
+            openapi.IN_QUERY,
+            description="ID подразделения (ChildDepartment), например группа «ЖМ 724 0/б»",
+            type=openapi.TYPE_STRING,
+            required=True,
+        ),
+        openapi.Parameter(
+            STAFF_PINS_HEADER_NAME,
+            openapi.IN_HEADER,
+            description=(
+                "Опциональный pins-mode: CSV список PIN в формате S{id}S "
+                "(например: S9614S,S30108S). При передаче этого header расчёт "
+                "идёт строго по переданным PIN и не зависит от существования "
+                "child_department_id."
+            ),
+            type=openapi.TYPE_STRING,
+            required=False,
+        ),
+        openapi.Parameter(
+            "date",
+            openapi.IN_QUERY,
+            description="Одна дата YYYY-MM-DD. Используется либо date, либо пара date_from и date_to.",
+            type=openapi.TYPE_STRING,
+            required=False,
+        ),
+        openapi.Parameter(
+            "date_from",
+            openapi.IN_QUERY,
+            description="Начало диапазона дат YYYY-MM-DD (включительно). В паре с date_to — один запрос на весь период (в т.ч. полгода).",
+            type=openapi.TYPE_STRING,
+            required=False,
+        ),
+        openapi.Parameter(
+            "date_to",
+            openapi.IN_QUERY,
+            description="Конец диапазона дат YYYY-MM-DD (включительно). В паре с date_from.",
+            type=openapi.TYPE_STRING,
+            required=False,
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Успешный ответ: одна дата — те же поля (date, locations, by_pin_short и т.д.); диапазон — child_department_id, child_department_name, results: [{ date, data_available, total, locations, by_pin_short }, ...].",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "date": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Дата (при запросе одной даты).",
+                    ),
+                    "child_department_id": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="ID отдела (ChildDepartment).",
+                    ),
+                    "child_department_name": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Название отдела (группы).",
+                    ),
+                    "data_available": openapi.Schema(
+                        type=openapi.TYPE_BOOLEAN,
+                        description="True, если данные посещаемости за эту дату уже выгружены (при одной дате).",
+                    ),
+                    "total": openapi.Schema(
+                        type=openapi.TYPE_INTEGER,
+                        description="Число сотрудников в отделе (при одной дате).",
+                    ),
+                    "locations": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        description="Локации по убыванию pct (при одной дате).",
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                    "by_pin_short": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        description="По pin_short: confirmed, waiting, location, first_in (при одной дате).",
+                        additional_properties=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                    "results": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        description="При запросе по диапазону: массив объектов по дням (date, data_available, total, locations, by_pin_short).",
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(
+            description="Ошибка: не указаны date или date_from/date_to; неверный формат даты; date_from > date_to.",
+        ),
+        404: openapi.Response(
+            description="Отдел с указанным child_department_id не найден.",
+        ),
+    },
+)
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def department_attendance_confirmation(request):
+    """Определяет подтверждение оценок по посещаемости для отдела на дату или диапазон дат.
+
+    По переданному отделу (child_department_id) и дате (или диапазону date_from/date_to) возвращает:
+    - список локаций с долей сотрудников (pct) и списком pins_short;
+    - объект by_pin_short для поиска по pin_short (формат внешней системы: без S/T)
+      с полями confirmed, waiting, location, first_in.
+
+    Один день: query date=YYYY-MM-DD. Ответ как раньше (одна дата).
+    Диапазон: query date_from=YYYY-MM-DD и date_to=YYYY-MM-DD (включительно). Ответ — results: [{ date, ... }, ...].
+
+    Args:
+        request: GET. Обязателен child_department_id. Либо date, либо оба date_from и date_to.
+    """
+    child_department_id = request.GET.get("child_department_id")
+    date_str = request.GET.get("date")
+    date_from_str = request.GET.get("date_from")
+    date_to_str = request.GET.get("date_to")
+    raw_staff_pins_header = request.headers.get(STAFF_PINS_HEADER_NAME)
+    use_staff_pins_mode = raw_staff_pins_header is not None
+    staff_pins = _parse_staff_pins_header(raw_staff_pins_header)
+
+    if not child_department_id and not use_staff_pins_mode:
+        return Response(
+            {"error": "child_department_id is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not child_department_id:
+        child_department_id = "pins_mode"
+
+    use_range = bool(date_from_str and date_to_str)
+    if not use_range and not date_str:
+        return Response(
+            {"error": "Either date or both date_from and date_to are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if use_range and date_str:
+        return Response(
+            {"error": "Use either date or date_from/date_to, not both"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if use_range:
+        try:
+            date_from = datetime.datetime.strptime(date_from_str, "%Y-%m-%d").date()
+            date_to = datetime.datetime.strptime(date_to_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response(
+                {"error": "Invalid date format for date_from/date_to, use YYYY-MM-DD"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if date_from > date_to:
+            return Response(
+                {"error": "date_from must be <= date_to"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    else:
+        try:
+            target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return Response(
+                {"error": "Invalid date format, use YYYY-MM-DD"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    dept = None
+    if not use_staff_pins_mode:
+        dept = models.ChildDepartment.objects.filter(id=child_department_id).first()
+        if not dept:
+            return Response(
+                {"error": f"ChildDepartment {child_department_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+    else:
+        dept = models.ChildDepartment.objects.filter(id=child_department_id).first()
+
+    dept_name = dept.name if dept else ""
+
+    cache_key = _build_department_confirmation_cache_key(
+        child_department_id=child_department_id,
+        use_range=use_range,
+        date_str=date_str,
+        date_from_str=date_from_str,
+        date_to_str=date_to_str,
+        use_staff_pins_mode=use_staff_pins_mode,
+        staff_pins=staff_pins,
+        hour_bucket=_department_confirmation_hour_bucket(),
+    )
+    cached = Cache.get(cache_key)
+    if cached is not None:
+        return Response(cached, status=status.HTTP_200_OK)
+
+    if use_staff_pins_mode:
+        staff_list = list(
+            models.Staff.objects.filter(pin__in=staff_pins).only(
+                "id", "pin", "name", "surname"
+            )
+        )
+    else:
+        staff_list = list(
+            models.Staff.objects.filter(department_id=child_department_id).only(
+                "id", "pin", "name", "surname"
+            )
+        )
+    if not staff_list and not use_range:
+        payload = {
+            "date": date_str,
+            "child_department_id": child_department_id,
+            "child_department_name": dept_name,
+            "data_available": False,
+            "total": 0,
+            "locations": [],
+            "by_pin_short": {},
+        }
+        Cache.set(cache_key, payload, DEPARTMENT_CONFIRMATION_CACHE_TTL)
+        return Response(payload, status=status.HTTP_200_OK)
+    if not staff_list and use_range:
+        results = []
+        d = date_from
+        while d <= date_to:
+            results.append(
+                {
+                    "date": d.strftime("%Y-%m-%d"),
+                    "data_available": False,
+                    "total": 0,
+                    "locations": [],
+                    "by_pin_short": {},
+                }
+            )
+            d += datetime.timedelta(days=1)
+        payload = {
+            "child_department_id": child_department_id,
+            "child_department_name": dept_name,
+            "results": results,
+        }
+        Cache.set(cache_key, payload, DEPARTMENT_CONFIRMATION_CACHE_TTL)
+        return Response(payload, status=status.HTTP_200_OK)
+
+    if use_range:
+        staff_ids = [s.id for s in staff_list]
+        sa_by_event_date, la_by_event_date = fetch_attendance_by_event_dates(
+            staff_ids, date_from, date_to
+        )
+        dates_with_any_sa = {ed + datetime.timedelta(days=1) for ed in sa_by_event_date}
+
+        location_cache = get_class_location_cache()
+        location_searcher = location_cache.get("searcher")
+        if location_searcher is None and location_cache.get("searcher_payload"):
+            try:
+                location_searcher = utils.LocationSearcher(
+                    location_cache["searcher_payload"]
+                )
+            except Exception:
+                location_searcher = None
+        class_locations = list(
+            models.ClassLocation.objects.only("name", "address").values(
+                "name", "address"
+            )
+        )
+        name_to_address = {loc["name"]: loc["address"] for loc in class_locations}
+        address_to_name = {loc["address"]: loc["name"] for loc in class_locations}
+
+        results = []
+        d = date_from
+        while d <= date_to:
+            sa_records = sa_by_event_date.get(d, [])
+            la_records = la_by_event_date.get(d, [])
+            day_payload = _build_one_day_from_records(
+                d,
+                staff_list,
+                sa_records,
+                la_records,
+                data_available=None,
+                location_searcher=location_searcher,
+                name_to_address=name_to_address,
+                address_to_name=address_to_name,
+                dates_with_any_sa=dates_with_any_sa,
+            )
+            results.append(day_payload)
+            d += datetime.timedelta(days=1)
+
+        payload = {
+            "child_department_id": child_department_id,
+            "child_department_name": dept_name,
+            "results": results,
+        }
+        Cache.set(cache_key, payload, DEPARTMENT_CONFIRMATION_CACHE_TTL)
+        return Response(payload, status=status.HTTP_200_OK)
+
+    day_payload = _build_one_day_confirmation(dept, target_date, staff_list)
+    payload = {
+        "date": day_payload["date"],
+        "child_department_id": child_department_id,
+        "child_department_name": dept_name,
+        "data_available": day_payload["data_available"],
+        "total": day_payload["total"],
+        "locations": day_payload["locations"],
+        "by_pin_short": day_payload["by_pin_short"],
+    }
+    Cache.set(cache_key, payload, DEPARTMENT_CONFIRMATION_CACHE_TTL)
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+@swagger_auto_schema(
+    method="GET",
+    operation_summary="Список локаций для занятий",
+    operation_description=(
+        "**Без latitude/longitude:** все локации (id, name, address, latitude, longitude). "
+        "Поле distance отсутствует.\n\n"
+        "**С latitude и longitude:** фронт шлёт координаты, ответ — «в локации или нет». "
+        "Только локации, где d ≤ R_loc: d — Haversine (user, pin) в м, R_loc из кэша/БД. "
+        "Сортировка по d. В элементе: distance = d (м, 2 знака). Если ни одна не подходит → 404."
+    ),
+    tags=["Locations"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            name="latitude",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_NUMBER,
+            format=openapi.FORMAT_FLOAT,
+            required=False,
+            description="Широта пользователя (WGS84). Для поиска по радиусу нужны оба: latitude и longitude.",
+            example=43.246871,
+        ),
+        openapi.Parameter(
+            name="longitude",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_NUMBER,
+            format=openapi.FORMAT_FLOAT,
+            required=False,
+            description="Долгота пользователя (WGS84). Для поиска по радиусу нужны оба: latitude и longitude.",
+            example=76.944923,
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="locations. Без lat/lon: все, без distance. С lat/lon: d ≤ R_loc, distance = Haversine (м).",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                required=["locations"],
+                properties={
+                    "locations": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        description="При lat/lon: в радиусе (d ≤ R_loc), distance — Haversine в м. Без lat/lon: все локации.",
+                        items=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            required=["id", "name", "address", "latitude", "longitude"],
+                            properties={
+                                "id": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    description="ID локации",
+                                ),
+                                "name": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="Название",
+                                ),
+                                "address": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="Адрес",
+                                ),
+                                "latitude": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format=openapi.FORMAT_FLOAT,
+                                    description="Широта точки локации",
+                                ),
+                                "longitude": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format=openapi.FORMAT_FLOAT,
+                                    description="Долгота точки локации",
+                                ),
+                                "distance": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format=openapi.FORMAT_FLOAT,
+                                    description=(
+                                        "Только при lat/lon. Haversine(пользователь, pin) в метрах, 2 знака. "
+                                        "Погрешность на практике — точность GPS (5–15 м у смартфона)."
+                                    ),
+                                ),
+                            },
+                        ),
+                    ),
+                },
+            ),
+        ),
+        404: openapi.Response(
+            description=(
+                "При lat/lon: нет локаций с d ≤ R_loc — {message, detail}. "
+                'Пустая БД по локациям — {error: "No locations available in database"}.'
+            ),
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "message": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Системное: напр. «Ближайшая локация 85.2 м, превышен лимит 70 м».",
+                    ),
+                    "detail": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Для фронта: «Ничего не найдено».",
+                    ),
+                    "error": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="При пустой БД: «No locations available in database».",
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(
+            description=(
+                "Параметры отсутствуют или неверный формат. "
+                "error, detail: «Широта обязательна», «Долгота обязательна», "
+                "«Широта и долгота обязательны», «Invalid latitude or longitude format. Expected numbers.»"
+            ),
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Код/текст ошибки",
+                    ),
+                    "detail": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Сообщение для пользователя",
+                    ),
+                },
+            ),
+        ),
+        500: openapi.Response(
+            description="Внутренняя ошибка сервера",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Описание ошибки",
+                    ),
+                },
+            ),
+        ),
+    },
+)
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def lesson_locations(request):
+    """Список локаций: все либо только в приёмном радиусе R_loc.
+
+    Без lat/lon: все локации (id, name, address, latitude, longitude).
+    Поле distance не возвращается.
+
+    С lat/lon: только локации, где d ≤ R_loc. d — Haversine (user, pin) в м,
+    R_loc из кэша или ClassLocation.acceptance_radius_m. Сортировка по d.
+    В ответе: distance = round(d, 2) (м). Погрешность — точность GPS (5–15 м).
+
+    Args:
+        request: GET; опционально latitude, longitude (WGS84, числа).
+
+    Returns:
+        Response: {locations: [...]}; при lat/lon и отсутствии подходящих — 404.
+    """
+
+    def _not_found(system_message: str):
+        return Response(
+            {"message": system_message, "detail": "Ничего не найдено"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    log_ll = logging.getLogger("monitoring_app.lesson_locations")
+    log_ll_nf = logging.getLogger("monitoring_app.lesson_locations.not_found")
+
+    try:
+        latitude_param = request.GET.get("latitude")
+        longitude_param = request.GET.get("longitude")
+
+        def _is_empty(val):
+            return val is None or (isinstance(val, str) and val.strip() == "")
+
+        lat_empty = _is_empty(latitude_param)
+        lon_empty = _is_empty(longitude_param)
+
+        if latitude_param is None and longitude_param is None:
+            pass
+        elif lat_empty and lon_empty:
+            log_ll.warning("MISSING both lat and lon")
+            return Response(
+                {
+                    "error": "Широта и долгота обязательны",
+                    "detail": "Широта и долгота обязательны",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        elif lat_empty:
+            log_ll.warning("MISSING latitude lon=%s", longitude_param)
+            return Response(
+                {"error": "Широта обязательна", "detail": "Широта обязательна"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        elif lon_empty:
+            log_ll.warning("MISSING longitude lat=%s", latitude_param)
+            return Response(
+                {"error": "Долгота обязательна", "detail": "Долгота обязательна"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if latitude_param is not None and longitude_param is not None:
+            log_ll.info("request lat=%s lon=%s", latitude_param, longitude_param)
+            try:
+                latitude = float(latitude_param)
+                longitude = float(longitude_param)
+            except (ValueError, TypeError):
+                log_ll.warning("INVALID lat=%s lon=%s", latitude_param, longitude_param)
+                return Response(
+                    {
+                        "error": "Invalid latitude or longitude format. Expected numbers.",
+                        "detail": "Неверный формат. Ожидаются числа.",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            all_locations = models.ClassLocation.objects.filter(
+                latitude__isnull=False, longitude__isnull=False
+            ).only("id", "name", "address", "latitude", "longitude")
+
+            if not all_locations.exists():
+                log_ll.warning("NO_LOCATIONS_IN_DB")
+                return Response(
+                    {"error": "No locations available in database"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            radii = get_class_location_cache().get("location_acceptance_radius_m", {})
+            within = []
+            min_overall = float("inf")
+            nearest_loc = None
+
+            for loc in all_locations:
+                d = utils.calculate_distance_haversine(
+                    latitude, longitude, loc.latitude, loc.longitude
+                )
+                R = radii.get(loc.id, DEFAULT_ACCEPTANCE_RADIUS_M)
+                if d < min_overall:
+                    min_overall = d
+                    nearest_loc = loc
+                if d <= R:
+                    within.append((d, loc, R))
+
+            within.sort(key=lambda x: x[0])
+
+            if not within:
+                R_n = (
+                    radii.get(nearest_loc.id, DEFAULT_ACCEPTANCE_RADIUS_M)
+                    if nearest_loc is not None
+                    else DEFAULT_ACCEPTANCE_RADIUS_M
+                )
+                nearest_name = nearest_loc.name if nearest_loc else "N/A"
+                loc_lat = nearest_loc.latitude if nearest_loc else 0
+                loc_lon = nearest_loc.longitude if nearest_loc else 0
+                loc_id = nearest_loc.id if nearest_loc else 0
+                log_ll.warning(
+                    "NOT_FOUND user(%.6f,%.6f) nearest_id=%d d=%.1fm R=%dm",
+                    latitude,
+                    longitude,
+                    loc_id,
+                    min_overall,
+                    R_n,
+                )
+                log_ll_nf.warning(
+                    "Haversine: d(user,loc)<=R => in_radius | "
+                    "user(lat=%.6f,lon=%.6f) nearest=%s[id=%d](lat=%.6f,lon=%.6f) "
+                    "d=%.1fm R=%dm => d>R NOT_FOUND",
+                    latitude,
+                    longitude,
+                    nearest_name,
+                    loc_id,
+                    loc_lat,
+                    loc_lon,
+                    min_overall,
+                    R_n,
+                )
+                return _not_found(
+                    f"Ближайшая локация {min_overall:.1f} м, превышен лимит {R_n} м"
+                )
+
+            log_ll.info(
+                "FOUND %d | %s",
+                len(within),
+                ", ".join(f"{loc.name}({d:.1f}m)" for d, loc, _ in within),
+            )
+
+            locations_data = [
+                {
+                    "id": loc.id,
+                    "name": loc.name,
+                    "address": loc.address,
+                    "latitude": loc.latitude,
+                    "longitude": loc.longitude,
+                    "distance": round(d, 2),
+                }
+                for d, loc, R in within
+            ]
+
+            return Response(
+                {"locations": locations_data},
+                status=status.HTTP_200_OK,
+            )
+
+        log_ll.info("request all locations")
+        locations = models.ClassLocation.objects.only(
+            "id", "name", "address", "latitude", "longitude"
+        ).order_by("name")
+        locations_data = [
+            {
+                "id": loc.id,
+                "name": loc.name,
+                "address": loc.address,
+                "latitude": loc.latitude,
+                "longitude": loc.longitude,
+            }
+            for loc in locations
+        ]
+        log_ll.info("returned %d locations", len(locations_data))
+
+        return Response(
+            {"locations": locations_data},
+            status=status.HTTP_200_OK,
+        )
+
+    except Exception as e:
+        log_ll.error(f"Critical error in lesson_locations: {str(e)}", exc_info=True)
+        return Response(
+            {"error": "A critical error occurred. Please try again later."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+_CLASSLOCATION_FIELDS = (
+    "id",
+    "name",
+    "address",
+    "latitude",
+    "longitude",
+    "acceptance_radius_m",
+)
+
+_classlocation_item_schema = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=["name", "address", "latitude", "longitude"],
+    properties={
+        "name": openapi.Schema(type=openapi.TYPE_STRING, description="Название"),
+        "address": openapi.Schema(type=openapi.TYPE_STRING, description="Адрес"),
+        "latitude": openapi.Schema(
+            type=openapi.TYPE_NUMBER, format=openapi.FORMAT_FLOAT, description="Широта"
+        ),
+        "longitude": openapi.Schema(
+            type=openapi.TYPE_NUMBER, format=openapi.FORMAT_FLOAT, description="Долгота"
+        ),
+        "acceptance_radius_m": openapi.Schema(
+            type=openapi.TYPE_INTEGER,
+            nullable=True,
+            description="Приёмный радиус (м), опционально",
+        ),
+    },
+)
+
+_classlocation_list_response = openapi.Response(
+    description="Список локаций",
+    schema=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        properties={
+            "results": openapi.Schema(
+                type=openapi.TYPE_ARRAY,
+                items=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "id": openapi.Schema(type=openapi.TYPE_INTEGER),
+                        "name": openapi.Schema(type=openapi.TYPE_STRING),
+                        "address": openapi.Schema(type=openapi.TYPE_STRING),
+                        "latitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+                        "longitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+                        "acceptance_radius_m": openapi.Schema(
+                            type=openapi.TYPE_INTEGER, nullable=True
+                        ),
+                    },
+                ),
+            ),
+        },
+    ),
+)
+
+
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Список локаций занятий (CRUD)",
+    operation_description="Возвращает все локации: id, название, адрес, широта, долгота, приёмный радиус (м). Один запрос к БД.",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+    ],
+    responses={200: _classlocation_list_response},
+)
+@swagger_auto_schema(
+    method="post",
+    operation_summary="Создать одну или несколько локаций",
+    operation_description="Тело: один объект или массив объектов. При массовом создании кэш локаций инвалидируется.",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+    ],
+    request_body=openapi.Schema(
+        type=openapi.TYPE_ARRAY,
+        description="Один объект или массив объектов: name, address, latitude, longitude, acceptance_radius_m (опционально).",
+        items=_classlocation_item_schema,
+    ),
+    responses={
+        201: openapi.Response(
+            description="Создано",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "results": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(description="Ошибка валидации"),
+    },
+)
+@swagger_auto_schema(
+    method="delete",
+    operation_summary="Массовое удаление локаций",
+    operation_description="Query-параметр ids: список ID через запятую, например ?ids=1,2,3.",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            name="ids",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="ID локаций через запятую (например 1,2,3)",
+        ),
+    ],
+    responses={
+        200: openapi.Response(description="Удалено"),
+        400: openapi.Response(description="Не указаны ids"),
+    },
+)
+@api_view(["GET", "POST", "DELETE"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def class_location_list_create(request):
+    """GET: список (кэш 1 ч, один запрос .values()). POST/DELETE: инвалидация + прогрев списка и таска радиусов."""
+    if request.method == "GET":
+        data = Cache.get(CLASS_LOCATION_LIST_CACHE_KEY)
+        if data is None:
+            data = list(
+                models.ClassLocation.objects.order_by("id").values(
+                    "id",
+                    "name",
+                    "address",
+                    "latitude",
+                    "longitude",
+                    "acceptance_radius_m",
+                )
+            )
+            Cache.set(
+                CLASS_LOCATION_LIST_CACHE_KEY,
+                data,
+                CLASS_LOCATION_LIST_CACHE_TTL,
+            )
+        return Response({"results": data}, status=status.HTTP_200_OK)
+
+    if request.method == "POST":
+        try:
+            body = request.data
+        except Exception:
+            body = None
+        if body is None:
+            return Response(
+                {"error": "Request body is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        is_list = isinstance(body, list)
+        items = body if is_list else [body]
+        serializer = serializers.ClassLocationSerializer(data=items, many=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        validated = serializer.validated_data
+        if not validated or not isinstance(validated, (list, tuple)):
+            return Response(
+                {"error": "At least one item required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        with _db_atomic():
+            created = []
+            for d in validated:
+                obj = models.ClassLocation.objects.create(
+                    name=d["name"],
+                    address=d["address"],
+                    latitude=d["latitude"],
+                    longitude=d["longitude"],
+                    acceptance_radius_m=d.get("acceptance_radius_m"),
+                )
+                created.append(obj)
+        if len(created) > 0:
+            invalidate_class_location_cache_impl()
+        result = [
+            {
+                "id": o.id,
+                "name": o.name,
+                "address": o.address,
+                "latitude": o.latitude,
+                "longitude": o.longitude,
+                "acceptance_radius_m": getattr(o, "acceptance_radius_m", None),
+            }
+            for o in created
+        ]
+        return Response({"results": result}, status=status.HTTP_201_CREATED)
+
+    if request.method == "DELETE":
+        ids_param = request.query_params.get("ids") or request.query_params.get("id")
+        if not ids_param:
+            return Response(
+                {"error": "Query parameter 'ids' is required (e.g. ids=1,2,3)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            id_list = [int(x.strip()) for x in ids_param.split(",") if x.strip()]
+        except ValueError:
+            return Response(
+                {"error": "ids must be comma-separated integers"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not id_list:
+            return Response(
+                {"error": "At least one id required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        deleted, _ = models.ClassLocation.objects.filter(id__in=id_list).delete()
+        return Response(
+            {"deleted": deleted, "ids": id_list},
+            status=status.HTTP_200_OK,
+        )
+
+
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Одна локация по ID",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            "id", openapi.IN_PATH, type=openapi.TYPE_INTEGER, description="ID локации"
+        ),
+    ],
+    responses={
+        200: _classlocation_list_response,
+        404: openapi.Response(description="Не найдено"),
+    },
+)
+@swagger_auto_schema(
+    method="patch",
+    operation_summary="Обновить одну локацию",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            "id", openapi.IN_PATH, type=openapi.TYPE_INTEGER, description="ID локации"
+        ),
+    ],
+    request_body=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        properties={
+            "name": openapi.Schema(type=openapi.TYPE_STRING),
+            "address": openapi.Schema(type=openapi.TYPE_STRING),
+            "latitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+            "longitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+            "acceptance_radius_m": openapi.Schema(
+                type=openapi.TYPE_INTEGER, nullable=True
+            ),
+        },
+    ),
+    responses={
+        200: _classlocation_list_response,
+        404: openapi.Response(description="Не найдено"),
+    },
+)
+@swagger_auto_schema(
+    method="delete",
+    operation_summary="Удалить одну локацию",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            "id", openapi.IN_PATH, type=openapi.TYPE_INTEGER, description="ID локации"
+        ),
+    ],
+    responses={
+        200: openapi.Response(description="Удалено"),
+        404: openapi.Response(description="Не найдено"),
+    },
+)
+@api_view(["GET", "PATCH", "DELETE"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def class_location_detail(request, pk):
+    """GET/PATCH/DELETE одной локации по pk. Кэш инвалидируется через signal при save/delete."""
+    loc = get_object_or_404(
+        models.ClassLocation.objects.only(*_CLASSLOCATION_FIELDS),
+        pk=pk,
+    )
+    if request.method == "GET":
+        return Response(
+            {
+                "id": loc.id,
+                "name": loc.name,
+                "address": loc.address,
+                "latitude": loc.latitude,
+                "longitude": loc.longitude,
+                "acceptance_radius_m": loc.acceptance_radius_m,
+            },
+            status=status.HTTP_200_OK,
+        )
+    if request.method == "PATCH":
+        serializer = serializers.ClassLocationSerializer(
+            loc, data=request.data, partial=True
+        )
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    if request.method == "DELETE":
+        loc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+_classlocation_bulk_update_schema = openapi.Schema(
+    type=openapi.TYPE_ARRAY,
+    items=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        required=["id"],
+        properties={
+            "id": openapi.Schema(type=openapi.TYPE_INTEGER, description="ID локации"),
+            "name": openapi.Schema(type=openapi.TYPE_STRING),
+            "address": openapi.Schema(type=openapi.TYPE_STRING),
+            "latitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+            "longitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+            "acceptance_radius_m": openapi.Schema(
+                type=openapi.TYPE_INTEGER, nullable=True
+            ),
+        },
+    ),
+)
+
+
+@swagger_auto_schema(
+    method="patch",
+    operation_summary="Массовое обновление локаций",
+    operation_description="Тело: массив объектов с обязательным полем id. После обновления кэш инвалидируется.",
+    tags=["ClassLocation"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+    ],
+    request_body=_classlocation_bulk_update_schema,
+    responses={
+        200: openapi.Response(
+            description="Обновлено",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "updated": openapi.Schema(type=openapi.TYPE_INTEGER),
+                    "results": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(description="Ошибка валидации"),
+    },
+)
+@api_view(["PATCH"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def class_location_bulk_update(request):
+    """Массовое обновление: bulk_update + инвалидация кэша."""
+    try:
+        body = request.data
+    except Exception:
+        body = None
+    if body is None:
+        return Response(
+            {"error": "Body must be a non-empty array of objects with 'id'"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not isinstance(body, list):
+        body = [body] if isinstance(body, dict) and "id" in body else []
+    if not body:
+        return Response(
+            {"error": "Body must be a non-empty array of objects with 'id'"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    ids = []
+    for item in body:
+        raw_id = item.get("id")
+        if raw_id is None:
+            return Response(
+                {"error": "Each item must have integer 'id'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "Each item must have integer 'id'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    unique_ids = list(dict.fromkeys(ids))
+    qs = list(
+        models.ClassLocation.objects.only(*_CLASSLOCATION_FIELDS).filter(
+            id__in=unique_ids
+        )
+    )
+    found_ids = {o.id for o in qs}
+    missing = [i for i in unique_ids if i not in found_ids]
+    if missing:
+        return Response(
+            {"error": "Some ids not found", "missing_ids": missing},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    by_id = {o.id: o for o in qs}
+    update_fields = ["name", "address", "latitude", "longitude", "acceptance_radius_m"]
+    for raw in body:
+        obj = by_id.get(int(raw["id"]))
+        if not obj:
+            continue
+        for f in update_fields:
+            if f in raw:
+                setattr(obj, f, raw[f])
+    with _db_atomic():
+        models.ClassLocation.objects.bulk_update(qs, update_fields)
+    invalidate_class_location_cache_impl()
+    results = [
+        {
+            "id": o.id,
+            "name": o.name,
+            "address": o.address,
+            "latitude": o.latitude,
+            "longitude": o.longitude,
+            "acceptance_radius_m": o.acceptance_radius_m,
+        }
+        for o in qs
+    ]
+    return Response({"updated": len(qs), "results": results}, status=status.HTTP_200_OK)
+
+
 @swagger_auto_schema(
     method="GET",
     operation_summary="Получить ID всех корневых (root) подразделений",
     operation_description="Возвращает список ID из ChildDepartment, где parent IS NULL.",
+    tags=["Departments"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+    ],
     responses={
         200: openapi.Response(
             description="Ок",
@@ -528,13 +2784,23 @@ def get_parent_id(request):
     """
     logger.info("Request received to get parent department IDs.")
 
-    try:
+    cache_key = "parent_department_ids"
+
+    def fetch_parent_ids():
         roots = (
             models.ChildDepartment.objects.filter(parent__isnull=True)
             .order_by("id")
             .values_list("id", flat=True)
         )
-        root_ids = [str(pk) for pk in roots]
+        return [str(pk) for pk in roots]
+
+    try:
+        root_ids = get_cache(
+            cache_key,
+            query=fetch_parent_ids,
+            timeout=30 * 60,
+        )
+
         if not root_ids:
             return Response(
                 {"error": "Корни не найдены"}, status=status.HTTP_404_NOT_FOUND
@@ -544,10 +2810,77 @@ def get_parent_id(request):
         return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
 
 
+def _get_breadcrumb_path(dept_id: str) -> list[dict]:
+    """Возвращает путь от корня до отдела: [{id, name}, ...]."""
+    try:
+        dept = models.ChildDepartment.objects.get(id=dept_id)
+    except models.ChildDepartment.DoesNotExist:
+        return []
+    path = []
+    current = dept
+    while current:
+        path.append({"id": str(current.id), "name": current.name})
+        current = current.parent
+    path.reverse()
+    return path
+
+
+def _build_department_summary_data(parent_department_id: str):
+    """Строит данные для department_summary. Используется в API и warmup."""
+
+    def get_subtree_staff_count(dept_id: str) -> int:
+        """Подсчёт сотрудников в поддереве через рекурсивный CTE (оптимизация для больших деревьев)."""
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH RECURSIVE subtree AS (
+                    SELECT id FROM monitoring_app_childdepartment WHERE id = %s
+                    UNION ALL
+                    SELECT cd.id FROM monitoring_app_childdepartment cd
+                    JOIN subtree s ON cd.parent_id = s.id
+                )
+                SELECT COUNT(DISTINCT st.id) FROM monitoring_app_staff st
+                INNER JOIN subtree s ON st.department_id = s.id
+                """,
+                [dept_id],
+            )
+            row = cursor.fetchone()
+            return row[0] if row else 0
+
+    parent_department = get_object_or_404(
+        models.ChildDepartment, id=parent_department_id
+    )
+    total_staff_count = get_subtree_staff_count(parent_department.id)
+    child_departments_data = models.ChildDepartment.objects.filter(
+        parent=parent_department
+    )
+    child_departments_data_serialized = serializers.ChildDepartmentSerializer(
+        child_departments_data, many=True
+    ).data
+    breadcrumb_path = _get_breadcrumb_path(parent_department_id)
+    return {
+        "name": parent_department.name,
+        "date_of_creation": parent_department.date_of_creation,
+        "child_departments": child_departments_data_serialized,
+        "total_staff_count": total_staff_count,
+        "breadcrumb_path": breadcrumb_path,
+    }
+
+
 @swagger_auto_schema(
     method="GET",
     operation_summary="Сводная информация о департаменте",
     operation_description="Метод для получения сводной информации о департаменте и его дочерних подразделениях с количеством сотрудников.",
+    tags=["Departments"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+    ],
     responses={
         200: openapi.Response(
             description="Успешный запрос. Возвращается сводная информация о департаменте и его дочерних подразделениях.",
@@ -602,7 +2935,7 @@ def get_parent_id(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def department_summary(request, parent_department_id):
-    cache_key = f"department_summary_{parent_department_id}"
+    cache_key = f"department_summary_v2_{parent_department_id}"
     logger.info(
         f"Request received for department summary with ID {parent_department_id}"
     )
@@ -615,62 +2948,12 @@ def department_summary(request, parent_department_id):
         )
 
     try:
-
-        def calculate_staff_count(department: models.ChildDepartment) -> int:
-            rows = list(models.ChildDepartment.objects.values_list("id", "parent_id"))
-
-            children_by_parent = {}
-            for cid, pid in rows:
-                children_by_parent.setdefault(pid, []).append(cid)
-
-            visited = set()
-            stack = [department.id]
-            subtree_ids = []
-
-            while stack:
-                cur = stack.pop()
-                if cur in visited:
-                    continue
-                visited.add(cur)
-                subtree_ids.append(cur)
-                stack.extend(children_by_parent.get(cur, []))
-
-            total = (
-                models.Staff.objects.filter(department_id__in=subtree_ids)
-                .values("id")
-                .distinct()
-                .count()
-            )
-            return total
-
-        parent_department = get_object_or_404(
-            models.ChildDepartment, id=parent_department_id
-        )
-        logger.info(
-            f"Department found: {parent_department.name} (ID: {parent_department_id})"
-        )
-        parent_department_id = str(parent_department_id).zfill(5)
-        total_staff_count = calculate_staff_count(parent_department)
-
-        child_departments_data = models.ChildDepartment.objects.filter(
-            parent=parent_department
-        )
-        child_departments_data_serialized = serializers.ChildDepartmentSerializer(
-            child_departments_data, many=True
-        ).data
-
-        data = {
-            "name": parent_department.name,
-            "date_of_creation": parent_department.date_of_creation,
-            "child_departments": child_departments_data_serialized,
-            "total_staff_count": total_staff_count,
-        }
-
-        logger.debug(f"Caching department summary data with key: {cache_key}")
         cached_data = get_cache(
-            cache_key, query=lambda: data, timeout=1 * 5, cache=Cache
+            cache_key,
+            query=lambda: _build_department_summary_data(parent_department_id),
+            timeout=5 * 60,
+            cache=Cache,
         )
-
         logger.info(f"Returning summary data for department ID {parent_department_id}")
         return Response(cached_data, status=status.HTTP_200_OK)
     except Exception as e:
@@ -678,11 +2961,250 @@ def department_summary(request, parent_department_id):
         return Response(data={"message": str(e)}, status=status.HTTP_404_NOT_FOUND)
 
 
+def _fetch_root_departments_data():
+    """
+    Внутренняя функция для получения данных корневых департаментов.
+    Может использоваться как в API endpoint, так и в preload.
+    """
+    all_departments = list(
+        models.ChildDepartment.objects.only(
+            "id", "parent_id", "name", "date_of_creation"
+        ).values_list("id", "parent_id", "name", "date_of_creation")
+    )
+
+    dept_by_id = {}
+    children_by_parent = {}
+    root_ids = []
+
+    for dept_id, parent_id, name, date_of_creation in all_departments:
+        dept_by_id[dept_id] = {
+            "id": dept_id,
+            "name": name,
+            "date_of_creation": date_of_creation,
+        }
+        if parent_id is None:
+            root_ids.append(dept_id)
+        else:
+            children_by_parent.setdefault(parent_id, []).append(dept_id)
+
+    if not root_ids:
+        return {
+            "departments": [],
+            "total_staff_count": 0,
+        }
+
+    root_ids.sort()
+
+    subtree_ids_by_root = {}
+    for root_id in root_ids:
+        visited = set()
+        stack = [root_id]
+        subtree_ids = []
+
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            subtree_ids.append(cur)
+            stack.extend(children_by_parent.get(cur, []))
+
+        subtree_ids_by_root[root_id] = subtree_ids
+
+    all_subtree_ids = []
+    for subtree_ids in subtree_ids_by_root.values():
+        all_subtree_ids.extend(subtree_ids)
+
+    unique_subtree_ids = list(set(all_subtree_ids))
+
+    staff_counts = (
+        models.Staff.objects.filter(department_id__in=unique_subtree_ids)
+        .values("department_id")
+        .annotate(count=Count("id", distinct=True))
+    )
+
+    staff_count_by_dept = {
+        item["department_id"]: item["count"] for item in staff_counts
+    }
+
+    all_child_dept_ids = []
+    for children in children_by_parent.values():
+        all_child_dept_ids.extend(children)
+
+    child_depts_by_parent = {}
+    if all_child_dept_ids:
+        child_depts = models.ChildDepartment.objects.filter(
+            id__in=all_child_dept_ids
+        ).only("id", "name", "date_of_creation", "parent_id")
+
+        for child in child_depts:
+            parent_id = child.parent_id
+            if parent_id:
+                child_depts_by_parent.setdefault(parent_id, []).append(child)
+
+    departments_data = []
+    total_staff_count = 0
+
+    for root_id in root_ids:
+        dept = dept_by_id[root_id]
+        subtree_ids = subtree_ids_by_root[root_id]
+        dept_total = sum(staff_count_by_dept.get(dept_id, 0) for dept_id in subtree_ids)
+        total_staff_count += dept_total
+
+        has_children = bool(children_by_parent.get(root_id))
+
+        child_depts = child_depts_by_parent.get(root_id, [])
+        child_departments_serialized = [
+            {
+                "child_id": str(child.id),
+                "name": child.name,
+                "date_of_creation": child.date_of_creation,
+                "parent": str(root_id),
+            }
+            for child in child_depts
+        ]
+
+        departments_data.append(
+            {
+                "child_id": str(root_id),
+                "name": dept["name"],
+                "date_of_creation": dept["date_of_creation"],
+                "parent": "",
+                "has_child_departments": has_children,
+                "total_staff_count": dept_total,
+                "child_departments": child_departments_serialized,
+            }
+        )
+
+    return {
+        "departments": departments_data,
+        "total_staff_count": total_staff_count,
+    }
+
+
+@swagger_auto_schema(
+    method="GET",
+    operation_summary="Получить все корневые департаменты одним запросом",
+    operation_description="endpoint для получения всех корневых департаментов с их сводной информацией одним запросом",
+    tags=["Departments"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Успешный ответ",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "departments": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "child_id": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="ID корневого департамента",
+                                ),
+                                "name": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="Название департамента",
+                                ),
+                                "date_of_creation": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format="date-time",
+                                    description="Дата создания",
+                                ),
+                                "parent": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    description="ID родительского департамента (всегда пусто для корневых)",
+                                ),
+                                "has_child_departments": openapi.Schema(
+                                    type=openapi.TYPE_BOOLEAN,
+                                    description="Есть ли дочерние подразделения",
+                                ),
+                                "total_staff_count": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    description="Общее количество сотрудников",
+                                ),
+                                "child_departments": openapi.Schema(
+                                    type=openapi.TYPE_ARRAY,
+                                    items=openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        properties={
+                                            "child_id": openapi.Schema(
+                                                type=openapi.TYPE_STRING
+                                            ),
+                                            "name": openapi.Schema(
+                                                type=openapi.TYPE_STRING
+                                            ),
+                                            "date_of_creation": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                format="date-time",
+                                            ),
+                                            "parent": openapi.Schema(
+                                                type=openapi.TYPE_STRING
+                                            ),
+                                        },
+                                    ),
+                                    description="Список дочерних подразделений",
+                                ),
+                            },
+                        ),
+                    ),
+                    "total_staff_count": openapi.Schema(
+                        type=openapi.TYPE_INTEGER,
+                        description="Общее количество сотрудников во всех корневых департаментах",
+                    ),
+                },
+            ),
+        ),
+    },
+)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def root_departments_batch(request):
+    """
+    Получить все корневые департаменты одним оптимизированным запросом.
+    Используется для быстрой загрузки главной страницы вместо множественных запросов.
+    """
+    cache_key = "root_departments_batch"
+    logger.info("Request received for root departments batch")
+
+    try:
+        cached_data = get_cache(
+            cache_key,
+            query=_fetch_root_departments_data,
+            timeout=15 * 60,
+        )
+
+        logger.info("Returning root departments batch data")
+        return Response(cached_data, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Error while generating root departments batch: {str(e)}")
+        return Response(
+            data={"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
 @swagger_auto_schema(
     method="get",
     operation_summary="Получить описание подотдела",
     operation_description="Получите подробную информацию о подотделе и его сотрудниках.",
+    tags=["Departments"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             name="child_department_id",
             in_=openapi.IN_PATH,
@@ -753,61 +3275,90 @@ def child_department_detail(request, child_department_id):
     logger.info(
         f"Request received for child department detail with ID {child_department_id}"
     )
-    try:
-        child_department = models.ChildDepartment.objects.get(id=child_department_id)
-        logger.info(
-            f"Found child department: {child_department.name} (ID: {child_department_id})"
-        )
-    except models.ChildDepartment.DoesNotExist:
-        logger.warning(f"Child department with ID {child_department_id} not found")
-        return Response(status=status.HTTP_404_NOT_FOUND)
 
-    all_departments = [child_department] + child_department.get_all_child_departments()
-    staff_in_department = models.Staff.objects.filter(department__in=all_departments)
-    logger.debug(
-        f"Found {staff_in_department.count()} staff members in child department ID {child_department_id}"
-    )
+    cache_key = f"child_department_detail_v2_{child_department_id}"
 
-    staff_data = {}
-    for staff_member in staff_in_department:
-        if staff_member.surname == "Нет фамилии":
-            fio = staff_member.name
-        else:
-            fio = f"{staff_member.surname} {staff_member.name}"
+    def fetch_child_department_data():
+        try:
+            child_department = models.ChildDepartment.objects.get(
+                id=child_department_id
+            )
+        except models.ChildDepartment.DoesNotExist:
+            logger.warning(f"Child department with ID {child_department_id} not found")
+            return None
 
-        staff_data[staff_member.pin] = {
-            "FIO": fio,
-            "date_of_creation": staff_member.date_of_creation,
-            "avatar": (staff_member.avatar.url if staff_member.avatar else None),
-            "positions": [position.name for position in staff_member.positions.all()],
-        }
-        logger.debug(f"Processed staff member: {fio} (PIN: {staff_member.pin})")
-
-    sorted_staff_data = dict(
-        sorted(staff_data.items(), key=lambda item: item[1]["FIO"])
-    )
-    logger.info(f"Sorted staff data for child department ID {child_department_id}")
-
-    data = {
-        "child_department": serializers.ChildDepartmentSerializer(
+        all_departments = [
             child_department
-        ).data,
-        "staff_count": staff_in_department.count(),
-        "staff_data": sorted_staff_data,
-    }
+        ] + child_department.get_all_child_departments()
+        staff_in_department = (
+            models.Staff.objects.filter(department__in=all_departments)
+            .select_related("department")
+            .prefetch_related("positions")
+        )
 
-    logger.info(
-        f"Returning detailed data for child department ID {child_department_id}"
-    )
+        staff_data = {}
+        for staff_member in staff_in_department:
+            if staff_member.surname == "Нет фамилии":
+                fio = staff_member.name
+            else:
+                fio = f"{staff_member.surname} {staff_member.name}"
+            staff_data[staff_member.pin] = {
+                "FIO": fio,
+                "date_of_creation": staff_member.date_of_creation,
+                "avatar": (staff_member.avatar.url if staff_member.avatar else None),
+                "positions": [p.name for p in staff_member.positions.all()],
+            }
 
-    return Response(data, status=status.HTTP_200_OK)
+        sorted_staff_data = dict(
+            sorted(staff_data.items(), key=lambda item: item[1]["FIO"])
+        )
+        breadcrumb_path = _get_breadcrumb_path(child_department_id)
+        return {
+            "child_department": serializers.ChildDepartmentSerializer(
+                child_department
+            ).data,
+            "staff_count": staff_in_department.count(),
+            "staff_data": sorted_staff_data,
+            "breadcrumb_path": breadcrumb_path,
+        }
+
+    try:
+        data = get_cache(
+            cache_key,
+            query=fetch_child_department_data,
+            timeout=10 * 60,
+        )
+
+        if data is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        logger.info(
+            f"Returning detailed data for child department ID {child_department_id}"
+        )
+        return Response(data, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Error in child_department_detail: {str(e)}")
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @swagger_auto_schema(
     method="GET",
     operation_summary="Получить информацию о сотруднике",
-    operation_description="Получение подробной информации о сотруднике, включая данные о посещаемости, заработной плате и типе контракта.",
+    operation_description=(
+        "Возвращает подробную информацию о сотруднике за период: посещаемость по датам "
+        "(first_in, last_out, effective_work_seconds — время в здании с учётом выходов, "
+        "area_sequence — цепочка зон для карты перемещений), процент присутствия, бонус, "
+        "тип контракта и зарплату. Данные кэшируются на 5 минут."
+    ),
+    tags=["Staff"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             name="staff_pin",
             in_=openapi.IN_PATH,
@@ -865,9 +3416,97 @@ def child_department_detail(request, child_department_id):
                     ),
                     "attendance": openapi.Schema(
                         type=openapi.TYPE_OBJECT,
+                        description="Данные о посещаемости по датам. Ключ - дата в формате DD-MM-YYYY",
                         additional_properties=openapi.Schema(
                             type=openapi.TYPE_OBJECT,
-                            description="Данные о посещаемости",
+                            description="Данные о посещаемости за конкретную дату",
+                            properties={
+                                "first_in": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format=openapi.FORMAT_DATETIME,
+                                    nullable=True,
+                                    description="Время первого входа в формате ISO 8601",
+                                ),
+                                "last_out": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format=openapi.FORMAT_DATETIME,
+                                    nullable=True,
+                                    description="Время последнего выхода в формате ISO 8601",
+                                ),
+                                "area_name_in": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    nullable=True,
+                                    description="Название места первого входа",
+                                ),
+                                "area_name_out": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    nullable=True,
+                                    description=(
+                                        "Название места последнего выхода. "
+                                        "Примечание: если значение равно 'Unknown', рекомендуется парсить его как null."
+                                    ),
+                                ),
+                                "first_in_source": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    nullable=True,
+                                    description="Источник данных о первом входе (staff_attendance или lesson_attendance)",
+                                ),
+                                "last_out_source": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    nullable=True,
+                                    description="Источник данных о последнем выходе (staff_attendance или lesson_attendance)",
+                                ),
+                                "percent_day": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format=openapi.FORMAT_FLOAT,
+                                    description="Процент отработанного времени за день",
+                                ),
+                                "total_minutes": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format=openapi.FORMAT_FLOAT,
+                                    description="Отработанные минуты за день (с учётом effective_work_seconds при наличии)",
+                                ),
+                                "effective_work_seconds": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    nullable=True,
+                                    description="Секунды в здании по интервалам (без времени вне здания по турникетам выхода)",
+                                ),
+                                "area_sequence": openapi.Schema(
+                                    type=openapi.TYPE_ARRAY,
+                                    nullable=True,
+                                    items=openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        properties={
+                                            "t": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                description="Время HH:MM",
+                                            ),
+                                            "area": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                description="Название зоны",
+                                            ),
+                                        },
+                                    ),
+                                    description="Цепочка зон по времени для карты перемещений (только при границах из StaffAttendance)",
+                                ),
+                                "is_weekend": openapi.Schema(
+                                    type=openapi.TYPE_BOOLEAN,
+                                    description="Является ли день выходным",
+                                ),
+                                "is_remote_work": openapi.Schema(
+                                    type=openapi.TYPE_BOOLEAN,
+                                    description="Является ли работа удаленной",
+                                ),
+                                "is_absent_approved": openapi.Schema(
+                                    type=openapi.TYPE_BOOLEAN,
+                                    description="Утверждено ли отсутствие",
+                                ),
+                                "absent_reason": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    nullable=True,
+                                    description="Причина отсутствия (если применимо)",
+                                ),
+                            },
                         ),
                     ),
                     "percent_for_period": openapi.Schema(
@@ -899,26 +3538,26 @@ def child_department_detail(request, child_department_id):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def staff_detail(request, staff_pin):
-    """
-    **Получить информацию о сотруднике**
+    """Возвращает детальную информацию о сотруднике за указанный период.
 
-    Данный метод возвращает подробную информацию о сотруднике, включая данные о посещаемости, заработной плате и типе контракта за указанный период.
+    Включает посещаемость (first_in, last_out, effective_work_seconds, area_sequence),
+    процент присутствия, бонус, тип контракта и зарплату. Данные кэшируются.
 
-    ### Args:
-        - **request (HttpRequest)**: Запрос, содержащий параметры запроса.
-        - **staff_pin (str)**: Уникальный идентификатор сотрудника (PIN).
+    Args:
+        request: HttpRequest с query-параметрами start_date, end_date (YYYY-MM-DD).
+        staff_pin: Уникальный идентификатор сотрудника (PIN), строка.
 
-    ### Returns:
-        - **Response**: Ответ с данными сотрудника или сообщением об ошибке.
-
-    ### Raises:
-        - **ValueError**: Если start_date больше end_date.
+    Returns:
+        Response с JSON-данными сотрудника (200), 400 при неверном диапазоне дат,
+        404 если сотрудник не найден.
     """
 
     logger.info(f"Request received for staff details with PIN {staff_pin}")
 
     staff = get_cache(
-        f"staff_{staff_pin}", query=lambda: fetch_staff_data(staff_pin), timeout=1 * 10
+        f"staff_{staff_pin}",
+        query=lambda: fetch_staff_data(staff_pin),
+        timeout=10 * 60,
     )
 
     if staff is None:
@@ -943,7 +3582,7 @@ def staff_detail(request, staff_pin):
     data = get_cache(
         cache_key,
         query=lambda: get_staff_detail(staff, start_date, end_date),
-        timeout=1 * 1 * 30,
+        timeout=300,
     )
 
     logger.info(f"Returning staff details for PIN {staff_pin}")
@@ -951,30 +3590,46 @@ def staff_detail(request, staff_pin):
 
 
 def fetch_staff_data(staff_pin):
-    """Получение данных о сотруднике из базы данных.
+    """Загружает объект сотрудника из БД по PIN с минимумом полей и department.
+
     Args:
-        staff_pin (str): Уникальный идентификатор сотрудника (PIN).
+        staff_pin: Уникальный идентификатор сотрудника (PIN), строка.
+
     Returns:
-        models.Staff: Объект сотрудника.
-        None: Если сотрудник не найден.
+        Экземпляр models.Staff с полями id, pin, name, surname, avatar, department
+        (select_related) или None, если сотрудник не найден.
     """
     try:
-        return models.Staff.objects.get(pin=staff_pin)
+        return (
+            models.Staff.objects.filter(pin=staff_pin)
+            .select_related("department")
+            .only(
+                "id",
+                "pin",
+                "name",
+                "surname",
+                "avatar",
+                "department_id",
+                "department__id",
+                "department__name",
+            )
+            .get()
+        )
     except models.Staff.DoesNotExist:
         return None
 
 
 def get_date_range(request):
-    """
-    Получение диапазона дат из параметров запроса.
+    """Извлекает диапазон дат из query-параметров запроса.
 
-    Если даты не указаны, используется период последних 7 дней.
+    Если параметры не заданы, используется период: последние 7 дней до сегодня.
+    Ожидаемые ключи: start_date, end_date в формате YYYY-MM-DD.
 
     Args:
-        request (HttpRequest): Запрос с параметрами.
+        request: HttpRequest с query_params (DRF или Django).
 
     Returns:
-        tuple: Кортеж с датами начала и окончания периода (datetime.date).
+        Кортеж (start_date, end_date) типа datetime.date.
     """
     end_date_str = request.query_params.get(
         "end_date", timezone.now().strftime("%Y-%m-%d")
@@ -990,78 +3645,47 @@ def get_date_range(request):
 
 
 def get_staff_detail(staff, start_date, end_date):
-    """
-    Получение подробной информации о сотруднике за указанный период.
+    """Формирует полный словарь данных сотрудника за период для API.
 
-    Включает данные о посещаемости, процент присутствия, заработную плату и тип контракта.
+    Объединяет StaffAttendance и LessonAttendance по датам, считает процент
+    присутствия и бонус, подтягивает удалёнку, отсутствия, праздники и зарплату.
+    Для посещаемости используется effective_work_seconds при наличии.
 
     Args:
-        staff (Staff): Объект сотрудника.
-        start_date (datetime.date): Дата начала периода.
-        end_date (datetime.date): Дата окончания периода.
+        staff: Экземпляр models.Staff (должен иметь id, name, pin, department и т.д.).
+        start_date: Начало периода, date.
+        end_date: Конец периода, date.
 
     Returns:
-        dict: Словарь с данными сотрудника.
+        Словарь с ключами name, surname, positions, avatar, department, department_id,
+        attendance (по датам), percent_for_period, bonus_percentage, contract_type, salary.
     """
     logger.info(f"Получение деталей сотрудника {staff.name} (PIN: {staff.pin})")
     logger.debug(f"Запрошенный диапазон дат: {start_date} до {end_date}")
 
-    attendance_qs = models.StaffAttendance.objects.filter(
-        staff=staff,
-        date_at__range=[
-            start_date + datetime.timedelta(days=1),
-            end_date + datetime.timedelta(days=1),
-        ],
+    sa_by_event_date, la_by_event_date = fetch_attendance_by_event_dates(
+        [staff.id], start_date, end_date
     )
+    location_cache = get_class_location_cache()
+    kd_tree = location_cache["kd_tree"]
+    class_names = location_cache["class_names"]
+    if kd_tree and class_names:
+        logger.debug(f"KDTree initialized with {len(class_names)} locations")
 
-    lesson_qs = models.LessonAttendance.objects.filter(
-        staff=staff,
-        date_at__range=[start_date, end_date],
+    all_event_dates = sorted(
+        set(sa_by_event_date.keys()) | set(la_by_event_date.keys())
     )
-
     combined_attendance = {}
+    for event_date in all_event_dates:
+        combined_attendance[event_date] = _merge_attendance_for_date(
+            sa_by_event_date.get(event_date, []),
+            la_by_event_date.get(event_date, []),
+            kd_tree,
+            class_names,
+        )
 
-    for record in attendance_qs:
-        date_key = record.date_at - datetime.timedelta(days=1)
-        if date_key not in combined_attendance:
-            combined_attendance[date_key] = {
-                "first_in": record.first_in,
-                "last_out": record.last_out,
-            }
-        else:
-            combined_attendance[date_key]["first_in"] = (
-                min(combined_attendance[date_key]["first_in"], record.first_in)
-                if combined_attendance[date_key]["first_in"] and record.first_in
-                else combined_attendance[date_key]["first_in"] or record.first_in
-            )
-
-            combined_attendance[date_key]["last_out"] = (
-                max(combined_attendance[date_key]["last_out"], record.last_out)
-                if combined_attendance[date_key]["last_out"] and record.last_out
-                else combined_attendance[date_key]["last_out"] or record.last_out
-            )
-
-    for record in lesson_qs:
-        date_key = record.date_at
-        if date_key not in combined_attendance:
-            combined_attendance[date_key] = {
-                "first_in": record.first_in,
-                "last_out": record.last_out,
-            }
-        else:
-            if record.first_in:
-                combined_attendance[date_key]["first_in"] = (
-                    min(combined_attendance[date_key]["first_in"], record.first_in)
-                    if combined_attendance[date_key]["first_in"]
-                    else record.first_in
-                )
-
-            if record.last_out:
-                combined_attendance[date_key]["last_out"] = (
-                    max(combined_attendance[date_key]["last_out"], record.last_out)
-                    if combined_attendance[date_key]["last_out"]
-                    else record.last_out
-                )
+    attendance_dates = list(sa_by_event_date.keys())
+    lesson_dates = list(la_by_event_date.keys())
 
     logger.debug(f"Объединенные данные посещаемости: {combined_attendance}")
 
@@ -1087,19 +3711,8 @@ def get_staff_detail(staff, start_date, end_date):
     logger.debug(f"Получено причин отсутствия: {absent_reason_qs.count()}")
 
     dates = []
-
-    if attendance_qs.exists():
-        attendance_dates = [
-            attendance.date_at - datetime.timedelta(days=1)
-            for attendance in attendance_qs
-        ]
-        dates.extend(attendance_dates)
-    else:
-        attendance_dates = []
-
-    if lesson_qs.exists():
-        lesson_dates = [lesson.date_at for lesson in lesson_qs]
-        dates.extend(lesson_dates)
+    dates.extend(attendance_dates)
+    dates.extend(lesson_dates)
 
     if remote_work_qs.exists():
         remote_dates = []
@@ -1149,7 +3762,7 @@ def get_staff_detail(staff, start_date, end_date):
         logger.warning(
             "Нет данных о посещаемости, дистанционной работе или причинах отсутствия за указанный период."
         )
-        staff_detail = {
+        staff_detail_data = {
             "name": staff.name,
             "surname": staff.surname if staff.surname != "Нет фамилии" else "",
             "positions": [position.name for position in staff.positions.all()],
@@ -1163,7 +3776,7 @@ def get_staff_detail(staff, start_date, end_date):
             "contract_type": None,
             "salary": None,
         }
-        return staff_detail
+        return staff_detail_data
 
     min_date = max(min(dates), start_date)
     max_date = min(max(dates), end_date)
@@ -1182,11 +3795,21 @@ def get_staff_detail(staff, start_date, end_date):
     )
 
     average_attendance = get_average_attendance_for_period(staff, start_date, end_date)
-    logger.debug(f"Средняя посещаемость за период: {average_attendance}")
+    logger.debug(f"Средняя посещаемость за период: {average_attendance}%")
 
     K_adj = 1.25
+
+    if average_attendance <= 0:
+        logger.error(
+            f"Критическая ошибка: средняя посещаемость равна нулю или отрицательна ({average_attendance}). "
+            f"Используется дефолтное значение 85.0% для расчета штрафного коэффициента."
+        )
+        average_attendance = 85.0
+
     penalty_rate = (100 / average_attendance) * K_adj
-    logger.debug(f"Расчет штрафного коэффициента: {penalty_rate}")
+    logger.debug(
+        f"Расчет штрафного коэффициента: penalty_rate = (100 / {average_attendance}) * {K_adj} = {penalty_rate:.4f}"
+    )
 
     salary_qs = models.Salary.objects.filter(staff=staff).first()
     contract_type = salary_qs.contract_type if salary_qs else "full_time"
@@ -1243,7 +3866,7 @@ def get_staff_detail(staff, start_date, end_date):
     avatar_url = staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
     logger.debug(f"URL аватара: {avatar_url}")
 
-    staff_detail = {
+    staff_detail_payload = {
         "name": staff.name,
         "surname": staff.surname if staff.surname != "Нет фамилии" else "",
         "positions": [position.name for position in staff.positions.all()],
@@ -1260,20 +3883,24 @@ def get_staff_detail(staff, start_date, end_date):
     logger.info(
         f"Генерация деталей сотрудника завершена для {staff.name} (PIN: {staff.pin})"
     )
-    return staff_detail
+    return staff_detail_payload
 
 
 def get_average_attendance_for_period(staff, start_date, end_date):
-    """
-    Расчет среднего процента присутствия за предыдущий аналогичный период.
+    """Считает средний процент присутствия за предыдущие 30 дней для KPI.
+
+    Используется при расчёте штрафного коэффициента в get_staff_detail. При
+    наличии effective_work_seconds берётся он, иначе (last_out - first_in).
+    Норма — 8 часов в день.
 
     Args:
-        staff (Staff): Объект сотрудника.
-        start_date (datetime.date): Дата начала текущего периода.
-        end_date (datetime.date): Дата окончания текущего периода.
+        staff: Экземпляр models.Staff.
+        start_date: Начало текущего запрошенного периода, date.
+        end_date: Конец текущего запрошенного периода, date.
 
     Returns:
-        float: Средний процент присутствия за предыдущий период.
+        Число с плавающей точкой (процент 0–100+). Не менее 1.0 и не более
+        разумного; при отсутствии данных возвращается 85.0.
     """
     logger.info(
         f"Calculating average attendance for staff {staff.name} (PIN: {staff.pin}) from {start_date} to {end_date}"
@@ -1285,7 +3912,7 @@ def get_average_attendance_for_period(staff, start_date, end_date):
 
     previous_attendance_qs = models.StaffAttendance.objects.filter(
         staff=staff, date_at__range=[previous_start_date, previous_end_date]
-    )
+    ).only("id", "date_at", "first_in", "last_out", "effective_work_seconds")
     logger.debug(
         f"Retrieved {previous_attendance_qs.count()} attendance records for previous period"
     )
@@ -1300,11 +3927,15 @@ def get_average_attendance_for_period(staff, start_date, end_date):
     total_days = 0
 
     for attendance in previous_attendance_qs:
-        first_in = attendance.first_in
-        last_out = attendance.last_out
-
-        if first_in and last_out:
-            minutes_present = (last_out - first_in).total_seconds() / 60
+        if attendance.effective_work_seconds is not None:
+            minutes_present = attendance.effective_work_seconds / 60.0
+        elif attendance.first_in and attendance.last_out:
+            minutes_present = (
+                attendance.last_out - attendance.first_in
+            ).total_seconds() / 60
+        else:
+            minutes_present = 0
+        if minutes_present > 0:
             total_minutes += minutes_present
             total_days += 1
             logger.debug(
@@ -1318,6 +3949,21 @@ def get_average_attendance_for_period(staff, start_date, end_date):
         return 85.0
 
     average_attendance = (total_minutes / (total_days * 8 * 60)) * 100
+
+    if average_attendance <= 0:
+        logger.warning(
+            f"Calculated average attendance is {average_attendance}% (invalid). "
+            f"Using default value of 85.0% for KPI calculation."
+        )
+        return 85.0
+
+    if average_attendance < 1.0:
+        logger.warning(
+            f"Calculated average attendance is very low ({average_attendance}%). "
+            f"Using minimum threshold of 1.0% for KPI calculation to prevent unrealistic penalties."
+        )
+        return 1.0
+
     logger.info(
         f"Calculated average attendance for previous period: {average_attendance}%"
     )
@@ -1325,14 +3971,13 @@ def get_average_attendance_for_period(staff, start_date, end_date):
 
 
 def get_expected_minutes_per_day(contract_type):
-    """
-    Получение ожидаемого количества рабочих минут в день на основе типа контракта.
+    """Возвращает норму рабочих минут в день по типу контракта.
 
     Args:
-        contract_type (str): Тип контракта сотрудника.
+        contract_type: Строка типа контракта (например "part_time", "gph", "full_time").
 
     Returns:
-        int: Ожидаемые минуты в день.
+        Целое число минут: 240 для part_time/gph, 480 для остальных.
     """
     if contract_type in ["part_time", "gph"]:
         return 4 * 60
@@ -1354,30 +3999,31 @@ def process_attendance(
     remote_work_qs,
     absent_reason_qs,
 ):
-    """
-    Обработка данных о посещаемости для конкретной даты с учетом новых требований.
+    """Обрабатывает посещаемость за одну дату и обновляет накопительные показатели периода.
+
+    Учитывает выходные, праздники, удалёнку и утверждённые отсутствия. Для расчёта
+    минут используется effective_work_seconds при наличии, иначе first_in/last_out
+    (с учётом обеда через calculate_effective_minutes_with_lunch).
 
     Args:
-        attendance (StaffAttendance): Запись о посещаемости за дату, если есть.
-        event_date (datetime.date): Дата, которую обрабатываем.
-        start_date (datetime.date): Дата начала периода.
-        end_date (datetime.date): Дата окончания периода.
-        holiday_dict (dict): Словарь с информацией о праздничных днях.
-        total_minutes_expected_per_day (int): Ожидаемое количество минут работы в день.
-        cost_per_day (float): Стоимость одного дня в процентах.
-        penalty_rate (float): Штрафной коэффициент за отсутствие.
-        total_minutes_for_period (float): Общее количество минут за период.
-        total_days_with_data (int): Общее количество дней с данными.
-        percent_for_period (float): Процент рабочего времени за период.
-        remote_work_qs (QuerySet): QuerySet с периодами дистанционной работы сотрудника.
-        absent_reason_qs (QuerySet): QuerySet с причинами отсутствия сотрудника.
+        attendance: Словарь объединённой посещаемости за дату (first_in, last_out,
+            effective_work_seconds, area_sequence и др.) или None.
+        event_date: Дата события, date.
+        start_date: Начало периода, date.
+        end_date: Конец периода, date.
+        holiday_dict: Словарь {date: is_working_day} по праздникам.
+        total_minutes_expected_per_day: Норма минут в день (int).
+        cost_per_day: Доля стоимости одного дня в процентах (float).
+        penalty_rate: Штрафной коэффициент (float).
+        total_minutes_for_period: Накопленные минуты за период (float).
+        total_days_with_data: Количество дней с данными (int).
+        percent_for_period: Накопленный процент за период (float).
+        remote_work_qs: QuerySet периодов дистанционной работы сотрудника.
+        absent_reason_qs: QuerySet причин отсутствия сотрудника.
 
     Returns:
-        tuple: Кортеж, содержащий:
-            - attendance_record (dict): Обработанные данные о посещаемости за дату.
-            - total_minutes_for_period (float): Обновленное общее количество минут за период.
-            - total_days_with_data (int): Обновленное количество дней с данными.
-            - percent_for_period (float): Обновленный процент рабочего времени за период.
+        Кортеж (attendance_record, total_minutes_for_period, total_days_with_data,
+        percent_for_period). attendance_record — словарь для ответа API или None.
     """
     logger.info(f"Обработка посещаемости за дату {event_date}")
 
@@ -1396,10 +4042,21 @@ def process_attendance(
 
     first_in = attendance.get("first_in") if attendance else None
     last_out = attendance.get("last_out") if attendance else None
+    area_name_in = attendance.get("area_name_in") if attendance else None
+    area_name_out = attendance.get("area_name_out") if attendance else None
+    effective_work_seconds = (
+        attendance.get("effective_work_seconds") if attendance else None
+    )
+    area_sequence = attendance.get("area_sequence") if attendance else None
 
     if is_off_day:
-        if first_in and last_out:
-            total_minutes_worked = (last_out - first_in).total_seconds() / 60
+        if effective_work_seconds is not None:
+            total_minutes_worked = effective_work_seconds / 60.0
+            percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
+        elif first_in and last_out:
+            total_minutes_worked = calculate_effective_minutes_with_lunch(
+                first_in, last_out
+            )
             percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
             logger.info(
                 f"Сотрудник работал в выходной день {event_date}. Данные отображаются, но не влияют на расчеты."
@@ -1422,8 +4079,12 @@ def process_attendance(
                 if last_out
                 else None
             ),
+            "area_name_in": area_name_in,
+            "area_name_out": area_name_out,
             "percent_day": round(percent_day, 2),
             "total_minutes": round(total_minutes_worked, 2),
+            "effective_work_seconds": effective_work_seconds,
+            "area_sequence": area_sequence,
             "is_weekend": True,
             "is_remote_work": False,
             "is_absent_approved": False,
@@ -1445,12 +4106,36 @@ def process_attendance(
     absent_reason_display = None
 
     if is_remote_work:
-        percent_day = 100.0
-        total_minutes_worked = total_minutes_expected_per_day
-        total_minutes_for_period += total_minutes_worked
-        total_days_with_data += 1
-        percent_for_period += percent_day
-        logger.info(f"{event_date} отмечен как день дистанционной работы.")
+        has_physical_attendance = effective_work_seconds is not None or (
+            first_in is not None and last_out is not None
+        )
+        if has_physical_attendance:
+            if effective_work_seconds is not None:
+                total_minutes_worked = effective_work_seconds / 60.0
+            else:
+                total_minutes_worked = calculate_effective_minutes_with_lunch(
+                    first_in, last_out
+                )
+            percent_day = (
+                total_minutes_worked / total_minutes_expected_per_day * 100
+                if total_minutes_expected_per_day
+                else 100.0
+            )
+            total_minutes_for_period += total_minutes_worked
+            total_days_with_data += 1
+            percent_for_period += percent_day
+            logger.info(
+                f"{event_date} дистанционный день с явкой: {total_minutes_worked:.1f} мин, {percent_day:.1f}%."
+            )
+        else:
+            percent_day = 100.0
+            total_minutes_worked = total_minutes_expected_per_day
+            total_minutes_for_period += total_minutes_worked
+            total_days_with_data += 1
+            percent_for_period += percent_day
+            logger.info(
+                f"{event_date} отмечен как день дистанционной работы (без явки)."
+            )
     elif absent_reason:
         is_absent_approved = absent_reason.approved
         absent_reason_display = absent_reason.get_reason_display()
@@ -1469,8 +4154,12 @@ def process_attendance(
                     if last_out
                     else None
                 ),
+                "area_name_in": area_name_in,
+                "area_name_out": area_name_out,
                 "percent_day": 0,
                 "total_minutes": 0,
+                "effective_work_seconds": effective_work_seconds,
+                "area_sequence": area_sequence,
                 "is_weekend": False,
                 "is_remote_work": False,
                 "is_absent_approved": True,
@@ -1492,8 +4181,13 @@ def process_attendance(
                 f"{event_date} неутвержденная причина отсутствия: {absent_reason_display}. Применяется штраф {penalty}%."
             )
     else:
-        if first_in and last_out:
-            total_minutes_worked = (last_out - first_in).total_seconds() / 60
+        if effective_work_seconds is not None:
+            total_minutes_worked = effective_work_seconds / 60.0
+            percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
+        elif first_in and last_out:
+            total_minutes_worked = calculate_effective_minutes_with_lunch(
+                first_in, last_out
+            )
             percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
             total_minutes_for_period += total_minutes_worked
             total_days_with_data += 1
@@ -1518,8 +4212,12 @@ def process_attendance(
         "last_out": (
             last_out.astimezone(timezone.get_current_timezone()) if last_out else None
         ),
+        "area_name_in": area_name_in,
+        "area_name_out": area_name_out,
         "percent_day": round(percent_day, 2),
         "total_minutes": round(total_minutes_worked, 2),
+        "effective_work_seconds": effective_work_seconds,
+        "area_sequence": area_sequence,
         "is_weekend": is_off_day,
         "is_remote_work": is_remote_work,
         "is_absent_approved": is_absent_approved,
@@ -1599,16 +4297,110 @@ def update_percent_for_period(
     return percent_for_period
 
 
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Статус задачи посещаемости",
+    operation_description=(
+        "Как использовать:\n"
+        "1. Возьмите task_id из POST /api/lesson_attendance/ или POST /api/lesson_attendance/json/.\n"
+        "2. Подставьте task_id в URL и выполните GET.\n\n"
+        "Коды ответа:\n"
+        "202 - задача в очереди.\n"
+        "200 - задача выполнена, вернутся lesson_ids.\n"
+        "500 - ошибка выполнения."
+    ),
+    tags=["Lesson Attendance"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+        openapi.Parameter(
+            "task_id",
+            openapi.IN_PATH,
+            description="ID задачи из ответа 202",
+            type=openapi.TYPE_STRING,
+            required=True,
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Задача выполнена успешно или в процессе выполнения",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "status": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Статус задачи (Success, Pending, или другой)",
+                    ),
+                    "lesson_ids": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_INTEGER),
+                        description="Список ID созданных записей посещаемости (только при Success)",
+                    ),
+                    "message": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Сообщение о статусе задачи",
+                    ),
+                },
+            ),
+        ),
+        202: openapi.Response(
+            description="Задача в очереди, ожидает выполнения",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "status": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Статус задачи (Pending)",
+                    ),
+                    "message": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Сообщение о том, что задача в очереди",
+                    ),
+                },
+            ),
+        ),
+        500: openapi.Response(
+            description="Ошибка при выполнении задачи или проверке статуса",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "status": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Статус задачи (Failure)",
+                    ),
+                    "error": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Описание ошибки",
+                    ),
+                },
+            ),
+        ),
+    },
+)
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def check_lesson_task_status(request, task_id):
     """
     Проверка статуса задачи и получение lesson_id.
     """
+    log_prefix = "[lesson_attendance]"
+    ip_address = request.META.get("REMOTE_ADDR", "Неизвестный IP")
+
     try:
         task_result = AsyncResult(task_id)
 
         if task_result.state == "PENDING":
+            lesson_attendance_logger.debug(
+                "%s task_status PENDING task_id=%s ip=%s",
+                log_prefix,
+                task_id,
+                ip_address,
+            )
             return Response(
                 {
                     "status": "Pending",
@@ -1618,19 +4410,50 @@ def check_lesson_task_status(request, task_id):
             )
 
         elif task_result.state == "SUCCESS":
-            result = task_result.result
+            result = task_result.result or {}
+            success_records = result.get("success_records", [])
+            error_records = result.get("error_records", [])
+            lesson_attendance_logger.info(
+                "%s task_status SUCCESS task_id=%s ip=%s created=%s failed=%s",
+                log_prefix,
+                task_id,
+                ip_address,
+                len(success_records),
+                len(error_records),
+            )
+            if error_records:
+                lesson_attendance_logger.warning(
+                    "%s task_status partial_failures task_id=%s error_records=%s",
+                    log_prefix,
+                    task_id,
+                    error_records,
+                )
             return Response(
-                {"status": "Success", "lesson_ids": result.get("success_records", [])},
+                {"status": "Success", "lesson_ids": success_records},
                 status=status.HTTP_200_OK,
             )
 
         elif task_result.state == "FAILURE":
+            lesson_attendance_logger.warning(
+                "%s task_status FAILURE task_id=%s ip=%s error=%s",
+                log_prefix,
+                task_id,
+                ip_address,
+                str(task_result.info),
+            )
             return Response(
                 {"status": "Failure", "error": str(task_result.info)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
         else:
+            lesson_attendance_logger.info(
+                "%s task_status state=%s task_id=%s ip=%s",
+                log_prefix,
+                task_result.state,
+                task_id,
+                ip_address,
+            )
             return Response(
                 {
                     "status": task_result.state,
@@ -1640,175 +4463,211 @@ def check_lesson_task_status(request, task_id):
             )
 
     except Exception as e:
-        logger.error(f"Ошибка при проверке задачи: {str(e)}")
+        lesson_attendance_logger.exception(
+            "%s task_status EXCEPTION task_id=%s ip=%s error=%s",
+            log_prefix,
+            task_id,
+            ip_address,
+            str(e),
+        )
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@swagger_auto_schema(
-    method="post",
-    operation_summary="Создание записей посещаемости занятий",
-    operation_description=(
-        "Создаёт новые записи посещаемости для сотрудников на занятия. "
-        "Каждая запись должна содержать обязательные параметры: "
-        "`staff_pin`, `tutor_id`, `tutor`, `first_in`, `latitude`, `longitude`. "
-        "`image` должен быть отправлен как отдельный файл в запросе."
-    ),
-    request_body=openapi.Schema(
-        type=openapi.TYPE_OBJECT,
-        required=["attendance_data", "image"],
-        properties={
-            "attendance_data": openapi.Schema(
-                type=openapi.TYPE_ARRAY,
-                items=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    required=[
-                        "staff_pin",
-                        "tutor_id",
-                        "tutor",
-                        "first_in",
-                        "latitude",
-                        "longitude",
-                    ],
-                    properties={
-                        "staff_pin": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            description="PIN сотрудника",
-                            example="s00260",
-                        ),
-                        "tutor_id": openapi.Schema(
-                            type=openapi.TYPE_INTEGER,
-                            description="ID преподавателя",
-                            example=1,
-                        ),
-                        "tutor": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            description="ФИО преподавателя",
-                            example="Иванов И.И.",
-                        ),
-                        "first_in": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            format=openapi.FORMAT_DATETIME,
-                            description="Время начала занятия в формате ISO 8601",
-                            example="2024-10-06T14:24:24+05:00",
-                        ),
-                        "latitude": openapi.Schema(
-                            type=openapi.TYPE_NUMBER,
-                            format=openapi.FORMAT_FLOAT,
-                            description="Широта места проведения",
-                            example=43.207674,
-                        ),
-                        "longitude": openapi.Schema(
-                            type=openapi.TYPE_NUMBER,
-                            format=openapi.FORMAT_FLOAT,
-                            description="Долгота места проведения",
-                            example=76.851377,
-                        ),
-                    },
-                ),
-            ),
-            "image": openapi.Schema(
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_BINARY,
-                description="Фотография сотрудника в бинарном формате.",
-            ),
-        },
-    ),
-    consumes=["multipart/form-data"],
-    responses={
+def _lesson_attendance_responses():
+    """Общие ответы для создания записей посещаемости (multipart и JSON)."""
+    return {
         202: openapi.Response(
-            description="Задача по созданию записей принята в обработку",
+            description="Задача принята в очередь. Идентификатор задачи — в task_id.",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
-                    "message": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="Сообщение об успешном запуске задачи",
-                    ),
+                    "message": openapi.Schema(type=openapi.TYPE_STRING),
                     "task_id": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="ID задачи"
+                        type=openapi.TYPE_STRING,
+                        description="Проверка: GET /api/lesson_attendance/task_status/{task_id}/",
                     ),
                 },
             ),
         ),
         400: openapi.Response(
-            description="Неверные данные",
+            description="Ошибка валидации.",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
-                    "error": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="Описание ошибки"
+                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                    "missing": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_STRING),
                     ),
                 },
             ),
         ),
         500: openapi.Response(
-            description="Ошибка сервера",
+            description="Ошибка сервера.",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
-                properties={
-                    "error": openapi.Schema(
-                        type=openapi.TYPE_STRING, description="Описание ошибки"
-                    ),
-                },
+                properties={"error": openapi.Schema(type=openapi.TYPE_STRING)},
             ),
         ),
-    },
+    }
+
+
+LESSON_ATTENDANCE_RECORD_EXAMPLE = {
+    "staff_pin": "T861T",
+    "tutor_id": 101,
+    "tutor": "Нео Андерсон",
+    "first_in": "2026-03-16T10:00:00+05:00",
+    "latitude": 43.2389,
+    "longitude": 76.8897,
+    "subject_name": "Матрица и Морбиус",
+}
+LESSON_ATTENDANCE_ARRAY_EXAMPLE_TEXT = json.dumps(
+    [LESSON_ATTENDANCE_RECORD_EXAMPLE], ensure_ascii=False, indent=2
+)
+LESSON_ATTENDANCE_JSON_BODY_EXAMPLE = {
+    "attendance_data": [LESSON_ATTENDANCE_RECORD_EXAMPLE],
+    "image": "<base64>",
+}
+LESSON_ATTENDANCE_JSON_BODY_EXAMPLE_TEXT = json.dumps(
+    LESSON_ATTENDANCE_JSON_BODY_EXAMPLE, ensure_ascii=False, indent=2
+)
+
+
+@swagger_auto_schema(
+    method="post",
+    auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
+    operation_summary="Создать записи посещаемости (multipart)",
+    operation_description=(
+        "Try it out (в Swagger):\n"
+        "1. Нажмите Try it out.\n"
+        "2. В поле attendance_data уже подставлен рабочий шаблон. "
+        "Скопируйте его и замените staff_pin, tutor, first_in и координаты под ваш кейс.\n"
+        "3. Если нужна фотофиксация, в поле image выберите файл через Choose File.\n"
+        "4. Нажмите Execute.\n\n"
+        "Обязательные поля записи: staff_pin, tutor_id, tutor, first_in, latitude, longitude.\n"
+        "subject_name - опционально.\n\n"
+        "Ответ: 202 + task_id.\n"
+        "Проверка статуса: GET /api/lesson_attendance/task_status/{task_id}/."
+    ),
+    tags=["Lesson Attendance"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API-ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            name="attendance_data",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description=(
+                "JSON-строка с массивом записей.\n"
+                "Что обычно меняют: staff_pin, tutor, first_in, latitude, longitude.\n"
+                "Готовый шаблон (скопируйте как есть):\n"
+                f"{LESSON_ATTENDANCE_ARRAY_EXAMPLE_TEXT}"
+            ),
+            default=LESSON_ATTENDANCE_ARRAY_EXAMPLE_TEXT,
+        ),
+        openapi.Parameter(
+            name="image",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_FILE,
+            required=False,
+            description="Файл фотографии (JPG/PNG), опционально. Загружайте через Choose File.",
+        ),
+    ],
+    request_body=no_body,
+    consumes=["multipart/form-data"],
+    responses=_lesson_attendance_responses(),
 )
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def create_lesson_attendance(request):
     """
-    Обрабатывает POST-запрос для создания записей посещаемости сотрудников на занятия.
+    POST /api/lesson_attendance/ — создание записей посещаемости занятий (с фото).
 
-    Функция принимает JSON-данные о посещаемости и файл с фотографией сотрудника, проверяет
-    корректность данных и запускает асинхронную задачу Celery для сохранения данных и фотографии.
+    Как заполнять запрос
+    --------------------
+    Поддерживаются два типа запроса.
 
-    Args:
-        request (Request): Объект запроса, содержащий:
-            - attendance_data (list): Список объектов с данными о посещаемости, каждый объект содержит:
-                - staff_pin (str): PIN сотрудника.
-                - tutor_id (int): ID преподавателя.
-                - tutor (str): ФИО преподавателя.
-                - first_in (str): Время начала занятия в формате ISO 8601.
-                - latitude (float): Широта места проведения занятия.
-                - longitude (float): Долгота места проведения занятия.
-            - image (File): Файл с фотографией сотрудника.
+    **1. multipart/form-data** (форма с файлом, в т.ч. в Swagger «Try it out»):
+    - Поле **attendance_data**: строка, содержащая JSON-массив объектов. Каждый объект — одна запись посещаемости.
+    - Поле **image**: файл изображения (JPG/PNG), опционально.
 
-    Returns:
-        Response:
-            - 202 Accepted: Задача по созданию записей принята в обработку.
-            - 400 Bad Request: Если переданы некорректные данные или отсутствуют обязательные параметры.
-            - 500 Internal Server Error: В случае возникновения ошибки на сервере.
+    Обязательные поля в каждом объекте массива attendance_data:
+    - staff_pin (str): PIN сотрудника из справочника Staff.
+    - tutor_id (int): ID преподавателя (допускается 0).
+    - tutor (str): ФИО преподавателя.
+    - first_in (str): Время начала занятия, ISO 8601 с таймзоной, напр. "2024-10-06T14:24:24+05:00".
+    - latitude (float): Широта (допускается 0).
+    - longitude (float): Долгота (допускается 0).
 
-    Raises:
-        Exception: Любые исключения логируются, и сервер возвращает ответ с кодом 500.
+    Необязательное поле: subject_name (str).
+
+    Пример значения для attendance_data (одна запись):
+        [
+          {
+            "staff_pin": "s00260",
+            "tutor_id": 1,
+            "tutor": "Иванов И.И.",
+            "first_in": "2024-10-06T14:24:24+05:00",
+            "latitude": 43.21,
+            "longitude": 76.85
+          }
+        ]
+
+    **2. application/json** (предпочтительно отправлять на POST /api/lesson_attendance/json/):
+    - Тело:
+      {
+        "attendance_data": [ {...}, ... ],
+        "image": "<base64-строка>" (опционально)
+      }.
+    - Структура объектов в attendance_data — та же, image — фото в Base64 без префикса data:... (опционально).
+
+    Ответ
+    -----
+    - 202: в теле {"message": "Task accepted", "task_id": "<uuid>"}. Результат проверять в GET /api/lesson_attendance/task_status/<task_id>/.
+    - 400: ошибка валидации (нет полей, неверный JSON и т.п.).
+    - 500: ошибка сервера при постановке задачи в очередь.
     """
     ip_address = request.META.get("REMOTE_ADDR", "Неизвестный IP")
     domain = request.get_host()
+    log_prefix = "[lesson_attendance]"
 
-    logger.info(
-        f"Запрос получен от IP: {ip_address}, домен: {domain} Получен запрос: {request.method} {request.path} {request}"
+    lesson_attendance_logger.info(
+        "%s POST create ip=%s host=%s content_type=%s",
+        log_prefix,
+        ip_address,
+        domain,
+        getattr(request, "content_type", None),
     )
-    logger.info(f"Заголовки запроса: {request.headers}")
-
-    if request.body:
-        try:
-            if request.content_type == "application/json":
-                logger.info("Тело запроса: содержит JSON данные")
-            else:
-                logger.info("Тело запроса содержит бинарные данные")
-        except Exception as e:
-            logger.error(
-                f"Ошибка при декодировании тела запроса: {str(e)}, IP: {ip_address}, домен: {domain}"
-            )
 
     try:
-        attendance_data_raw = request.data.get("attendance_data")
-        image_base64 = request.data.get("image")
+        ct = (getattr(request, "content_type") or "") or ""
+        if "multipart" in ct or "form-data" in ct:
+            attendance_data_raw = request.POST.get(
+                "attendance_data"
+            ) or request.data.get("attendance_data")
+            image_base64 = request.POST.get("image") or request.data.get("image")
+        else:
+            attendance_data_raw = request.data.get("attendance_data")
+            image_base64 = request.data.get("image")
+        has_file = bool(request.FILES.get("image"))
 
         if not attendance_data_raw:
-            logger.error(
-                f"Отсутствуют данные о посещаемости, IP: {ip_address}, домен: {domain}"
+            _data_keys = (
+                list(request.data.keys()) if getattr(request, "data", None) else []
+            )
+            _post_keys = list(request.POST.keys()) if hasattr(request, "POST") else []
+            lesson_attendance_logger.warning(
+                "%s BAD_REQUEST attendance_data_missing ip=%s data_keys=%s post_keys=%s",
+                log_prefix,
+                ip_address,
+                _data_keys,
+                _post_keys,
             )
             return Response(
                 {"error": "Attendance data is missing"},
@@ -1823,59 +4682,109 @@ def create_lesson_attendance(request):
                 if isinstance(attendance_data_raw, bytes)
                 else attendance_data_raw
             )
-            attendance_data = json.loads(attendance_data_raw)
+            try:
+                attendance_data = json.loads(attendance_data_raw)
+            except json.JSONDecodeError as e:
+                lesson_attendance_logger.warning(
+                    "%s BAD_REQUEST attendance_data_not_json ip=%s error=%s",
+                    log_prefix,
+                    ip_address,
+                    str(e),
+                )
+                return Response(
+                    {"error": "Invalid JSON in attendance_data"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         else:
             attendance_data = []
 
-        for record in attendance_data:
-            required_fields = [
-                "staff_pin",
-                "tutor_id",
-                "tutor",
-                "first_in",
-                "latitude",
-                "longitude",
-            ]
-            if not all(record.get(field) for field in required_fields):
-                logger.error(
-                    f"Отсутствуют обязательные поля в записи: {record} IP: {ip_address}, домен: {domain}"
+        if not isinstance(attendance_data, list):
+            lesson_attendance_logger.warning(
+                "%s BAD_REQUEST attendance_data_not_list ip=%s type=%s",
+                log_prefix,
+                ip_address,
+                type(attendance_data).__name__,
+            )
+            return Response(
+                {"error": "attendance_data must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        def _missing_required(rec):
+            missing = []
+            if not rec.get("staff_pin"):
+                missing.append("staff_pin")
+            if "tutor_id" not in rec:
+                missing.append("tutor_id")
+            if not rec.get("tutor"):
+                missing.append("tutor")
+            if not rec.get("first_in"):
+                missing.append("first_in")
+            if "latitude" not in rec:
+                missing.append("latitude")
+            if "longitude" not in rec:
+                missing.append("longitude")
+            return missing
+
+        for idx, record in enumerate(attendance_data):
+            if not isinstance(record, dict):
+                lesson_attendance_logger.warning(
+                    "%s BAD_REQUEST record_not_dict ip=%s record_index=%s",
+                    log_prefix,
+                    ip_address,
+                    idx,
                 )
                 return Response(
-                    {"error": "Missing required fields in record"},
+                    {"error": "Each attendance record must be an object"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            missing = _missing_required(record)
+            if missing:
+                lesson_attendance_logger.warning(
+                    "%s BAD_REQUEST missing_required_fields ip=%s record_index=%s missing=%s staff_pin=%s tutor_id=%s",
+                    log_prefix,
+                    ip_address,
+                    idx,
+                    missing,
+                    record.get("staff_pin"),
+                    record.get("tutor_id"),
+                )
+                return Response(
+                    {"error": "Missing required fields in record", "missing": missing},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
         image_content = None
         image_name = None
 
-        if image_base64:
-            logger.info("Получено изображение в формате Base64")
+        if has_file:
+            staff_image = request.FILES["image"]
+            image_content = staff_image.read()
+        elif image_base64:
             try:
                 image_content = base64.b64decode(image_base64)
-                logger.info("Изображение успешно декодировано в байты")
             except Exception as e:
-                logger.error("Ошибка декодирования Base64 изображения: %s", e)
+                lesson_attendance_logger.warning(
+                    "%s BAD_REQUEST image_base64_decode_failed ip=%s error=%s",
+                    log_prefix,
+                    ip_address,
+                    str(e),
+                )
                 return Response(
                     {"error": "Invalid Base64 image format"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-        elif request.FILES.get("image"):
-            staff_image = request.FILES["image"]
-            image_content = staff_image.read()
-            logger.info("Изображение прочитано как бинарные данные")
-
-        if not image_content:
-            logger.error(f"Изображение отсутствует, IP: {ip_address}, домен: {domain}")
-            return Response(
-                {"error": "Image is missing"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         task = tasks.process_lesson_attendance_batch.apply_async(
             args=[attendance_data, image_name, image_content]
         )
-        logger.info(
-            f"Задача успешно принята: ID задачи {task.id}, IP: {ip_address}, домен: {domain}"
+        lesson_attendance_logger.info(
+            "%s ACCEPTED task_id=%s ip=%s records_count=%s image_size_bytes=%s",
+            log_prefix,
+            task.id,
+            ip_address,
+            len(attendance_data),
+            len(image_content) if image_content else 0,
         )
 
         return Response(
@@ -1884,8 +4793,11 @@ def create_lesson_attendance(request):
         )
 
     except Exception as e:
-        logger.error(
-            f"Ошибка при запуске задачи: {str(e)}, IP: {ip_address}, домен: {domain}"
+        lesson_attendance_logger.exception(
+            "%s EXCEPTION create ip=%s error=%s",
+            log_prefix,
+            ip_address,
+            str(e),
         )
         return Response(
             {"error": "Error with creating job"},
@@ -1893,11 +4805,117 @@ def create_lesson_attendance(request):
         )
 
 
+_lesson_attendance_json_schema = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=["attendance_data"],
+    description="Тело запроса: массив записей посещаемости; фото в Base64 опционально.",
+    example=LESSON_ATTENDANCE_JSON_BODY_EXAMPLE,
+    properties={
+        "attendance_data": openapi.Schema(
+            type=openapi.TYPE_ARRAY,
+            description="Массив записей посещаемости.",
+            items=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                required=[
+                    "staff_pin",
+                    "tutor_id",
+                    "tutor",
+                    "first_in",
+                    "latitude",
+                    "longitude",
+                ],
+                properties={
+                    "staff_pin": openapi.Schema(
+                        type=openapi.TYPE_STRING, example="s00260"
+                    ),
+                    "tutor_id": openapi.Schema(type=openapi.TYPE_INTEGER, example=1),
+                    "tutor": openapi.Schema(
+                        type=openapi.TYPE_STRING, example="Иванов И.И."
+                    ),
+                    "first_in": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        format=openapi.FORMAT_DATETIME,
+                        example="2024-10-06T14:24:24+05:00",
+                    ),
+                    "latitude": openapi.Schema(
+                        type=openapi.TYPE_NUMBER, example=43.207674
+                    ),
+                    "longitude": openapi.Schema(
+                        type=openapi.TYPE_NUMBER, example=76.851377
+                    ),
+                    "subject_name": openapi.Schema(
+                        type=openapi.TYPE_STRING, example="Математика"
+                    ),
+                },
+            ),
+        ),
+        "image": openapi.Schema(
+            type=openapi.TYPE_STRING,
+            description="Фото в Base64 (без префикса data:image/...;base64,). Опционально.",
+        ),
+    },
+)
+
+
+@swagger_auto_schema(
+    method="post",
+    operation_summary="Создать записи посещаемости (JSON)",
+    operation_description=(
+        "Формат запроса: application/json.\n"
+        "Тело запроса:\n"
+        f"{LESSON_ATTENDANCE_JSON_BODY_EXAMPLE_TEXT}\n"
+        "image - опционально.\n\n"
+        "Обязательные поля записи: staff_pin, tutor_id, tutor, first_in, latitude, longitude.\n"
+        "subject_name - опционально.\n\n"
+        "Ответ: 202 + task_id.\n"
+        "Проверка статуса: GET /api/lesson_attendance/task_status/{task_id}/."
+    ),
+    tags=["Lesson Attendance"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API-ключ (альтернатива JWT).",
+        ),
+    ],
+    request_body=_lesson_attendance_json_schema,
+    consumes=["application/json"],
+    responses=_lesson_attendance_responses(),
+)
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def create_lesson_attendance_json(request):
+    return create_lesson_attendance(request)
+
+
 @swagger_auto_schema(
     method="put",
-    operation_summary="Обновление записи посещаемости занятия",
-    operation_description="Обновляет существующую запись посещаемости занятия по её ID. Параметр `last_out` обязателен, так как он указывает время окончания занятия. Параметры `first_in`, `latitude` и `longitude` могут быть обновлены опционально.",
+    auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
+    operation_summary="Обновить запись посещаемости",
+    operation_description=(
+        "Try it out (в Swagger):\n"
+        "1. Укажите id записи в path-параметре.\n"
+        "2. Заполните только те поля, которые хотите изменить.\n"
+        "3. Для фото используйте только поле image (кнопка Choose File).\n"
+        "4. Нажмите Execute.\n\n"
+        "Пример JSON (для Postman/curl):\n"
+        "{\n"
+        "  \"last_out\": \"2026-03-16T11:40:00+05:00\",\n"
+        "  \"latitude\": 43.2389,\n"
+        "  \"longitude\": 76.8897\n"
+        "}"
+    ),
+    tags=["Lesson Attendance"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             "id",
             openapi.IN_PATH,
@@ -1905,37 +4923,48 @@ def create_lesson_attendance(request):
             type=openapi.TYPE_INTEGER,
             required=True,
         ),
+        openapi.Parameter(
+            "first_in",
+            openapi.IN_FORM,
+            description="Начало занятия (ISO 8601). Пример: 2026-03-16T10:00:00+05:00",
+            type=openapi.TYPE_STRING,
+            required=False,
+            default="2026-03-16T10:00:00+05:00",
+        ),
+        openapi.Parameter(
+            "last_out",
+            openapi.IN_FORM,
+            description="Окончание занятия (ISO 8601). Пример: 2026-03-16T11:40:00+05:00",
+            type=openapi.TYPE_STRING,
+            required=False,
+            default="2026-03-16T11:40:00+05:00",
+        ),
+        openapi.Parameter(
+            "latitude",
+            openapi.IN_FORM,
+            description="Широта. Пример: 43.2389",
+            type=openapi.TYPE_NUMBER,
+            required=False,
+            default=43.2389,
+        ),
+        openapi.Parameter(
+            "longitude",
+            openapi.IN_FORM,
+            description="Долгота. Пример: 76.8897",
+            type=openapi.TYPE_NUMBER,
+            required=False,
+            default=76.8897,
+        ),
+        openapi.Parameter(
+            name="image",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_FILE,
+            required=False,
+            description="Фото сотрудника (jpg/png). Загружайте через Choose File.",
+        ),
     ],
-    request_body=openapi.Schema(
-        type=openapi.TYPE_OBJECT,
-        required=["last_out"],
-        properties={
-            "first_in": openapi.Schema(
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_DATETIME,
-                description="Время начала занятия в формате ISO 8601 с часовым поясом. Опционально",
-                example="2024-09-16T17:28:24+05:00",
-            ),
-            "last_out": openapi.Schema(
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_DATETIME,
-                description="Время окончания занятия в формате ISO 8601 с часовым поясом. Обязательно",
-                example="2024-09-16T18:28:24+05:00",
-            ),
-            "latitude": openapi.Schema(
-                type=openapi.TYPE_NUMBER,
-                format=openapi.FORMAT_FLOAT,
-                description="Широта места проведения. Опционально",
-                example=43.222,
-            ),
-            "longitude": openapi.Schema(
-                type=openapi.TYPE_NUMBER,
-                format=openapi.FORMAT_FLOAT,
-                description="Долгота места проведения. Опционально",
-                example=76.851,
-            ),
-        },
-    ),
+    request_body=no_body,
+    consumes=["multipart/form-data"],
     responses={
         200: openapi.Response(
             description="Запись успешно обновлена",
@@ -1946,11 +4975,15 @@ def create_lesson_attendance(request):
                         type=openapi.TYPE_STRING,
                         description="Сообщение об успешном обновлении записи",
                     ),
+                    "lesson_id": openapi.Schema(
+                        type=openapi.TYPE_INTEGER,
+                        description="ID обновленной записи посещаемости",
+                    ),
                 },
             ),
         ),
         400: openapi.Response(
-            description="Неверные данные или отсутствует обязательный параметр `last_out`",
+            description="Неверные данные в теле запроса",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
@@ -1980,7 +5013,7 @@ def create_lesson_attendance(request):
 )
 @api_view(["PUT"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
-def update_lesson_attendance(request, id):
+def update_lesson_attendance(request, attendance_id=None, **kwargs):
     """
     Обновление записи посещаемости занятия.
 
@@ -1988,35 +5021,84 @@ def update_lesson_attendance(request, id):
         id (int): ID записи для обновления.
         request (Request): HTTP запрос, содержащий данные для обновления записи.
 
-    Ожидаемые параметры:
-        last_out (str): Время окончания занятия в формате ISO 8601 с часовым поясом (обязательно).
-        first_in (str): Время начала занятия в формате ISO 8601 с часовым поясом (опционально).
-        latitude (float): Широта места проведения (опционально).
-        longitude (float): Долгота места проведения (опционально).
-
-    Returns:
-        Response: Возвращает сообщение об успешном обновлении записи.
+    Все поля в теле запроса опциональны: можно изменить время начала/окончания,
+    координаты и/или добавить/обновить фото (image: файл в multipart или Base64 в JSON).
     """
+    ip_address = request.META.get("REMOTE_ADDR", "Неизвестный IP")
+    log_prefix = "[lesson_attendance]"
+    attendance_id = attendance_id if attendance_id is not None else kwargs.get("id")
+    if attendance_id is None:
+        return Response(
+            {"error": "Attendance id is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     try:
-        lesson_attendance = get_object_or_404(models.LessonAttendance, id=id)
+        lesson_attendance = get_object_or_404(models.LessonAttendance, id=attendance_id)
+
+        image_content = None
+        if request.FILES.get("image"):
+            image_content = request.FILES["image"].read()
+        elif request.data.get("image"):
+            try:
+                image_content = base64.b64decode(request.data.get("image"))
+            except Exception as e:
+                lesson_attendance_logger.warning(
+                    "%s PUT BAD_REQUEST image_base64_decode_failed id=%s error=%s",
+                    log_prefix,
+                    attendance_id,
+                    str(e),
+                )
+                return Response(
+                    {"error": "Invalid Base64 image format"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         first_in = request.data.get("first_in", lesson_attendance.first_in)
         last_out = request.data.get("last_out")
         latitude = request.data.get("latitude", lesson_attendance.latitude)
         longitude = request.data.get("longitude", lesson_attendance.longitude)
 
-        if not last_out:
-            return Response(
-                {"error": "'last_out' is required for updating."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        if last_out is None:
+            last_out = lesson_attendance.last_out
+
+        update_fields = ["first_in", "last_out", "latitude", "longitude"]
+        if image_content:
+            staff_pin = lesson_attendance.staff.pin
+            base_dir, file_path = utils.get_lesson_attendance_photo_path(staff_pin)
+            os.makedirs(base_dir, exist_ok=True)
+            try:
+                with open(file_path, "wb") as destination:
+                    destination.write(image_content)
+            except OSError as e:
+                lesson_attendance_logger.error(
+                    "%s PUT image_save_failed id=%s path=%s error=%s",
+                    log_prefix,
+                    attendance_id,
+                    file_path,
+                    str(e),
+                )
+                return Response(
+                    {"error": f"Image save failed: {e}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            lesson_attendance.staff_image_path = file_path
+            update_fields.append("staff_image_path")
 
         lesson_attendance.first_in = first_in
         lesson_attendance.last_out = last_out
         lesson_attendance.latitude = latitude
         lesson_attendance.longitude = longitude
-        lesson_attendance.save()
+        lesson_attendance.save(update_fields=update_fields)
 
+        lesson_attendance_logger.info(
+            "%s PUT OK lesson_id=%s ip=%s last_out=%s has_photo=%s",
+            log_prefix,
+            lesson_attendance.id,
+            ip_address,
+            last_out,
+            bool(image_content),
+        )
         return Response(
             {
                 "message": "LessonAttendance updated successfully",
@@ -2026,10 +5108,23 @@ def update_lesson_attendance(request, id):
         )
 
     except models.LessonAttendance.DoesNotExist:
+        lesson_attendance_logger.warning(
+            "%s PUT NOT_FOUND id=%s ip=%s",
+            log_prefix,
+            attendance_id,
+            ip_address,
+        )
         return Response(
             {"error": "LessonAttendance not found."}, status=status.HTTP_404_NOT_FOUND
         )
     except Exception as e:
+        lesson_attendance_logger.exception(
+            "%s PUT EXCEPTION id=%s ip=%s error=%s",
+            log_prefix,
+            attendance_id,
+            ip_address,
+            str(e),
+        )
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -2037,116 +5132,15 @@ def update_lesson_attendance(request, id):
     method="get",
     operation_summary="Посещаемость сотрудников по отделу",
     operation_description="Получить данные о посещаемости сотрудников по ID подразделения и его дочерним подразделениям за указанный период.",
-    responses={
-        200: openapi.Response(
-            description="Успешный ответ",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "count": openapi.Schema(
-                        type=openapi.TYPE_INTEGER,
-                        description="Общее количество записей",
-                    ),
-                    "next": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="URL следующей страницы результатов",
-                        nullable=True,
-                    ),
-                    "previous": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="URL предыдущей страницы результатов",
-                        nullable=True,
-                    ),
-                    "results": openapi.Schema(
-                        type=openapi.TYPE_ARRAY,
-                        items=openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            additional_properties=openapi.Schema(
-                                type=openapi.TYPE_OBJECT,
-                                properties={
-                                    "department": openapi.Schema(
-                                        type=openapi.TYPE_STRING,
-                                        description="Название отдела сотрудника",
-                                    ),
-                                    "attendance": openapi.Schema(
-                                        type=openapi.TYPE_ARRAY,
-                                        items=openapi.Schema(
-                                            type=openapi.TYPE_OBJECT,
-                                            properties={
-                                                "staff_fio": openapi.Schema(
-                                                    type=openapi.TYPE_STRING,
-                                                    description="ФИО сотрудника",
-                                                ),
-                                                "first_in": openapi.Schema(
-                                                    type=openapi.TYPE_STRING,
-                                                    format=openapi.FORMAT_DATETIME,
-                                                    description="Время первого входа сотрудника",
-                                                    nullable=True,
-                                                ),
-                                                "last_out": openapi.Schema(
-                                                    type=openapi.TYPE_STRING,
-                                                    format=openapi.FORMAT_DATETIME,
-                                                    description="Время последнего выхода сотрудника",
-                                                    nullable=True,
-                                                ),
-                                                "area_name": openapi.Schema(
-                                                    type=openapi.TYPE_STRING,
-                                                    description="Название зоны посещения",
-                                                    nullable=True,
-                                                ),
-                                                "remote_work": openapi.Schema(
-                                                    type=openapi.TYPE_BOOLEAN,
-                                                    description="Удаленная работа",
-                                                ),
-                                                "absence_reason": openapi.Schema(
-                                                    type=openapi.TYPE_STRING,
-                                                    description="Причина отсутствия",
-                                                    enum=[
-                                                        "Командировка",
-                                                        "Болезнь",
-                                                        "Другая причина",
-                                                    ],
-                                                    nullable=True,
-                                                ),
-                                            },
-                                        ),
-                                    ),
-                                },
-                            ),
-                        ),
-                    ),
-                },
-            ),
-        ),
-        400: openapi.Response(
-            description="Ошибка в запросе",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "error": openapi.Schema(type=openapi.TYPE_STRING),
-                },
-            ),
-        ),
-        404: openapi.Response(
-            description="Не найдено",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "error": openapi.Schema(type=openapi.TYPE_STRING),
-                },
-            ),
-        ),
-        500: openapi.Response(
-            description="Ошибка сервера",
-            schema=openapi.Schema(
-                type=openapi.TYPE_OBJECT,
-                properties={
-                    "error": openapi.Schema(type=openapi.TYPE_STRING),
-                },
-            ),
-        ),
-    },
+    tags=["Attendance & Statistics"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             "end_date",
             openapi.IN_QUERY,
@@ -2333,29 +5327,21 @@ def staff_detail_by_department_id(request, department_id):
             staff_dict = {staff.id: staff for staff in staff_objects}
             staff_ids = list(staff_dict.keys())
 
-            staff_attendance_qs = (
-                models.StaffAttendance.objects.filter(
-                    staff_id__in=staff_ids,
-                    date_at__range=(start_date, end_date),
-                )
-                .select_related("staff__department")
-                .values("staff_id", "date_at", "first_in", "last_out", "area_name_in")
-            )
+            staff_attendance_qs = models.StaffAttendance.objects.filter(
+                staff_id__in=staff_ids,
+                date_at__range=(start_date, end_date),
+            ).values("staff_id", "date_at", "first_in", "last_out", "area_name_in")
 
-            lesson_attendance_qs = (
-                models.LessonAttendance.objects.filter(
-                    staff_id__in=staff_ids,
-                    date_at__range=(start_date, end_date),
-                )
-                .select_related("staff__department")
-                .values(
-                    "staff_id",
-                    "date_at",
-                    "first_in",
-                    "last_out",
-                    "latitude",
-                    "longitude",
-                )
+            lesson_attendance_qs = models.LessonAttendance.objects.filter(
+                staff_id__in=staff_ids,
+                date_at__range=(start_date, end_date),
+            ).values(
+                "staff_id",
+                "date_at",
+                "first_in",
+                "last_out",
+                "latitude",
+                "longitude",
             )
 
             absent_reasons_qs = (
@@ -2382,18 +5368,12 @@ def staff_detail_by_department_id(request, department_id):
             )
             logger.debug(f"RemoteWork records fetched: {remote_works_qs.count()}")
 
-            class_locations = list(models.ClassLocation.objects.all())
-
-            location_searcher = utils.LocationSearcher(
-                [
-                    {
-                        "latitude": loc.latitude,
-                        "longitude": loc.longitude,
-                        "name": loc.name,
-                    }
-                    for loc in class_locations
-                ]
-            )
+            location_cache = get_class_location_cache()
+            location_searcher = location_cache["searcher"]
+            if location_searcher is None:
+                location_searcher = utils.LocationSearcher(
+                    location_cache["searcher_payload"] or []
+                )
 
             staff_attendance_map = defaultdict(lambda: defaultdict(list))
             for sa in staff_attendance_qs:
@@ -2472,11 +5452,11 @@ def staff_detail_by_department_id(request, department_id):
                             )
                             if not last_out or sa_last_out > last_out:
                                 last_out = sa_last_out
-                        area_name = utils.AREA_ADDRESS_MAPPING.get(
-                            sa["area_name_in"], "Unknown Area"
+                        area_address = utils.resolve_area_address(
+                            sa.get("area_name_in")
                         )
-                        if area_name != "Unknown Area":
-                            area_names.append(area_name)
+                        if area_address:
+                            area_names.append(area_address)
 
                     for la in la_records:
                         if la["first_in"]:
@@ -2541,6 +5521,16 @@ def staff_detail_by_department_id(request, department_id):
     method="post",
     operation_summary="Зарегистрировать нового пользователя (доступно только для администратора)",
     operation_description="Регистрирует нового пользователя в системе. Разрешено только для администратора.",
+    tags=["Authentication"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+    ],
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         required=["username", "password"],
@@ -2668,32 +5658,138 @@ def login_view(request):
 
 @swagger_auto_schema(
     method="get",
-    operation_summary="Запрос на получение данных с Внешнего сервера",
-    operation_description="Запрос на получение данных о посещаемости. Требует передачи заголовка X-API-KEY для аутентификации.",
+    operation_summary="Запуск синхронизации посещаемости с внешним СКУД",
+    operation_description=(
+        "Запускает загрузку посещаемости сотрудников с внешнего сервера и сохранение в базу. "
+        "Аутентификация: `X-API-KEY` или `Authorization: Bearer <access_token>`."
+    ),
+    tags=["Fetcher"],
     manual_parameters=[
         openapi.Parameter(
             name="X-API-KEY",
             in_=openapi.IN_HEADER,
             type=openapi.TYPE_STRING,
-            required=True,
-            description="API ключ для аутентификации запроса.",
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+        token_param_config,
+        openapi.Parameter(
+            name="days",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_INTEGER,
+            required=False,
+            description=(
+                "На сколько дней назад брать данные (0..365). "
+                "Если не передан, используется значение из settings.DAYS."
+            ),
+        ),
+        openapi.Parameter(
+            name="max_concurrent_requests",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_INTEGER,
+            required=False,
+            description=(
+                "Максимум одновременных запросов к внешнему API (1..30, по умолчанию 6)."
+            ),
         ),
     ],
     responses={
         200: openapi.Response(
-            description="Запуск процесса получения данных.",
+            description="Синхронизация завершена без ошибок.",
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
                     "message": openapi.Schema(
                         type=openapi.TYPE_STRING,
-                        description="Статус сообщения.",
+                        description="Статус выполнения.",
+                    ),
+                    "days": openapi.Schema(
+                        type=openapi.TYPE_INTEGER,
+                        description="Фактически использованное значение days.",
+                    ),
+                    "duration_seconds": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        format=openapi.FORMAT_FLOAT,
+                        description="Время выполнения в секундах.",
+                    ),
+                    "duration_human_readable": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Человекочитаемая длительность.",
+                    ),
+                    "status": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Статус выполнения: success/partial_error/failed.",
+                    ),
+                    "fetch_summary": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        properties={
+                            "source_date": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                description="Дата источника (день, который запрашивали во внешнем API).",
+                            ),
+                            "save_date": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                description="Дата, в которую сохранялись записи.",
+                            ),
+                            "total_pins": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "successful_requests": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "failed_requests": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "pins_with_events": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "pins_without_events": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "created_records": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "updated_records": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "event_time_parse_errors": openapi.Schema(
+                                type=openapi.TYPE_INTEGER
+                            ),
+                            "ambiguous_exit_candidates": openapi.Schema(
+                                type=openapi.TYPE_INTEGER,
+                                description="Количество неоднозначных кандидатов на выход (ambiguous exit devices).",
+                            ),
+                            "ambiguous_resolved_as_exit": openapi.Schema(
+                                type=openapi.TYPE_INTEGER,
+                                description="Количество неоднозначных событий, классифицированных как выход.",
+                            ),
+                            "ambiguous_resolved_as_transfer": openapi.Schema(
+                                type=openapi.TYPE_INTEGER,
+                                description="Количество неоднозначных событий, классифицированных как переход в пристройку.",
+                            ),
+                            "error_statuses": openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                description="Сводка кодов ошибок внешнего API, например {'401': 12, 'network_or_unknown': 2}.",
+                            ),
+                        },
                     ),
                 },
             ),
         ),
-        403: "Forbidden: Если доступ запрещен или отсутствует API ключ.",
-        500: "Internal Server Error: В случае ошибки сервера.",
+        207: openapi.Response(
+            description="Синхронизация завершена частично: были ошибки по части PIN-ов.",
+        ),
+        400: openapi.Response(
+            description="Некорректные query-параметры.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "error": openapi.Schema(type=openapi.TYPE_STRING),
+                },
+            ),
+        ),
+        403: "Forbidden: Если доступ запрещен (нет валидной авторизации).",
+        429: "Too Many Requests: Fetcher уже выполняется.",
+        500: "Internal Server Error: Внутренняя ошибка сервера.",
+        502: "Bad Gateway: Все обращения к внешнему API завершились ошибкой.",
     },
 )
 @async_logic.async_drf_view(["GET"])
@@ -2704,64 +5800,200 @@ async def fetch_data_view(request):
     """
     function_name = "fetch_data_view"
     start_time = time.perf_counter()
-    logger.info(f"{function_name}: Request received")
+    logger.info("%s: Request received", function_name)
+    lock_key = "attendance_fetcher_run_lock"
+    lock_ttl_seconds = int(getattr(settings, "FETCHER_LOCK_TTL_SECONDS", 30 * 60))
+    lock_acquired = cache.add(lock_key, "running", timeout=lock_ttl_seconds)
+
+    if not lock_acquired:
+        logger.warning(
+            "%s: rejected because another fetcher run is in progress", function_name
+        )
+        return Response(
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+            data={
+                "status": "busy",
+                "message": "Fetcher is already running. Try again later.",
+            },
+        )
+
+    def parse_int_query_param(
+        name: str,
+        *,
+        default: int | None,
+        min_value: int | None = None,
+        max_value: int | None = None,
+    ) -> tuple[int | None, str | None]:
+        raw_value = request.query_params.get(name)
+        if raw_value in (None, ""):
+            return default, None
+        try:
+            parsed_value = int(raw_value)
+        except (TypeError, ValueError):
+            return None, f"Параметр '{name}' должен быть целым числом."
+
+        if min_value is not None and parsed_value < min_value:
+            return (
+                None,
+                f"Параметр '{name}' должен быть не меньше {min_value}.",
+            )
+        if max_value is not None and parsed_value > max_value:
+            return (
+                None,
+                f"Параметр '{name}' должен быть не больше {max_value}.",
+            )
+        return parsed_value, None
 
     try:
-        api_key = request.headers.get("X-API-KEY")
-        if api_key is None:
-            logger.warning(f"{function_name}: API key not provided in request headers")
+        has_api_key_header = bool(
+            request.headers.get("X-API-KEY") or request.headers.get("x-api-key")
+        )
+        if (
+            request.user.is_authenticated
+            and not request.user.is_staff
+            and not has_api_key_header
+        ):
+            logger.warning(
+                "%s: forbidden for non-staff authenticated user id=%s",
+                function_name,
+                request.user.id,
+            )
             return Response(
                 status=status.HTTP_403_FORBIDDEN,
-                data={"error": "Доступ запрещен. Не указан API ключ."},
+                data={"error": "Недостаточно прав для запуска fetcher."},
             )
 
-        get_api_key = sync_to_async(lambda: models.APIKey.objects.get(key=api_key))
-        try:
-            key_obj = await get_api_key()
-            if not key_obj.is_active:
-                logger.warning(f"{function_name}: API key {api_key} is inactive")
-                return Response(
-                    status=status.HTTP_403_FORBIDDEN,
-                    data={"error": "Доступ запрещен. Недействительный API ключ."},
-                )
-        except models.APIKey.DoesNotExist:
-            logger.warning(f"{function_name}: API key {api_key} does not exist")
+        days, days_error = parse_int_query_param(
+            "days",
+            default=None,
+            min_value=0,
+            max_value=365,
+        )
+        if days_error:
             return Response(
-                status=status.HTTP_403_FORBIDDEN,
-                data={"error": "Доступ запрещен. Недействительный API ключ."},
+                status=status.HTTP_400_BAD_REQUEST, data={"error": days_error}
             )
 
-        days = request.query_params.get("days")
-        if days is not None:
-            try:
-                days = int(days)
-            except ValueError:
-                return Response(
-                    status=status.HTTP_400_BAD_REQUEST,
-                    data={"error": "Неверное значение параметра 'days'"},
-                )
+        max_concurrent_requests, concurrency_error = parse_int_query_param(
+            "max_concurrent_requests",
+            default=6,
+            min_value=1,
+            max_value=30,
+        )
+        if concurrency_error:
+            return Response(
+                status=status.HTTP_400_BAD_REQUEST,
+                data={"error": concurrency_error},
+            )
+        if max_concurrent_requests is None:
+            max_concurrent_requests = 6
 
-        fetcher = attendance_fetcher.AsyncAttendanceFetcher()
-        await fetcher.get_all_attendance(days=days)
+        logger.info(
+            "%s: Starting attendance fetch with params days=%s, max_concurrent_requests=%s",
+            function_name,
+            days,
+            max_concurrent_requests,
+        )
 
-        logger.info(f"{function_name}: Attendance data fetched successfully")
-        return Response(status=status.HTTP_200_OK, data={"message": "Done"})
+        fetcher = attendance_fetcher.AsyncAttendanceFetcher(
+            max_concurrent_requests=max_concurrent_requests,
+        )
+        fetch_summary = await fetcher.get_all_attendance(days=days)
+        raw_errors = fetch_summary.get("errors", [])
+
+        error_statuses_counter: Counter[str] = Counter()
+        if isinstance(raw_errors, list):
+            for error in raw_errors:
+                if not isinstance(error, dict):
+                    error_statuses_counter["network_or_unknown"] += 1
+                    continue
+                status_value = error.get("status")
+                if status_value is None:
+                    error_statuses_counter["network_or_unknown"] += 1
+                else:
+                    error_statuses_counter[str(status_value)] += 1
+
+        failed_requests = int(fetch_summary.get("failed_requests", 0))
+        total_pins = int(fetch_summary.get("total_pins", 0))
+        elapsed_seconds = time.perf_counter() - start_time
+        duration_human_readable = utils.format_duration(elapsed_seconds)
+        response_summary = {
+            "source_date": fetch_summary.get("source_date"),
+            "save_date": fetch_summary.get("save_date"),
+            "total_pins": total_pins,
+            "successful_requests": int(fetch_summary.get("successful_requests", 0)),
+            "failed_requests": failed_requests,
+            "pins_with_events": int(fetch_summary.get("pins_with_events", 0)),
+            "pins_without_events": int(fetch_summary.get("pins_without_events", 0)),
+            "created_records": int(fetch_summary.get("created_records", 0)),
+            "updated_records": int(fetch_summary.get("updated_records", 0)),
+            "event_time_parse_errors": int(
+                fetch_summary.get("event_time_parse_errors", 0)
+            ),
+            "ambiguous_exit_candidates": int(
+                fetch_summary.get("ambiguous_exit_candidates", 0)
+            ),
+            "ambiguous_resolved_as_exit": int(
+                fetch_summary.get("ambiguous_resolved_as_exit", 0)
+            ),
+            "ambiguous_resolved_as_transfer": int(
+                fetch_summary.get("ambiguous_resolved_as_transfer", 0)
+            ),
+        }
+        if error_statuses_counter:
+            response_summary["error_statuses"] = dict(error_statuses_counter)
+
+        response_data = {
+            "message": "Done",
+            "status": "success",
+            "days": fetch_summary.get("days", days),
+            "duration_seconds": round(elapsed_seconds, 2),
+            "duration_human_readable": duration_human_readable,
+            "fetch_summary": response_summary,
+        }
+
+        if failed_requests == 0:
+            response_status = status.HTTP_200_OK
+            response_data["message"] = "Done"
+        elif failed_requests < total_pins:
+            response_status = status.HTTP_207_MULTI_STATUS
+            response_data["status"] = "partial_error"
+            response_data["message"] = "Done with errors."
+        else:
+            response_status = status.HTTP_502_BAD_GATEWAY
+            response_data["status"] = "failed"
+            response_data["message"] = "Fetcher failed."
+
+        logger.info(
+            "%s: Completed with status=%s in %.2f seconds (total_pins=%s, failed_requests=%s)",
+            function_name,
+            response_status,
+            elapsed_seconds,
+            total_pins,
+            failed_requests,
+        )
+
+        return Response(status=response_status, data=response_data)
 
     except Exception as e:
+        elapsed_seconds = time.perf_counter() - start_time
+        duration_human_readable = utils.format_duration(elapsed_seconds)
         logger.error(
             f"{function_name}: Error occurred while fetching attendance data: {str(e)}",
             exc_info=True,
         )
         return Response(
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR, data={"error": str(e)}
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            data={
+                "status": "failed",
+                "error": "Ошибка при выполнении fetcher.",
+                "duration_seconds": round(elapsed_seconds, 2),
+                "duration_human_readable": duration_human_readable,
+            },
         )
     finally:
-        end_time = time.perf_counter()
-        duration_seconds = end_time - start_time
-        duration_human_readable = utils.format_duration(duration_seconds)
-        logger.info(
-            f"{function_name} completed in {duration_human_readable} ({duration_seconds:.2f} seconds)"
-        )
+        if lock_acquired:
+            cache.delete(lock_key)
 
 
 @swagger_auto_schema(
@@ -2773,7 +6005,15 @@ async def fetch_data_view(request):
         "query parameters formatted as YYYY-MM-DD. If the provided endDate is greater than today, it will be capped to today's date. "
         "Authentication is required by providing a valid API key in the X-API-KEY header or by using other credentials."
     ),
+    tags=["Files & Downloads"],
     manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
         openapi.Parameter(
             name="department_id",
             in_=openapi.IN_PATH,
@@ -2796,13 +6036,6 @@ async def fetch_data_view(request):
             format="date",
             required=True,
             description="The end date of the attendance report period, formatted as YYYY-MM-DD.",
-        ),
-        openapi.Parameter(
-            name="X-API-KEY",
-            in_=openapi.IN_HEADER,
-            type=openapi.TYPE_STRING,
-            required=True,
-            description="API key for authentication.",
         ),
     ],
     responses={
@@ -3020,8 +6253,7 @@ class UploadFileView(View):
 
         return render(request, self.template_name)
 
-    @transaction.atomic
-    def handle_excel(self, file_path):
+    def handle_excel(self, file_path) -> List[ExcelRow]:
         """
         Обрабатывает загрузку и импорт данных из файла Excel.
 
@@ -3034,27 +6266,27 @@ class UploadFileView(View):
         """
         logger.info("Handling Excel file")
         try:
-            wb = load_workbook(file_path)
-            ws = wb.active
-            ws.delete_rows(1, 2)
-            rows = list(ws.iter_rows())
-            logger.debug(f"Rows before sorting: {[row[0].value for row in rows]}")
+            with atomic_block():
+                wb = load_workbook(file_path)
+                ws = wb.active
+                ws.delete_rows(1, 2)
+                rows = list(ws.iter_rows())
+                logger.debug(f"Rows before sorting: {[row[0].value for row in rows]}")
 
-            rows.sort(
-                key=lambda row: (
-                    not str(row[0].value).isdigit(),
-                    str(row[0].value).zfill(10),
-                ),
-                reverse=False,
-            )
-            logger.debug(f"Rows after sorting: {[row[0].value for row in rows]}")
-            logger.debug(f"Excel file processed, number of rows: {len(rows)}")
-            return rows
+                rows.sort(
+                    key=lambda row: (
+                        not str(row[0].value).isdigit(),
+                        str(row[0].value).zfill(10),
+                    ),
+                    reverse=False,
+                )
+                logger.debug(f"Rows after sorting: {[row[0].value for row in rows]}")
+                logger.debug(f"Excel file processed, number of rows: {len(rows)}")
+                return rows
         except Exception as e:
             logger.error(f"Error processing Excel file: {str(e)}")
             raise
 
-    @transaction.atomic
     def process_class_locations(self, request, rows):
         """
         Processes a list of Excel file rows to populate the ClassLocation model using bulk_create and bulk_update.
@@ -3080,108 +6312,139 @@ class UploadFileView(View):
             Logs details of processed rows, including created, updated, and skipped rows. If errors
             occur, they are logged and the user is notified.
         """
-        to_create = []
-        to_update = []
-        existing_locations = {
-            (loc.name, loc.address): loc for loc in models.ClassLocation.objects.all()
-        }
+        with transaction.atomic():  # type: ignore[reportGeneralTypeIssues]
+            to_create = []
+            to_update = []
+            existing_locations = {
+                (loc.name, loc.address): loc
+                for loc in models.ClassLocation.objects.only(
+                    "id",
+                    "name",
+                    "address",
+                    "latitude",
+                    "longitude",
+                    "acceptance_radius_m",
+                )
+            }
 
-        error_count = 0
-        error_details = []
-        MAX_ERROR_DETAILS = 10
+            error_count = 0
+            error_details = []
+            MAX_ERROR_DETAILS = 10
 
-        for index, row in enumerate(rows):
-            try:
-                name = str(row[0].value).strip()
-                address = str(row[1].value).strip()
-                geo_data = str(row[2].value)
-
-                if not geo_data or geo_data.lower() == "none":
-                    raise ValueError("Отсутствует значение в столбце 'geo'.")
-
-                latitude, longitude = utils.extract_coordinates(geo_data)
-
-                if not all([name, address, latitude, longitude]):
-                    raise ValueError("Отсутствуют необходимые данные.")
-
+            for index, row in enumerate(rows):
                 try:
-                    if latitude is None or str(latitude).strip() == "":
-                        raise ValueError("Latitude is missing or empty")
-                    if longitude is None or str(longitude).strip() == "":
-                        raise ValueError("Longitude is missing or empty")
+                    name = str(row[0].value or "").strip()
+                    address = str(row[1].value or "").strip()
+                    geo_data = str(row[2].value or "") if len(row) > 2 else ""
+                    radius_val = row[3].value if len(row) > 3 else None
 
-                    lat_str = (
-                        latitude
-                        if isinstance(latitude, (int, float))
-                        else str(latitude).strip().replace(",", ".")
-                    )
-                    lon_str = (
-                        longitude
-                        if isinstance(longitude, (int, float))
-                        else str(longitude).strip().replace(",", ".")
-                    )
+                    if not geo_data or geo_data.lower() == "none":
+                        raise ValueError("Отсутствует значение в столбце 'geo'.")
 
-                    latitude = float(lat_str)
-                    longitude = float(lon_str)
-                except (TypeError, ValueError) as e:
-                    raise ValueError(f"Invalid coordinates: {e}")
+                    latitude, longitude = utils.extract_coordinates(geo_data)
 
-                if (name, address) in existing_locations:
-                    location = existing_locations[(name, address)]
-                    location.latitude = latitude
-                    location.longitude = longitude
-                    to_update.append(location)
-                else:
-                    to_create.append(
-                        models.ClassLocation(
+                    if not all([name, address, latitude, longitude]):
+                        raise ValueError("Отсутствуют необходимые данные.")
+
+                    try:
+                        if latitude is None or str(latitude).strip() == "":
+                            raise ValueError("Latitude is missing or empty")
+                        if longitude is None or str(longitude).strip() == "":
+                            raise ValueError("Longitude is missing or empty")
+
+                        lat_str = (
+                            latitude
+                            if isinstance(latitude, (int, float))
+                            else str(latitude).strip().replace(",", ".")
+                        )
+                        lon_str = (
+                            longitude
+                            if isinstance(longitude, (int, float))
+                            else str(longitude).strip().replace(",", ".")
+                        )
+
+                        latitude = float(lat_str)
+                        longitude = float(lon_str)
+                    except (TypeError, ValueError) as e:
+                        raise ValueError(f"Invalid coordinates: {e}")
+
+                    acceptance_radius_m = None
+                    if radius_val is not None and str(radius_val).strip() != "":
+                        try:
+                            acceptance_radius_m = int(float(str(radius_val).strip()))
+                            if acceptance_radius_m <= 0:
+                                acceptance_radius_m = None
+                        except (TypeError, ValueError):
+                            pass
+
+                    if (name, address) in existing_locations:
+                        location = existing_locations[(name, address)]
+                        location.latitude = latitude
+                        location.longitude = longitude
+                        if acceptance_radius_m is not None:
+                            location.acceptance_radius_m = acceptance_radius_m
+                        to_update.append(location)
+                    else:
+                        loc_kw = dict(
                             name=name,
                             address=address,
                             latitude=latitude,
                             longitude=longitude,
                         )
+                        if acceptance_radius_m is not None:
+                            loc_kw["acceptance_radius_m"] = acceptance_radius_m
+                        to_create.append(models.ClassLocation(**loc_kw))
+                except Exception as e:
+                    logger.error(f"Error processing row {index} for ClassLocation: {e}")
+                    error_count += 1
+                    if len(error_details) < MAX_ERROR_DETAILS:
+                        error_details.append(f"Строка {index + 2}: {e}")
+                    continue
+
+            if to_create:
+                try:
+                    models.ClassLocation.objects.bulk_create(to_create)
+                    logger.info(f"Создано новых записей: {len(to_create)}")
+                except Exception as e:
+                    logger.error(f"Error during bulk_create: {e}")
+                    messages.error(
+                        request, "Не удалось создать новые записи ClassLocation."
                     )
-            except Exception as e:
-                logger.error(f"Error processing row {index} for ClassLocation: {e}")
-                error_count += 1
-                if len(error_details) < MAX_ERROR_DETAILS:
-                    error_details.append(f"Строка {index + 2}: {e}")
-                continue
 
-        if to_create:
-            try:
-                models.ClassLocation.objects.bulk_create(to_create)
-                logger.info(f"Создано новых записей: {len(to_create)}")
-            except Exception as e:
-                logger.error(f"Error during bulk_create: {e}")
-                messages.error(
-                    request, "Не удалось создать новые записи ClassLocation."
+            if to_update:
+                try:
+                    models.ClassLocation.objects.bulk_update(
+                        to_update, ["latitude", "longitude", "acceptance_radius_m"]
+                    )
+                    logger.info(f"Обновлено существующих записей: {len(to_update)}")
+                except Exception as e:
+                    logger.error(f"Error during bulk_update: {e}")
+                    messages.error(
+                        request,
+                        "Не удалось обновить существующие записи ClassLocation.",
+                    )
+
+            if to_create or to_update:
+                try:
+                    invalidate_class_location_cache_impl()
+                except Exception as inv_err:
+                    logger.warning(f"Cache invalidation after bulk ops: {inv_err}")
+
+            success_message = f"Успешно добавлено {len(to_create)} новых записей и обновлено {len(to_update)} записей."
+            if error_count > 0:
+                success_message += f" Пропущено {error_count} записей из-за ошибок."
+            messages.success(request, success_message)
+
+            if error_details:
+                error_message = (
+                    "Некоторые записи были пропущены из-за ошибок:\n"
+                    + "\n".join(error_details)
                 )
-
-        if to_update:
-            try:
-                models.ClassLocation.objects.bulk_update(
-                    to_update, ["latitude", "longitude"]
-                )
-                logger.info(f"Обновлено существующих записей: {len(to_update)}")
-            except Exception as e:
-                logger.error(f"Error during bulk_update: {e}")
-                messages.error(
-                    request, "Не удалось обновить существующие записи ClassLocation."
-                )
-
-        success_message = f"Успешно добавлено {len(to_create)} новых записей и обновлено {len(to_update)} записей."
-        if error_count > 0:
-            success_message += f" Пропущено {error_count} записей из-за ошибок."
-        messages.success(request, success_message)
-
-        if error_details:
-            error_message = (
-                "Некоторые записи были пропущены из-за ошибок:\n"
-                + "\n".join(error_details)
-            )
-            if error_count > MAX_ERROR_DETAILS:
-                error_message += f"\n...и ещё {error_count - MAX_ERROR_DETAILS} ошибок."
-            messages.warning(request, error_message)
+                if error_count > MAX_ERROR_DETAILS:
+                    error_message += (
+                        f"\n...и ещё {error_count - MAX_ERROR_DETAILS} ошибок."
+                    )
+                messages.warning(request, error_message)
 
     def delete_staff(self, request, rows, parent_department_id):
         """
@@ -3305,7 +6568,7 @@ class UploadFileView(View):
                     )
 
                 (
-                    child_department,
+                    _child_department,
                     child_created,
                 ) = models.ChildDepartment.objects.get_or_create(
                     id=child_department_id,
@@ -3435,7 +6698,6 @@ class UploadFileView(View):
             logger.error(f"Error processing staff data: {str(e)}")
             messages.error(request, f"Ошибка при обработке сотрудников: {str(e)}")
 
-    @transaction.atomic
     def process_public_holidays(self, request, rows):
         """
         Обрабатывает данные для категории "public_holidays" из Excel файла.
@@ -3465,69 +6727,72 @@ class UploadFileView(View):
             "не рабочий": False,
         }
 
-        for index, row in enumerate(rows):
-            try:
-                date_cell = row[0].value
-                name_cell = row[1].value
-                is_working_day_cell = row[2].value
+        with atomic_block():
+            for index, row in enumerate(rows):
+                try:
+                    date_cell = row[0].value
+                    name_cell = row[1].value
+                    is_working_day_cell = row[2].value
 
-                if not date_cell or not name_cell:
-                    raise ValueError(
-                        "Отсутствуют обязательные поля 'Дата праздника' или 'Название праздника'."
-                    )
-
-                if isinstance(date_cell, datetime.datetime) or isinstance(
-                    date_cell, datetime.date
-                ):
-                    date = (
-                        date_cell.date()
-                        if isinstance(date_cell, datetime.datetime)
-                        else date_cell
-                    )
-                else:
-                    try:
-                        date = datetime.datetime.strptime(
-                            str(date_cell), "%d.%m.%Y"
-                        ).date()
-                    except ValueError:
-                        try:
-                            date = datetime.datetime.strptime(
-                                str(date_cell), "%Y-%m-%d"
-                            ).date()
-                        except ValueError:
-                            raise ValueError(
-                                "Неверный формат даты. Ожидается DD.MM.YYYY или YYYY-MM-DD."
-                            )
-
-                if isinstance(is_working_day_cell, bool):
-                    is_working_day = is_working_day_cell
-                else:
-                    is_working_day_str = str(is_working_day_cell).strip().lower()
-                    is_working_day = WORKING_DAY_MAPPING.get(is_working_day_str)
-                    if is_working_day is None:
+                    if not date_cell or not name_cell:
                         raise ValueError(
-                            "Неверное значение в поле 'Рабочий день'. Ожидается 'Да' или 'Нет'."
+                            "Отсутствуют обязательные поля 'Дата праздника' или 'Название праздника'."
                         )
 
-                holiday, created = models.PublicHoliday.objects.update_or_create(
-                    date=date,
-                    defaults={
-                        "name": name_cell.strip(),
-                        "is_working_day": is_working_day,
-                    },
-                )
+                    if isinstance(date_cell, datetime.datetime) or isinstance(
+                        date_cell, datetime.date
+                    ):
+                        date = (
+                            date_cell.date()
+                            if isinstance(date_cell, datetime.datetime)
+                            else date_cell
+                        )
+                    else:
+                        try:
+                            date = datetime.datetime.strptime(
+                                str(date_cell), "%d.%m.%Y"
+                            ).date()
+                        except ValueError:
+                            try:
+                                date = datetime.datetime.strptime(
+                                    str(date_cell), "%Y-%m-%d"
+                                ).date()
+                            except ValueError:
+                                raise ValueError(
+                                    "Неверный формат даты. Ожидается DD.MM.YYYY или YYYY-MM-DD."
+                                )
 
-                if created:
-                    created_holidays += 1
-                else:
-                    updated_holidays += 1
+                    if isinstance(is_working_day_cell, bool):
+                        is_working_day = is_working_day_cell
+                    else:
+                        is_working_day_str = str(is_working_day_cell).strip().lower()
+                        is_working_day = WORKING_DAY_MAPPING.get(is_working_day_str)
+                        if is_working_day is None:
+                            raise ValueError(
+                                "Неверное значение в поле 'Рабочий день'. Ожидается 'Да' или 'Нет'."
+                            )
 
-            except Exception as e:
-                logger.error(f"Error processing row {index + 2} for PublicHoliday: {e}")
-                errors.append(f"Строка {index + 2}: {e}")
-                if len(errors) >= MAX_ERROR_DETAILS:
-                    break
-                continue
+                    _holiday, created = models.PublicHoliday.objects.update_or_create(
+                        date=date,
+                        defaults={
+                            "name": name_cell.strip(),
+                            "is_working_day": is_working_day,
+                        },
+                    )
+
+                    if created:
+                        created_holidays += 1
+                    else:
+                        updated_holidays += 1
+
+                except Exception as e:
+                    logger.error(
+                        f"Error processing row {index + 2} for PublicHoliday: {e}"
+                    )
+                    errors.append(f"Строка {index + 2}: {e}")
+                    if len(errors) >= MAX_ERROR_DETAILS:
+                        break
+                    continue
 
         success_message = f"Успешно создано {created_holidays} праздников и обновлено {updated_holidays} праздников."
         messages.success(request, success_message)
@@ -3596,6 +6861,7 @@ class APIKeyCheckView(APIView):
     @swagger_auto_schema(
         operation_summary="Проверка API ключа",
         operation_description="Проверяет наличие и валидность переданного API ключа в заголовке запроса.",
+        tags=["Authentication"],
         manual_parameters=[
             openapi.Parameter(
                 name="X-API-KEY",
@@ -3797,127 +7063,108 @@ def download_examples_zip(request):
         raise Http404("An error occurred while serving the file.")
 
 
+@swagger_auto_schema(
+    method="post",
+    auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
+    operation_summary="Верификация лица",
+    operation_description="Верифицирует лицо сотрудника по PIN и изображению. Требует передачи заголовка X-API-KEY для просмотра в Swagger.",
+    tags=["Face Recognition - Verify"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="API ключ для доступа к этому эндпоинту. Без этого ключа эндпоинт скрыт в Swagger.",
+        ),
+        openapi.Parameter(
+            name="pin",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="PIN сотрудника для верификации.",
+        ),
+        openapi.Parameter(
+            name="image",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_FILE,
+            required=True,
+            description="Изображение лица для верификации.",
+        ),
+    ],
+    request_body=no_body,
+    responses={
+        200: openapi.Response(
+            description="Результат верификации",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "verified": openapi.Schema(
+                        type=openapi.TYPE_BOOLEAN,
+                        description="Результат верификации (True/False).",
+                    ),
+                    "score": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        description="Оценка схожести (0-1).",
+                    ),
+                },
+            ),
+        ),
+        400: "Bad Request: Неверные данные запроса.",
+        404: "Not Found: Сотрудник не найден.",
+    },
+)
 @api_view(["POST"])
 @permission_classes([AllowAny])
-def analyze_face(request):
-    logger = logging.getLogger("django")
-    logger.info("Received request to analyze faces.")
-
-    staff_image = request.FILES.get("image")
-    if not staff_image:
-        return Response({"error": "Image is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-    ok, reason = _validate_uploaded_image(staff_image)
-    if not ok:
-        return Response({"error": reason}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        img = ml.load_image_from_memory(staff_image)
-        ml.load_arcface_model()
-        faces = ml.arcface_model.get(img)
-        if not faces:
-            return Response({"faces": []}, status=status.HTTP_200_OK)
-
-        results = []
-        for f in faces:
-            bbox = f.bbox.astype(int).tolist()
-            # optional attributes (if available in FaceAnalysis result)
-            age = getattr(f, "age", None)
-            gender = getattr(f, "gender", None)
-            aligned = ml.align_face_with_landmarks(img, f.kps)
-            if aligned is None:
-                crop = img[int(f.bbox[1]): int(f.bbox[3]), int(f.bbox[0]): int(f.bbox[2])]
-                aligned = cv2.resize(crop, (112, 112), interpolation=cv2.INTER_LINEAR)
-            emb = ml.arcface_model.get(aligned)[0].embedding if aligned is not None else f.embedding
-            emb = ml._l2_normalize(np.asarray(emb, dtype=np.float32))
-
-            # similarity to nearest centroid (top-1)
-            centroids, owners = ml.get_staff_centroids()
-            if centroids.size:
-                sims, idxs, owners2 = ml.ann_topk(emb.reshape(1, -1), k=3)
-                if sims is None:
-                    from sklearn.neighbors import NearestNeighbors
-                    nbrs = NearestNeighbors(n_neighbors=3, metric="cosine").fit(centroids)
-                    dists, inds = nbrs.kneighbors(emb.reshape(1, -1))
-                    sims = 1 - dists
-                    idxs = inds
-                    owners2 = owners
-                topk = [
-                    {"pin": owners2[j].pin, "similarity": float(sims[0][k])}
-                    for k, j in enumerate(idxs[0])
-                ]
-            else:
-                topk = []
-
-            results.append({
-                "bbox": bbox,
-                "age": int(age) if age is not None else None,
-                "gender": gender,
-                "topk": topk,
-            })
-
-        return Response({"faces": results}, status=status.HTTP_200_OK)
-    except Exception as e:
-        logger.error("analyze_face failed: %s", e)
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 def verify_face(request):
     import numpy as np
-    import cv2
     from sklearn.metrics.pairwise import cosine_similarity
 
-    logger = logging.getLogger("django")
-    logger.info("Received request to verify face.")
+    face_logger = logging.getLogger("django")
+    face_logger.info("Received request to verify face.")
 
     staff_pin = request.data.get("pin")
     staff_image = request.FILES.get("image")
 
     if not staff_pin or not staff_image:
-        logger.warning("PIN or image is missing in the request.")
+        face_logger.warning("PIN or image is missing in the request.")
         return Response(
             {"error": "PIN and image are required."}, status=status.HTTP_400_BAD_REQUEST
         )
 
-    ok, reason = _validate_uploaded_image(staff_image)
-    if not ok:
-        return Response({"error": reason}, status=status.HTTP_400_BAD_REQUEST)
+    if staff_image.size == 0:
+        face_logger.warning("Uploaded image is empty.")
+        return Response(
+            {"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST
+        )
 
     try:
         staff = models.Staff.objects.get(pin=staff_pin)
-        logger.info(f"Staff with PIN {staff_pin} found.")
+        face_logger.info(f"Staff with PIN {staff_pin} found.")
     except models.Staff.DoesNotExist:
-        logger.error(f"Staff with PIN {staff_pin} does not exist.")
+        face_logger.error(f"Staff with PIN {staff_pin} does not exist.")
         return Response({"error": "Staff not found."}, status=status.HTTP_404_NOT_FOUND)
 
     try:
         face_mask = staff.face_mask
-        logger.info(f"Face mask for staff with PIN {staff_pin} found.")
+        face_logger.info(f"Face mask for staff with PIN {staff_pin} found.")
     except models.StaffFaceMask.DoesNotExist:
-        logger.error(f"Face mask for staff with PIN {staff_pin} does not exist.")
+        face_logger.error(f"Face mask for staff with PIN {staff_pin} does not exist.")
         return Response(
             {"error": "Face mask for this staff member are not found."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     if not face_mask.mask_encoding:
-        logger.error(f"Face embeddings for staff with PIN {staff_pin} are empty.")
+        face_logger.error(f"Face embeddings for staff with PIN {staff_pin} are empty.")
         return Response(
             {"error": "Face embeddings for this staff member are empty."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     try:
-        import time
-        t0 = time.time()
         new_image = ml.load_image_from_memory(staff_image)
-        emb, kps, bbox = ml.detect_align_embed_single(new_image)
-        if emb is None:
-            logger.warning("No face detected in the uploaded image.")
-            return Response(
-                {"error": "No face detected in the image."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        new_embedding = emb.reshape(1, -1)
+        new_embedding = ml.create_face_encoding(new_image)
         if new_embedding is None:
             logger.warning("No face detected in the uploaded image.")
             return Response(
@@ -3925,7 +7172,7 @@ def verify_face(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        logger.info("Face detected, calculating similarity.")
+        face_logger.info("Face detected, calculating similarity.")
         new_embedding = np.array(new_embedding).reshape(1, -1)
         stored_embeddings = np.array(face_mask.mask_encoding)
 
@@ -3938,39 +7185,94 @@ def verify_face(request):
         threshold = settings.FACE_RECOGNITION_THRESHOLD
         verified = max_similarity >= threshold
 
-        latency_ms = int((time.time() - t0) * 1000)
-        logger.info(
-            "Verify: pin=%s, score=%.3f, verified=%s, latency_ms=%s, provider=%s",
-            staff_pin,
-            float(max_similarity),
-            verified,
-            latency_ms,
-            getattr(ml, "selected_provider", None),
+        face_logger.info(
+            f"Verification completed for PIN {staff_pin}. Score: {max_similarity}, Verified: {verified}"
         )
-        return Response({"verified": verified, "score": float(max_similarity)}, status=status.HTTP_200_OK)
+        return Response(
+            {"verified": verified, "score": float(max_similarity)},
+            status=status.HTTP_200_OK,
+        )
 
     except Exception as e:
-        logger.error(f"Error during face verification for PIN {staff_pin}: {str(e)}")
+        face_logger.error(
+            f"Error during face verification for PIN {staff_pin}: {str(e)}"
+        )
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+@swagger_auto_schema(
+    method="post",
+    auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
+    operation_summary="Распознавание лиц",
+    operation_description="Распознает лица сотрудников на изображении. Требует передачи заголовка X-API-KEY для просмотра в Swagger.",
+    tags=["Face Recognition - Recognize"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="API ключ для доступа к этому эндпоинту. Без этого ключа эндпоинт скрыт в Swagger.",
+        ),
+        openapi.Parameter(
+            name="image",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_FILE,
+            required=True,
+            description="Изображение с лицами для распознавания (PNG, JPG, JPEG).",
+        ),
+    ],
+    request_body=no_body,
+    responses={
+        200: openapi.Response(
+            description="Результат распознавания",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "recognized_staff": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        description="Список распознанных сотрудников.",
+                    ),
+                    "unknown_faces": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        description="Список нераспознанных лиц.",
+                    ),
+                },
+            ),
+        ),
+        400: "Bad Request: Неверные данные запроса.",
+        404: "Not Found: Лица не распознаны.",
+        500: "Internal Server Error: Ошибка при распознавании.",
+    },
+)
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def recognize_faces(request):
-    logger = logging.getLogger("django")
-    logger.info("Received request to recognize faces.")
+    recognize_logger = logging.getLogger("django")
+    recognize_logger.info("Received request to recognize faces.")
 
     staff_image = request.FILES.get("image")
 
     if not staff_image:
-        logger.warning("No image provided in the request.")
+        recognize_logger.warning("No image provided in the request.")
         return Response(
             {"error": "Image is required."}, status=status.HTTP_400_BAD_REQUEST
         )
 
-    ok, reason = _validate_uploaded_image(staff_image)
-    if not ok:
-        return Response({"error": reason}, status=status.HTTP_400_BAD_REQUEST)
+    if not staff_image.name.lower().endswith((".png", ".jpg", ".jpeg")):
+        recognize_logger.warning("Invalid image format provided.")
+        return Response(
+            {"error": "Invalid image format. Only PNG, JPG, and JPEG are allowed."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if staff_image.size == 0:
+        recognize_logger.warning("Uploaded image is empty.")
+        return Response(
+            {"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST
+        )
 
     try:
         recognized_staff, unknown_faces = ml.recognize_faces_in_image(staff_image)
@@ -3982,7 +7284,7 @@ def recognize_faces(request):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        logger.info(
+        recognize_logger.info(
             f"Recognition completed. Recognized staff: {len(recognized_staff)}, Unknown faces: {len(unknown_faces)}."
         )
         return Response(
@@ -3991,10 +7293,10 @@ def recognize_faces(request):
         )
 
     except ValidationError as ve:
-        logger.warning(f"Validation error during face recognition: {str(ve)}")
+        recognize_logger.warning(f"Validation error during face recognition: {str(ve)}")
         return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
-        logger.error(f"Unexpected error during face recognition: {str(e)}")
+        recognize_logger.error(f"Unexpected error during face recognition: {str(e)}")
         return Response(
             {"error": f"Face recognition error: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -4003,6 +7305,7 @@ def recognize_faces(request):
 
 class AbsentReasonView(APIView):
     permission_classes = [permissions.IsAuthenticatedOrAPIKey]
+    authentication_classes = [JWTAuthentication]
 
     def get_date_interval(self, request):
         """
@@ -4062,7 +7365,15 @@ class AbsentReasonView(APIView):
             "\nПри параметре **download=true** архив формируется с файлами, имена которых имеют формат:\n"
             "   `staff.pin_fio_absenceID.ext` (например: `001_Ivanov_Ivan_7.pdf`)."
         ),
+        tags=["Absence"],
         manual_parameters=[
+            openapi.Parameter(
+                name="X-API-KEY",
+                in_=openapi.IN_HEADER,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="API ключ для аутентификации (альтернатива JWT токену).",
+            ),
             openapi.Parameter(
                 "start_date",
                 openapi.IN_QUERY,
@@ -4163,7 +7474,9 @@ class AbsentReasonView(APIView):
             logger.info(
                 f"Возвращается ZIP-архив документов за период {query_start} - {query_end}."
             )
-            response = HttpResponse(in_memory, content_type="application/zip")
+            response = HttpResponse(
+                in_memory.getvalue(), content_type="application/zip"
+            )
             response["Content-Disposition"] = (
                 f'attachment; filename="documents_{query_start}_{query_end}.zip"'
             )
@@ -4211,6 +7524,7 @@ class AbsentReasonView(APIView):
             " - **approved** (bool): Статус утверждения.\n"
             " - **document** (файл, опционально): Прикрепленный документ. Разрешенные форматы: pdf, jpg, jpeg, png."
         ),
+        tags=["Absence"],
         request_body=serializers.AbsentReasonSerializer,
         responses={
             201: openapi.Response(description="Запись отсутствия успешно создана."),
@@ -4233,48 +7547,37 @@ class AbsentReasonView(APIView):
           - **HTTP 201 CREATED**: Сообщение об успешном создании записи.
           - **HTTP 400 BAD REQUEST**: Если входные данные неверны.
         """
-        serializer = serializers.AbsentReasonSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            logger.info("Запись отсутствия успешно создана.")
-            return Response(
-                {"message": "Запись отсутствия успешно создана."},
-                status=status.HTTP_201_CREATED,
+        if not request.user.is_authenticated:
+            logger.warning(
+                "Пользователь не аутентифицирован для POST /api/absent_staff/"
             )
-        logger.error(f"Ошибка при создании записи отсутствия: {serializer.errors}")
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Требуется аутентификация"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
+        serializer = serializers.AbsentReasonSerializer(data=request.data)
 
-def _validate_uploaded_image(django_file):
-    max_megapixels = 10_000_000
-    max_bytes = getattr(settings, "DATA_UPLOAD_MAX_MEMORY_SIZE", 50 * 1024 * 1024)
-    content_type = getattr(django_file, "content_type", "") or ""
-    if not content_type.lower().startswith("image/"):
-        return False, "Invalid content type"
-    if getattr(django_file, "size", 0) and django_file.size > max_bytes:
-        return False, "Image too large"
-    if Image is None:
-        return True, None
-    pos = django_file.tell() if hasattr(django_file, "tell") else None
-    try:
-        if hasattr(django_file, "seek"):
-            django_file.seek(0)
-        with Image.open(django_file) as im:
-            im.verify()
-        if hasattr(django_file, "seek"):
-            django_file.seek(0)
-        with Image.open(django_file) as im2:
-            width, height = im2.size
-        if width * height > max_megapixels:
-            return False, "Image exceeds megapixel limit"
-        return True, None
-    except UnidentifiedImageError:
-        return False, "Unrecognized image file"
-    except Exception as e:
-        return False, f"Image validation failed: {e}"
-    finally:
-        if pos is not None and hasattr(django_file, "seek"):
+        if serializer.is_valid():
             try:
-                django_file.seek(pos)
-            except Exception:
-                pass
+                instance = serializer.save()
+                logger.info(
+                    f"Запись отсутствия создана. ID: {instance.id}, "
+                    f"Сотрудник: {instance.staff.pin if hasattr(instance, 'staff') and hasattr(instance.staff, 'pin') else 'N/A'}, "
+                    f"Период: {instance.start_date} - {instance.end_date}"
+                )
+                return Response(
+                    {"message": "Запись отсутствия успешно создана."},
+                    status=status.HTTP_201_CREATED,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Ошибка при сохранении записи отсутствия: {str(e)}", exc_info=True
+                )
+                return Response(
+                    {"error": f"Ошибка при сохранении: {str(e)}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+        else:
+            logger.warning(f"Ошибка валидации данных: {serializer.errors}")
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

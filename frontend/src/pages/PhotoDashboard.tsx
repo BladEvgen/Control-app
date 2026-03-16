@@ -4,23 +4,613 @@ import React, {
   useRef,
   useCallback,
   useMemo,
+  startTransition,
 } from "react";
-import { PhotoData } from "../schemas/IData";
+import { useLocation, useNavigate } from "react-router-dom";
+import {
+  FaExpand,
+  FaCompress,
+  FaTimes,
+  FaImage,
+  FaClock,
+  FaBuilding,
+  FaRegCalendarAlt,
+} from "react-icons/fa";
+import { PhotoData, PhotoWsMessage } from "../schemas/IData";
 import { apiUrl } from "../../apiConfig";
-import { FaSadTear } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 import { log } from "../api";
 import useWebSocket from "../hooks/useWebSocket";
 import LoaderComponent from "../components/LoaderComponent";
+import { Toggle } from "../components/Toggle";
+import useWindowSize from "../hooks/useWindowSize";
+
+const PING_INTERVAL = 15000;
+const PONG_TIMEOUT = 8000;
+const MARQUEE_SPEED = 95;
+const MARQUEE_HOVER_SPEED = 0;
+const SMOOTH_TAU = 0.25;
+const MIN_TRACK_COPIES = 2;
+const TRACK_COPY_HEADROOM = 2;
+const STATIC_TRACK_FIT_THRESHOLD = 1.05;
+const HOVER_IDLE_RESUME_MS = 2500;
+const STORAGE_KEY_SHOW_ALL_PHOTOS = "photoDashboard_showAllPhotos";
+const WS_MERGE_BUFFER_MS = 180;
+const WS_BATCH_FAILSAFE_MS = 300;
+const STAGED_INSERT_COMMIT_MS = 1200;
+const STAGED_INSERT_MAX_ITEMS = 8;
+const CREATED_NO_PHOTO_MIN_VISIBLE_MS = 2500;
+
+const getStoredShowAllPhotos = (): boolean => {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY_SHOW_ALL_PHOTOS);
+    return v === "true";
+  } catch {
+    return false;
+  }
+};
+
+const getLabelForDepartment = (photo: PhotoData): string =>
+  photo.tutorInfo ? "Группа" : "Отдел";
+
+const timezoneIsoNow = (): string => new Date().toISOString();
+
+const stableHash = (value: string): number => {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 33) ^ value.charCodeAt(i);
+  }
+  return Math.abs(hash >>> 0);
+};
+
+const getStableRowKey = (photo: PhotoData, fallbackIndex: number): string => {
+  if (photo.id != null) {
+    return `id:${photo.id}`;
+  }
+  return `pin:${photo.staffPin}|time:${photo.attendanceTime}|i:${fallbackIndex}`;
+};
+
+const formatTime = (iso: string): string => {
+  const d = new Date(iso);
+  return d.toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+};
+
+const CARD_WIDTH_BASE = 220;
+const CARD_WIDTH_SM = 260;
+const CARD_WIDTH_MD = 280;
+const CARD_WIDTH_LG = 300;
+const CARD_WIDTH_XL = 336;
+const CARD_WIDTH_2XL = 372;
+const CARD_META_HEIGHT = 100;
+const ROW_GAP_PX = 12;
+const HEADER_ESTIMATE_PX = 200;
+const BOTTOM_RESERVE_KIOSK_PX = 40;
+const KIOSK_HEADER_RESERVE_PX = 132;
+const KIOSK_MAIN_TOP_RESERVE_PX = 24;
+const CARD_WIDTH_MIN_PX = 140;
+const KIOSK_SHRINK_VIEWPORT_WIDTH = 1280;
+const TAPE_NUM_ROWS_MIN = 1;
+const TAPE_NUM_ROWS_MAX = 6;
+const HANDHELD_LANDSCAPE_MAX_HEIGHT = 1024;
+const HANDHELD_LANDSCAPE_MAX_WIDTH = 1400;
+
+const isSingleRowLandscapeViewport = (
+  viewportWidth: number,
+  viewportHeight: number,
+): boolean => {
+  return (
+    viewportWidth > viewportHeight &&
+    viewportHeight <= HANDHELD_LANDSCAPE_MAX_HEIGHT &&
+    viewportWidth <= HANDHELD_LANDSCAPE_MAX_WIDTH
+  );
+};
+
+const getMaxPhotosForViewport = (
+  width: number,
+  aspectBucket:
+    | "portrait-tall"
+    | "portrait-classic"
+    | "square-ish"
+    | "landscape-classic"
+    | "landscape-wide"
+    | "landscape-ultrawide",
+  resolutionTier: "sd" | "hd" | "fhd" | "qhd" | "uhd",
+  isKiosk: boolean,
+): number => {
+  const byTier: Record<typeof resolutionTier, number> = {
+    sd: 12,
+    hd: 24,
+    fhd: 40,
+    qhd: 60,
+    uhd: 84,
+  };
+  const byAspect: Record<typeof aspectBucket, number> = {
+    "portrait-tall": -8,
+    "portrait-classic": -4,
+    "square-ish": 0,
+    "landscape-classic": 2,
+    "landscape-wide": 8,
+    "landscape-ultrawide": 12,
+  };
+  let max = byTier[resolutionTier] + byAspect[aspectBucket];
+  if (width < 768) max = Math.min(max, 18);
+  if (width < 480) max = Math.min(max, 12);
+  if (isKiosk) {
+    return Math.min(Math.round(max * 1.4), 140);
+  }
+  return Math.max(8, max);
+};
+
+const getCardWidthForViewport = (viewportWidth: number): number => {
+  if (viewportWidth >= 2560) return CARD_WIDTH_2XL;
+  if (viewportWidth >= 1920) return CARD_WIDTH_XL;
+  if (viewportWidth >= 1024) return CARD_WIDTH_LG;
+  if (viewportWidth >= 768) return CARD_WIDTH_MD;
+  if (viewportWidth >= 640) return CARD_WIDTH_SM;
+  return CARD_WIDTH_BASE;
+};
+
+const getTapeNumRows = (
+  viewportHeight: number,
+  viewportWidth: number,
+  extraBottomReservePx = 0,
+  extraTopReservePx = 0,
+  headerReservePx?: number,
+): number => {
+  const header = headerReservePx ?? HEADER_ESTIMATE_PX;
+  const cardW = getCardWidthForViewport(viewportWidth);
+  const rowHeight = cardW + CARD_META_HEIGHT + ROW_GAP_PX;
+  const available = Math.max(
+    100,
+    viewportHeight - header - extraBottomReservePx - extraTopReservePx,
+  );
+  const n = Math.floor(available / rowHeight);
+  return Math.max(TAPE_NUM_ROWS_MIN, Math.min(TAPE_NUM_ROWS_MAX, n));
+};
+
+const getPreferredRowsForViewport = (
+  viewportWidth: number,
+  viewportHeight: number,
+): number => {
+  const isLandscape = viewportWidth > viewportHeight;
+  if (isSingleRowLandscapeViewport(viewportWidth, viewportHeight)) return 1;
+  if (isLandscape && viewportWidth >= 1680) return 2;
+  if (isLandscape && viewportWidth >= 1024) return 2;
+  if (isLandscape && viewportWidth >= 768) return 2;
+  if (viewportHeight >= 1200) return 2;
+  if (viewportHeight >= 920) return 2;
+  return 1;
+};
+
+const MarqueeTrack: React.FC<{
+  items: (PhotoData | null)[];
+  rowIndex: number;
+  speedPxSec: number;
+  hoverSpeed?: number;
+  isPaused: boolean;
+  cardWidthPx: number;
+  renderItem: (
+    photo: PhotoData | null,
+    displayIndex: number,
+    copyIndex: number,
+    itemIndex: number,
+  ) => React.ReactNode;
+}> = ({
+  items,
+  rowIndex,
+  speedPxSec,
+  hoverSpeed = MARQUEE_HOVER_SPEED,
+  isPaused,
+  cardWidthPx,
+  renderItem,
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const seqRef = useRef<HTMLUListElement>(null);
+
+  const [seqWidth, setSeqWidth] = useState(0);
+  const [copyCount, setCopyCount] = useState(MIN_TRACK_COPIES);
+  const [shouldAnimate, setShouldAnimate] = useState(true);
+
+  const offsetRef = useRef(0);
+  const velocityRef = useRef(0);
+  const lastTimestampRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const seqWidthRef = useRef(0);
+  const itemsChangedTimeRef = useRef(0);
+
+  const updateDimensions = useCallback(() => {
+    const containerWidth = containerRef.current?.clientWidth ?? 0;
+    const sequenceWidth = seqRef.current?.getBoundingClientRect().width ?? 0;
+    if (sequenceWidth <= 0) return;
+
+    const roundedSequenceWidth = Math.ceil(sequenceWidth);
+    const now = Date.now();
+    const recentlyChanged = now - itemsChangedTimeRef.current < 500;
+    if (
+      roundedSequenceWidth < seqWidthRef.current &&
+      seqWidthRef.current > 0 &&
+      recentlyChanged
+    ) {
+      return;
+    }
+    const previousWidth = seqWidthRef.current;
+    if (previousWidth > 0 && roundedSequenceWidth > 0) {
+      const normalizedProgress =
+        (((offsetRef.current % previousWidth) + previousWidth) % previousWidth) /
+        previousWidth;
+      offsetRef.current = normalizedProgress * roundedSequenceWidth;
+    }
+    seqWidthRef.current = roundedSequenceWidth;
+    setSeqWidth(roundedSequenceWidth);
+
+    const canAnimate =
+      roundedSequenceWidth > containerWidth * STATIC_TRACK_FIT_THRESHOLD;
+    setShouldAnimate(canAnimate);
+    if (!canAnimate) {
+      setCopyCount(1);
+      return;
+    }
+
+    const copiesNeeded =
+      Math.ceil(containerWidth / roundedSequenceWidth) + TRACK_COPY_HEADROOM;
+    setCopyCount(Math.max(MIN_TRACK_COPIES, copiesNeeded));
+  }, []);
+
+  useEffect(() => {
+    itemsChangedTimeRef.current = Date.now();
+    updateDimensions();
+  }, [updateDimensions, items, rowIndex]);
+
+  useEffect(() => {
+    if (!window.ResizeObserver) {
+      window.addEventListener("resize", updateDimensions);
+      return () => window.removeEventListener("resize", updateDimensions);
+    }
+
+    const ro = new ResizeObserver(updateDimensions);
+    if (containerRef.current) ro.observe(containerRef.current);
+    if (seqRef.current) ro.observe(seqRef.current);
+
+    return () => ro.disconnect();
+  }, [updateDimensions]);
+
+  useEffect(() => {
+    const images = seqRef.current?.querySelectorAll("img") ?? [];
+    if (images.length === 0) {
+      updateDimensions();
+      return;
+    }
+
+    let remaining = images.length;
+    const handleImage = () => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        updateDimensions();
+      }
+    };
+
+    images.forEach((img) => {
+      const htmlImg = img as HTMLImageElement;
+      if (htmlImg.complete) {
+        handleImage();
+      } else {
+        htmlImg.addEventListener("load", handleImage, { once: true });
+        htmlImg.addEventListener("error", handleImage, { once: true });
+      }
+    });
+
+    return () => {
+      images.forEach((img) => {
+        img.removeEventListener("load", handleImage);
+        img.removeEventListener("error", handleImage);
+      });
+    };
+  }, [items, updateDimensions]);
+
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track || seqWidth <= 0) return;
+
+    if (!shouldAnimate) {
+      track.style.transform = "translate3d(0, 0, 0)";
+      return;
+    }
+
+    const safeSeqWidth =
+      Number.isFinite(seqWidth) && seqWidth > 0 ? seqWidth : 1;
+    offsetRef.current =
+      ((offsetRef.current % safeSeqWidth) + safeSeqWidth) % safeSeqWidth;
+    track.style.transform = `translate3d(-${offsetRef.current}px, 0, 0)`;
+
+    const animate = (timestamp: number) => {
+      if (lastTimestampRef.current === null) {
+        lastTimestampRef.current = timestamp;
+      }
+
+      const dt = Math.max(0, timestamp - lastTimestampRef.current) / 1000;
+      lastTimestampRef.current = timestamp;
+
+      const targetVelocity = isPaused ? hoverSpeed : speedPxSec;
+      const easingFactor = 1 - Math.exp(-dt / SMOOTH_TAU);
+      velocityRef.current +=
+        (targetVelocity - velocityRef.current) * easingFactor;
+
+      const safeSeqWidth =
+        Number.isFinite(seqWidth) && seqWidth > 0 ? seqWidth : 1;
+      let nextOffset = offsetRef.current + velocityRef.current * dt;
+      nextOffset = ((nextOffset % safeSeqWidth) + safeSeqWidth) % safeSeqWidth;
+      offsetRef.current = nextOffset;
+
+      track.style.transform = `translate3d(-${nextOffset}px, 0, 0)`;
+      rafRef.current = requestAnimationFrame(animate);
+    };
+
+    rafRef.current = requestAnimationFrame(animate);
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      lastTimestampRef.current = null;
+    };
+  }, [seqWidth, speedPxSec, hoverSpeed, isPaused, shouldAnimate]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative overflow-x-hidden overflow-y-visible"
+    >
+      <div
+        ref={trackRef}
+        className={`flex ${shouldAnimate ? "w-max will-change-transform" : "w-full justify-center"} ${isPaused ? "photo-marquee-paused" : ""}`}
+      >
+        {Array.from({ length: copyCount }, (_, copyIndex) => (
+          <ul
+            key={`row-${rowIndex}-copy-${copyIndex}`}
+            ref={copyIndex === 0 ? seqRef : undefined}
+            className="flex items-center"
+            aria-hidden={copyIndex > 0}
+          >
+            {items.map((photo, itemIndex) => {
+              const displayIndex = copyIndex * items.length + itemIndex;
+              const key =
+                photo != null
+                  ? `row-${rowIndex}-${copyIndex}-${photo.id ?? `${photo.staffPin}-${photo.attendanceTime}`}`
+                  : `row-${rowIndex}-${copyIndex}-empty-${itemIndex}`;
+              return (
+                <li
+                  key={key}
+                  className="mr-4 my-1 flex-shrink-0 list-none"
+                  style={photo == null ? { width: cardWidthPx } : undefined}
+                >
+                  {renderItem(photo, displayIndex, copyIndex, itemIndex)}
+                </li>
+              );
+            })}
+          </ul>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+interface DocumentWithFullscreen extends Document {
+  webkitExitFullscreen?: () => Promise<void> | void;
+  mozCancelFullScreen?: () => Promise<void> | void;
+  msExitFullscreen?: () => Promise<void> | void;
+  webkitFullscreenElement?: Element | null;
+  mozFullScreenElement?: Element | null;
+  msFullscreenElement?: Element | null;
+}
+
+interface DocumentElementWithFullscreen extends HTMLElement {
+  webkitRequestFullscreen?: () => Promise<void> | void;
+  mozRequestFullScreen?: () => Promise<void> | void;
+  msRequestFullscreen?: () => Promise<void> | void;
+}
+
+interface WsBatchBucket {
+  messageType: "initial_photos" | "photos_updated";
+  totalChunks: number;
+  receivedChunks: Set<number>;
+  events: PhotoData[];
+  timeoutId: number;
+}
 
 const PhotoDashboard: React.FC = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const isKiosk =
+    /\/photo$/.test(location.pathname) &&
+    new URLSearchParams(location.search).get("kiosk") === "1";
+
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreenBusy, setIsFullscreenBusy] = useState(false);
   const [photos, setPhotos] = useState<PhotoData[]>([]);
+  const photosRef = useRef<PhotoData[]>([]);
   const [selectedPhoto, setSelectedPhoto] = useState<PhotoData | null>(null);
+  const selectedPhotoRef = useRef<PhotoData | null>(null);
+  const keepKioskOnFullscreenExitRef = useRef(false);
+  const fullscreenToggleLockRef = useRef(false);
+
+  const getFullscreenElement = useCallback((): Element | null => {
+    const doc = document as DocumentWithFullscreen;
+    return (
+      document.fullscreenElement ??
+      doc.webkitFullscreenElement ??
+      doc.mozFullScreenElement ??
+      doc.msFullscreenElement ??
+      null
+    );
+  }, []);
+
+  useEffect(() => {
+    selectedPhotoRef.current = selectedPhoto;
+  }, [selectedPhoto]);
+
+  useEffect(() => {
+    photosRef.current = photos;
+  }, [photos]);
+
+  const handleFullscreenChange = useCallback(() => {
+    const newState = !!getFullscreenElement();
+    setIsFullscreen(newState);
+    setIsFullscreenBusy(false);
+    fullscreenToggleLockRef.current = false;
+    if (!newState) {
+      const keepKiosk =
+        keepKioskOnFullscreenExitRef.current || !!selectedPhotoRef.current;
+      keepKioskOnFullscreenExitRef.current = false;
+      setSelectedPhoto(null);
+      if (
+        !keepKiosk &&
+        new URLSearchParams(window.location.search).get("kiosk") === "1"
+      ) {
+        navigate(
+          { pathname: location.pathname, search: "" },
+          { replace: true },
+        );
+      }
+    }
+  }, [navigate, location.pathname, getFullscreenElement]);
+
+  useEffect(() => {
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+    document.addEventListener("mozfullscreenchange", handleFullscreenChange);
+    document.addEventListener("MSFullscreenChange", handleFullscreenChange);
+    handleFullscreenChange();
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener(
+        "webkitfullscreenchange",
+        handleFullscreenChange,
+      );
+      document.removeEventListener(
+        "mozfullscreenchange",
+        handleFullscreenChange,
+      );
+      document.removeEventListener(
+        "MSFullscreenChange",
+        handleFullscreenChange,
+      );
+    };
+  }, [handleFullscreenChange]);
+
+  const handleFullscreenToggle = useCallback(async () => {
+    if (fullscreenToggleLockRef.current) return;
+    const docEl = document.documentElement as DocumentElementWithFullscreen;
+    const doc = document as DocumentWithFullscreen;
+    const currentlyFullscreen = !!getFullscreenElement();
+
+    fullscreenToggleLockRef.current = true;
+    setIsFullscreenBusy(true);
+
+    try {
+      if (!currentlyFullscreen) {
+        if (!isKiosk) {
+          navigate(
+            { pathname: location.pathname, search: "?kiosk=1" },
+            { replace: true },
+          );
+        }
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, isKiosk ? 0 : 120),
+        );
+        const req =
+          docEl.requestFullscreen ??
+          docEl.webkitRequestFullscreen ??
+          docEl.mozRequestFullScreen ??
+          docEl.msRequestFullscreen;
+        if (req) {
+          await Promise.resolve(req.call(docEl));
+        }
+      } else {
+        keepKioskOnFullscreenExitRef.current = false;
+        const exit =
+          document.exitFullscreen ??
+          doc.webkitExitFullscreen ??
+          doc.mozCancelFullScreen ??
+          doc.msExitFullscreen;
+        if (exit) {
+          await Promise.resolve(exit.call(doc));
+          if (getFullscreenElement()) {
+            await new Promise<void>((resolve) =>
+              window.setTimeout(resolve, 140),
+            );
+            await Promise.resolve(exit.call(doc));
+          }
+        }
+      }
+    } catch (error) {
+      log.warn("Fullscreen toggle failed:", error);
+    } finally {
+      window.setTimeout(() => {
+        if (!getFullscreenElement()) {
+          setIsFullscreenBusy(false);
+          fullscreenToggleLockRef.current = false;
+        }
+      }, 360);
+    }
+  }, [isKiosk, navigate, location.pathname, getFullscreenElement]);
+
+  const todayLabel = new Date().toLocaleDateString("ru-RU", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+
+  const pageTitle = isFullscreen
+    ? "Лента фотографий посещаемости"
+    : "Фотографии посещаемости";
+
+  const pageSubtitle = isFullscreen
+    ? "Режим показа в реальном времени"
+    : "Актуальные отметки за текущий день";
+
   const [loading, setLoading] = useState<boolean>(true);
-  const maxPhotosRef = useRef<number>(10);
-  const [focusedIndex, setFocusedIndex] = useState<number>(-1);
-  const gridRef = useRef<HTMLDivElement | null>(null);
-  const prevPhotosLengthRef = useRef<number>(0);
+  const initialLoadDoneRef = useRef<boolean>(false);
+  const maxPhotosRef = useRef<number>(12);
+  const [showAllPhotos, setShowAllPhotos] = useState<boolean>(
+    getStoredShowAllPhotos,
+  );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_SHOW_ALL_PHOTOS, String(showAllPhotos));
+    } catch {
+      // ignore storage errors
+    }
+  }, [showAllPhotos]);
+  const [hoveredCardKey, setHoveredCardKey] = useState<string | null>(null);
+  const lastPointerActivityRef = useRef<number>(Date.now());
+  const cardRefs = useRef<Map<string, HTMLElement | null>>(new Map());
+  const [activeCardCoords, setActiveCardCoords] = useState<{
+    row: number;
+    col: number;
+  } | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [cardWidthPx, setCardWidthPx] = useState<number>(CARD_WIDTH_MD);
+  const [tapeNumRows, setTapeNumRows] = useState<number>(3);
+  const [kioskNarrowViewport, setKioskNarrowViewport] =
+    useState<boolean>(false);
+  const viewport = useWindowSize();
+  const wsMergeBufferRef = useRef<PhotoData[]>([]);
+  const wsMergeTimerRef = useRef<number | null>(null);
+  const wsBatchBucketsRef = useRef<Map<string, WsBatchBucket>>(new Map());
+  const stagedInsertQueueRef = useRef<PhotoData[]>([]);
+  const stagedInsertByIdRef = useRef<Map<number, number>>(new Map());
+  const stagedInsertTimerRef = useRef<number | null>(null);
+  const noPhotoFirstSeenRef = useRef<Map<number, number>>(new Map());
+  const delayedPhotoAttachTimersRef = useRef<Map<number, number>>(new Map());
+  const lastVersionByIdRef = useRef<Map<number, string>>(new Map());
+  const enqueueWsEventsRef = useRef<(events: PhotoData[]) => void>(() => {});
 
   const getCurrentLocalDate = useCallback((): string => {
     const today = new Date();
@@ -33,260 +623,1164 @@ const PhotoDashboard: React.FC = () => {
   const date = getCurrentLocalDate();
   log.info("Connecting with date:", date);
 
+  useEffect(() => {
+    initialLoadDoneRef.current = false;
+  }, [date]);
+
+  const getMaxPhotos = useCallback(() => {
+    return getMaxPhotosForViewport(
+      viewport.width,
+      viewport.aspectBucket,
+      viewport.resolutionTier,
+      isKiosk,
+    );
+  }, [isKiosk, viewport.width, viewport.aspectBucket, viewport.resolutionTier]);
+
   const updateMaxPhotos = useCallback(() => {
-    const { innerWidth: width, innerHeight: height } = window;
-    const aspectRatio = width / height;
+    maxPhotosRef.current = getMaxPhotos();
+  }, [getMaxPhotos]);
 
-    const isMobile = /Mobi|Android/i.test(navigator.userAgent);
-    const isTablet = /Tablet|iPad/i.test(navigator.userAgent);
+  const extractEventsFromMessage = useCallback((data: PhotoWsMessage): PhotoData[] => {
+    if (Array.isArray(data.events)) return data.events;
+    if (Array.isArray(data.photos)) return data.photos;
+    if (data.newPhoto) return [data.newPhoto];
+    return [];
+  }, []);
 
-    if (isMobile) {
-      maxPhotosRef.current = 7;
-    } else if (isTablet) {
-      maxPhotosRef.current = 10;
-    } else if (aspectRatio > 2) {
-      maxPhotosRef.current = 20;
-    } else if (width >= 3840) {
-      maxPhotosRef.current = 25;
-    } else if (width >= 2560) {
-      maxPhotosRef.current = 15;
-    } else if (width >= 1920) {
-      maxPhotosRef.current = 12;
-    } else {
-      maxPhotosRef.current = 10;
-    }
+  const normalizeWsEvent = useCallback((eventData: PhotoData): PhotoData => {
+    const normalizedOp =
+      eventData.op ??
+      (eventData.stateCode === "DELETED"
+        ? "deleted"
+        : eventData.stateCode === "SNAPSHOT"
+          ? "snapshot"
+          : "updated");
+    const normalizedState =
+      eventData.stateCode ??
+      (normalizedOp === "snapshot"
+        ? "SNAPSHOT"
+        : normalizedOp === "deleted"
+          ? "DELETED"
+          : normalizedOp === "created" && eventData.hasPhoto === false
+            ? "CREATED_NO_PHOTO"
+            : eventData.hasPhoto
+              ? "PHOTO_ATTACHED"
+              : "UPDATED_META");
+    return {
+      id: eventData.id,
+      hasPhoto: eventData.hasPhoto,
+      staffPin: eventData.staffPin ?? "",
+      staffFullName: eventData.staffFullName ?? "",
+      department: eventData.department ?? "",
+      photoUrl: eventData.photoUrl ?? "",
+      attendanceTime: eventData.attendanceTime ?? timezoneIsoNow(),
+      tutorInfo: eventData.tutorInfo ?? "",
+      op: normalizedOp,
+      stateCode: normalizedState,
+      versionTs: eventData.versionTs,
+    };
+  }, []);
 
-    setPhotos((prev) => prev.slice(0, maxPhotosRef.current));
-    log.info("Max photos updated to:", maxPhotosRef.current);
-
-    setFocusedIndex((prevIndex) => {
-      if (prevIndex >= maxPhotosRef.current) {
-        return maxPhotosRef.current - 1;
+  const rebuildStagedInsertIndex = useCallback(() => {
+    stagedInsertByIdRef.current.clear();
+    stagedInsertQueueRef.current.forEach((item, idx) => {
+      if (item.id != null) {
+        stagedInsertByIdRef.current.set(item.id, idx);
       }
-      return prevIndex;
     });
   }, []);
 
-  const handleWebSocketMessage = useCallback((event: MessageEvent) => {
-    try {
-      const data = JSON.parse(event.data);
-      log.info("WebSocket message received:", data);
+  const scheduleStagedInsertCommit = useCallback(() => {
+    if (stagedInsertTimerRef.current != null) return;
+    stagedInsertTimerRef.current = window.setTimeout(() => {
+      stagedInsertTimerRef.current = null;
+      const queue = stagedInsertQueueRef.current;
+      if (queue.length === 0) return;
+      const chunk = queue.splice(0, STAGED_INSERT_MAX_ITEMS);
+      rebuildStagedInsertIndex();
 
-      if (data.type === "ping") {
-        log.info("Received ping from server.");
+      const base = photosRef.current;
+      const next = [...base];
+      for (let i = chunk.length - 1; i >= 0; i -= 1) {
+        const item = chunk[i];
+        if (item.id != null) {
+          const idx = next.findIndex((x) => x.id === item.id);
+          if (idx >= 0) {
+            next[idx] = { ...next[idx], ...item };
+            continue;
+          }
+        }
+        next.unshift(item);
+      }
+      photosRef.current = next;
+      startTransition(() => setPhotos(next));
+
+      if (queue.length > 0) {
+        scheduleStagedInsertCommit();
+      }
+    }, STAGED_INSERT_COMMIT_MS);
+  }, [rebuildStagedInsertIndex]);
+
+  const enqueueStagedInsert = useCallback(
+    (photo: PhotoData) => {
+      if (photo.id != null) {
+        const existingQueueIndex = stagedInsertByIdRef.current.get(photo.id);
+        if (existingQueueIndex != null) {
+          stagedInsertQueueRef.current[existingQueueIndex] = {
+            ...stagedInsertQueueRef.current[existingQueueIndex],
+            ...photo,
+          };
+          return;
+        }
+        stagedInsertByIdRef.current.set(photo.id, stagedInsertQueueRef.current.length);
+      }
+      stagedInsertQueueRef.current.push(photo);
+      scheduleStagedInsertCommit();
+    },
+    [scheduleStagedInsertCommit],
+  );
+
+  const applyInitialSnapshot = useCallback(
+    (events: PhotoData[]) => {
+      const normalized = events
+        .map(normalizeWsEvent)
+        .filter((item) => item.stateCode !== "DELETED");
+      noPhotoFirstSeenRef.current.clear();
+      delayedPhotoAttachTimersRef.current.forEach((timerId) =>
+        window.clearTimeout(timerId),
+      );
+      delayedPhotoAttachTimersRef.current.clear();
+      lastVersionByIdRef.current.clear();
+      stagedInsertQueueRef.current = [];
+      stagedInsertByIdRef.current.clear();
+      if (stagedInsertTimerRef.current != null) {
+        window.clearTimeout(stagedInsertTimerRef.current);
+        stagedInsertTimerRef.current = null;
+      }
+      normalized.forEach((item) => {
+        if (item.id != null && item.versionTs) {
+          lastVersionByIdRef.current.set(item.id, item.versionTs);
+        }
+        if (item.id != null && item.stateCode === "CREATED_NO_PHOTO") {
+          noPhotoFirstSeenRef.current.set(item.id, Date.now());
+        }
+      });
+      photosRef.current = normalized;
+      startTransition(() => {
+        setPhotos(normalized);
+        setLoading(false);
+      });
+      initialLoadDoneRef.current = true;
+    },
+    [normalizeWsEvent],
+  );
+
+  const flushWsMergeBuffer = useCallback(() => {
+    wsMergeTimerRef.current = null;
+    const buffered = wsMergeBufferRef.current;
+    if (buffered.length === 0) return;
+    wsMergeBufferRef.current = [];
+
+    const dedupById = new Map<number, PhotoData>();
+    const withoutId: PhotoData[] = [];
+    buffered.forEach((evt) => {
+      if (evt.id == null) {
+        withoutId.push(evt);
         return;
       }
+      dedupById.set(evt.id, evt);
+    });
+    const events = [...withoutId, ...Array.from(dedupById.values())];
 
-      if (data.photos) {
-        log.info("Received photos data.");
-        const newPhotos = [...data.photos]
-          .reverse()
-          .slice(0, maxPhotosRef.current);
-        setPhotos(newPhotos);
-        setLoading(false);
-        prevPhotosLengthRef.current = newPhotos.length;
-        setFocusedIndex(newPhotos.length > 0 ? 0 : -1);
+    const next = [...photosRef.current];
+    for (const rawEvent of events) {
+      const eventData = normalizeWsEvent(rawEvent);
+      const eventId = eventData.id;
+      if (eventId != null && eventData.versionTs) {
+        const lastVersion = lastVersionByIdRef.current.get(eventId);
+        if (lastVersion && eventData.versionTs < lastVersion) {
+          continue;
+        }
+        lastVersionByIdRef.current.set(eventId, eventData.versionTs);
       }
-      else if (data.newPhoto) {
-        log.info("Received new photo data.");
-        setPhotos((prev) => {
-          const updatedPhotos = [data.newPhoto, ...prev].slice(
-            0,
-            maxPhotosRef.current
-          );
-          if (
-            prev.length !== updatedPhotos.length &&
-            updatedPhotos.length > 0
-          ) {
-            setFocusedIndex((prevIndex) => (prevIndex === -1 ? 0 : prevIndex));
+      if (eventData.stateCode === "DELETED" || eventData.op === "deleted") {
+        if (eventId != null) {
+          const idx = next.findIndex((x) => x.id === eventId);
+          if (idx >= 0) next.splice(idx, 1);
+          noPhotoFirstSeenRef.current.delete(eventId);
+          lastVersionByIdRef.current.delete(eventId);
+        }
+        continue;
+      }
+      if (eventData.id != null && eventData.stateCode === "CREATED_NO_PHOTO") {
+        if (!noPhotoFirstSeenRef.current.has(eventData.id)) {
+          noPhotoFirstSeenRef.current.set(eventData.id, Date.now());
+        }
+      }
+      if (eventData.id != null && eventData.stateCode === "PHOTO_ATTACHED") {
+        const seenAt = noPhotoFirstSeenRef.current.get(eventData.id);
+        if (seenAt != null) {
+          const elapsed = Date.now() - seenAt;
+          if (elapsed < CREATED_NO_PHOTO_MIN_VISIBLE_MS) {
+            const pendingTimer = delayedPhotoAttachTimersRef.current.get(eventData.id);
+            if (pendingTimer != null) window.clearTimeout(pendingTimer);
+            const waitMs = CREATED_NO_PHOTO_MIN_VISIBLE_MS - elapsed;
+            const timerId = window.setTimeout(() => {
+              delayedPhotoAttachTimersRef.current.delete(eventData.id!);
+              enqueueWsEventsRef.current([eventData]);
+            }, waitMs);
+            delayedPhotoAttachTimersRef.current.set(eventData.id, timerId);
+            continue;
           }
-          prevPhotosLengthRef.current = updatedPhotos.length;
-          return updatedPhotos;
-        });
+          noPhotoFirstSeenRef.current.delete(eventData.id);
+        }
       }
-    } catch (error) {
-      log.error("Error processing WebSocket message:", error);
+      if (eventId != null) {
+        const idx = next.findIndex((x) => x.id === eventId);
+        if (idx >= 0) {
+          next[idx] = { ...next[idx], ...eventData };
+        } else {
+          enqueueStagedInsert(eventData);
+        }
+      } else {
+        enqueueStagedInsert(eventData);
+      }
     }
-  }, []);
 
+    photosRef.current = next;
+    startTransition(() => setPhotos(next));
+  }, [enqueueStagedInsert, normalizeWsEvent]);
 
-  const handleOpen = useCallback(() => {
-    log.info("WebSocket connection established via hook");
-  }, []);
+  const enqueueWsEvents = useCallback(
+    (events: PhotoData[]) => {
+      if (!events.length) return;
+      wsMergeBufferRef.current.push(...events);
+      if (wsMergeTimerRef.current != null) return;
+      wsMergeTimerRef.current = window.setTimeout(
+        flushWsMergeBuffer,
+        WS_MERGE_BUFFER_MS,
+      );
+    },
+    [flushWsMergeBuffer],
+  );
 
-  const handleClose = useCallback((event: CloseEvent) => {
-    log.warn("WebSocket connection closed via hook:", event);
-  }, []);
+  useEffect(() => {
+    enqueueWsEventsRef.current = enqueueWsEvents;
+  }, [enqueueWsEvents]);
 
-  const handleError = useCallback((error: Event) => {
-    log.error("WebSocket error via hook:", error);
-  }, []);
+  const collectChunkedEvents = useCallback(
+    (
+      messageType: "initial_photos" | "photos_updated",
+      data: PhotoWsMessage,
+      events: PhotoData[],
+    ): PhotoData[] | null => {
+      const totalChunks = Math.max(1, Number(data.totalChunks) || 1);
+      if (totalChunks <= 1) return events;
+      const chunkIndex = Math.max(1, Number(data.chunkIndex) || 1);
+      const batchId =
+        data.batchId ??
+        `${messageType}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      let bucket = wsBatchBucketsRef.current.get(batchId);
+      if (!bucket) {
+        const timeoutId = window.setTimeout(() => {
+          const timedOut = wsBatchBucketsRef.current.get(batchId);
+          if (!timedOut) return;
+          wsBatchBucketsRef.current.delete(batchId);
+          if (timedOut.messageType === "initial_photos") {
+            if (!initialLoadDoneRef.current) {
+              applyInitialSnapshot(timedOut.events);
+            }
+          } else {
+            enqueueWsEventsRef.current(timedOut.events);
+          }
+        }, WS_BATCH_FAILSAFE_MS);
+        bucket = {
+          messageType,
+          totalChunks,
+          receivedChunks: new Set<number>(),
+          events: [],
+          timeoutId,
+        };
+        wsBatchBucketsRef.current.set(batchId, bucket);
+      }
+      if (!bucket.receivedChunks.has(chunkIndex)) {
+        bucket.receivedChunks.add(chunkIndex);
+        bucket.events.push(...events);
+      }
+      if (bucket.receivedChunks.size >= bucket.totalChunks) {
+        wsBatchBucketsRef.current.delete(batchId);
+        window.clearTimeout(bucket.timeoutId);
+        return bucket.events;
+      }
+      return null;
+    },
+    [applyInitialSnapshot],
+  );
+
+  const handleWebSocketMessage = useCallback(
+    (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as PhotoWsMessage;
+        if (data.type === "ping" || data.type === "heartbeat") return;
+        const events = extractEventsFromMessage(data);
+
+        if (data.type === "initial_photos" || data.type == null) {
+          const snapshotEvents = collectChunkedEvents("initial_photos", data, events);
+          if (snapshotEvents == null) return;
+          if (!initialLoadDoneRef.current) {
+            applyInitialSnapshot(snapshotEvents);
+          }
+          return;
+        }
+
+        if (data.type === "photos_updated") {
+          const chunkEvents = collectChunkedEvents("photos_updated", data, events);
+          if (chunkEvents == null) return;
+          enqueueWsEvents(chunkEvents);
+          return;
+        }
+
+        if (events.length > 0) {
+          enqueueWsEvents(events);
+        }
+      } catch (error) {
+        log.error("Error processing WebSocket message:", error);
+      }
+    },
+    [
+      applyInitialSnapshot,
+      collectChunkedEvents,
+      enqueueWsEvents,
+      extractEventsFromMessage,
+    ],
+  );
 
   const wsUrl = useMemo(() => {
     const urlObj = new URL(apiUrl);
     const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
     return `${protocol}://${urlObj.host}/ws/photos/?date=${date}`;
-  }, [apiUrl, date]);
+  }, [date]);
 
-
-  useWebSocket({
+  const { isConnected, reconnect } = useWebSocket({
     url: wsUrl,
     onMessage: handleWebSocketMessage,
-    onOpen: handleOpen,
-    onClose: handleClose,
-    onError: handleError,
+    onOpen: useCallback(() => log.info("WebSocket connected"), []),
+    onClose: useCallback(
+      (e: CloseEvent) => log.warn("WebSocket closed:", e),
+      [],
+    ),
+    onError: useCallback((e: Event) => log.error("WebSocket error:", e), []),
     shouldReconnect: true,
-    reconnectInterval: 5000,
-    pingInterval: 30000,
-    pongTimeout: 10000,
+    reconnectInterval: 3000,
+    pingInterval: PING_INTERVAL,
+    pongTimeout: PONG_TIMEOUT,
   });
+
+  const clearWsRuntimeBuffers = useCallback(() => {
+    if (wsMergeTimerRef.current != null) {
+      window.clearTimeout(wsMergeTimerRef.current);
+      wsMergeTimerRef.current = null;
+    }
+    if (stagedInsertTimerRef.current != null) {
+      window.clearTimeout(stagedInsertTimerRef.current);
+      stagedInsertTimerRef.current = null;
+    }
+
+    const delayedTimers = delayedPhotoAttachTimersRef.current;
+    delayedTimers.forEach((timerId) => window.clearTimeout(timerId));
+    delayedTimers.clear();
+
+    const batchBuckets = wsBatchBucketsRef.current;
+    batchBuckets.forEach((bucket) => {
+      window.clearTimeout(bucket.timeoutId);
+    });
+    batchBuckets.clear();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearWsRuntimeBuffers();
+    };
+  }, [clearWsRuntimeBuffers]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && !isConnected) {
+        reconnect();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [isConnected, reconnect]);
 
   useEffect(() => {
     updateMaxPhotos();
-    window.addEventListener("resize", updateMaxPhotos);
+  }, [updateMaxPhotos, viewport.width, viewport.height]);
 
-    return () => {
-      window.removeEventListener("resize", updateMaxPhotos);
-    };
-  }, [updateMaxPhotos]);
+  const displayPhotos = useMemo(
+    () => (showAllPhotos ? photos : photos.slice(0, getMaxPhotos())),
+    [photos, showAllPhotos, getMaxPhotos],
+  );
 
-  useEffect(() => {
-    log.info("Photos state updated:", photos);
-  }, [photos]);
-
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (selectedPhoto) {
-        if (e.key === "Escape") {
-          setSelectedPhoto(null);
-        }
-        return;
-      }
-
-      if (photos.length === 0) return;
-
-      if (e.key === "ArrowRight") {
-        e.preventDefault();
-        setFocusedIndex((prevIndex) => {
-          const nextIndex = prevIndex + 1;
-          return nextIndex >= photos.length ? 0 : nextIndex;
-        });
-      } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        setFocusedIndex((prevIndex) => {
-          const nextIndex = prevIndex - 1;
-          return nextIndex < 0 ? photos.length - 1 : nextIndex;
-        });
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        if (focusedIndex >= 0 && focusedIndex < photos.length) {
-          setSelectedPhoto(photos[focusedIndex]);
-        }
-      }
-    },
-    [photos, selectedPhoto, focusedIndex]
+  const toggleLabel = useMemo(
+    () =>
+      showAllPhotos
+        ? "Все фото"
+        : `Только свежие (${displayPhotos.length} из ${photos.length})`,
+    [showAllPhotos, displayPhotos.length, photos.length],
   );
 
   useEffect(() => {
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
+    const getViewportSize = (): { w: number; h: number } => {
+      const vv = window.visualViewport;
+      const h = vv ? vv.height : window.innerHeight;
+      const w = vv ? vv.width : window.innerWidth;
+      return { w, h };
     };
+    const updateLayout = () => {
+      const { w, h } = getViewportSize();
+      const isKioskMode = isKiosk || isFullscreen;
+      const extraBottom = isKioskMode ? BOTTOM_RESERVE_KIOSK_PX : 0;
+      const extraTop = isKioskMode ? KIOSK_MAIN_TOP_RESERVE_PX : 0;
+      const headerReserve = isKioskMode ? KIOSK_HEADER_RESERVE_PX : undefined;
+      const availableHeight = Math.max(
+        0,
+        h - (headerReserve ?? HEADER_ESTIMATE_PX) - extraBottom - extraTop,
+      );
+
+      let cardW = getCardWidthForViewport(w);
+      const narrowViewport = w < KIOSK_SHRINK_VIEWPORT_WIDTH;
+      if (isKioskMode && narrowViewport) {
+        cardW = Math.round(cardW * 0.9);
+      }
+      if (isKioskMode && w >= 2560) {
+        cardW = Math.min(cardW + 16, CARD_WIDTH_2XL + 20);
+      } else if (isKioskMode && w >= 1920) {
+        cardW = Math.min(cardW + 12, CARD_WIDTH_XL + 16);
+      }
+
+      const baseRows = getTapeNumRows(
+        h,
+        w,
+        extraBottom,
+        extraTop,
+        headerReserve,
+      );
+      const isSingleRowLandscape = isSingleRowLandscapeViewport(w, h);
+      const preferredRows = isKioskMode
+        ? getPreferredRowsForViewport(w, h)
+        : baseRows;
+      const rows = isSingleRowLandscape
+        ? 1
+        : isKioskMode
+          ? Math.max(baseRows, preferredRows)
+          : baseRows;
+      setTapeNumRows(rows);
+
+      let heightCapped = false;
+      const rowHeight = cardW + CARD_META_HEIGHT + ROW_GAP_PX;
+      if (isKioskMode && rows > 0 && availableHeight < rows * rowHeight) {
+        const maxCardH =
+          Math.floor(availableHeight / rows) - CARD_META_HEIGHT - ROW_GAP_PX;
+        cardW = Math.max(CARD_WIDTH_MIN_PX, Math.min(cardW, maxCardH));
+        heightCapped = true;
+      }
+      setCardWidthPx(cardW);
+      setKioskNarrowViewport(isKioskMode && (narrowViewport || heightCapped));
+    };
+    updateLayout();
+    const el = containerRef.current;
+    const hasResizeObserver = typeof window.ResizeObserver !== "undefined";
+    let ro: ResizeObserver | null = null;
+    if (hasResizeObserver) {
+      ro = new ResizeObserver(updateLayout);
+      if (el) ro.observe(el);
+    }
+    window.addEventListener("resize", updateLayout);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", updateLayout);
+      window.visualViewport.addEventListener("scroll", updateLayout);
+    }
+    document.addEventListener("fullscreenchange", updateLayout);
+    document.addEventListener("webkitfullscreenchange", updateLayout);
+    return () => {
+      if (ro) {
+        ro.disconnect();
+      }
+      window.removeEventListener("resize", updateLayout);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", updateLayout);
+        window.visualViewport.removeEventListener("scroll", updateLayout);
+      }
+      document.removeEventListener("fullscreenchange", updateLayout);
+      document.removeEventListener("webkitfullscreenchange", updateLayout);
+    };
+  }, [isKiosk, isFullscreen]);
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.key === "Escape" || e.key === "Backspace") {
+        if (selectedPhoto) {
+          e.preventDefault();
+          e.stopPropagation();
+          if ("stopImmediatePropagation" in e) e.stopImmediatePropagation();
+          keepKioskOnFullscreenExitRef.current = isKiosk;
+          setSelectedPhoto(null);
+          return;
+        }
+      }
+      if (e.key === "F11") {
+        e.preventDefault();
+        handleFullscreenToggle();
+      }
+    },
+    [selectedPhoto, handleFullscreenToggle, isKiosk],
+  );
+
+  useEffect(() => {
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
   }, [handleKeyDown]);
 
   useEffect(() => {
-    if (focusedIndex >= 0 && focusedIndex < photos.length && gridRef.current) {
-      const grid = gridRef.current;
-      const photoElements =
-        grid.querySelectorAll<HTMLDivElement>(".photo-item");
-      const currentPhoto = photoElements[focusedIndex];
-      if (currentPhoto) {
-        currentPhoto.focus();
-      }
+    if (selectedPhoto) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => {
+        document.body.style.overflow = prev;
+      };
     }
-  }, [focusedIndex, photos]);
+  }, [selectedPhoto]);
 
-  const gridClasses =
-    "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6";
+  useEffect(() => {
+    const touchActivity = () => {
+      lastPointerActivityRef.current = Date.now();
+    };
+    window.addEventListener("mousemove", touchActivity, { passive: true });
+    window.addEventListener("mousedown", touchActivity, { passive: true });
+    window.addEventListener("wheel", touchActivity, { passive: true });
+    window.addEventListener("touchstart", touchActivity, { passive: true });
+    window.addEventListener("touchmove", touchActivity, { passive: true });
+    return () => {
+      window.removeEventListener("mousemove", touchActivity);
+      window.removeEventListener("mousedown", touchActivity);
+      window.removeEventListener("wheel", touchActivity);
+      window.removeEventListener("touchstart", touchActivity);
+      window.removeEventListener("touchmove", touchActivity);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hoveredCardKey || selectedPhoto) return;
+    const timerId = window.setInterval(() => {
+      const inactiveMs = Date.now() - lastPointerActivityRef.current;
+      if (inactiveMs < HOVER_IDLE_RESUME_MS) return;
+      const hasHoveredCard = !!document.querySelector(".photo-item:hover");
+      if (!hasHoveredCard) {
+        setHoveredCardKey(null);
+      }
+    }, 300);
+
+    return () => window.clearInterval(timerId);
+  }, [hoveredCardKey, selectedPhoto]);
+
+  const getHints = useCallback(() => {
+    if (typeof window === "undefined") return "";
+    const hasTouch = navigator.maxTouchPoints > 0 || "ontouchstart" in window;
+    const hasFinePointer = window.matchMedia(
+      "(hover: hover) and (pointer: fine)",
+    ).matches;
+
+    if (hasTouch && !hasFinePointer) {
+      return "Коснитесь фото, чтобы открыть карточку";
+    }
+    if (hasTouch && hasFinePointer) {
+      return "Клик или касание по фото · Esc — закрыть";
+    }
+    return "Клик по фото · Esc — закрыть";
+  }, []);
+
+  const [hints, setHints] = useState("");
+
+  useEffect(() => {
+    setHints(getHints());
+    const onResize = () => setHints(getHints());
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [getHints]);
 
   const renderLoading = () => (
-    <div className="flex flex-col justify-center items-center h-screen text-gray-700">
+    <div className="flex flex-col justify-center items-center py-24 text-gray-700 dark:text-gray-300">
       <LoaderComponent />
+      <p className="mt-6 text-lg animate-pulse">Загрузка посещаемости...</p>
     </div>
   );
 
   const renderNoPhotos = () => (
     <motion.div
-      className="flex flex-col justify-center items-center h-screen dark:text-text-light text-text-dark"
+      className="py-16 sm:py-20"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.5 }}
+      transition={{ duration: 0.45 }}
     >
-      <FaSadTear className="text-6xl mb-4 dark:text-text-light text-text-black" />
-      <p className="text-xl">Фотографии отсутствуют</p>
+      <div className="mx-auto w-full max-w-2xl rounded-3xl border border-white/60 dark:border-gray-700/70 bg-white/65 dark:bg-gray-900/50 backdrop-blur-md shadow-xl p-8 sm:p-10">
+        <div className="mx-auto mb-5 w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-secondary-500 text-white flex items-center justify-center shadow-lg">
+          <FaImage className="w-7 h-7" />
+        </div>
+        <h2 className="text-center text-2xl font-semibold text-gray-800 dark:text-gray-100">
+          Пока нет фотографий
+        </h2>
+        <p className="mt-2 text-center text-sm sm:text-base text-gray-600 dark:text-gray-300">
+          Карточки сотрудников и студентов появятся здесь после отметки
+          посещаемости.
+        </p>
+        <p className="mt-3 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+          Оставьте страницу открытой: обновление происходит автоматически.
+        </p>
+      </div>
     </motion.div>
   );
 
-  const renderPhotos = () => (
-    <div ref={gridRef} className={gridClasses}>
-      <AnimatePresence>
-        {photos.map((photo, index) => (
-          <motion.div
-            key={`${photo.photoUrl}-${photo.attendanceTime}`}
-            className={`relative bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden cursor-pointer group photo-item focus:outline-none ${
-              index === focusedIndex ? "ring-4 neon-glow" : ""
-            }`}
-            onClick={() => {
-              setSelectedPhoto(photo);
-              setFocusedIndex(index);
-            }}
-            role="button"
-            tabIndex={0}
-            onKeyPress={(e) => {
-              if (e.key === "Enter") setSelectedPhoto(photo);
-            }}
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -50 }}
-            transition={{ duration: 0.5 }}
-            whileHover={{ scale: 1.05 }}
-            whileFocus={{ scale: 1.05 }}
-            aria-label={`Фотография ${photo.staffFullName}`}
-          >
-            <div className="relative w-full h-60 overflow-hidden">
-              <img
-                src={`${apiUrl}${photo.photoUrl}`}
-                alt={photo.staffFullName}
-                className="w-full h-full object-cover transform transition-transform duration-300 group-hover:scale-110"
-                loading="lazy"
-              />
-              <motion.div
-                className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity duration-300"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 0 }}
-                whileHover={{ opacity: 1 }}
-              >
-                <div className="text-center px-2">
-                  <h3 className="text-lg font-semibold">
-                    {photo.staffFullName}
-                  </h3>
-                  <p className="text-sm">{photo.department}</p>
+  const photoRows = useMemo(() => {
+    const w = viewport.width;
+    const h = viewport.height;
+    const isSingleRowLandscape = isSingleRowLandscapeViewport(w, h);
+    const isKioskMode = isKiosk || isFullscreen;
+    const minCardsPerRow = isSingleRowLandscape
+      ? Number.MAX_SAFE_INTEGER
+      : isKioskMode && viewport.resolutionTier === "uhd"
+        ? 6
+        : isKioskMode && viewport.resolutionTier === "qhd"
+          ? 7
+          : isKioskMode
+            ? 7
+            : 5;
+    const maxRowsByDensity = Math.max(
+      1,
+      Math.floor(displayPhotos.length / minCardsPerRow),
+    );
+    const numRows = isSingleRowLandscape
+      ? 1
+      : Math.max(1, Math.min(tapeNumRows, maxRowsByDensity));
+    if (numRows <= 0 || displayPhotos.length === 0) {
+      return [];
+    }
+
+    const rows: (PhotoData | null)[][] = Array.from(
+      { length: numRows },
+      () => [],
+    );
+    displayPhotos.forEach((photo, index) => {
+      const stableKey = getStableRowKey(photo, index);
+      const rowIndex = stableHash(stableKey) % numRows;
+      rows[rowIndex].push(photo);
+    });
+
+    return rows;
+  }, [
+    displayPhotos,
+    tapeNumRows,
+    isKiosk,
+    isFullscreen,
+    viewport.width,
+    viewport.height,
+    viewport.resolutionTier,
+  ]);
+
+  const tapeCols = Math.ceil(displayPhotos.length / tapeNumRows) || 1;
+  const marqueeSpeed = useMemo(
+    () => MARQUEE_SPEED + Math.min(Math.max(tapeCols, 1), 10) * 2,
+    [tapeCols],
+  );
+
+  const renderCardMeta = useCallback((photo: PhotoData) => {
+    const departmentLabel = getLabelForDepartment(photo);
+    const clamp2Lines: React.CSSProperties = {
+      display: "-webkit-box",
+      WebkitLineClamp: 2,
+      WebkitBoxOrient: "vertical",
+      overflow: "hidden",
+    };
+    const clamp1Line: React.CSSProperties = {
+      display: "-webkit-box",
+      WebkitLineClamp: 1,
+      WebkitBoxOrient: "vertical",
+      overflow: "hidden",
+    };
+
+    return (
+      <div className="h-[112px] sm:h-[118px] px-3 py-2.5 sm:px-3.5 sm:py-3 flex flex-col">
+        <h2
+          className="min-h-[2.4rem] text-[13px] sm:text-[13.5px] font-semibold leading-[1.2] text-gray-100/95 dark:text-gray-100 tracking-[0.005em]"
+          style={clamp2Lines}
+        >
+          {photo.staffFullName}
+        </h2>
+        <div className="mt-1.5 h-px w-full bg-white/10 dark:bg-gray-600/40" />
+        <div className="mt-1.5 min-h-[2.15rem] max-h-[2.15rem] flex items-start gap-1.5 min-w-0 text-gray-200/85 dark:text-gray-300">
+          <FaBuilding className="w-3 h-3 opacity-80 shrink-0 mt-[0.15rem]" />
+          <span className="min-w-0 leading-[1.2]">
+            <span
+              className="block text-[10px] sm:text-[10.5px] uppercase tracking-[0.08em] text-gray-300/70 dark:text-gray-400"
+              style={clamp1Line}
+            >
+              {departmentLabel}
+            </span>
+            <span
+              className="block text-[11px] sm:text-[11.5px] leading-[1.15] text-gray-100/85 dark:text-gray-300"
+              style={clamp2Lines}
+            >
+              {photo.department}
+            </span>
+          </span>
+        </div>
+        <p className="mt-auto pt-1 text-[12px] sm:text-[12.5px] text-gray-300/85 dark:text-gray-400 flex items-center gap-1.5 leading-none">
+          <FaClock className="w-3 h-3 opacity-75 shrink-0" />
+          <span className="tabular-nums">
+            {formatTime(photo.attendanceTime)}
+          </span>
+        </p>
+      </div>
+    );
+  }, []);
+
+  const focusCardByCoords = useCallback((row: number, col: number) => {
+    const key = `r${row}-i${col}`;
+    const el = cardRefs.current.get(key);
+    if (el) {
+      el.focus();
+    }
+  }, []);
+
+  const getNextCardCoords = useCallback(
+    (row: number, col: number, key: string): { row: number; col: number } => {
+      const rows = photoRows.length;
+      if (rows === 0) return { row, col };
+      const rowLen = photoRows[row]?.length ?? 0;
+
+      if (key === "ArrowRight") {
+        if (col + 1 < rowLen) return { row, col: col + 1 };
+        const nextRow = (row + 1) % rows;
+        return { row: nextRow, col: 0 };
+      }
+
+      if (key === "ArrowLeft") {
+        if (col - 1 >= 0) return { row, col: col - 1 };
+        const prevRow = (row - 1 + rows) % rows;
+        const prevLen = photoRows[prevRow]?.length ?? 1;
+        return { row: prevRow, col: Math.max(0, prevLen - 1) };
+      }
+
+      if (key === "ArrowDown") {
+        const nextRow = (row + 1) % rows;
+        const nextLen = photoRows[nextRow]?.length ?? 1;
+        return { row: nextRow, col: Math.min(col, Math.max(0, nextLen - 1)) };
+      }
+
+      const prevRow = (row - 1 + rows) % rows;
+      const prevLen = photoRows[prevRow]?.length ?? 1;
+      return { row: prevRow, col: Math.min(col, Math.max(0, prevLen - 1)) };
+    },
+    [photoRows],
+  );
+
+  useEffect(() => {
+    if (photoRows.length === 0) {
+      setActiveCardCoords(null);
+      return;
+    }
+
+    setActiveCardCoords((prev) => {
+      if (!prev) return { row: 0, col: 0 };
+      const row = Math.min(prev.row, photoRows.length - 1);
+      const rowLen = photoRows[row]?.length ?? 0;
+      if (rowLen <= 0) return { row: 0, col: 0 };
+      const col = Math.min(prev.col, rowLen - 1);
+      return { row, col };
+    });
+  }, [photoRows]);
+
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName.toLowerCase();
+      return (
+        target.isContentEditable ||
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select"
+      );
+    };
+
+    const onGlobalKeyDown = (e: KeyboardEvent) => {
+      if (selectedPhoto) return;
+      if (isTypingTarget(e.target)) return;
+      if (photoRows.length === 0) return;
+
+      const hasArrow =
+        e.key === "ArrowRight" ||
+        e.key === "ArrowLeft" ||
+        e.key === "ArrowDown" ||
+        e.key === "ArrowUp";
+      const hasOpenKey = e.key === "Enter" || e.key === " ";
+      if (!hasArrow && !hasOpenKey) return;
+
+      const current = activeCardCoords ?? { row: 0, col: 0 };
+      if (hasArrow) {
+        e.preventDefault();
+        const next = getNextCardCoords(current.row, current.col, e.key);
+        setActiveCardCoords(next);
+        focusCardByCoords(next.row, next.col);
+        return;
+      }
+
+      e.preventDefault();
+      const rowPhoto = photoRows[current.row]?.[current.col];
+      if (rowPhoto) {
+        setSelectedPhoto(rowPhoto);
+      }
+    };
+
+    window.addEventListener("keydown", onGlobalKeyDown);
+    return () => window.removeEventListener("keydown", onGlobalKeyDown);
+  }, [
+    selectedPhoto,
+    photoRows,
+    activeCardCoords,
+    getNextCardCoords,
+    focusCardByCoords,
+  ]);
+
+  const renderPhotoCard = useCallback(
+    (
+      photo: PhotoData,
+      keyIndex: number,
+      rowIndex: number,
+      cardIndex: number,
+      isHovered: boolean,
+      isInteractive: boolean,
+      kioskCardWidth?: number,
+    ) => (
+      <motion.article
+        key={
+          photo.id != null
+            ? `photo-${photo.id}`
+            : `${photo.photoUrl}-${photo.attendanceTime}-${keyIndex}`
+        }
+        initial={false}
+        className={`photo-item group relative flex-shrink-0 w-[220px] sm:w-[260px] md:w-[280px] lg:w-[300px] rounded-2xl md:rounded-3xl cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60 focus-visible:ring-offset-2 flex flex-col transition-all duration-300 ${
+          isHovered
+            ? ""
+            : "overflow-hidden bg-white/95 dark:bg-gray-800/95 ring-1 ring-white/80 dark:ring-gray-700/90 shadow-[0_12px_30px_-20px_rgba(15,23,42,0.7)] hover:shadow-[0_20px_45px_-25px_rgba(37,99,235,0.55)] hover:ring-primary-300/70 dark:hover:ring-primary-400/45"
+        }`}
+        style={kioskCardWidth != null ? { width: kioskCardWidth } : undefined}
+        onClick={() => setSelectedPhoto(photo)}
+        onMouseEnter={() => setHoveredCardKey(`r${rowIndex}-i${cardIndex}`)}
+        onMouseLeave={() => setHoveredCardKey(null)}
+        onTouchStart={() => setHoveredCardKey(`r${rowIndex}-i${cardIndex}`)}
+        onTouchEnd={() => setHoveredCardKey(null)}
+        onFocus={() => {
+          setHoveredCardKey(`r${rowIndex}-i${cardIndex}`);
+          setActiveCardCoords({ row: rowIndex, col: cardIndex });
+        }}
+        onBlur={() =>
+          setHoveredCardKey((prev) =>
+            prev === `r${rowIndex}-i${cardIndex}` ? null : prev,
+          )
+        }
+        onMouseMove={() => {
+          setActiveCardCoords({ row: rowIndex, col: cardIndex });
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setSelectedPhoto(photo);
+            return;
+          }
+          if (
+            e.key !== "ArrowRight" &&
+            e.key !== "ArrowLeft" &&
+            e.key !== "ArrowDown" &&
+            e.key !== "ArrowUp"
+          ) {
+            return;
+          }
+          e.preventDefault();
+          const next = getNextCardCoords(rowIndex, cardIndex, e.key);
+          focusCardByCoords(next.row, next.col);
+        }}
+        role="button"
+        tabIndex={isInteractive ? 0 : -1}
+        aria-hidden={isInteractive ? undefined : true}
+        aria-label={`${photo.staffFullName}, ${photo.department}`}
+        ref={(el) => {
+          const key = `r${rowIndex}-i${cardIndex}`;
+          if (isInteractive) {
+            cardRefs.current.set(key, el);
+          } else {
+            cardRefs.current.delete(key);
+          }
+        }}
+        whileHover={{ y: -4 }}
+        whileTap={{ scale: 0.98 }}
+      >
+        {isHovered ? (
+          <div className="photo-electric-border w-full flex-1 flex flex-col min-h-0 rounded-2xl">
+            <div className="photo-electric-border-inner flex flex-col flex-1 overflow-hidden rounded-2xl relative">
+              <div className="photo-shine-overlay" aria-hidden />
+              <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
+                {photo.hasPhoto === false ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
+                      <FaImage className="h-7 w-7" />
+                    </div>
+                    <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white shadow-md backdrop-blur-sm">
+                      Фото не загружено
+                    </span>
+                  </div>
+                ) : (
+                  <img
+                    src={`${apiUrl}${photo.photoUrl}`}
+                    alt={photo.staffFullName}
+                    className="w-full h-full object-contain transition-opacity duration-300"
+                    loading="lazy"
+                    draggable={false}
+                  />
+                )}
+              </div>
+              {renderCardMeta(photo)}
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
+              {photo.hasPhoto === false ? (
+                <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
+                    <FaImage className="h-7 w-7" />
+                  </div>
+                  <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white shadow-md backdrop-blur-sm">
+                    Фото не загружено
+                  </span>
                 </div>
-              </motion.div>
+              ) : (
+                <img
+                  src={`${apiUrl}${photo.photoUrl}`}
+                  alt={photo.staffFullName}
+                  className="w-full h-full object-contain transition-opacity duration-300"
+                  loading="lazy"
+                  draggable={false}
+                />
+              )}
             </div>
-            <div className="p-5">
-              <h2 className="text-lg font-semibold text-gray-800 dark:text-white truncate">
-                {photo.staffFullName}
-              </h2>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                {new Date(photo.attendanceTime).toLocaleString()}
-              </p>
-            </div>
-          </motion.div>
-        ))}
-      </AnimatePresence>
+            {renderCardMeta(photo)}
+          </>
+        )}
+      </motion.article>
+    ),
+    [renderCardMeta, focusCardByCoords, getNextCardCoords],
+  );
+
+  const renderPhotos = () => (
+    <div
+      className={
+        isKiosk ? "min-h-[100dvh] flex flex-col py-3 sm:py-4 md:py-5" : "py-6"
+      }
+    >
+      {displayPhotos.length > 0 && hints && !isKiosk && (
+        <p className="text-gray-500 dark:text-gray-400 text-xs sm:text-sm mb-3">
+          {hints}
+        </p>
+      )}
+      <div
+        className={`mx-auto w-full max-w-[1500px] flex-shrink-0 ${
+          isFullscreen
+            ? "mb-1.5 rounded-xl border border-white/55 dark:border-slate-700/70 bg-white/65 dark:bg-slate-900/45 backdrop-blur-md px-2 py-1.5 shadow-lg lg:mb-4 lg:rounded-2xl lg:px-5 lg:py-3"
+            : isKiosk
+              ? "mb-1.5 px-2 py-1 lg:mb-4 lg:px-5 lg:py-2"
+              : "mb-4"
+        }`}
+      >
+        <div
+          className={`flex flex-wrap items-center justify-between ${
+            isFullscreen || isKiosk ? "gap-2 lg:gap-4" : "gap-3 md:gap-4"
+          }`}
+        >
+          <div className="min-w-0">
+            <h1
+              className={`font-semibold text-gray-800 dark:text-white truncate ${
+                isFullscreen || isKiosk
+                  ? "text-sm sm:text-base lg:text-xl xl:text-2xl"
+                  : "text-lg sm:text-xl md:text-2xl"
+              }`}
+            >
+              {pageTitle}
+            </h1>
+            <p
+              className={`text-gray-600 dark:text-gray-300 ${
+                isFullscreen || isKiosk
+                  ? "mt-0 text-[10px] sm:text-xs lg:text-sm"
+                  : "mt-0.5 text-[11px] sm:text-xs md:text-sm"
+              }`}
+            >
+              {pageSubtitle}
+            </p>
+          </div>
+          <div
+            className={`flex flex-wrap items-center ${
+              isFullscreen || isKiosk
+                ? "gap-1.5 sm:gap-2 lg:gap-4"
+                : "gap-2 sm:gap-3 md:gap-4"
+            }`}
+          >
+            {photos.length > 0 && (
+              <Toggle
+                checked={showAllPhotos}
+                onChange={(v) => startTransition(() => setShowAllPhotos(v))}
+                labelPosition="left"
+                label={toggleLabel}
+                ariaLabel={
+                  showAllPhotos
+                    ? "Показать только последние фото"
+                    : "Показать все фото за день"
+                }
+                className={
+                  isFullscreen || isKiosk
+                    ? "text-[10px] sm:text-xs lg:text-sm"
+                    : "text-xs sm:text-sm"
+                }
+              />
+            )}
+            <motion.button
+              onClick={handleFullscreenToggle}
+              disabled={isFullscreenBusy}
+              className={`flex items-center gap-1.5 rounded-lg font-semibold text-white transition-colors ${
+                isFullscreen || isKiosk
+                  ? "px-2 py-1 text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-sm"
+                  : "gap-2 px-3.5 py-1.5 text-xs md:px-4 md:py-2 md:text-sm"
+              } ${
+                isFullscreenBusy
+                  ? "bg-primary-400 cursor-not-allowed"
+                  : "bg-primary-600 hover:bg-primary-700"
+              }`}
+              aria-label={
+                isFullscreen
+                  ? "Выйти из полноэкранного режима"
+                  : "Полноэкранный режим"
+              }
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              {isFullscreen && !isFullscreenBusy ? (
+                <FaCompress
+                  className={`${isFullscreen || isKiosk ? "w-3.5 h-3.5 lg:w-4 lg:h-4" : "w-4 h-4"}`}
+                />
+              ) : (
+                <FaExpand
+                  className={`${isFullscreen || isKiosk ? "w-3.5 h-3.5 lg:w-4 lg:h-4" : "w-4 h-4"}`}
+                />
+              )}
+              <span>
+                {isFullscreenBusy
+                  ? isFullscreen
+                    ? "Выход..."
+                    : "Открытие..."
+                  : isFullscreen
+                    ? "Выход"
+                    : "Полный экран"}
+              </span>
+            </motion.button>
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap ${
+                isFullscreen || isKiosk
+                  ? "px-2 py-1 text-[10px] sm:text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-base"
+                  : "gap-2 px-2.5 py-1.5 text-xs sm:px-3 sm:text-sm md:px-4 md:py-2 md:text-base"
+              }`}
+            >
+              <FaRegCalendarAlt
+                className={`opacity-80 ${isFullscreen || isKiosk ? "w-3 h-3 lg:w-4 lg:h-4" : "w-3.5 h-3.5 md:w-4 md:h-4"}`}
+              />
+              <span className="capitalize">{todayLabel}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div
+        className={`photo-marquee-lux-edges ${
+          isKiosk || isFullscreen ? "photo-marquee-lux-edges-kiosk" : ""
+        }`}
+      >
+        <div
+          ref={containerRef}
+          className={`[scrollbar-width:none] [-ms-overflow-style:none] ${
+            isKiosk
+              ? "photo-kiosk-marquee-mask flex-1 min-h-0 flex flex-col overflow-x-hidden overflow-y-hidden px-4 sm:px-6 md:px-8 lg:px-10 py-2 sm:py-3 md:py-4 pb-4 sm:pb-5 md:pb-6"
+              : "overflow-x-hidden overflow-y-visible py-4 pb-8 px-4 md:px-6"
+          }`}
+          style={
+            isKiosk
+              ? {
+                  paddingBottom: "max(1rem, env(safe-area-inset-bottom, 0px))",
+                }
+              : undefined
+          }
+        >
+          <div
+            className={`flex flex-col flex-1 min-h-0 ${isKiosk ? "gap-2 sm:gap-3 md:gap-4 lg:gap-5 py-1 justify-center" : "gap-4 md:gap-5 py-3 md:py-4"}`}
+          >
+            {photoRows.map((rowPhotos, rowIndex) => (
+              <div
+                key={rowIndex}
+                className={
+                  isKiosk
+                    ? "overflow-x-hidden overflow-y-visible py-2 sm:py-3 md:py-4 lg:py-5"
+                    : "overflow-x-hidden overflow-y-visible py-4 md:py-5"
+                }
+                style={{ minHeight: 1 }}
+                onMouseLeave={() => setHoveredCardKey(null)}
+              >
+                <MarqueeTrack
+                  items={rowPhotos}
+                  rowIndex={rowIndex}
+                  speedPxSec={marqueeSpeed}
+                  isPaused={!!selectedPhoto || !!hoveredCardKey}
+                  hoverSpeed={MARQUEE_HOVER_SPEED}
+                  cardWidthPx={cardWidthPx}
+                  renderItem={(photo, displayIndex, copyIndex, itemIndex) => {
+                    if (photo == null) {
+                      return (
+                        <div
+                          className="flex-shrink-0 rounded-2xl bg-transparent"
+                          style={{
+                            width: cardWidthPx,
+                            height: cardWidthPx + 80,
+                          }}
+                          aria-hidden
+                        />
+                      );
+                    }
+                    const keyIndex =
+                      rowIndex * 1_000_000 + copyIndex * 10_000 + displayIndex;
+                    const cardIndex = itemIndex;
+                    const isHovered =
+                      hoveredCardKey === `r${rowIndex}-i${cardIndex}`;
+                    return renderPhotoCard(
+                      photo,
+                      keyIndex,
+                      rowIndex,
+                      cardIndex,
+                      isHovered,
+                      copyIndex === 0,
+                      kioskNarrowViewport ? cardWidthPx : undefined,
+                    );
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 
@@ -294,53 +1788,80 @@ const PhotoDashboard: React.FC = () => {
     selectedPhoto && (
       <AnimatePresence>
         <motion.div
-          className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 sm:p-5 md:p-6"
           onClick={() => setSelectedPhoto(null)}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.3 }}
+          transition={{ duration: 0.2 }}
         >
           <motion.div
-            className="relative bg-white dark:bg-gray-900 rounded-lg overflow-hidden shadow-xl w-11/12 max-w-screen-lg mx-auto"
+            className="relative w-full max-w-md sm:max-w-lg md:max-w-xl lg:max-w-2xl rounded-2xl md:rounded-3xl overflow-hidden bg-white dark:bg-gray-800 shadow-2xl flex flex-col max-h-[90vh] md:max-h-[85vh] [@media(orientation:landscape)]:max-w-4xl [@media(orientation:landscape)]:max-h-[90vh]"
             onClick={(e) => e.stopPropagation()}
-            initial={{ scale: 0.8, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.8, opacity: 0 }}
-            transition={{ duration: 0.3 }}
+            initial={{ scale: 0.92, opacity: 0, y: 20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.92, opacity: 0, y: 20 }}
+            transition={{ type: "spring", damping: 28, stiffness: 300 }}
           >
             <button
-              className="absolute top-4 right-4 text-gray-800 dark:text-gray-300 hover:text-gray-600 dark:hover:text-white focus:outline-none"
+              className="absolute top-3 right-3 z-10 w-9 h-9 md:w-10 md:h-10 rounded-full bg-white/90 dark:bg-gray-700/90 hover:bg-gray-100 dark:hover:bg-gray-600 shadow-md text-gray-700 dark:text-gray-200 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-primary-500 touch-manipulation transition-colors"
               onClick={() => setSelectedPhoto(null)}
               aria-label="Закрыть"
             >
-              ✕
+              <FaTimes className="w-4 h-4 md:w-5 md:h-5" />
             </button>
 
-            <div className="flex flex-col md:flex-row">
-              <div className="w-full md:w-1/2 flex items-center justify-center p-6">
-                <img
-                  src={`${apiUrl}${selectedPhoto.photoUrl}`}
-                  alt={selectedPhoto.staffFullName}
-                  className="max-w-full max-h-full object-contain transform transition-transform duration-300 hover:scale-105"
-                />
+            <div className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain [@media(orientation:landscape)]:flex-row [@media(orientation:landscape)]:overflow-hidden">
+              <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex-shrink-0 max-h-[50vh] [@media(orientation:landscape)]:max-h-none [@media(orientation:landscape)]:w-[min(42%,85vh)] [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:aspect-square [@media(orientation:landscape)]:shrink-0">
+                {selectedPhoto.hasPhoto === false ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
+                    <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
+                      <FaImage className="h-10 w-10" />
+                    </div>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-black/60 px-3 py-1.5 text-xs font-medium text-white shadow-md backdrop-blur-sm">
+                      <FaImage className="h-4 w-4" />
+                      Фото не загружено
+                    </span>
+                  </div>
+                ) : (
+                  <img
+                    src={`${apiUrl}${selectedPhoto.photoUrl}`}
+                    alt={selectedPhoto.staffFullName}
+                    className="w-full h-full object-contain"
+                    draggable={false}
+                  />
+                )}
               </div>
-              <div className="w-full md:w-1/2 p-8 flex flex-col justify-center">
-                <h2 className="text-2xl font-semibold text-gray-800 dark:text-white mb-4">
+
+              <div className="p-5 sm:p-6 md:p-7 flex flex-col gap-3 flex-shrink-0 [@media(orientation:landscape)]:flex-1 [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:overflow-y-auto [@media(orientation:landscape)]:justify-center">
+                <h2 className="text-xl md:text-2xl font-semibold text-gray-800 dark:text-white pr-10 md:pr-12">
                   {selectedPhoto.staffFullName}
                 </h2>
-                <p className="text-lg text-gray-600 dark:text-gray-300 mb-2">
-                  <strong>Отдел:</strong> {selectedPhoto.department}
-                </p>
-                <p className="text-lg text-gray-600 dark:text-gray-300 mb-2">
-                  <strong>Время:</strong>{" "}
-                  {new Date(selectedPhoto.attendanceTime).toLocaleString()}
-                </p>
-                {selectedPhoto.tutorInfo && (
-                  <p className="text-md text-gray-500 dark:text-gray-400 mt-2">
-                    {selectedPhoto.tutorInfo}
+                <div className="flex flex-col gap-1.5 text-sm">
+                  <p className="text-gray-600 dark:text-gray-300 flex items-center gap-2">
+                    <FaBuilding className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                    <span>
+                      <span className="font-medium text-gray-700 dark:text-gray-200">
+                        {getLabelForDepartment(selectedPhoto)}:
+                      </span>{" "}
+                      {selectedPhoto.department}
+                    </span>
                   </p>
-                )}
+                  <p className="text-gray-600 dark:text-gray-300 flex items-center gap-2">
+                    <FaClock className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                    <span>
+                      <span className="font-medium text-gray-700 dark:text-gray-200">
+                        Время:
+                      </span>{" "}
+                      {formatTime(selectedPhoto.attendanceTime)}
+                    </span>
+                  </p>
+                  {selectedPhoto.tutorInfo && (
+                    <p className="text-gray-500 dark:text-gray-400 text-xs mt-1 leading-relaxed">
+                      {selectedPhoto.tutorInfo}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
           </motion.div>
@@ -349,12 +1870,12 @@ const PhotoDashboard: React.FC = () => {
     );
 
   return (
-    <div className="min-h-screen p-6 bg-transparent">
+    <div>
       {loading
         ? renderLoading()
         : photos.length === 0
-        ? renderNoPhotos()
-        : renderPhotos()}
+          ? renderNoPhotos()
+          : renderPhotos()}
 
       {renderSelectedPhoto()}
     </div>

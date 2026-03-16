@@ -1,33 +1,81 @@
-import re
-import json
-import math
-import pytz
-import logging
 import datetime
+import json
+import logging
+import math
+import os
+import re
+from collections import Counter, defaultdict
+from difflib import get_close_matches
+from functools import lru_cache
+from typing import Any, Dict, List, Tuple, cast
+
 import numpy as np
 import pandas as pd
-from typing import Any, Dict
-from openpyxl import Workbook
-from django.urls import reverse
-from django.conf import settings
-from django.utils import timezone
-from monitoring_app import models
-from sklearn.neighbors import KDTree
+import pytz
 from cryptography.fernet import Fernet
-from django.core.mail import send_mail
-from django.db.models import Func, Count
-from django.utils.html import format_html
-from collections import defaultdict, Counter
-from monitoring_app.cache_conf import get_cache
+from django.conf import settings
 from django.contrib.admin import SimpleListFilter
+from django.core.mail import send_mail
+from django.db.models import Count
+from django.urls import reverse
+from django.utils import timezone
+from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
+from monitoring_app import models
+from monitoring_app.cache_conf import get_cache
+from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from functools import lru_cache
-from difflib import get_close_matches
+from sklearn.neighbors import KDTree
 
 DAYS = settings.DAYS
 
 logger = logging.getLogger("django")
+
+
+def get_lesson_attendance_photo_path(staff_pin: str):
+    """
+    Возвращает (base_dir, full_file_path) для сохранения фото посещаемости.
+    base_dir нужно создать (makedirs); full_file_path — куда писать файл.
+    """
+    date_path = timezone.now().strftime("%Y-%m-%d")
+    timestamp = int(timezone.now().timestamp())
+    if settings.DEBUG:
+        base_dir = os.path.join(
+            settings.MEDIA_ROOT, "control_image", staff_pin, date_path
+        )
+    else:
+        base_dir = os.path.join(settings.ATTENDANCE_ROOT, staff_pin, date_path)
+    filename = f"{staff_pin}_{timestamp}.jpg"
+    return base_dir, os.path.join(base_dir, filename)
+
+
+def merge_work_intervals_to_total_seconds(
+    intervals: List[Tuple[datetime.datetime, datetime.datetime]],
+) -> int:
+    """Объединяет перекрывающиеся интервалы и возвращает суммарную длительность в секундах.
+
+    Интервалы сортируются по началу; пересекающиеся или смежные объединяются в один.
+    Подходит для расчёта эффективного времени по SA и LA без двойного учёта.
+
+    Args:
+        intervals: Список кортежей (start, end) — timezone-aware datetime.
+
+    Returns:
+        Сумма длительностей объединённых интервалов в секундах (int). 0 при пустом списке.
+    """
+    if not intervals:
+        return 0
+    sorted_intervals = sorted(intervals, key=lambda x: (x[0], x[1]))
+    merged: List[Tuple[datetime.datetime, datetime.datetime]] = [
+        (sorted_intervals[0][0], sorted_intervals[0][1])
+    ]
+    for start, end in sorted_intervals[1:]:
+        if start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return sum(int((e - s).total_seconds()) for s, e in merged)
+
 
 arcface_model = None
 
@@ -79,6 +127,38 @@ _RX_KARASAI = re.compile(r"карасай", re.IGNORECASE)
 
 _RX_LIFT = re.compile(r"\bлифт[\s\-]*\d+\b|\bлифты?\b|\bлифт\w*\b", re.IGNORECASE)
 
+
+def is_lift_terminal(area_name: str | None) -> bool:
+    """Возвращает True, если зона/терминал — лифт (лифт 1, лифт 8, лифтовые и т.п.)."""
+    if not area_name or not area_name.strip():
+        return False
+    return bool(_RX_LIFT.search(area_name.strip()))
+
+
+@lru_cache(maxsize=8192)
+def pin_to_external_format(pin: str | None) -> str:
+    """Приводит PIN к формату внешней системы (убирает обёртку S и T).
+
+    Используется для сопоставления сотрудников с системой оценок, где PIN
+    хранятся без префикса/суффикса (например, 9614 вместо S9614S).
+    Результат кэшируется (lru_cache) для повторных вызовов с тем же pin.
+
+    Args:
+        pin: PIN сотрудника в формате системы контроля (может быть None).
+
+    Returns:
+        PIN без обёртки: S9614S → 9614, T861T → 861. Если обёртки нет
+        или pin пустой — возвращается исходная строка или пустая строка.
+    """
+    if not pin:
+        return ""
+    if len(pin) >= 2 and pin[0] == "S" and pin[-1] == "S":
+        return pin[1:-1]
+    if len(pin) >= 2 and pin[0] == "T" and pin[-1] == "T":
+        return pin[1:-1]
+    return pin
+
+
 KEYWORDS = {
     "abilai": ["абылай", "абылайхана", "цос", "военные", "вход", "выход", "лифт"],
     "torekulova": ["торекулова", "торекулов", "турекулова", "торекулв"],
@@ -99,12 +179,18 @@ def _fuzzy_family(n: str) -> str | None:
 
 @lru_cache(maxsize=4096)
 def resolve_area_address(area_name: str | None) -> str | None:
-    """
+    """Преобразует произвольное имя зоны к каноническому адресу.
+
     Преобразует произвольное имя зоны (любой регистр/формат) к одному из:
-      - 'Проспект Абылай хана, 51/53'
-      - 'Улица Торекулова, 71'
-      - 'Улица Карасай батыра, 75'
-    Возвращает None, если распознать нельзя.
+    - 'Проспект Абылай хана, 51/53'
+    - 'Улица Торекулова, 71'
+    - 'Улица Карасай батыра, 75'
+
+    Args:
+        area_name (str | None): Имя зоны для преобразования.
+
+    Returns:
+        str | None: Канонический адрес или None, если распознать нельзя.
     """
     if not area_name:
         return None
@@ -129,7 +215,14 @@ def resolve_area_address(area_name: str | None) -> str | None:
 
 
 def get_client_ip(request):
-    """Get the client IP address from the request, considering proxy setups."""
+    """Получает IP адрес клиента из запроса с учетом прокси.
+
+    Args:
+        request: HTTP запрос Django.
+
+    Returns:
+        str: IP адрес клиента.
+    """
     x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded_for:
         ip = x_forwarded_for.split(",")[0].strip()
@@ -139,7 +232,14 @@ def get_client_ip(request):
 
 
 def format_duration(duration_seconds):
-    """Converts a duration in seconds to a more human-readable format."""
+    """Преобразует длительность в секундах в читаемый формат.
+
+    Args:
+        duration_seconds (float): Длительность в секундах.
+
+    Returns:
+        str: Отформатированная строка с длительностью (секунды, минуты, часы).
+    """
     if duration_seconds < 60:
         return f"{duration_seconds:.2f} seconds"
     elif duration_seconds < 3600:
@@ -156,34 +256,52 @@ def format_duration(duration_seconds):
 class HierarchicalDepartmentFilter(SimpleListFilter):
     title = _("Department")
     parameter_name = "staff_department"
+    _lookups_cache_key = "hierarchical_dept_filter_lookups"
+    _lookups_cache_ttl = 600
 
     def lookups(self, request, model_admin):
-        departments = models.ChildDepartment.objects.all().select_related("parent")
-        return [(dept.id, dept.name) for dept in departments]
+        from django.core.cache import cache
+
+        lookup_list = cache.get(self._lookups_cache_key)
+        if lookup_list is not None:
+            return lookup_list
+        departments = list(
+            models.ChildDepartment.objects.only("id", "name").order_by("name")
+        )
+        lookup_list = [(dept.id, dept.name) for dept in departments]
+        cache.set(self._lookups_cache_key, lookup_list, self._lookups_cache_ttl)
+        return lookup_list
 
     def queryset(self, request, queryset):
         if self.value():
-            try:
-                department = models.ChildDepartment.objects.get(pk=self.value())
-            except models.ChildDepartment.DoesNotExist:
-                return queryset
+            cache_key = f"dept_descendants_{self.value()}"
+            from django.core.cache import cache
 
-            descendant_ids = self.get_all_descendant_ids(department)
+            descendant_ids = cache.get(cache_key)
+            if descendant_ids is None:
+                try:
+                    department = models.ChildDepartment.objects.only("id").get(
+                        pk=self.value()
+                    )
+                except models.ChildDepartment.DoesNotExist:
+                    return queryset
+                descendant_ids = self.get_all_descendant_ids(department.id)
+                cache.set(cache_key, descendant_ids, self._lookups_cache_ttl)
             return queryset.filter(staff__department__in=descendant_ids)
         return queryset
 
-    def get_all_descendant_ids(self, department):
-        descendant_ids = set([department.id])
-        queue = [department.id]
-
+    def get_all_descendant_ids(self, department_id):
+        descendant_ids = {department_id}
+        queue = [department_id]
         while queue:
             current_id = queue.pop(0)
-            children = models.ChildDepartment.objects.filter(
-                parent_id=current_id
-            ).values_list("id", flat=True)
+            children = list(
+                models.ChildDepartment.objects.filter(parent_id=current_id).values_list(
+                    "id", flat=True
+                )
+            )
             queue.extend(children)
             descendant_ids.update(children)
-
         return descendant_ids
 
 
@@ -314,7 +432,7 @@ def send_password_reset_email(user, request):
                         <h1 style="color: #2563EB; font-size: 24px; margin: 0 0 5px 0;">Сброс пароля</h1>
                         <p style="color: #6B7280; font-size: 16px; margin: 0;">Инструкция по восстановлению доступа</p>
                     </div>
-                    
+
                     <div style="padding: 20px; background-color: #F3F4F6; border-radius: 8px; margin-bottom: 25px;">
                         <p style="color: #4B5563; line-height: 1.6; margin: 0 0 15px 0;">
                             Здравствуйте, <strong>{user_name}</strong>!
@@ -323,20 +441,20 @@ def send_password_reset_email(user, request):
                             Мы получили запрос на сброс пароля для вашего аккаунта. Если это были вы, используйте кнопку ниже для создания нового пароля.
                         </p>
                     </div>
-                    
+
                     <div style="text-align: center; margin-bottom: 30px;">
                         <a href="{reset_link}" style="display: inline-block; padding: 14px 32px; color: #ffffff; background-color: #2563EB; text-decoration: none; border-radius: 6px; font-size: 16px; font-weight: 600; transition: background-color 0.2s ease;">
                             Сбросить пароль
                         </a>
                     </div>
-                    
+
                     <div style="border-left: 4px solid #FCD34D; padding: 12px 15px; background-color: #FFFBEB; margin-bottom: 25px; border-radius: 0 6px 6px 0;">
                         <p style="color: #92400E; font-size: 14px; line-height: 1.5; margin: 0;">
                             <strong>Важно:</strong> Ссылка действительна до <strong>{expiry_time}</strong>.<br>
                             Если вы не запрашивали сброс пароля, пожалуйста, игнорируйте это письмо или обратитесь в службу поддержки.
                         </p>
                     </div>
-                    
+
                     <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #E5E7EB; text-align: center;">
                         <div style="display: inline-block; margin: 0 15px 15px 0;">
                             <a href="{site_url}" style="color: #4B5563; text-decoration: none; font-size: 14px;">
@@ -487,14 +605,6 @@ def transliterate(name):
     return "".join(translit)
 
 
-class Radians(Func):
-    function = "RADIANS"
-
-
-class Cos(Func):
-    function = "COS"
-
-
 def clean_address(address):
     """
     Очищает адрес, удаляя префиксы ('Улица', 'Проспект', и т.д.),
@@ -608,11 +718,17 @@ def generate_map_data(
             logger.info(f"Количество LessonAttendance для обработки: {lesson_count}")
 
             if lesson_count > 0:
-                lesson_coords = list(
-                    lesson_attendances_qs.values_list("latitude", "longitude")
+                lesson_attendances_list = list(
+                    lesson_attendances_qs.values_list(
+                        "id", "latitude", "longitude", flat=False
+                    )
                 )
 
-                class_locations = list(models.ClassLocation.objects.all())
+                class_locations = list(
+                    models.ClassLocation.objects.only(
+                        "id", "name", "latitude", "longitude"
+                    )
+                )
                 if not class_locations:
                     logger.warning("Нет записей ClassLocation.")
                     return []
@@ -620,26 +736,73 @@ def generate_map_data(
                 class_coords = [
                     (loc.latitude, loc.longitude) for loc in class_locations
                 ]
-                class_addresses = [loc.address.strip() for loc in class_locations]
 
                 kd_tree = KDTree(class_coords, metric="euclidean")
                 logger.info("KDTree успешно построен.")
 
-                distances, indices = kd_tree.query(lesson_coords, k=1)
-                logger.info("KDTree запрос завершен.")
+                nearest_addresses = []
+                for lesson_id, lesson_lat, lesson_lon in lesson_attendances_list:
+                    if lesson_lat is None or lesson_lon is None:
+                        logger.warning(
+                            f"LessonAttendance {lesson_id} не имеет координат"
+                        )
+                        continue
 
-                if hasattr(indices, "ndim") and indices.ndim > 1:
-                    indices = indices.flatten()
-                else:
-                    indices = indices
-
-                try:
-                    nearest_addresses = [class_addresses[int(idx)] for idx in indices]
-                except (ValueError, TypeError) as e:
-                    logger.error(
-                        f"Ошибка при преобразовании индексов KDTree: {e}", exc_info=True
+                    k_candidates = min(5, len(class_locations))
+                    _distances_degrees, candidate_indices = kd_tree.query(
+                        [[lesson_lat, lesson_lon]], k=k_candidates
                     )
-                    raise
+
+                    candidate_list = []
+                    if hasattr(candidate_indices, "flatten"):
+                        candidate_list = candidate_indices.flatten().tolist()
+                    elif (
+                        hasattr(candidate_indices, "__len__")
+                        and len(candidate_indices) > 0
+                    ):
+                        if (
+                            hasattr(candidate_indices[0], "__len__")
+                            and len(candidate_indices[0]) > 0
+                        ):
+                            candidate_list = [int(idx) for idx in candidate_indices[0]]
+                        else:
+                            candidate_list = [int(candidate_indices[0])]
+
+                    nearest_location = None
+                    min_distance = float("inf")
+                    for idx in candidate_list:
+                        if 0 <= idx < len(class_locations):
+                            candidate_loc = class_locations[idx]
+                            distance = calculate_distance_haversine(
+                                lesson_lat,
+                                lesson_lon,
+                                candidate_loc.latitude,
+                                candidate_loc.longitude,
+                            )
+                            if distance < min_distance:
+                                min_distance = distance
+                                nearest_location = candidate_loc
+
+                    if nearest_location is None:
+                        for loc in class_locations:
+                            distance = calculate_distance_haversine(
+                                lesson_lat,
+                                lesson_lon,
+                                loc.latitude,
+                                loc.longitude,
+                            )
+                            if distance < min_distance:
+                                min_distance = distance
+                                nearest_location = loc
+
+                    if nearest_location:
+                        nearest_addresses.append(nearest_location.address.strip())
+                    else:
+                        logger.warning(
+                            f"Не найдена ближайшая локация для LessonAttendance {lesson_id}"
+                        )
+
+                logger.info("KDTree запрос с точным расчетом завершен.")
 
                 address_counts = Counter(nearest_addresses)
                 lesson_attendance_by_address = defaultdict(int, address_counts)
@@ -721,9 +884,14 @@ def generate_map_data(
 
 
 class LocationSearcher:
+    """Класс для поиска ближайших локаций с использованием KDTree.
+
+    Использует KDTree для быстрого поиска кандидатов и формулу Haversine
+    для точного расчета расстояния.
+    """
+
     def __init__(self, locations):
-        """
-        Инициализация с использованием списка локаций.
+        """Инициализирует LocationSearcher со списком локаций.
 
         Args:
             locations (list): Список словарей с ключами `latitude`, `longitude`, `name`.
@@ -736,8 +904,10 @@ class LocationSearcher:
         self.names = [loc["name"] for loc in locations]
 
     def find_nearest(self, lat, lon, radius=200):
-        """
-        Находит ближайшую локацию в заданном радиусе.
+        """Находит ближайшую локацию в заданном радиусе с точным расчетом расстояния.
+
+        Использует KDTree для быстрого поиска кандидатов, затем пересчитывает
+        точное расстояние через формулу Haversine для выбора ближайшей локации.
 
         Args:
             lat (float): Широта искомой точки.
@@ -748,15 +918,47 @@ class LocationSearcher:
             str: Название ближайшей локации или "Unknown Area".
         """
         meters_to_degrees = radius / 111000
-        indices = self.kd_tree.query_radius([[lat, lon]], r=meters_to_degrees)[0]
-        if len(indices) > 0:
-            return self.names[indices[0]]
-        return "Unknown Area"
+        candidate_indices = self.kd_tree.query_radius(
+            [[lat, lon]], r=meters_to_degrees
+        )[0]
+
+        if len(candidate_indices) == 0:
+            return "Unknown Area"
+
+        nearest_name = None
+        min_distance = float("inf")
+
+        for idx in candidate_indices:
+            if 0 <= idx < len(self.locations):
+                candidate = self.locations[idx]
+                distance = calculate_distance_haversine(
+                    lat, lon, candidate["latitude"], candidate["longitude"]
+                )
+                if distance < min_distance and distance <= radius:
+                    min_distance = distance
+                    nearest_name = candidate["name"]
+
+        return nearest_name if nearest_name else "Unknown Area"
 
 
-def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
-    R = 6371000
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+R_EARTH_M = 6_371_000
+
+
+def calculate_distance_haversine(lat1, lon1, lat2, lon2):
+    """Расстояние между двумя точками по формуле Haversine (большой круг на сфере).
+
+    Подходит для WGS84 (lat/lon) при d < 1 км. Точность для смартфона (5–15 м) достаточна.
+
+    Args:
+        lat1, lon1: широта и долгота первой точки, градусы.
+        lat2, lon2: широта и долгота второй точки, градусы.
+
+    Returns:
+        float: расстояние в метрах.
+    """
+    R = R_EARTH_M
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
     delta_phi = math.radians(lat2 - lat1)
     delta_lambda = math.radians(lon2 - lon1)
     a = (
@@ -765,33 +967,200 @@ def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
     )
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     distance = R * c
+    return distance
+
+
+def compute_class_location_acceptance_radii(
+    locations,
+    r_same_point=60,
+    r_cluster=80,
+    r_standalone=65,
+    same_point_threshold=5,
+    cluster_threshold=30,
+):
+    """Приёмный радиус R_loc (м) для каждой локации. Логика:
+
+    1) Если у объекта задано acceptance_radius_m (БД) и > 0 — использовать его.
+    2) Иначе — по соседству (min_d до ближайшей другой локации, Haversine):
+       — min_d < same_point_threshold: одна точка, несколько организаций → r_same_point
+       — same_point_threshold ≤ min_d < cluster_threshold: кластер/двор → r_cluster
+       — min_d ≥ cluster_threshold: отдельно стоящая → r_standalone
+
+    Кэшируется в Redis. Классификация по соседям учитывает двор/несколько пинов.
+
+    Args:
+        locations: объекты с .id, .latitude, .longitude; опционально .acceptance_radius_m
+        r_same_point, r_cluster, r_standalone: радиусы в метрах
+        same_point_threshold, cluster_threshold: пороги до ближайшей локации (м)
+
+    Returns:
+        dict[int, int]: {location_id: R в метрах}
+    """
+    locs = [
+        o
+        for o in locations
+        if getattr(o, "latitude", None) is not None
+        and getattr(o, "longitude", None) is not None
+    ]
+    out = {}
+    for loc in locs:
+        override = getattr(loc, "acceptance_radius_m", None)
+        if override is not None and override > 0:
+            out[loc.id] = int(override)
+            continue
+        min_d = float("inf")
+        for other in locs:
+            if getattr(other, "id", None) == getattr(loc, "id", None):
+                continue
+            d = calculate_distance_haversine(
+                loc.latitude, loc.longitude, other.latitude, other.longitude
+            )
+            if d < min_d:
+                min_d = d
+        if min_d < same_point_threshold:
+            R = r_same_point
+        elif min_d < cluster_threshold:
+            R = r_cluster
+        else:
+            R = r_standalone
+        out[loc.id] = R
+    return out
+
+
+def get_location_radius(loc, radii_dict=None):
+    """Радиус R (м) для локации: acceptance_radius_m или radii_dict или DEFAULT."""
+    override = getattr(loc, "acceptance_radius_m", None)
+    if override is not None and override > 0:
+        return int(override)
+    if radii_dict and getattr(loc, "id", None) in radii_dict:
+        return int(radii_dict[loc.id])
+    from monitoring_app.lesson_locations_conf import DEFAULT_ACCEPTANCE_RADIUS_M
+
+    return DEFAULT_ACCEPTANCE_RADIUS_M
+
+
+def compute_neighbor_color_index(locations, neighbor_threshold_m=30):
+    """Индексы цветов для различения соседних локаций на карте.
+
+    Сосед = расстояние < neighbor_threshold_m. В каждом кластере соседей
+    раздаёт 0,1,2,... чтобы отличать друг от друга. Одинокие — 0.
+
+    Returns:
+        dict[int, int]: {location_id: 0..4}
+    """
+    thr = neighbor_threshold_m
+    locs = [
+        o
+        for o in locations
+        if getattr(o, "latitude", None) is not None
+        and getattr(o, "longitude", None) is not None
+    ]
+    neighbors = {o.id: [] for o in locs}
+    for i, a in enumerate(locs):
+        for b in locs[i + 1 :]:
+            d = calculate_distance_haversine(
+                a.latitude, a.longitude, b.latitude, b.longitude
+            )
+            if d < thr:
+                neighbors[a.id].append(b.id)
+                neighbors[b.id].append(a.id)
+    PALETTE_SIZE = 5
+    out = {}
+    for loc in locs:
+        used = {out[n] for n in neighbors[loc.id] if n in out}
+        c = 0
+        while c in used:
+            c += 1
+        out[loc.id] = c % PALETTE_SIZE
+    return out
+
+
+def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
+    """Проверяет, находится ли точка в заданном радиусе от другой точки.
+
+    Args:
+        lat1 (float): Широта первой точки в градусах.
+        lon1 (float): Долгота первой точки в градусах.
+        lat2 (float): Широта второй точки в градусах.
+        lon2 (float): Долгота второй точки в градусах.
+        radius (float): Радиус в метрах. По умолчанию 200.
+
+    Returns:
+        bool: True если расстояние меньше или равно радиусу.
+    """
+    distance = calculate_distance_haversine(lat1, lon1, lat2, lon2)
     return distance <= radius
 
 
 def extract_coordinates(geo_data):
     """
-    Extracts latitude and longitude from a geo data string formatted as 'longitude%2Clatitude'.
+    Extracts latitude and longitude from a geo data string.
 
-    This function searches the input string `geo_data` for a latitude-longitude pair in the
-    format `longitude%2Clatitude` (e.g., "76.929225%2C43.254926"). The latitude and longitude
-    values are extracted, converted to floats, and returned in the order (latitude, longitude).
-
-    Args:
-        geo_data (str): A string containing latitude and longitude data in the
-            format 'longitude%2Clatitude'.
+    Supports formats:
+    - latitude,longitude (e.g. "43.254926,76.929225") — для ручного редактирования
+    - longitude%2Clatitude (e.g. "76.929225%2C43.254926")
 
     Returns:
-        tuple: A tuple (latitude, longitude) if the coordinates are successfully extracted,
-        or (None, None) if the input string is invalid or does not contain recognizable coordinates.
-
-    Example:
-        >>> extract_coordinates("76.929225%2C43.254926")
-        (43.254926, 76.929225)
+        tuple: (latitude, longitude) or (None, None) if invalid.
     """
-    match = re.search(r"(\d{2}\.\d+)%2C(\d{2}\.\d+)", geo_data)
+    if not geo_data or not isinstance(geo_data, str):
+        return (None, None)
+    geo_data = geo_data.strip()
+    # Формат lat,lon (широта,долгота)
+    match = re.search(r"(-?\d+\.?\d*)\s*[,;]\s*(-?\d+\.?\d*)", geo_data)
     if match:
-        return match.group(2), match.group(1)
+        a, b = float(match.group(1)), float(match.group(2))
+        # Широта -90..90, долгота -180..180
+        if -90 <= a <= 90 and -180 <= b <= 180:
+            return (a, b)
+        if -90 <= b <= 90 and -180 <= a <= 180:
+            return (b, a)
+        return (a, b)
+    # Формат lon%2Clat
+    match = re.search(r"(-?\d+\.?\d*)%2C(-?\d+\.?\d*)", geo_data)
+    if match:
+        lon, lat = float(match.group(1)), float(match.group(2))
+        return (lat, lon)
     return (None, None)
+
+
+def export_class_locations_to_excel(queryset=None) -> bytes:
+    """
+    Экспортирует ClassLocation в Excel в формате загрузки (load_geo).
+    Столбцы: name, address, geo (latitude,longitude), acceptance_radius_m.
+    Можно отредактировать и загрузить обратно через upload_file.
+    queryset: если передан — экспортируются только выбранные, иначе все.
+    """
+    import io
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Локации"
+
+    ws.append(["Экспорт локаций для редактирования"])
+    ws.append(["Формат: name, address, latitude,longitude, acceptance_radius_m (м)"])
+    ws.append(["name", "address", "geo", "acceptance_radius_m"])
+
+    if queryset is not None and queryset.exists():
+        locs = queryset.only(
+            "name", "address", "latitude", "longitude", "acceptance_radius_m"
+        ).order_by("name")
+    else:
+        locs = models.ClassLocation.objects.only(
+            "name", "address", "latitude", "longitude", "acceptance_radius_m"
+        ).order_by("name")
+
+    for loc in locs:
+        geo = ""
+        if loc.latitude is not None and loc.longitude is not None:
+            geo = f"{loc.latitude},{loc.longitude}"
+        radius = loc.acceptance_radius_m if loc.acceptance_radius_m is not None else ""
+        ws.append([loc.name or "", loc.address or "", geo, radius])
+
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out.getvalue()
 
 
 def get_bonus_percentage(num_days, percent_for_period):
@@ -889,29 +1258,34 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
     """
     from django.db.models import Q
 
-    logger.info(
-        f"Collecting attendance data from {start_date} to {end_date} for {staff_list.count()} staff members"
-    )
-
     date_range = [
         start_date + datetime.timedelta(days=i)
         for i in range((end_date - start_date).days + 1)
     ]
 
-    staff_ids = list(staff_list.values_list("id", flat=True))
-
-    holidays = get_cache(
-        "public_holidays",
-        query=lambda: {
-            holiday.date: holiday.is_working_day
-            for holiday in models.PublicHoliday.objects.filter(
-                date__range=[start_date, end_date]
-            )
-        },
-        timeout=10 * 60,
+    staff_list = list(staff_list.select_related("department"))
+    staff_ids = [s.id for s in staff_list]
+    logger.info(
+        f"Collecting attendance data from {start_date} to {end_date} for {len(staff_list)} staff members"
     )
 
-    class_locations = list(models.ClassLocation.objects.all())
+    holidays = (
+        get_cache(
+            "public_holidays",
+            query=lambda: {
+                holiday.date: holiday.is_working_day
+                for holiday in models.PublicHoliday.objects.filter(
+                    date__range=[start_date, end_date]
+                )
+            },
+            timeout=10 * 60,
+        )
+        or {}
+    )
+
+    class_locations = list(
+        models.ClassLocation.objects.only("id", "name", "latitude", "longitude")
+    )
     location_searcher = None
     if class_locations:
         location_data = [
@@ -929,12 +1303,29 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             start_date + datetime.timedelta(days=1),
             end_date + datetime.timedelta(days=1),
         ],
-    ).select_related("staff")
+    ).only(
+        "staff_id",
+        "date_at",
+        "first_in",
+        "last_out",
+        "area_name_in",
+        "area_name_out",
+        "effective_work_seconds",
+        "effective_work_intervals",
+    )
 
     lesson_attendance_qs = models.LessonAttendance.objects.filter(
         staff_id__in=staff_ids,
         date_at__range=[start_date, end_date],
-    ).select_related("staff")
+    ).only(
+        "staff_id",
+        "first_in",
+        "date_at",
+        "last_out",
+        "latitude",
+        "longitude",
+        "duration_seconds",
+    )
 
     remote_work_qs = models.RemoteWork.objects.filter(
         Q(staff_id__in=staff_ids)
@@ -942,38 +1333,67 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             Q(start_date__lte=end_date, end_date__gte=start_date)
             | Q(permanent_remote=True)
         )
-    ).select_related("staff")
+    ).only("staff_id", "permanent_remote", "start_date", "end_date")
 
     absence_qs = models.AbsentReason.objects.filter(
         staff_id__in=staff_ids, start_date__lte=end_date, end_date__gte=start_date
-    ).select_related("staff")
+    ).only("staff_id", "start_date", "end_date", "reason", "approved")
 
     attendance_map = defaultdict(lambda: defaultdict(dict))
 
     for att in attendance_qs:
-        local_date = (
-            convert_to_local(att.first_in)
-            if att.first_in
-            else convert_to_local(att.date_at) - datetime.timedelta(days=1)
-        )
+        if att.first_in:
+            local_date = convert_to_local(att.first_in)
+        else:
+            local_date = convert_to_local(att.date_at)
+            if local_date is not None:
+                local_date = local_date - datetime.timedelta(days=1)
+        if local_date is None:
+            continue
         date_key = local_date.strftime("%Y-%m-%d")
         staff_id = att.staff_id
 
-        first_in_local = convert_to_local(att.first_in) if att.first_in else None
-        last_out_local = convert_to_local(att.last_out) if att.last_out else None
+        use_first_in = att.first_in and not is_lift_terminal(att.area_name_in)
+        use_last_out = att.last_out and not is_lift_terminal(att.area_name_out)
+        first_in_local = convert_to_local(att.first_in) if use_first_in else None
+        last_out_local = convert_to_local(att.last_out) if use_last_out else None
+        elevator_first_in = (
+            convert_to_local(att.first_in)
+            if att.first_in and not use_first_in
+            else None
+        )
+        elevator_last_out = (
+            convert_to_local(att.last_out)
+            if att.last_out and not use_last_out
+            else None
+        )
 
         if staff_id not in attendance_map[date_key]:
-            attendance_map[date_key][staff_id] = {
+            area_name = (
+                (att.area_name_in if (att.area_name_in and use_first_in) else None)
+                or (att.area_name_out if (att.area_name_out and use_last_out) else None)
+                or "Неизвестная локация"
+            )
+            rec = {
                 "first_in": first_in_local,
                 "last_out": last_out_local,
-                "area_name": (
-                    att.area_name_in if att.area_name_in else "Неизвестная локация"
-                ),
+                "area_name": area_name,
                 "source": "staff_attendance",
+                "first_in_source": "staff_attendance",
+                "last_out_source": "staff_attendance",
+                "effective_work_seconds": getattr(att, "effective_work_seconds", None),
+                "effective_work_intervals": getattr(
+                    att, "effective_work_intervals", None
+                ),
+                "la_intervals": [],
             }
+            if elevator_first_in is not None or elevator_last_out is not None:
+                rec["elevator_first_in"] = elevator_first_in
+                rec["elevator_last_out"] = elevator_last_out
+            attendance_map[date_key][staff_id] = rec
         else:
             current_rec = attendance_map[date_key][staff_id]
-            if att.first_in and (
+            if use_first_in and (
                 not current_rec["first_in"]
                 or convert_to_local(att.first_in) < current_rec["first_in"]
             ):
@@ -983,11 +1403,11 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     if current_rec.get("source") == "lesson_attendance"
                     else "mixed"
                 )
-                current_rec["area_name"] = (
-                    att.area_name_in if att.area_name_in else current_rec["area_name"]
-                )
+                current_rec["first_in_source"] = "staff_attendance"
+                if att.area_name_in:
+                    current_rec["area_name"] = att.area_name_in
 
-            if att.last_out and (
+            if use_last_out and (
                 not current_rec["last_out"]
                 or convert_to_local(att.last_out) > current_rec["last_out"]
             ):
@@ -997,8 +1417,16 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     if current_rec.get("source") == "lesson_attendance"
                     else "mixed"
                 )
+                current_rec["last_out_source"] = "staff_attendance"
                 if att.area_name_out:
                     current_rec["area_name"] = att.area_name_out
+            if elevator_first_in is not None or elevator_last_out is not None:
+                current_rec["elevator_first_in"] = elevator_first_in
+                current_rec["elevator_last_out"] = elevator_last_out
+            if getattr(att, "effective_work_seconds", None) is not None:
+                current_rec["effective_work_seconds"] = att.effective_work_seconds
+            if "la_intervals" not in current_rec:
+                current_rec["la_intervals"] = []
 
     for lesson_att in lesson_attendance_qs:
         local_date = (
@@ -1039,14 +1467,26 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             )
 
         if staff_id not in attendance_map[date_key]:
+            la_intervals = []
+            if first_in_local and last_out_local and last_out_local > first_in_local:
+                la_intervals = [(first_in_local, last_out_local)]
             attendance_map[date_key][staff_id] = {
                 "first_in": first_in_local,
                 "last_out": last_out_local,
                 "area_name": location_name,
                 "source": "lesson_attendance",
+                "first_in_source": "lesson_attendance",
+                "last_out_source": "lesson_attendance",
+                "effective_work_seconds": None,
+                "effective_work_intervals": None,
+                "la_intervals": la_intervals,
             }
         else:
             current_rec = attendance_map[date_key][staff_id]
+            if "la_intervals" not in current_rec:
+                current_rec["la_intervals"] = []
+            if first_in_local and last_out_local and last_out_local > first_in_local:
+                current_rec["la_intervals"].append((first_in_local, last_out_local))
 
             if lesson_att.first_in and (
                 not current_rec["first_in"]
@@ -1058,6 +1498,7 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     if current_rec.get("source") == "staff_attendance"
                     else "mixed"
                 )
+                current_rec["first_in_source"] = "lesson_attendance"
                 if current_rec.get("source") == "lesson_attendance":
                     current_rec["area_name"] = location_name
 
@@ -1071,15 +1512,54 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     if current_rec.get("source") == "staff_attendance"
                     else "mixed"
                 )
+                current_rec["last_out_source"] = "lesson_attendance"
                 if current_rec.get("source") == "lesson_attendance":
                     current_rec["area_name"] = location_name
+
+    for date_key in attendance_map:
+        for staff_id in attendance_map[date_key]:
+            rec = attendance_map[date_key][staff_id]
+            intervals: List[Tuple[datetime.datetime, datetime.datetime]] = []
+            for raw in rec.get("effective_work_intervals") or []:
+                try:
+                    s = raw.get("start") and datetime.datetime.fromisoformat(
+                        raw["start"].replace("Z", "+00:00")
+                    )
+                    e = raw.get("end") and datetime.datetime.fromisoformat(
+                        raw["end"].replace("Z", "+00:00")
+                    )
+                    if s is not None and e is not None and e > s:
+                        intervals.append((s, e))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+            for start, end in rec.get("la_intervals") or []:
+                if start and end and end > start:
+                    intervals.append((start, end))
+            total_sec = merge_work_intervals_to_total_seconds(intervals)
+            rec["effective_work_seconds"] = total_sec if total_sec > 0 else None
+            rec.pop("la_intervals", None)
+            rec.pop("effective_work_intervals", None)
 
     remote_work_map = defaultdict(set)
     for rw in remote_work_qs:
         staff_id = rw.staff_id
 
-        rw_start = start_date if rw.permanent_remote else max(rw.start_date, start_date)
-        rw_end = end_date if rw.permanent_remote else min(rw.end_date, end_date)
+        if rw.permanent_remote:
+            rw_start = start_date
+            rw_end = end_date
+        else:
+            if rw.start_date is None or rw.end_date is None:
+                logger.warning(
+                    "RemoteWork id=%s for staff_id=%s skipped because start/end dates are missing",
+                    rw.id,
+                    staff_id,
+                )
+                continue
+            rw_start = max(rw.start_date, start_date)
+            rw_end = min(rw.end_date, end_date)
+
+        if rw_start > rw_end:
+            continue
 
         date_keys = [
             (rw_start + datetime.timedelta(days=i)).strftime("%Y-%m-%d")
@@ -1110,33 +1590,56 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         for staff in staff_list
     }
 
-    for date in date_range:
-        date_str = date.strftime("%Y-%m-%d")
-        date_display = date.strftime("%d.%m.%Y")
-        is_weekend = date.weekday() >= 5
-        is_holiday = date in holidays and not holidays[date]
-        is_off_day = is_weekend or is_holiday
+    date_info = [
+        (
+            d.strftime("%Y-%m-%d"),
+            d.strftime("%d.%m.%Y"),
+            (d.weekday() >= 5) or (d in holidays and not holidays.get(d, False)),
+        )
+        for d in date_range
+    ]
+
+    for date_str, date_display, is_off_day in date_info:
+        date_attendance = attendance_map.get(date_str, {})
+        date_remote = remote_work_map.get(date_str, set())
+        date_absence = absence_map.get(date_str, {})
 
         for staff in staff_list:
             staff_id = staff.id
             staff_fio, department_name = staff_data_cache[staff_id]
 
-            has_attendance = staff_id in attendance_map.get(date_str, {})
-            is_remote = staff_id in remote_work_map.get(date_str, set())
-            has_absence = staff_id in absence_map.get(date_str, {})
+            att_data = date_attendance.get(staff_id)
+            has_attendance = att_data is not None
+            is_remote = staff_id in date_remote
+            has_absence = staff_id in date_absence
 
             attendance_info = None
             if has_attendance:
-                att_data = attendance_map[date_str][staff_id]
                 first_in = att_data["first_in"]
                 last_out = att_data["last_out"]
+                effective_work_seconds = att_data.get("effective_work_seconds")
 
-                if first_in and last_out:
-                    area_name = att_data.get("area_name", "Неизвестная локация")
-                    attendance_info = (
-                        f"{first_in.strftime('%H:%M:%S')} - {last_out.strftime('%H:%M:%S')}\n"
-                        f"({area_name})"
+                if first_in or last_out:
+                    raw_area = att_data.get("area_name", "Неизвестная локация")
+                    display_area = resolve_area_address(raw_area) or raw_area
+                    t_in = (
+                        (first_in or last_out).strftime("%H:%M:%S")
+                        if (first_in or last_out)
+                        else "—"
                     )
+                    t_out = (
+                        (last_out or first_in).strftime("%H:%M:%S")
+                        if (last_out or first_in)
+                        else "—"
+                    )
+                    attendance_info = f"{t_in} - {t_out}\n({display_area})"
+                    if effective_work_seconds is not None:
+                        mins = int(effective_work_seconds // 60)
+                        if mins >= 60:
+                            h, m = divmod(mins, 60)
+                            attendance_info += f"\n{h} ч {m} мин"
+                        else:
+                            attendance_info += f"\n{mins} мин"
 
             if is_off_day:
                 if attendance_info:
@@ -1146,7 +1649,33 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     status_info = "Выходной"
                     meta = "holiday"
             else:
-                if has_attendance and is_remote:
+                first_in = att_data["first_in"] if att_data else None
+                last_out = att_data["last_out"] if att_data else None
+                has_elevator_times = att_data and (
+                    att_data.get("elevator_first_in") is not None
+                    or att_data.get("elevator_last_out") is not None
+                )
+                is_elevator_only = (
+                    has_attendance
+                    and first_in is None
+                    and last_out is None
+                    and not has_absence
+                    and has_elevator_times
+                )
+                if is_elevator_only:
+                    ei = att_data.get("elevator_first_in") if att_data else None
+                    eo = att_data.get("elevator_last_out") if att_data else None
+                    raw_area = att_data.get("area_name") if att_data else None
+                    lift_addr = resolve_area_address(raw_area) if raw_area else None
+                    addr_suffix = f"\n({lift_addr})" if lift_addr else ""
+                    if ei is not None or eo is not None:
+                        t_in = ei.strftime("%H:%M:%S") if ei else "—"
+                        t_out = eo.strftime("%H:%M:%S") if eo else "—"
+                        status_info = f"{t_in} - {t_out}\nЛИФТ{addr_suffix}"
+                    else:
+                        status_info = f"ЛИФТ{addr_suffix}"
+                    meta = "elevator_only"
+                elif has_attendance and is_remote:
                     status_info = (
                         f"Удаленная работа + Присутствие\n{attendance_info}"
                         if attendance_info
@@ -1154,7 +1683,7 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     )
                     meta = "remote_work"
                 elif has_attendance and has_absence:
-                    absence_info = absence_map[date_str][staff_id][0]
+                    absence_info = date_absence[staff_id][0]
                     reason = absence_info["reason"]
                     approved = absence_info["approved"]
 
@@ -1179,7 +1708,7 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     status_info = "Удаленная работа"
                     meta = "remote_work"
                 elif has_absence:
-                    absence_info = absence_map[date_str][staff_id][0]
+                    absence_info = date_absence[staff_id][0]
                     status_info = absence_info["reason"]
                     meta = (
                         "absence_reason_approved"
@@ -1219,6 +1748,7 @@ def generate_excel_file(
         Bytes data of the Excel file.
     """
     import io
+
     from openpyxl.styles import Border, Side
     from openpyxl.utils import get_column_letter
 
@@ -1251,6 +1781,9 @@ def generate_excel_file(
     )
     fill_not_approved = PatternFill(
         start_color="FB7185", end_color="FB7185", fill_type="solid"
+    )
+    fill_elevator = PatternFill(
+        start_color="9CA3AF", end_color="9CA3AF", fill_type="solid"
     )
     thin_border = Border(
         left=Side(style="thin"),
@@ -1286,6 +1819,7 @@ def generate_excel_file(
         ("Удаленная работа", fill_remote),
         ("Одобрено", fill_approved),
         ("Не одобрено", fill_not_approved),
+        ("ЛИФТ", fill_elevator),
     ]
     for i, (legend_text, legend_fill) in enumerate(legends, start=1):
         row_idx = legend_row + i
@@ -1300,9 +1834,11 @@ def generate_excel_file(
 
     data_start_row = legend_row + len(legends) + 2
 
-    df = pd.DataFrame(
-        attendance_data, columns=["ФИО", "Отдел", "Дата", "Посещаемость", "meta"]
+    columns_index = pd.Index(
+        ["ФИО", "Отдел", "Дата", "Посещаемость", "meta"], dtype="object"
     )
+    df = pd.DataFrame(attendance_data, columns=columns_index)
+    df = cast(pd.DataFrame, df)
     df["date_obj"] = pd.to_datetime(df["Дата"], format="%d.%m.%Y")
     df = df[
         (df["date_obj"] >= pd.to_datetime(user_start_date))
@@ -1311,10 +1847,15 @@ def generate_excel_file(
     if df.empty:
         logger.warning("No attendance data for the selected date range.")
 
-    df = df.sort_values(by="date_obj", ascending=False)
+    sort_method = getattr(df, "sort_values")
+    df = cast(pd.DataFrame, sort_method(by="date_obj", ascending=False))
 
     unique_staff = df[["ФИО", "Отдел"]].drop_duplicates()
-    unique_staff = unique_staff.sort_values(by=["Отдел", "ФИО"], ascending=True)
+    sort_method_staff = getattr(unique_staff, "sort_values")
+    unique_staff = cast(
+        pd.DataFrame,
+        sort_method_staff(by=["Отдел", "ФИО"], ascending=[True, True]),
+    )
 
     unique_dates = df["Дата"].unique()
 
@@ -1333,21 +1874,26 @@ def generate_excel_file(
         attendance_lookup[key] = row.Посещаемость
         meta_lookup[key] = row.meta
 
-    public_holidays = get_cache(
-        "public_holidays_for_excel",
-        query=lambda: {
-            holiday.date.strftime("%d.%m.%Y"): holiday.is_working_day
-            for holiday in models.PublicHoliday.objects.filter(
-                date__range=[user_start_date, user_end_date]
-            )
-        },
-        timeout=10 * 60,
+    public_holidays = (
+        get_cache(
+            "public_holidays_for_excel",
+            query=lambda: {
+                holiday.date.strftime("%d.%m.%Y"): holiday.is_working_day
+                for holiday in models.PublicHoliday.objects.filter(
+                    date__range=[user_start_date, user_end_date]
+                )
+            },
+            timeout=10 * 60,
+        )
+        or {}
     )
 
     row_idx = data_start_row + 1
-    for _, staff_row in unique_staff.iterrows():
-        fio = staff_row["ФИО"]
-        dept = staff_row["Отдел"]
+    for __, staff_row in unique_staff.iterrows():
+        fio_value = staff_row["ФИО"]
+        dept_value = staff_row["Отдел"]
+        fio = "" if bool(pd.isna(fio_value)) else str(fio_value)
+        dept = "" if bool(pd.isna(dept_value)) else str(dept_value)
 
         fio_cell = ws.cell(row=row_idx, column=1, value=fio)
         fio_cell.font = data_font
@@ -1385,6 +1931,8 @@ def generate_excel_file(
             elif meta in ["absence", "absence_reason"]:
                 data_cell.fill = fill_not_approved
                 data_cell.font = Font(name="Arial", size=10, color="FFFFFF")
+            elif meta == "elevator_only":
+                data_cell.fill = fill_elevator
         row_idx += 1
 
     for col_idx in range(1, ws.max_column + 1):

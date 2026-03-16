@@ -1,6 +1,6 @@
-import { useState, ChangeEvent, useMemo } from "react";
+import { useState, ChangeEvent, useMemo, memo, useCallback } from "react";
 import { IData } from "../schemas/IData";
-import { Link } from "../RouterUtils";
+import { useNavigate } from "../RouterUtils";
 import { formatDepartmentName } from "../utils/utils";
 import { motion } from "framer-motion";
 import SearchInput from "../components/SearchInput";
@@ -16,29 +16,36 @@ import {
 
 interface DepartmentTableProps {
   data: IData;
-  mode?: "root" | "department";
 }
 
-const DepartmentTable: React.FC<DepartmentTableProps> = ({
-  data,
-  mode = "department",
-}) => {
+const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
+  const navigate = useNavigate();
   const [page, setPage] = useState<number>(0);
   const [rowsPerPage] = useState<number>(10);
   const [searchQuery, setSearchQuery] = useState<string>("");
+
+  const handleRowClick = useCallback(
+    (departmentId: string, hasChildDepartments: boolean) => {
+      const path = hasChildDepartments
+        ? `/department/${departmentId}`
+        : `/childDepartment/${departmentId}`;
+      navigate(path);
+    },
+    [navigate],
+  );
 
   const filteredDepartments = useMemo(() => {
     return (data?.child_departments ?? [])
       .sort((a, b) => a.name.localeCompare(b.name))
       .filter((department) =>
-        department.name.toLowerCase().includes(searchQuery.toLowerCase())
+        department.name.toLowerCase().includes(searchQuery.toLowerCase()),
       );
   }, [data, searchQuery]);
 
   const totalPages = Math.ceil(filteredDepartments.length / rowsPerPage);
   const visibleDepartments = filteredDepartments.slice(
     page * rowsPerPage,
-    page * rowsPerPage + rowsPerPage
+    page * rowsPerPage + rowsPerPage,
   );
 
   const handleChangePage = (newPage: number) => {
@@ -157,23 +164,34 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
               Отделы не найдены
             </motion.div>
           ) : (
-            visibleDepartments.map((department) => (
-              <motion.div
-                key={department.child_id}
-                variants={cardVariants}
-                whileHover="hover"
-                className="card p-5"
-              >
-                <Link
-                  to={
-                    mode === "root"
-                      ? `/department/${department.child_id}`
-                      : `/childDepartment/${department.child_id}`
+            visibleDepartments.map((department) => {
+              const hasChildDepartments = department.has_child_departments;
+
+              return (
+                <motion.div
+                  key={department.child_id}
+                  variants={cardVariants}
+                  whileHover="hover"
+                  className="card p-5 cursor-pointer"
+                  onClick={() =>
+                    handleRowClick(
+                      String(department.child_id),
+                      hasChildDepartments,
+                    )
                   }
-                  className="block"
                 >
                   <div className="flex items-start mb-3">
-                    <FaFolderOpen className="text-primary-500 dark:text-primary-400 text-xl mt-1 mr-3" />
+                    {hasChildDepartments ? (
+                      <FaFolderOpen
+                        className="text-primary-500 dark:text-primary-400 text-xl mt-1 mr-3"
+                        title="Отдел с подразделениями"
+                      />
+                    ) : (
+                      <FaFolder
+                        className="text-primary-500 dark:text-primary-400 text-xl mt-1 mr-3"
+                        title="Конечный отдел (сотрудники)"
+                      />
+                    )}
                     <h3 className="text-lg font-medium text-primary-700 dark:text-primary-300">
                       {formatDepartmentName(department.name)}
                     </h3>
@@ -182,13 +200,13 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
                     <FaCalendarAlt className="mr-2 text-gray-500 dark:text-gray-500" />
                     <span className="font-mono">
                       {new Date(
-                        department.date_of_creation
+                        department.date_of_creation,
                       ).toLocaleDateString()}
                     </span>
                   </div>
-                </Link>
-              </motion.div>
-            ))
+                </motion.div>
+              );
+            })
           )}
         </motion.div>
 
@@ -230,46 +248,52 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
                   </td>
                 </tr>
               ) : (
-                visibleDepartments.map((department) => (
-                  <motion.tr
-                    key={department.child_id}
-                    variants={rowVariants}
-                    className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors duration-200"
-                  >
-                    <td className="py-4 pl-6 pr-3 whitespace-nowrap">
-                      <div className="flex items-center">
-                        <FaFolderOpen className="flex-shrink-0 h-5 w-5 text-primary-500 dark:text-primary-400 mr-3" />
-                        <Link
-                          to={
-                            department.has_child_departments
-                              ? `/department/${department.child_id}`
-                              : `/childDepartment/${department.child_id}`
-                          }
-                          className="text-base font-medium text-primary-700 hover:text-primary-900 dark:text-primary-300 dark:hover:text-primary-100 transition-colors duration-200"
-                        >
-                          {formatDepartmentName(department.name)}
-                        </Link>
-                      </div>
-                    </td>
-                    <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400 font-mono">
-                      {new Date(
-                        department.date_of_creation
-                      ).toLocaleDateString()}
-                    </td>
-                    <td className="py-4 pl-3 pr-6 whitespace-nowrap text-right text-sm">
-                      <Link
-                        to={
-                          department.has_child_departments
-                            ? `/department/${department.child_id}`
-                            : `/childDepartment/${department.child_id}`
-                        }
-                        className="inline-flex items-center px-2.5 py-1.5 border border-transparent text-xs font-medium rounded-full bg-primary-100 text-primary-700 hover:bg-primary-200 dark:bg-primary-900/30 dark:text-primary-300 dark:hover:bg-primary-800/50 transition-colors duration-200"
-                      >
-                        Показать
-                      </Link>
-                    </td>
-                  </motion.tr>
-                ))
+                visibleDepartments.map((department) => {
+                  const hasChildDepartments = department.has_child_departments;
+
+                  return (
+                    <motion.tr
+                      key={department.child_id}
+                      variants={rowVariants}
+                      className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors duration-200 cursor-pointer"
+                      onClick={() =>
+                        handleRowClick(
+                          String(department.child_id),
+                          hasChildDepartments,
+                        )
+                      }
+                    >
+                      <td className="py-4 pl-6 pr-3 whitespace-nowrap">
+                        <div className="flex items-center">
+                          {hasChildDepartments ? (
+                            <FaFolderOpen
+                              className="flex-shrink-0 h-5 w-5 text-primary-500 dark:text-primary-400 mr-3"
+                              title="Отдел с подразделениями"
+                            />
+                          ) : (
+                            <FaFolder
+                              className="flex-shrink-0 h-5 w-5 text-primary-500 dark:text-primary-400 mr-3"
+                              title="Конечный отдел (сотрудники)"
+                            />
+                          )}
+                          <span className="text-base font-medium text-primary-700 hover:text-primary-900 dark:text-primary-300 dark:hover:text-primary-100 transition-colors duration-200">
+                            {formatDepartmentName(department.name)}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400 font-mono">
+                        {new Date(
+                          department.date_of_creation,
+                        ).toLocaleDateString()}
+                      </td>
+                      <td className="py-4 pl-3 pr-6 whitespace-nowrap text-right text-sm">
+                        <span className="inline-flex items-center px-2.5 py-1.5 border border-transparent text-xs font-medium rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300 transition-colors duration-200">
+                          Показать
+                        </span>
+                      </td>
+                    </motion.tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -340,7 +364,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
                   >
                     {pageNum + 1}
                   </button>
-                )
+                ),
               )}
 
               <button
@@ -376,4 +400,4 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({
   );
 };
 
-export default DepartmentTable;
+export default memo(DepartmentTable);

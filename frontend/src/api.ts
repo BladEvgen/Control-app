@@ -3,21 +3,21 @@ import axios, { AxiosResponse } from "axios";
 import { apiUrl, isDebug } from "../apiConfig";
 
 const log = {
-  info: (...args: any[]) => {
+  info: (...args: unknown[]) => {
     if (isDebug) {
       console.log(`%cINFO:`, "color: green; font-weight: bold;", ...args);
     } else {
       log.prodWarning();
     }
   },
-  warn: (...args: any[]) => {
+  warn: (...args: unknown[]) => {
     if (isDebug) {
       console.log(`%cWARN:`, "color: orange; font-weight: bold;", ...args);
     } else {
       log.prodWarning();
     }
   },
-  error: (...args: any[]) => {
+  error: (...args: unknown[]) => {
     if (isDebug) {
       console.error(`%cERROR:`, "color: red; font-weight: bold;", ...args);
     } else {
@@ -99,7 +99,7 @@ export const removeCookie = (
 export const getCookie = (name: string): string | null => {
   try {
     const cookies = document.cookie.split("; ");
-    for (let cookie of cookies) {
+    for (const cookie of cookies) {
       try {
         const [cookieName, cookieValue] = cookie.split("=");
         if (cookieName === encodeURIComponent(name)) {
@@ -151,19 +151,83 @@ export const clearAuthData = () => {
 const axiosInstance = axios.create({
   baseURL: `${apiUrl}/api`,
   timeout: 10000,
-  headers: {
-    "Content-Type": "application/json;charset=utf-8",
-  },
 });
 
 let refreshPromise: Promise<string> | null = null;
 let refreshAttempts = 0;
 const MAX_REFRESH_ATTEMPTS = 3;
+const ACCESS_EXPIRE_BUFFER_MS = 60 * 1000;
+const ONE_MINUTE_MS = 60 * 1000;
+
+let refreshScheduleTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
 const resetRefreshAttempts = () => {
   setTimeout(() => {
     refreshAttempts = 0;
   }, 60000);
+};
+
+const getAccessTokenExpiryMs = (): number | null => {
+  const accessToken = getCookie("access_token");
+  if (!accessToken) return null;
+  try {
+    const parts = accessToken.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(atob(parts[1]));
+    if (!payload.exp) return null;
+    return payload.exp * 1000;
+  } catch {
+    return null;
+  }
+};
+
+const isAccessExpiredOrExpiringSoon = (accessToken: string): boolean => {
+  try {
+    const parts = accessToken.split(".");
+    if (parts.length !== 3) return true;
+    const payload = JSON.parse(atob(parts[1]));
+    if (!payload.exp) return false;
+    return payload.exp * 1000 <= Date.now() + ACCESS_EXPIRE_BUFFER_MS;
+  } catch {
+    return true;
+  }
+};
+
+export const clearRefreshSchedule = (): void => {
+  if (refreshScheduleTimeoutId !== null) {
+    clearTimeout(refreshScheduleTimeoutId);
+    refreshScheduleTimeoutId = null;
+  }
+};
+
+export const scheduleNextRefreshBeforeExpiry = (): void => {
+  clearRefreshSchedule();
+  const expiryMs = getAccessTokenExpiryMs();
+  if (expiryMs === null) return;
+  const delayMs = expiryMs - ONE_MINUTE_MS - Date.now();
+  if (delayMs <= 0) {
+    void proactiveRefreshIfNeeded();
+    return;
+  }
+  refreshScheduleTimeoutId = setTimeout(() => {
+    refreshScheduleTimeoutId = null;
+    void proactiveRefreshIfNeeded();
+  }, delayMs);
+};
+
+const handleLogout = () => {
+  log.info("Logging out. Clearing authentication data...");
+  clearRefreshSchedule();
+  try {
+    clearAuthData();
+    window.dispatchEvent(new Event("userLoggedOut"));
+    setTimeout(() => {
+      window.location.href = addPrefix("/login");
+    }, 100);
+  } catch (error) {
+    log.error("Error during logout:", error);
+    window.location.href = addPrefix("/login");
+  }
 };
 
 const refreshTokens = async (): Promise<string> => {
@@ -200,6 +264,11 @@ const refreshTokens = async (): Promise<string> => {
       const newAccessToken = response.data.access;
       const newRefreshToken = response.data.refresh;
 
+      if (!newAccessToken) {
+        log.error("No access token in refresh response");
+        return Promise.reject(new Error("No access token in response"));
+      }
+
       refreshAttempts = 0;
 
       setCookie("access_token", newAccessToken, {
@@ -207,21 +276,28 @@ const refreshTokens = async (): Promise<string> => {
         sameSite: isDebug ? "Lax" : "Strict",
         maxAge: 1800,
       });
-      setCookie("refresh_token", newRefreshToken, {
-        secure: !isDebug,
-        sameSite: isDebug ? "Lax" : "Strict",
-        maxAge: 7200,
-      });
+
+      if (newRefreshToken) {
+        setCookie("refresh_token", newRefreshToken, {
+          secure: !isDebug,
+          sameSite: isDebug ? "Lax" : "Strict",
+          maxAge: 7200,
+        });
+      }
 
       try {
-        localStorage.setItem(
-          "access_token_expires",
-          response.data.access_token_expires
-        );
-        localStorage.setItem(
-          "refresh_token_expires",
-          response.data.refresh_token_expires
-        );
+        if (response.data.access_token_expires) {
+          localStorage.setItem(
+            "access_token_expires",
+            response.data.access_token_expires
+          );
+        }
+        if (response.data.refresh_token_expires) {
+          localStorage.setItem(
+            "refresh_token_expires",
+            response.data.refresh_token_expires
+          );
+        }
       } catch (storageError) {
         log.error(
           "Failed to store token expiration in localStorage:",
@@ -230,6 +306,33 @@ const refreshTokens = async (): Promise<string> => {
       }
 
       log.info("Tokens refreshed successfully.");
+
+      window.dispatchEvent(
+        new CustomEvent("tokensRefreshed", {
+          detail: {
+            access: newAccessToken,
+            refresh: newRefreshToken,
+            accessTokenExpires: response.data.access_token_expires,
+            refreshTokenExpires: response.data.refresh_token_expires,
+          },
+        })
+      );
+
+      scheduleNextRefreshBeforeExpiry();
+
+      if (typeof window !== "undefined") {
+        try {
+          if ("BroadcastChannel" in window) {
+            const ch = new BroadcastChannel("auth");
+            ch.postMessage({ type: "tokens-refreshed", timestamp: Date.now() });
+            ch.close();
+          }
+          localStorage.setItem("app:authSync", String(Date.now()));
+        } catch {
+          // ignore
+        }
+      }
+
       refreshPromise = null;
       return newAccessToken;
     })
@@ -243,17 +346,46 @@ const refreshTokens = async (): Promise<string> => {
   return refreshPromise;
 };
 
+
+export const proactiveRefreshIfNeeded = async (): Promise<void> => {
+  const refreshToken = getCookie("refresh_token");
+  if (!refreshToken) return;
+  const accessToken = getCookie("access_token");
+  if (accessToken && !isAccessExpiredOrExpiringSoon(accessToken)) return;
+  try {
+    await refreshTokens();
+  } catch {
+    if (isDebug) {
+      log.info("Proactive refresh failed (handled in refreshTokens)");
+    }
+  }
+};
+
 axiosInstance.interceptors.request.use(
   async (config) => {
     if (config.skipAuthInterceptor) {
       return config;
     }
 
+    if (config.data instanceof FormData) {
+      delete config.headers["Content-Type"];
+    } else if (
+      config.data &&
+      typeof config.data === "object" &&
+      !config.headers["Content-Type"]
+    ) {
+      config.headers["Content-Type"] = "application/json;charset=utf-8";
+    }
+
     try {
       let accessToken = getCookie("access_token");
       const refreshToken = getCookie("refresh_token");
 
-      if (!accessToken && refreshToken) {
+      const needRefresh =
+        refreshToken &&
+        (!accessToken || isAccessExpiredOrExpiringSoon(accessToken));
+
+      if (needRefresh) {
         try {
           accessToken = await refreshTokens();
         } catch (err) {
@@ -307,20 +439,5 @@ axiosInstance.interceptors.response.use(
     return Promise.reject(error);
   }
 );
-
-const handleLogout = () => {
-  log.info("Logging out. Clearing authentication data...");
-  try {
-    clearAuthData();
-    window.dispatchEvent(new Event("userLoggedOut"));
-
-    setTimeout(() => {
-      window.location.href = addPrefix("/login");
-    }, 100);
-  } catch (error) {
-    log.error("Error during logout:", error);
-    window.location.href = addPrefix("/login");
-  }
-};
 
 export default axiosInstance;

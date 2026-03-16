@@ -1,0 +1,78 @@
+[MASTER]
+load-plugins = pylint_django
+init-hook = "import sys, os; sys.path.insert(0, os.path.abspath('backend')); os.environ.setdefault('DJANGO_SETTINGS_MODULE','django_settings.settings')"
+
+ignore = migrations
+ignore-patterns = (^|.*/)(migrations|venv|\.venv|node_modules|build|dist)(/|$)
+
+[MESSAGES CONTROL]
+disable =
+    import-error,
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    ungrouped-imports,
+    logging-fstring-interpolation,
+    trailing-whitespace,
+    import-outside-toplevel,
+    too-many-branches,
+    too-many-statements,
+    too-many-return-statements,
+    too-many-nested-blocks,
+    too-many-locals,
+    inconsistent-return-statements,
+    consider-using-in,
+    protected-access,
+    abstract-method,
+    invalid-name,
+    line-too-long,
+    too-many-lines,
+    wrong-import-position,
+    superfluous-parens,
+    use-maxsplit-arg,
+    no-member,
+    consider-using-from-import,
+    too-many-instance-attributes,
+    too-few-public-methods,
+    too-many-arguments,
+    too-many-positional-arguments,
+    redefined-argument-from-local,
+    no-else-return,
+    consider-merging-isinstance,
+    super-with-arguments,
+    consider-using-min-builtin,
+    consider-using-with,
+    use-dict-literal,
+    invalid-overridden-method,
+    arguments-renamed,
+    reimported,
+    unused-variable,
+    unused-argument,
+    redefined-outer-name,
+    cell-var-from-loop,
+    raise-missing-from,
+    broad-exception-caught,
+    useless-return
+
+[TYPECHECK]
+generated-members = objects,_default_manager,DoesNotExist,MultipleObjectsReturned,_meta,save,delete
+ignored-modules = django,rest_framework,channels
+
+[FORMAT]
+max-line-length = 120
+
+[DESIGN]
+max-branches = 20
+max-statements = 90
+max-locals = 25
+
+[SIMILARITIES]
+min-similarity-lines = 999
+ignore-comments = yes
+ignore-docstrings = yes
+ignore-imports = yes
+
+[REPORTS]
+score = no
+output-format = json
+reports = no

@@ -1,12 +1,8 @@
 from django.urls import path, re_path
-from rest_framework_simplejwt.views import (
-    TokenVerifyView,
-    TokenRefreshView,
-)
-
-from monitoring_app import views, custom_jwt
 from django.views.generic import RedirectView
+from monitoring_app import custom_jwt, views
 from monitoring_app.swagger import urlpatterns as doc_urls
+from monitoring_app.swagger_views import swagger_session_login, swagger_session_logout
 
 urlpatterns = [
     path("", RedirectView.as_view(url="/app/")),
@@ -19,11 +15,37 @@ urlpatterns = [
         views.StaffAttendanceStatsView.as_view(),
         name="staff-attendance-stats",
     ),
+    path(
+        "api/attendance/department-confirmation/",
+        views.department_attendance_confirmation,
+        name="department-attendance-confirmation",
+    ),
     path("api/locations", views.map_location, name="locations"),
+    path("api/lesson_locations/", views.lesson_locations, name="lesson_locations"),
+    path(
+        "api/classlocation/",
+        views.class_location_list_create,
+        name="class_location_list_create",
+    ),
+    path(
+        "api/classlocation/bulk/",
+        views.class_location_bulk_update,
+        name="class_location_bulk_update",
+    ),
+    path(
+        "api/classlocation/<int:pk>/",
+        views.class_location_detail,
+        name="class_location_detail",
+    ),
     path(
         "api/lesson_attendance/",
         views.create_lesson_attendance,
         name="create_lesson_attendance",
+    ),
+    path(
+        "api/lesson_attendance/json/",
+        views.create_lesson_attendance_json,
+        name="create_lesson_attendance_json",
     ),
     path(
         "api/lesson_attendance/<int:id>/",
@@ -53,14 +75,26 @@ urlpatterns = [
     path("api/download/<str:department_id>/", views.sent_excel, name="sent_excel"),
     path("api/key_check/", views.APIKeyCheckView.as_view(), name="api_key_check"),
     path("api/parent_department_id/", views.get_parent_id, name="get-parent-ids"),
+    path(
+        "api/departments/root/",
+        views.root_departments_batch,
+        name="root-departments-batch",
+    ),
     path("api/staff/<str:staff_pin>/", views.staff_detail, name="staff-detail"),
     path(
         "api/token/",
         custom_jwt.CustomTokenObtainPairView.as_view(),
         name="token_obtain_pair",
     ),
-    path("api/token/refresh/", TokenRefreshView.as_view()),
-    path("api/token/verify/", TokenVerifyView.as_view()),
+    path(
+        "api/token/refresh/",
+        custom_jwt.CustomTokenRefreshView.as_view(),
+        name="token_refresh",
+    ),
+    path(
+        "api/token/verify/",
+        custom_jwt.CustomTokenVerifyView.as_view(),
+    ),
     path("api/user/register/", views.user_register, name="userRegister"),
     path(
         "password-reset/",
@@ -79,6 +113,8 @@ urlpatterns = [
         "download/examples/", views.download_examples_zip, name="download_examples_zip"
     ),
     path("api/absent_staff/", views.AbsentReasonView.as_view(), name="absent_staff"),
+    path("api/swagger-login/", swagger_session_login, name="swagger_session_login"),
+    path("api/swagger-logout/", swagger_session_logout, name="swagger_session_logout"),
 ]
 
 urlpatterns += doc_urls

@@ -1,38 +1,52 @@
 import os
 import socket
+from datetime import datetime, timedelta
 from pathlib import Path
-import numpy as np
-import random
-from dotenv import load_dotenv
+
 from celery.schedules import crontab
-from datetime import timedelta, datetime
+from dotenv import load_dotenv
 from kombu import Queue
 
 # Host names and DEBUG setting
-HOST_NAMES = ["RogStrix", "MacBook-Pro.local", "MacbookPro"]
+HOST_NAMES = ["RogStrix", "MacBook-Pro.local", "MacbookPro", "Rumishka"]
 DEBUG = socket.gethostname() in HOST_NAMES
 
 # Base directories
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
+
 load_dotenv(BASE_DIR / ".env")
+
+
+def _csv_env_frozenset(name: str, default: str) -> frozenset[str]:
+    """Parse comma-separated env var into a normalized frozenset."""
+    return frozenset(
+        item.strip() for item in os.getenv(name, default).split(",") if item.strip()
+    )
+
 
 # Custom settings
 DAYS = 1
-FACE_RECOGNITION_THRESHOLD = float(os.getenv("FACE_RECOGNITION_THRESHOLD", "0.78"))
+# Серийные номера устройств выхода из здания (devSn из API СКУД)
+ATTENDANCE_EXIT_DEVICE_SNS = _csv_env_frozenset(
+    "ATTENDANCE_EXIT_DEVICE_SNS",
+    "CORL223060005,QJT3244400440,CN3R230260001,CN3R230260016,CN3R230260009",
+)
+ATTENDANCE_AMBIGUOUS_EXIT_DEVICE_SNS = _csv_env_frozenset(
+    "ATTENDANCE_AMBIGUOUS_EXIT_DEVICE_SNS",
+    "QJT3244400440",
+)
+ATTENDANCE_REENTRY_DEVICE_SNS = _csv_env_frozenset(
+    "ATTENDANCE_REENTRY_DEVICE_SNS",
+    "COVS222560013,CN3R230260010,CN3R230260002,CN3R230260003",
+)
+ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES = int(
+    os.getenv("ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES", "45")
+)
+FACE_RECOGNITION_THRESHOLD = 0.76
 RATE_PERIOD = 600
 RATE_LIMIT = 40
 NO_ALBUMENTATIONS_UPDATE: int = int(os.getenv("NO_ALBUMENTATIONS_UPDATE", "1"))
-
-# ML/Vision feature flags and quality gates
-USE_GPU = os.getenv("USE_GPU", "True").lower() in ("1", "true", "yes")
-MAX_AUG_VARIANTS = int(os.getenv("MAX_AUG_VARIANTS", "12"))
-FACE_MIN_BLUR_VAR = float(os.getenv("FACE_MIN_BLUR_VAR", "50.0"))
-FACE_MIN_SIZE_PX = int(os.getenv("FACE_MIN_SIZE_PX", "80"))
-RANDOM_SEED = int(os.getenv("RANDOM_SEED", "42"))
-IDENTITY_GATE_THRESHOLD = float(os.getenv("IDENTITY_GATE_THRESHOLD", "0.9"))
-
-# Load environment variables
 
 # Secret keys and API configurations
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -46,7 +60,7 @@ DB_TYPE = os.getenv("DB_TYPE", "sqlite3").lower()
 # Email configurations
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND")
 EMAIL_HOST = os.getenv("EMAIL_HOST")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT") or 0)
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "0"))
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS") == "True"
 EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL") == "True"
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
@@ -56,31 +70,6 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL")
 # Authentication URLs
 LOGIN_URL = "/login_view/"
 LOGOUT_URL = "/logout/"
-
-# Deterministic seeds for reproducibility across processes
-try:
-    random.seed(RANDOM_SEED)
-    np.random.seed(RANDOM_SEED)
-    # Torch seeding (optional import if available)
-    try:
-        import torch  # type: ignore
-
-        torch.manual_seed(RANDOM_SEED)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(RANDOM_SEED)
-            # Ensure deterministic algorithms when possible
-            try:
-                torch.use_deterministic_algorithms(True)
-            except Exception:
-                pass
-            if hasattr(torch.backends, "cudnn"):
-                torch.backends.cudnn.deterministic = True
-                torch.backends.cudnn.benchmark = False
-    except Exception:
-        # Torch may not be installed in some environments
-        pass
-except Exception:
-    pass
 
 
 # Function to get the local IP address
@@ -114,7 +103,9 @@ EXTERNAL_IP = get_external_ip()
 
 # Allowed hosts and CSRF trusted origins
 ALLOWED_HOSTS = ["*"] + (
-    [LOCAL_IP, EXTERNAL_IP] if DEBUG else ["control.krmu.edu.kz", "dot.medkrmu.edu.kz"]
+    [LOCAL_IP, EXTERNAL_IP]
+    if DEBUG
+    else ["control.krmu.edu.kz", "dot.medkrmu.edu.kz", "commander.medkrmu.kz"]
 )
 
 CSRF_TRUSTED_ORIGINS = (
@@ -122,11 +113,20 @@ CSRF_TRUSTED_ORIGINS = (
         f"http://{EXTERNAL_IP}:8000",
         f"http://{EXTERNAL_IP}:5173",
         f"http://{EXTERNAL_IP}:3000",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
     ]
     if DEBUG
     else [
         "https://control.krmu.edu.kz",
         "https://dot.medkrmu.kz",
+        "https://commander.medkrmu.kz",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
     ]
 )
 
@@ -137,10 +137,18 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  # 50 MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  # 50 MB
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 100000
 
+# Grappelli Admin Settings
+GRAPPELLI_ADMIN_TITLE = "Панель управления мониторинга"
+GRAPPELLI_AUTOCOMPLETE_LIMIT = 15
+GRAPPELLI_SWITCH_USER = True
+GRAPPELLI_CLEAN_INPUT_TYPES = True
+GRAPPELLI_INDEX_DASHBOARD = "django_settings.dashboard.CustomIndexDashboard"
+
 # Application definition
 INSTALLED_APPS = [
     "daphne",
     "channels",
+    "grappelli.dashboard",
     "grappelli",
     "django.contrib.admin",
     "django.contrib.auth",
@@ -156,6 +164,8 @@ INSTALLED_APPS = [
     "django_extensions",
     "django_admin_geomap",
     "rest_framework.authtoken",
+    "django_celery_beat",
+    "django_celery_results",
 ]
 
 # Channel layers configuration
@@ -178,13 +188,46 @@ CORS_ALLOWED_ORIGINS = (
         f"http://{EXTERNAL_IP}:8000",
         f"http://{EXTERNAL_IP}:3000",
         f"http://{EXTERNAL_IP}:5173",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
     ]
     if DEBUG
     else [
         "https://dot.medkrmu.kz",
         "https://control.krmu.edu.kz",
+        "https://commander.medkrmu.kz",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
     ]
 )
+
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+    "x-api-key",
+    "x-api-token",
+]
+
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
 # Settings for Custom Middleware
 SECURITY_MIDDLEWARE_EXEMPT_PATHS = [
     "/app/",
@@ -262,7 +305,7 @@ if DEBUG:
         "NAME": BASE_DIR / "db.sqlite3",
     }
 else:
-    # If production using MySQL or PostgreSQL
+    # If production using MySQL, PostgreSQL or SQLite
     if DB_TYPE == "mysql":
         DATABASES["default"] = {
             "ENGINE": "django.db.backends.mysql",
@@ -280,6 +323,11 @@ else:
             "PASSWORD": os.getenv("DB_PASSWORD"),
             "HOST": os.getenv("DB_HOST"),
             "PORT": os.getenv("DB_PORT", "5432"),
+        }
+    elif DB_TYPE == "sqlite3":
+        DATABASES["default"] = {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
         }
     else:
         raise ValueError(f"Unsupported database type: {DB_TYPE}")
@@ -319,9 +367,16 @@ STATICFILES_DIRS = [
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+BACKUP_DB_DIR = BASE_DIR.parent / "DB"
+
 # Attendance and augment paths
 ATTENDANCE_URL = "/attendance_media/"
-ATTENDANCE_ROOT = MEDIA_ROOT / "control_image" if DEBUG else "/mnt/disk/control_image/"
+_attendance_root_env = os.getenv("ATTENDANCE_ROOT")
+ATTENDANCE_ROOT = (
+    Path(_attendance_root_env).resolve()
+    if _attendance_root_env
+    else (MEDIA_ROOT / "control_image" if DEBUG else Path("/mnt/disk/control_image/"))
+)
 
 AUGMENT_URL = "/augment_media/"
 AUGMENT_ROOT = (
@@ -344,6 +399,9 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+    ],
 }
 
 # JWT configurations
@@ -368,11 +426,15 @@ SIMPLE_JWT = {
 # Token lifetimes based on DEBUG
 SIMPLE_JWT.update(
     {
-        "ACCESS_TOKEN_LIFETIME": timedelta(minutes=10) if DEBUG else timedelta(minutes=30),
+        "ACCESS_TOKEN_LIFETIME": (
+            timedelta(minutes=10) if DEBUG else timedelta(minutes=30)
+        ),
         "REFRESH_TOKEN_LIFETIME": (
             timedelta(minutes=30) if DEBUG else timedelta(hours=2)
         ),
-        "SLIDING_TOKEN_LIFETIME": timedelta(minutes=10) if DEBUG else timedelta(minutes=30),
+        "SLIDING_TOKEN_LIFETIME": (
+            timedelta(minutes=10) if DEBUG else timedelta(minutes=30)
+        ),
         "SLIDING_TOKEN_REFRESH_LIFETIME": (
             timedelta(minutes=30) if DEBUG else timedelta(hours=2)
         ),
@@ -383,15 +445,23 @@ SIMPLE_JWT.update(
 SWAGGER_SETTINGS = {
     "LOGIN_URL": "login_view",
     "LOGOUT_URL": "logout",
+    "VALIDATOR_URL": None,
     "SECURITY_DEFINITIONS": {
         "Bearer": {
             "type": "apiKey",
             "name": "Authorization",
             "in": "header",
-        }
+            "description": "JWT токен в формате: Bearer {token}",
+        },
+        "X-API-KEY": {
+            "type": "apiKey",
+            "name": "X-API-KEY",
+            "in": "header",
+            "description": "API ключ для аутентификации",
+        },
     },
     "USE_SESSION_AUTH": True,
-    "DEFAULT_AUTO_SCHEMA_CLASS": "drf_yasg.inspectors.SwaggerAutoSchema",
+    "DEFAULT_AUTO_SCHEMA_CLASS": "monitoring_app.views.FormOnlySwaggerAutoSchema",
 }
 
 # ReDoc settings
@@ -404,9 +474,7 @@ CELERY_BROKER_URL = "redis://localhost:6379/0"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 
-CELERY_TASK_QUEUES = (
-    Queue("control_app_queue", routing_key="control_app_queue"),
-)
+CELERY_TASK_QUEUES = (Queue("control_app_queue", routing_key="control_app_queue"),)
 
 CELERY_TASK_ROUTES = {
     "monitoring_app.tasks.*": {
@@ -419,13 +487,44 @@ CELERY_BEAT_SCHEDULE = (
     {}
     if DEBUG
     else {
-        "get-attendance-every-day-5am": {
+        "get-attendance-every-day-4am": {
             "task": "monitoring_app.tasks.get_all_attendance_task",
-            "schedule": crontab(hour=5, minute=0),
+            "schedule": crontab(hour="4", minute="0"),
+        },
+        "sync-staff-from-api-twice-weekly": {
+            "task": "monitoring_app.tasks.sync_staff_from_api_task",
+            "schedule": crontab(
+                day_of_week="1,4",
+                hour="5",
+                minute="30",
+            ),
         },
         "update-lesson-attendance-last-out-every-10-minutes": {
             "task": "monitoring_app.tasks.update_lesson_attendance_last_out",
             "schedule": crontab(minute="*/5"),
+        },
+        "warmup-cache-every-hour": {
+            "task": "monitoring_app.tasks.warmup_cache_task",
+            "schedule": crontab(minute="0"),
+            "kwargs": {"force": False},
+        },
+        "rotate-department-confirmation-cache-hourly": {
+            "task": "monitoring_app.tasks.rotate_department_confirmation_cache_epoch",
+            "schedule": crontab(minute="5"),
+        },
+        "warmup-cache-hot-daily": {
+            "task": "monitoring_app.tasks.warmup_cache_task",
+            "schedule": crontab(hour="6", minute="0"),
+            "kwargs": {"force": True},
+        },
+        "warmup-class-location-buffers-every-30-min": {
+            "task": "monitoring_app.tasks.warmup_class_location_buffers",
+            "schedule": crontab(minute="*/30"),
+        },
+        "clean-old-attendance-photos-daily": {
+            "task": "monitoring_app.tasks.clean_old_attendance_photos",
+            "schedule": crontab(hour="4", minute="30"),
+            "kwargs": {"days_old": 62},
         },
         # "augment-images-every-day": {
         #     "task": "monitoring_app.tasks.augment_user_images",
@@ -436,7 +535,30 @@ CELERY_BEAT_SCHEDULE = (
 
 # Logging configurations
 LOG_DIR = BASE_DIR / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _normalize_log_level(value, default):
+    if not value:
+        return default
+    cleaned = str(value).strip().upper()
+    allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+    return cleaned if cleaned in allowed else default
+
+
+def get_log_level(prefix, default=None, override=None):
+    """Уровень логирования: по умолчанию зависит от DEBUG, можно override через env."""
+    base_default = default or ("DEBUG" if DEBUG else "WARNING")
+    if override:
+        return _normalize_log_level(override, base_default)
+    env_value = os.getenv(f"{prefix}_LOG_LEVEL") or os.getenv("LOG_LEVEL")
+    return _normalize_log_level(env_value, base_default)
+
+
+ADMIN_ERRORS_LEVEL = get_log_level("ADMIN_ERRORS", default="DEBUG")
+MONITORING_ADMIN_LEVEL = get_log_level(
+    "MONITORING_ADMIN", default=("DEBUG" if DEBUG else "WARNING")
+)
 
 
 # Custom function to generate log filenames
@@ -462,34 +584,189 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {name} {module} {funcName} {lineno} {message}",
+            "style": "{",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
         "standard": {
             "format": "{levelname} {asctime} {name} {module} {message}",
             "style": "{",
             "datefmt": "%Y-%m-%d %H:%M:%S",
         },
     },
+    "filters": {
+        "ignore_shutdown": {
+            "()": "django_settings.logging_filters.IgnoreShutdownErrorsFilter",
+        },
+        "ignore_pylint": {
+            "()": "django_settings.logging_filters.IgnorePylintFilter",
+        },
+        "admin_request_only": {
+            "()": "django_settings.logging_filters.AdminRequestFilter",
+        },
+    },
     "handlers": {
+        "admin_errors_file": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "admin_errors.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 14,
+            "utc": True,
+            "encoding": "utf-8",
+            "delay": True,
+            "formatter": "standard",
+            "level": ADMIN_ERRORS_LEVEL,
+            "filters": ["ignore_shutdown", "ignore_pylint", "admin_request_only"],
+        },
+        "admin_errors_file_no_filter": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "admin_errors.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 14,
+            "utc": True,
+            "encoding": "utf-8",
+            "delay": True,
+            "formatter": "standard",
+            "level": ADMIN_ERRORS_LEVEL,
+            "filters": ["ignore_shutdown", "ignore_pylint"],
+        },
         "file": {
-            "level": "INFO" if DEBUG else "WARNING",
+            "level": "DEBUG" if DEBUG else "INFO",
             "class": "logging.handlers.RotatingFileHandler",
             "filename": get_log_filename("log"),
             "maxBytes": 10 * 1024 * 1024,  # 10 MB
             "backupCount": 24,  # Keep logs for 24 hours
             "encoding": "utf-8",
-            "formatter": "standard",
+            "formatter": "verbose",
+            "delay": False,
+            "filters": ["ignore_shutdown", "ignore_pylint"],
+        },
+        "console": {
+            "level": "INFO" if DEBUG else "WARNING",
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+            "filters": ["ignore_shutdown", "ignore_pylint"],
+        },
+        "lesson_locations_file": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "lesson_locations.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 7,
+            "utc": True,
+            "encoding": "utf-8",
             "delay": True,
+            "formatter": "standard",
+            "level": "INFO",
+            "filters": ["ignore_shutdown", "ignore_pylint"],
+        },
+        "ws_user_file": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "ws_user.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 7,
+            "utc": True,
+            "encoding": "utf-8",
+            "delay": True,
+            "formatter": "standard",
+            "level": "INFO",
+            "filters": ["ignore_shutdown", "ignore_pylint"],
+        },
+        "lesson_locations_not_found_file": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "lesson_locations_not_found.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 14,
+            "utc": True,
+            "encoding": "utf-8",
+            "delay": True,
+            "formatter": "standard",
+            "level": "INFO",
+            "filters": ["ignore_shutdown", "ignore_pylint"],
         },
     },
     "loggers": {
         "": {
-            "handlers": ["file"],
+            "handlers": ["file", "console"] if DEBUG else ["file"],
             "level": "INFO" if DEBUG else "WARNING",
             "propagate": True,
         },
         "django": {
-            "handlers": ["file"],
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "django.request": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "monitoring_app": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "monitoring_app.views": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
             "level": "INFO" if DEBUG else "WARNING",
             "propagate": True,
         },
+        "monitoring_app.lesson_attendance": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "monitoring_app.lesson_locations": {
+            "handlers": ["lesson_locations_file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "monitoring_app.lesson_locations.not_found": {
+            "handlers": ["lesson_locations_not_found_file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "monitoring_app.serializers": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": True,
+        },
+        "monitoring_app.permissions": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": True,
+        },
+        "monitoring_app.middleware": {
+            "handlers": ["file", "console"] if DEBUG else ["file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "monitoring_app.admin": {
+            "handlers": ["admin_errors_file_no_filter", "console"],
+            "level": MONITORING_ADMIN_LEVEL,
+            "propagate": False,
+        },
+        "monitoring_app.ws_user": {
+            "handlers": ["file", "console", "ws_user_file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
     },
+}
+
+_django_request_handlers = ["file", "console"] if DEBUG else ["file"]
+LOGGING["loggers"]["django.request"] = {
+    "handlers": _django_request_handlers,
+    "level": "INFO" if DEBUG else "WARNING",
+    "propagate": False,
+}
+LOGGING["loggers"]["django.security.csrf"] = {
+    "handlers": _django_request_handlers,
+    "level": "WARNING",
+    "propagate": False,
 }

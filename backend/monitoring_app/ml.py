@@ -1,23 +1,36 @@
-import os
-import cv2
-import torch
+import importlib
 import logging
+import os
 import traceback
-import numpy as np
-import torch.nn as nn
-from threading import Lock
 from collections import Counter
+from threading import Lock
+from typing import Any, Optional, cast
+
+import numpy as np
+import torch
+import torch.nn as nn
 from django.conf import settings
-import time
-from insightface.app import FaceAnalysis
-from sklearn.neighbors import NearestNeighbors
-from sklearn.model_selection import train_test_split
 from rest_framework.exceptions import ValidationError
-from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import f1_score, precision_score, recall_score
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import NearestNeighbors
+from sklearn.utils.class_weight import compute_class_weight
+from torch.optim.adamw import AdamW
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 from monitoring_app import models
+
+cv2 = cast(Any, importlib.import_module("cv2"))
+
+def _get_face_analysis():
+    try:
+        from insightface.app import FaceAnalysis
+        return FaceAnalysis
+    except ImportError as e:
+        raise ImportError(
+            "insightface не установлен. На Windows установите Visual C++ Build Tools, "
+            "затем: pip install -r requirements_win_optional.txt"
+        ) from e
 
 # -----------------------------------
 # 1. Logging Setup
@@ -30,66 +43,36 @@ logger = logging.getLogger("django")
 # 2. Global Variables and Device Setup
 # -----------------------------------
 
-arcface_model = None
-selected_provider = None
-_emb_cache = {}
-_emb_mtime = {}
-_faiss_index = None
-_faiss_id_to_staff = []
-_faiss_dim = 512
-_faiss_available = False
 
-try:
-    import faiss  # type: ignore
+class _ArcFaceModelHolder:
+    instance: Optional[Any] = None
 
-    _faiss_available = True
-except Exception:
-    _faiss_available = False
+
+arcface_model_holder = _ArcFaceModelHolder()
 
 arcface_lock = Lock()
 
 
 def get_device():
-    try:
-        use_gpu = getattr(settings, "USE_GPU", True)
-    except Exception:
-        use_gpu = True
-    cuda_ok = torch.cuda.is_available() and use_gpu
-    device = torch.device("cuda" if cuda_ok else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Selected device: {device}")
     return device
 
 
 def load_arcface_model():
-    global arcface_model
-    global selected_provider
-    if arcface_model is None:
+    if arcface_model_holder.instance is None:
         with arcface_lock:
-            if arcface_model is None:
-                use_gpu = getattr(settings, "USE_GPU", True)
-                cuda_ok = torch.cuda.is_available() and use_gpu
-                providers = (
-                    ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                    if cuda_ok
-                    else ["CPUExecutionProvider"]
+            if arcface_model_holder.instance is None:
+                FaceAnalysis = _get_face_analysis()
+                device_type = "GPU" if torch.cuda.is_available() else "CPU"
+                logger.info(f"Using {device_type} for ArcFace model")
+                model = FaceAnalysis(
+                    name="buffalo_l",
+                    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
                 )
-                selected_provider = providers[0]
-                logger.info(
-                    "Initializing ArcFace model with providers=%s, selected=%s",
-                    providers,
-                    selected_provider,
-                )
-                arcface_model = FaceAnalysis(name="buffalo_l", providers=providers)
-                ctx_id = 0 if cuda_ok else -1
-                arcface_model.prepare(ctx_id=ctx_id, det_size=(640, 640))
-
-                # Warm-up pass to initialize kernels and caches
-                try:
-                    dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-                    _ = arcface_model.get(dummy)
-                    logger.info("ArcFace warm-up completed")
-                except Exception as e:
-                    logger.warning("ArcFace warm-up failed: %s", e)
+                ctx_id = 0 if torch.cuda.is_available() else -1
+                model.prepare(ctx_id=ctx_id, det_size=(640, 640))
+                arcface_model_holder.instance = model
 
 
 # -----------------------------------
@@ -145,80 +128,6 @@ def preprocess_image(image):
     return image
 
 
-def _l2_normalize(vec: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(vec, axis=-1, keepdims=True)
-    norm[norm == 0] = 1.0
-    return vec / norm
-
-
-def _largest_face(faces):
-    if not faces:
-        return None
-    areas = [float((f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])) for f in faces]
-    return faces[int(np.argmax(areas))]
-
-
-def align_face_with_landmarks(image_bgr: np.ndarray, kps: np.ndarray) -> np.ndarray | None:
-    try:
-        # Standard ArcFace 5-point template (112x112)
-        src = np.array(
-            [
-                [38.2946, 51.6963],
-                [73.5318, 51.5014],
-                [56.0252, 71.7366],
-                [41.5493, 92.3655],
-                [70.7299, 92.2041],
-            ],
-            dtype=np.float32,
-        )
-        dst = np.array(kps, dtype=np.float32)
-        if dst.shape != (5, 2):
-            return None
-        M, _ = cv2.estimateAffinePartial2D(dst, src, method=cv2.LMEDS)
-        if M is None:
-            return None
-        aligned = cv2.warpAffine(image_bgr, M, (112, 112), flags=cv2.INTER_LINEAR)
-        return aligned
-    except Exception:
-        return None
-
-
-def detect_faces(image_bgr: np.ndarray):
-    load_arcface_model()
-    return arcface_model.get(image_bgr)
-
-
-def embed_aligned_face(image_bgr_112: np.ndarray) -> np.ndarray | None:
-    try:
-        load_arcface_model()
-        faces = arcface_model.get(image_bgr_112)
-        if not faces:
-            return None
-        emb = np.asarray(faces[0].embedding, dtype=np.float32)
-        return _l2_normalize(emb)
-    except Exception:
-        return None
-
-
-def detect_align_embed_single(image_bgr: np.ndarray):
-    faces = detect_faces(image_bgr)
-    if not faces:
-        return None, None, None
-    face = _largest_face(faces)
-    aligned = align_face_with_landmarks(image_bgr, face.kps)
-    if aligned is None:
-        x1, y1, x2, y2 = face.bbox.astype(int)
-        crop = image_bgr[max(0, y1): max(0, y2), max(0, x1): max(0, x2)]
-        if crop.size == 0:
-            return None, None, None
-        aligned = cv2.resize(crop, (112, 112), interpolation=cv2.INTER_LINEAR)
-    emb = embed_aligned_face(aligned)
-    if emb is None:
-        emb = np.asarray(face.embedding, dtype=np.float32)
-        emb = _l2_normalize(emb)
-    return emb, face.kps, face.bbox.astype(int).tolist()
-
-
 # -----------------------------------
 # 4. Embedding Creation Functions
 # -----------------------------------
@@ -267,10 +176,7 @@ def create_embeddings_for_staff(staff):
         )
         np.save(embeddings_path, embeddings)
         logger.info(
-            "Saved %s embeddings for %s at %s",
-            len(embeddings),
-            staff.pin,
-            embeddings_path,
+            f"Сохранены эмбеддинги для {staff.pin} по пути {embeddings_path}",
         )
 
     except Exception as e:
@@ -278,109 +184,6 @@ def create_embeddings_for_staff(staff):
             f"Ошибка при создании эмбеддингов для {staff.pin}: {str(e)}\n{traceback.format_exc()}",
         )
         raise e
-
-
-def _load_staff_embeddings_with_cache(staff):
-    try:
-        if not staff.avatar or not staff.avatar.path:
-            return None
-        emb_path = os.path.join(os.path.dirname(staff.avatar.path), f"{staff.pin}_embeddings.npy")
-        if not os.path.exists(emb_path):
-            return None
-        mtime = os.path.getmtime(emb_path)
-        cached = _emb_cache.get(staff.pin)
-        if cached is not None and _emb_mtime.get(staff.pin) == mtime:
-            return cached
-        arr = np.load(emb_path)
-        arr = _l2_normalize(arr.astype(np.float32))
-        _emb_cache[staff.pin] = arr
-        _emb_mtime[staff.pin] = mtime
-        return arr
-    except Exception:
-        return None
-
-
-def get_staff_centroids():
-    staff_members = list(models.Staff.objects.filter(avatar__isnull=False))
-    centroids = []
-    owners = []
-    for st in staff_members:
-        embs = _load_staff_embeddings_with_cache(st)
-        if embs is None or embs.size == 0:
-            # fallback to face_mask single embedding if available
-            try:
-                if st.face_mask and st.face_mask.mask_encoding:
-                    vec = np.asarray(st.face_mask.mask_encoding, dtype=np.float32)
-                    vec = _l2_normalize(vec)
-                    embs = vec.reshape(1, -1)
-            except Exception:
-                embs = None
-        if embs is None or embs.size == 0:
-            continue
-        centroid = np.median(embs, axis=0)
-        centroid = _l2_normalize(centroid)
-        centroids.append(centroid)
-        owners.append(st)
-    if not centroids:
-        return np.empty((0, 512), dtype=np.float32), []
-    return np.stack(centroids, axis=0).astype(np.float32), owners
-
-
-def rebuild_ann_index():
-    global _faiss_index, _faiss_id_to_staff
-    centroids, owners = get_staff_centroids()
-    if centroids.size == 0:
-        _faiss_index = None
-        _faiss_id_to_staff = []
-        return False
-    if _faiss_available:
-        try:
-            index = faiss.IndexFlatIP(_faiss_dim)
-            # vectors must be L2-normalized for cosine via inner product
-            faiss.normalize_L2(centroids)
-            index.add(centroids.astype(np.float32))
-            _faiss_index = index
-            _faiss_id_to_staff = owners
-            logger.info("FAISS index rebuilt: n=%s dim=%s", len(owners), _faiss_dim)
-            return True
-        except Exception as e:
-            logger.warning("FAISS build failed: %s; falling back to sklearn", e)
-            _faiss_index = None
-            _faiss_id_to_staff = owners
-            return False
-    else:
-        _faiss_index = None
-        _faiss_id_to_staff = owners
-        return False
-
-
-def ann_topk(query_vectors: np.ndarray, k: int = 3):
-    # query_vectors expected L2-normalized
-    if _faiss_index is not None and _faiss_available and len(_faiss_id_to_staff) > 0:
-        try:
-            q = query_vectors.astype(np.float32)
-            faiss.normalize_L2(q)
-            sims, idxs = _faiss_index.search(q, min(k, len(_faiss_id_to_staff)))
-            # convert to cosine similarities (already ip of normalized → cosine)
-            return sims, idxs, _faiss_id_to_staff
-        except Exception as e:
-            logger.warning("FAISS search failed: %s; using sklearn", e)
-    # sklearn fallback
-    owners = _faiss_id_to_staff
-    if not owners:
-        centroids, owners = get_staff_centroids()
-    else:
-        centroids, owners = get_staff_centroids()
-    if centroids.size == 0:
-        return None, None, []
-    from sklearn.neighbors import NearestNeighbors
-
-    nbrs = NearestNeighbors(n_neighbors=min(k, centroids.shape[0]), metric="cosine").fit(
-        centroids
-    )
-    distances, indices = nbrs.kneighbors(query_vectors)
-    sims = 1 - distances
-    return sims, indices, owners
 
 
 def create_embeddings_from_images(image_paths):
@@ -443,16 +246,16 @@ def create_face_encoding(image_or_path):
                 return None
             image = image_or_path
 
-        faces = arcface_model.get(image)
+        arcface_instance = arcface_model_holder.instance
+        if arcface_instance is None:
+            logger.error("ArcFace model is not initialized.")
+            return None
+        faces = arcface_instance.get(image)
         if not faces:
             logger.warning(f"No face detected in image {str(image_or_path)}")
             return None
 
-        # choose largest face
-        face = _largest_face(faces)
-        emb = np.asarray(face.embedding, dtype=np.float32)
-        emb = _l2_normalize(emb)
-        return emb.tolist()
+        return faces[0].embedding.tolist()
 
     except Exception as e:
         logger.error(f"Ошибка при создании encoding: {e}")
@@ -551,13 +354,10 @@ class GeneralFaceRecognitionModel(nn.Module):
 class FaceRecognitionResNet(nn.Module):
     """
     Individual face recognition model using MLP.
-
-    Args:
-        pretrained (bool): Whether to use pretrained weights.
     """
 
-    def __init__(self, pretrained=False):
-        super(FaceRecognitionResNet, self).__init__()
+    def __init__(self):
+        super().__init__()
         self.fc1 = nn.Linear(512, 512)
         self.bn1 = nn.BatchNorm1d(512)
         self.dropout1 = nn.Dropout(0.5)
@@ -595,9 +395,14 @@ def evaluate_metrics(y_true, y_pred):
     Returns:
         tuple: Precision, Recall, F1-score.
     """
-    precision = precision_score(y_true, y_pred, average="weighted", zero_division="warn")
-    recall = recall_score(y_true, y_pred, average="weighted", zero_division="warn")
-    f1 = f1_score(y_true, y_pred, average="weighted", zero_division="warn")
+    zero_division_safe = cast(Any, 0)
+    precision = precision_score(
+        y_true, y_pred, average="weighted", zero_division=zero_division_safe
+    )
+    recall = recall_score(
+        y_true, y_pred, average="weighted", zero_division=zero_division_safe
+    )
+    f1 = f1_score(y_true, y_pred, average="weighted", zero_division=zero_division_safe)
     return precision, recall, f1
 
 
@@ -618,8 +423,12 @@ def get_class_weights(labels, class_weights):
         WeightedRandomSampler: Sampler for balancing classes.
     """
     samples_weights = class_weights[labels]
-    samples_weights = torch.from_numpy(samples_weights.astype(np.float64))
-    sampler = WeightedRandomSampler(weights=samples_weights, num_samples=len(samples_weights), replacement=True)
+    samples_weights_tensor = torch.from_numpy(samples_weights).double()
+    sampler = WeightedRandomSampler(
+        samples_weights_tensor.tolist(),
+        num_samples=len(samples_weights_tensor),
+        replacement=True,
+    )
     return sampler
 
 
@@ -676,7 +485,7 @@ def load_model_for_staff(staff, model_path_suffix="model.pt"):
         raise ValueError(f"Модель для {staff.pin} не найдена")
 
     device = get_device()
-    model = FaceRecognitionResNet(pretrained=False).to(device)
+    model = FaceRecognitionResNet().to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     model.eval()
@@ -793,7 +602,7 @@ def train_face_recognition_model(staff, epochs=20, batch_size=256, learning_rate
         dataset, batch_size=batch_size, sampler=sampler, num_workers=0
     )
 
-    inputs_train, inputs_val, labels_train, labels_val = train_test_split(
+    _, inputs_val_np, _, labels_val_np = train_test_split(
         embeddings_combined.cpu().numpy(),
         labels.cpu().numpy(),
         test_size=0.2,
@@ -801,20 +610,18 @@ def train_face_recognition_model(staff, epochs=20, batch_size=256, learning_rate
         stratify=labels.cpu().numpy(),
     )
 
-    inputs_val = torch.tensor(inputs_val, dtype=torch.float32).to(device)
-    labels_val = torch.tensor(labels_val, dtype=torch.float32).to(device)
+    inputs_val = torch.tensor(inputs_val_np, dtype=torch.float32).to(device)
+    labels_val = torch.tensor(labels_val_np, dtype=torch.float32).to(device)
 
     val_dataset = TensorDataset(inputs_val, labels_val)
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False, num_workers=0
     )
 
-    model = FaceRecognitionResNet(pretrained=False).to(device)
+    model = FaceRecognitionResNet().to(device)
 
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=learning_rate, weight_decay=1e-4
-    )
+    optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     scaler = torch.GradScaler("cuda")
 
     best_f1 = 0
@@ -1053,9 +860,7 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
 
     model = GeneralFaceRecognitionModel(num_classes=num_staff).to(device)
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=learning_rate, weight_decay=1e-4
-    )
+    optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     scaler = torch.GradScaler("cuda")
 
     best_f1 = 0
@@ -1167,57 +972,48 @@ def recognize_faces_in_image(image_file):
     """
     try:
         load_arcface_model()
-        t0 = time.time()
         img = load_image_from_memory(image_file)
-        faces = arcface_model.get(img)
+        arcface_instance = arcface_model_holder.instance
+        if arcface_instance is None:
+            raise ValidationError("Модель распознавания лиц не инициализирована.")
+        faces = arcface_instance.get(img)
 
         if not faces:
             logger.warning("Лица не найдены на изображении")
             raise ValidationError("Лица не найдены на изображении")
 
-        # align + normalize each face embedding
-        embeddings = []
-        for face in faces:
-            aligned = align_face_with_landmarks(img, face.kps)
-            if aligned is None:
-                # fallback to original crop implied by detector
-                face_img = img[int(face.bbox[1]): int(face.bbox[3]), int(face.bbox[0]): int(face.bbox[2])]
-                aligned = cv2.resize(face_img, (112, 112), interpolation=cv2.INTER_LINEAR)
-            emb = arcface_model.get(aligned)[0].embedding if aligned is not None else face.embedding
-            embeddings.append(np.asarray(emb, dtype=np.float32))
-        embeddings = np.stack(embeddings, axis=0)
-        embeddings_normalized = _l2_normalize(embeddings)
+        embeddings = [face.embedding for face in faces]
+        embeddings = np.array(embeddings)
+        embeddings_normalized = embeddings / np.linalg.norm(
+            embeddings, axis=1, keepdims=True
+        )
 
-        # Build centroids for each staff
-        staff_embeddings_normalized, staff_members = get_staff_centroids()
-        if staff_embeddings_normalized.size == 0:
-            logger.warning("No staff embeddings available for recognition")
-            raise ValidationError("Database has no embeddings for recognition")
+        # Загрузка эмбеддингов сотрудников
+        staff_members = list(models.Staff.objects.filter(face_mask__isnull=False))
+        staff_embeddings = np.array(
+            [staff.face_mask.mask_encoding for staff in staff_members]
+        )
+        staff_embeddings_normalized = staff_embeddings / np.linalg.norm(
+            staff_embeddings, axis=1, keepdims=True
+        )
 
-        # ANN search via FAISS if available, else sklearn NearestNeighbors
-        sims, idxs, owners = ann_topk(embeddings_normalized, k=3)
-        if sims is None or idxs is None:
-            from sklearn.neighbors import NearestNeighbors
-            nbrs = NearestNeighbors(n_neighbors=3, metric="cosine").fit(staff_embeddings_normalized)
-            distances, indices = nbrs.kneighbors(embeddings_normalized)
-            sims = 1 - distances
-            idxs = indices
-            owners = staff_members
+        # Инициализация NearestNeighbors для косинусного сходства
+        nbrs = NearestNeighbors(n_neighbors=1, metric="cosine").fit(
+            staff_embeddings_normalized
+        )
+
+        # Поиск ближайшего соседа для каждого лица
+        distances, indices = nbrs.kneighbors(embeddings_normalized)
 
         recognized_staff = []
         unknown_faces = []
 
-        sim_samples = []
-        for idx, (sim_row, staff_idx) in enumerate(zip(sims, idxs)):
+        for idx, (distance, staff_idx) in enumerate(zip(distances, indices)):
             bbox = faces[idx].bbox.astype(int).tolist()
-            topk = []
-            for j, sidx in enumerate(staff_idx):
-                st = owners[sidx]
-                topk.append({"pin": st.pin, "similarity": float(sim_row[j])})
-            similarity = float(sim_row[0])
-            sim_samples.append(float(similarity))
+            similarity = 1 - distance[0]  # Косинусное сходство
+
             if similarity > settings.FACE_RECOGNITION_THRESHOLD:
-                staff = owners[staff_idx[0]]
+                staff = staff_members[staff_idx[0]]
                 recognized_staff.append(
                     {
                         "pin": staff.pin,
@@ -1228,7 +1024,6 @@ def recognize_faces_in_image(image_file):
                         ),
                         "similarity": similarity,
                         "bbox": bbox,
-                        "topk": topk,
                     }
                 )
             else:
@@ -1236,32 +1031,12 @@ def recognize_faces_in_image(image_file):
                     {
                         "status": "unknown",
                         "bbox": bbox,
-                        "topk": topk,
                     }
                 )
 
-        latency_ms = int((time.time() - t0) * 1000)
-        if sim_samples:
-            sim_array = np.array(sim_samples)
-            logger.info(
-                "Recognition: faces=%s, recognized=%s, unknown=%s, latency_ms=%s, provider=%s, sim_p50=%.3f, sim_p90=%.3f",
-                len(faces),
-                len(recognized_staff),
-                len(unknown_faces),
-                latency_ms,
-                selected_provider,
-                float(np.percentile(sim_array, 50)),
-                float(np.percentile(sim_array, 90)),
-            )
-        else:
-            logger.info(
-                "Recognition: faces=%s, recognized=%s, unknown=%s, latency_ms=%s, provider=%s",
-                len(faces),
-                len(recognized_staff),
-                len(unknown_faces),
-                latency_ms,
-                selected_provider,
-            )
+        logger.info(
+            f"Recognition completed. Recognized: {len(recognized_staff)}, Unknown: {len(unknown_faces)}"
+        )
         return recognized_staff, unknown_faces
 
     except Exception as e:

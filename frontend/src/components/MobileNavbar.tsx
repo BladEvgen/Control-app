@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import { Link, useNavigate } from "../RouterUtils";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   FaBars,
-  FaTimes,
   FaHome,
   FaUpload,
   FaUserClock,
@@ -14,8 +14,8 @@ import { FaMapLocationDot } from "react-icons/fa6";
 import { ImCamera } from "react-icons/im";
 import { MdDashboard } from "react-icons/md";
 import { apiUrl } from "../../apiConfig";
-import { useUserContext } from "../context/UserContext";
-import { logoutUser, isAuthenticated } from "../utils/authHelpers";
+import { useAuth } from "../store/hooks";
+import { isAuthenticated } from "../utils/authHelpers";
 
 type MobileNavbarProps = {
   toggleTheme: () => void;
@@ -29,8 +29,10 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+  const location = useLocation();
+  const isHome = location.pathname === "/app" || location.pathname === "/app/";
 
-  const { user } = useUserContext();
+  const { user, logout } = useAuth();
   const username = user ? user.username : "";
   const auth = isAuthenticated() && Boolean(user);
 
@@ -85,28 +87,52 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
   };
 
   const handleLogout = () => {
-    logoutUser(navigate, () => setIsMenuOpen(false));
+    logout();
+    setIsMenuOpen(false);
+    navigate("/login");
   };
 
   return (
     <>
-      {/* Header */}
+      {/* Header — компактный, только логотип */}
       <header className="lg:hidden sticky top-0 z-[999] bg-primary-900 dark:bg-primary-950 text-text-light shadow-md">
-        <div className="flex items-center justify-between px-4 py-3">
-          <button
-            onClick={toggleMenu}
-            className="text-2xl focus:outline-none active:scale-95 transition-transform"
-            aria-label={isMenuOpen ? "Close menu" : "Open menu"}
-          >
-            {isMenuOpen ? <FaTimes /> : <FaBars />}
-          </button>
-          <Link to="/" className="text-xl font-bold flex items-center">
+        <div className="flex items-center justify-center px-4 py-2 min-h-[44px]">
+          <Link to="/" className="text-lg font-bold flex items-center">
             Staff App
             <FaUserClock className="ml-2" />
           </Link>
-          <div className="w-6"></div>
         </div>
       </header>
+
+      {/* Dock bar — тонкая панель внизу, выше жестовой полосы */}
+      <nav
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-[998] flex items-center justify-around px-6 py-2.5 bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-t border-gray-200/60 dark:border-gray-700/60"
+        style={{
+          paddingBottom: "calc(0.625rem + env(safe-area-inset-bottom, 0px))",
+        }}
+        aria-label="Навигация"
+      >
+        <Link
+          to="/"
+          className={`flex flex-col items-center gap-0.5 py-1 px-4 rounded-lg transition-colors min-w-[64px] ${
+            isHome
+              ? "text-primary-600 dark:text-primary-400"
+              : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+          }`}
+        >
+          <FaHome className="w-5 h-5" />
+          <span className="text-[10px] font-medium">Главная</span>
+        </Link>
+        <button
+          type="button"
+          onClick={toggleMenu}
+          className="flex flex-col items-center gap-0.5 py-1 px-4 rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 transition-colors min-w-[64px]"
+          aria-label="Открыть меню"
+        >
+          <FaBars className="w-5 h-5" />
+          <span className="text-[10px] font-medium">Меню</span>
+        </button>
+      </nav>
 
       {/* Overlay background */}
       <AnimatePresence>
@@ -129,6 +155,7 @@ const MobileNavbar: React.FC<MobileNavbarProps> = ({
           <motion.aside
             ref={panelRef}
             className="fixed bottom-0 left-0 right-0 z-[1001] bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-t-2xl shadow-xl overflow-hidden"
+            style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
             variants={panelVariants}
             initial="hidden"
             animate="visible"

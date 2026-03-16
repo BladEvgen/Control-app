@@ -6,17 +6,16 @@ from rest_framework_simplejwt.exceptions import AuthenticationFailed, InvalidTok
 
 from monitoring_app import models
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("monitoring_app.permissions")
 
 
 class IsAuthenticatedOrAPIKey(BasePermission):
 
     def has_permission(self, request, view):
-
-        logger.info("Checking permissions for request")
+        path = request.path_info
+        method = request.method
 
         if request.user and request.user.is_authenticated:
-            logger.info("User is authenticated via session")
             return True
 
         jwt_authenticator = JWTAuthentication()
@@ -25,23 +24,25 @@ class IsAuthenticatedOrAPIKey(BasePermission):
             if auth_result is not None:
                 user, token = auth_result
                 if token.payload.get("token_type") == "access":
-                    logger.info("User authenticated via JWT")
                     return True
-        except (InvalidToken, AuthenticationFailed) as e:
-            logger.warning(f"JWT authentication failed: {str(e)}")
+        except (InvalidToken, AuthenticationFailed):
+            pass
+        except Exception as e:
+            logger.warning(f"Unexpected error during JWT authentication for {method} {path}: {str(e)}")
 
-        api_key = request.headers.get("X-API-KEY")
+        api_key = request.headers.get("X-API-KEY") or request.headers.get("x-api-key")
         if api_key:
-            logger.info("API key provided")
             try:
                 key_obj = models.APIKey.objects.get(key=api_key)
                 if key_obj.is_active:
-                    logger.info("API key is valid and active ")
                     return True
-                else:
-                    logger.warning(f"API key is inactive {api_key}")
             except models.APIKey.DoesNotExist:
-                logger.warning(f"API key does not exist {api_key}")
+                pass
+            except Exception as e:
+                logger.warning(f"Error checking API key for {method} {path}: {str(e)}")
 
-        logger.warning("Permission denied")
+        logger.warning(
+            f"Permission denied for {method} {path}. "
+            f"User authenticated: {request.user.is_authenticated if hasattr(request.user, 'is_authenticated') else False}"
+        )
         return False

@@ -7,17 +7,6 @@ const bonusVariants = {
   visible: { opacity: 1, scale: 1, transition: { duration: 0.5 } },
 };
 
-const CONTRACT_TYPE_CHOICES: [string, string][] = [
-  ["full_time", "Полная занятость"],
-  ["part_time", "Частичная занятость"],
-  ["gph", "ГПХ"],
-];
-
-const getContractTypeLabel = (type: string): string => {
-  const choice = CONTRACT_TYPE_CHOICES.find(([key]) => key === type);
-  return choice ? choice[1] : "Не указан";
-};
-
 const shouldShowBonus = (staffData: StaffData | null): boolean => {
   if (!staffData) return false;
   if (staffData.bonus_percentage <= 0) return false;
@@ -33,32 +22,27 @@ interface EmployeeInfoProps {
 }
 
 const EmployeeInfo: React.FC<EmployeeInfoProps> = ({ staffData }) => {
+  if (!shouldShowBonus(staffData)) {
+    return null;
+  }
+
   return (
-    <div className="p-8 grid grid-cols-1 md:grid-cols-2 gap-8">
-      <div>
-        <p className="text-xl text-gray-700 dark:text-gray-300">
-          <strong>Должность:</strong> {staffData.positions.join(", ")}
-        </p>
-        <p className="text-xl text-gray-700 dark:text-gray-300 mt-2">
-          <strong>Тип занятости:</strong>{" "}
-          {getContractTypeLabel(staffData.contract_type || "")}
-        </p>
-        <p className="text-xl text-gray-700 dark:text-gray-300 mt-2">
-          <strong>Процент за период:</strong> {staffData.percent_for_period}%
-        </p>
-      </div>
-      {shouldShowBonus(staffData) && (
-        <motion.div
-          variants={bonusVariants}
-          initial="hidden"
-          animate="visible"
-          className="flex items-center justify-center bg-green-100 dark:bg-green-900 rounded-lg p-6"
-        >
-          <p className="text-lg font-medium text-green-700 dark:text-green-300">
-            Возможный Бонус: {staffData.bonus_percentage}%
-          </p>
-        </motion.div>
-      )}
+    <div className="hidden sm:block px-6 lg:px-8 pb-4">
+      <motion.div
+        variants={bonusVariants}
+        initial="hidden"
+        animate="visible"
+        className="inline-flex items-center gap-3 bg-gradient-to-r from-green-100 to-emerald-100 dark:from-green-900/30 dark:to-emerald-900/30 rounded-lg px-6 py-3 border-2 border-green-200 dark:border-green-800 shadow-sm"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-green-700 dark:text-green-400">
+            Возможный бонус:
+          </span>
+          <span className="text-2xl font-bold text-green-800 dark:text-green-300">
+            {staffData.bonus_percentage}%
+          </span>
+        </div>
+      </motion.div>
     </div>
   );
 };

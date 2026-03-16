@@ -1,9 +1,14 @@
 import datetime
+import logging
+from typing import Any
 
-from rest_framework import serializers
-from django.contrib.auth.models import User
-
+from django.contrib.auth import get_user_model
 from monitoring_app import models
+from rest_framework import serializers
+
+User = get_user_model()
+
+logger = logging.getLogger(__name__)
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -12,7 +17,9 @@ class UserSerializer(serializers.ModelSerializer):
     last_login = serializers.SerializerMethodField()
 
     def get_date_joined(self, obj):
-        return obj.date_joined.strftime("%Y-%m-%d %H:%M:%S") if obj.date_joined else None
+        return (
+            obj.date_joined.strftime("%Y-%m-%d %H:%M:%S") if obj.date_joined else None
+        )
 
     def get_last_login(self, obj):
         return obj.last_login.strftime("%Y-%m-%d %H:%M:%S") if obj.last_login else None
@@ -176,9 +183,20 @@ class StaffAttendanceDetailSerializer(serializers.Serializer):
         else:
             department_id = obj.staff.department_id
 
-        staff_attendance = models.StaffAttendance.objects.filter(
-            staff__department_id=department_id
-        ).order_by("-date_at")
+        staff_attendance = (
+            models.StaffAttendance.objects.filter(staff__department_id=department_id)
+            .select_related("staff")
+            .only(
+                "id",
+                "staff_id",
+                "date_at",
+                "first_in",
+                "last_out",
+                "staff__surname",
+                "staff__name",
+            )
+            .order_by("-date_at")
+        )
         for attendance in staff_attendance:
             staff_fio = attendance.staff.surname + " " + attendance.staff.name
             date_at = attendance.date_at - datetime.timedelta(days=1)
@@ -267,15 +285,18 @@ class AbsentReasonSerializer(serializers.ModelSerializer):
         the value "other" is returned instead of an error.
         """
         super().__init__(*args, **kwargs)
-        original_to_internal_value = self.fields["reason"].to_internal_value
+        reason_field = self.fields.get("reason")
+        if reason_field is None or not hasattr(reason_field, "to_internal_value"):
+            return
+        original_to_internal_value = reason_field.to_internal_value
 
-        def custom_to_internal_value(data):
+        def custom_to_internal_value(data: Any):
             try:
                 return original_to_internal_value(data)
             except serializers.ValidationError:
                 return "other"
 
-        self.fields["reason"].to_internal_value = custom_to_internal_value
+        reason_field.to_internal_value = custom_to_internal_value
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)
@@ -310,3 +331,19 @@ class AbsentReasonSerializer(serializers.ModelSerializer):
             instance.approved = approved
             instance.save(update_fields=["approved"])
         return instance
+
+
+class ClassLocationSerializer(serializers.ModelSerializer):
+    """Сериализатор для локаций занятий: адрес, название, радиус, широта, долгота."""
+
+    class Meta:
+        model = models.ClassLocation
+        fields = [
+            "id",
+            "name",
+            "address",
+            "latitude",
+            "longitude",
+            "acceptance_radius_m",
+        ]
+        read_only_fields = ["id"]

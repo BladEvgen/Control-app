@@ -218,7 +218,7 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({
     const urlObj = new URL(apiUrl);
     const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
     return `${protocol}://${urlObj.host}/ws/user-detail/?token=${token}`;
-  }, [token, apiUrl]);
+  }, [token]);
 
   const { sendMessage } = useWebSocket({
     url: wsUrl || "",

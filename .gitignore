@@ -295,14 +295,12 @@ dist
 one_pin_skud.py
 *.sqlite3
 frontend\apiConfig.ts
-/backend/monitoring_app/migrations
 frontend/apiConfig.ts
 backend/db.json
 backend/data-12-09-24.json
 backend/old_data-12-09-24.json
 *.sql
 /backend/static/media/absence_documents
-*.json
 /backend/static/media/control_image
 *.pkl
 *.db
@@ -316,3 +314,4 @@ backend/static/media/examples.zip
 *.conf
 backend/media/examples.zip
 backend/media/
+DB/
