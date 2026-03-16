@@ -25,6 +25,26 @@ def _csv_env_frozenset(name: str, default: str) -> frozenset[str]:
     )
 
 
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 # Custom settings
 DAYS = 1
 # Серийные номера устройств выхода из здания (devSn из API СКУД)
@@ -396,7 +416,7 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.AllowAny",
     ),
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework.authentication.SessionAuthentication",
+        "monitoring_app.authentication.SessionAuthenticationAllowTokenOrApiKey",
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
     "DEFAULT_RENDERER_CLASSES": [
@@ -474,6 +494,84 @@ CELERY_BROKER_URL = "redis://localhost:6379/0"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 
+# ----------------------------
+# Photo PAD (anti-spoof) config
+# ----------------------------
+PHOTO_PAD_DEVICE = os.getenv("PHOTO_PAD_DEVICE", "auto")
+
+PHOTO_PAD_HOURLY_BATCH_SIZE = max(1, _int_env("PHOTO_PAD_HOURLY_BATCH_SIZE", 100))
+PHOTO_PAD_HOURLY_MAX_RECORDS = max(1, _int_env("PHOTO_PAD_HOURLY_MAX_RECORDS", 200))
+PHOTO_PAD_HOURLY_MINUTE = min(max(0, _int_env("PHOTO_PAD_HOURLY_MINUTE", 20)), 59)
+
+PHOTO_PAD_WS_SCAN_ENABLED = os.getenv("PHOTO_PAD_WS_SCAN_ENABLED", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+}
+PHOTO_PAD_WS_SCAN_FLUSH_DELAY = max(
+    0.1,
+    _float_env("PHOTO_PAD_WS_SCAN_FLUSH_DELAY", 0.8),
+)
+PHOTO_PAD_WS_SCAN_MAX_WAIT = max(
+    PHOTO_PAD_WS_SCAN_FLUSH_DELAY,
+    _float_env("PHOTO_PAD_WS_SCAN_MAX_WAIT", 2.5),
+)
+PHOTO_PAD_WS_SCAN_MAX_ITEMS = max(1, _int_env("PHOTO_PAD_WS_SCAN_MAX_ITEMS", 60))
+PHOTO_PAD_WS_SCAN_LOCK_TTL = max(10, _int_env("PHOTO_PAD_WS_SCAN_LOCK_TTL", 180))
+
+PHOTO_PAD_NUMBERS = {
+    # Детектор устройств (телефон/ноутбук/экран)
+    "device_min_conf": _float_env("PHOTO_PAD_DEVICE_MIN_CONF", 0.20),
+    "device_min_area_ratio": _float_env("PHOTO_PAD_DEVICE_MIN_AREA_RATIO", 0.02),
+    "device_ratio_ref": _float_env("PHOTO_PAD_DEVICE_RATIO_REF", 0.25),
+    "device_score_conf_weight": _float_env("PHOTO_PAD_DEVICE_SCORE_CONF_WEIGHT", 0.60),
+    "device_score_ratio_weight": _float_env("PHOTO_PAD_DEVICE_SCORE_RATIO_WEIGHT", 0.40),
+    # Поиск прямоугольной рамки экрана
+    "frame_canny_low": _int_env("PHOTO_PAD_FRAME_CANNY_LOW", 60),
+    "frame_canny_high": _int_env("PHOTO_PAD_FRAME_CANNY_HIGH", 160),
+    "frame_gaussian_kernel": _int_env("PHOTO_PAD_FRAME_GAUSSIAN_KERNEL", 5),
+    "frame_dilate_kernel": _int_env("PHOTO_PAD_FRAME_DILATE_KERNEL", 3),
+    "frame_min_area_ratio": _float_env("PHOTO_PAD_FRAME_MIN_AREA_RATIO", 0.12),
+    "frame_poly_epsilon": _float_env("PHOTO_PAD_FRAME_POLY_EPSILON", 0.02),
+    "frame_min_solidity": _float_env("PHOTO_PAD_FRAME_MIN_SOLIDITY", 0.80),
+    "frame_ratio_ref": _float_env("PHOTO_PAD_FRAME_RATIO_REF", 0.55),
+    "frame_face_bonus": _float_env("PHOTO_PAD_FRAME_FACE_BONUS", 0.15),
+    "frame_border_bonus": _float_env("PHOTO_PAD_FRAME_BORDER_BONUS", 0.08),
+    "frame_border_margin_px": _int_env("PHOTO_PAD_FRAME_BORDER_MARGIN_PX", 8),
+    "frame_tag_threshold": _float_env("PHOTO_PAD_FRAME_TAG_THRESHOLD", 0.35),
+    # Quality gate (не путать плохой свет с обманом)
+    "quality_blur_min": _float_env("PHOTO_PAD_QUALITY_BLUR_MIN", 45.0),
+    "quality_brightness_min": _float_env("PHOTO_PAD_QUALITY_BRIGHTNESS_MIN", 35.0),
+    "quality_brightness_max": _float_env("PHOTO_PAD_QUALITY_BRIGHTNESS_MAX", 225.0),
+    "quality_contrast_min": _float_env("PHOTO_PAD_QUALITY_CONTRAST_MIN", 24.0),
+    "quality_face_ratio_min": _float_env("PHOTO_PAD_QUALITY_FACE_RATIO_MIN", 0.035),
+    "quality_penalty_blur": _float_env("PHOTO_PAD_QUALITY_PENALTY_BLUR", 0.35),
+    "quality_penalty_exposure": _float_env("PHOTO_PAD_QUALITY_PENALTY_EXPOSURE", 0.20),
+    "quality_penalty_contrast": _float_env("PHOTO_PAD_QUALITY_PENALTY_CONTRAST", 0.20),
+    "quality_penalty_small_face": _float_env("PHOTO_PAD_QUALITY_PENALTY_SMALL_FACE", 0.25),
+    "quality_poor_threshold": _float_env("PHOTO_PAD_QUALITY_POOR_THRESHOLD", 0.45),
+    # Интегральный риск
+    "risk_weight_deepface": _float_env("PHOTO_PAD_RISK_WEIGHT_DEEPFACE", 0.50),
+    "risk_weight_device": _float_env("PHOTO_PAD_RISK_WEIGHT_DEVICE", 0.30),
+    "risk_weight_frame": _float_env("PHOTO_PAD_RISK_WEIGHT_FRAME", 0.20),
+    "risk_quality_discount_max": _float_env("PHOTO_PAD_RISK_QUALITY_DISCOUNT_MAX", 0.18),
+    "risk_quality_discount_scale": _float_env("PHOTO_PAD_RISK_QUALITY_DISCOUNT_SCALE", 0.25),
+    # Decision thresholds
+    "decision_device_present_min": _float_env("PHOTO_PAD_DECISION_DEVICE_PRESENT_MIN", 0.25),
+    "decision_frame_present_min": _float_env("PHOTO_PAD_DECISION_FRAME_PRESENT_MIN", 0.40),
+    "decision_strong_device_min": _float_env("PHOTO_PAD_DECISION_STRONG_DEVICE_MIN", 0.35),
+    "decision_strong_frame_min": _float_env("PHOTO_PAD_DECISION_STRONG_FRAME_MIN", 0.30),
+    "decision_very_strong_device_min": _float_env("PHOTO_PAD_DECISION_VERY_STRONG_DEVICE_MIN", 0.55),
+    "decision_quality_poor_min": _float_env("PHOTO_PAD_DECISION_QUALITY_POOR_MIN", 0.45),
+    "decision_deepfake_review_min": _float_env("PHOTO_PAD_DECISION_DEEPFAKE_REVIEW_MIN", 0.65),
+    "decision_deepfake_device_min": _float_env("PHOTO_PAD_DECISION_DEEPFAKE_DEVICE_MIN", 0.90),
+    "decision_deepfake_very_high": _float_env("PHOTO_PAD_DECISION_DEEPFAKE_VERY_HIGH", 0.96),
+    "decision_suspicious_device_min": _float_env("PHOTO_PAD_DECISION_SUSPICIOUS_DEVICE_MIN", 0.25),
+    "decision_suspicious_frame_min": _float_env("PHOTO_PAD_DECISION_SUSPICIOUS_FRAME_MIN", 0.45),
+}
+
 CELERY_TASK_QUEUES = (Queue("control_app_queue", routing_key="control_app_queue"),)
 
 CELERY_TASK_ROUTES = {
@@ -520,6 +618,16 @@ CELERY_BEAT_SCHEDULE = (
         "warmup-class-location-buffers-every-30-min": {
             "task": "monitoring_app.tasks.warmup_class_location_buffers",
             "schedule": crontab(minute="*/30"),
+        },
+        "scan-lesson-attendance-photos-hourly": {
+            "task": "monitoring_app.tasks.scan_lesson_attendance_photos_hourly",
+            "schedule": crontab(minute=str(PHOTO_PAD_HOURLY_MINUTE)),
+            "kwargs": {
+                "batch_size": PHOTO_PAD_HOURLY_BATCH_SIZE,
+                "max_records": PHOTO_PAD_HOURLY_MAX_RECORDS,
+                "device": PHOTO_PAD_DEVICE,
+                "only_today": True,
+            },
         },
         "clean-old-attendance-photos-daily": {
             "task": "monitoring_app.tasks.clean_old_attendance_photos",
