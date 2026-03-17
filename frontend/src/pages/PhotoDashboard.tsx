@@ -46,6 +46,9 @@ const WS_BATCH_FAILSAFE_MS = 300;
 const STAGED_INSERT_COMMIT_MS = 1200;
 const STAGED_INSERT_MAX_ITEMS = 8;
 const CREATED_NO_PHOTO_MIN_VISIBLE_MS = 2500;
+const MARQUEE_VIRTUALIZE_MIN_ITEMS = 120;
+const MARQUEE_VIRTUAL_OVERSCAN_ITEMS = 4;
+const MARQUEE_VIRTUAL_SYNC_MS = 90;
 
 type PhotoUiStatus =
   | "clean"
@@ -293,6 +296,7 @@ const MarqueeTrack: React.FC<{
   cardWidthPx,
   renderItem,
 }) => {
+  type VisibleSlice = { start: number; end: number };
   const containerRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const seqRef = useRef<HTMLUListElement>(null);
@@ -300,6 +304,13 @@ const MarqueeTrack: React.FC<{
   const [seqWidth, setSeqWidth] = useState(0);
   const [copyCount, setCopyCount] = useState(MIN_TRACK_COPIES);
   const [shouldAnimate, setShouldAnimate] = useState(true);
+  const [visibleCopyRange, setVisibleCopyRange] = useState<{
+    start: number;
+    end: number;
+  }>({ start: 0, end: MIN_TRACK_COPIES - 1 });
+  const [visibleSlicesByCopy, setVisibleSlicesByCopy] = useState<
+    Record<number, VisibleSlice>
+  >({});
 
   const offsetRef = useRef(0);
   const velocityRef = useRef(0);
@@ -307,6 +318,113 @@ const MarqueeTrack: React.FC<{
   const rafRef = useRef<number | null>(null);
   const seqWidthRef = useRef(0);
   const itemsChangedTimeRef = useRef(0);
+  const virtualSignatureRef = useRef("");
+  const lastVirtualSyncTsRef = useRef(0);
+
+  const shouldVirtualize = shouldAnimate && items.length >= MARQUEE_VIRTUALIZE_MIN_ITEMS;
+
+  const computeVisibleWindow = useCallback(
+    (currentOffset: number) => {
+      const itemCount = items.length;
+      const safeSeqWidth =
+        Number.isFinite(seqWidthRef.current) && seqWidthRef.current > 0
+          ? seqWidthRef.current
+          : Number.isFinite(seqWidth) && seqWidth > 0
+            ? seqWidth
+            : 0;
+      const containerWidth = containerRef.current?.clientWidth ?? 0;
+
+      if (
+        itemCount <= 0 ||
+        copyCount <= 0 ||
+        safeSeqWidth <= 0 ||
+        containerWidth <= 0 ||
+        !shouldVirtualize
+      ) {
+        const allCopies: Record<number, VisibleSlice> = {};
+        for (let copyIndex = 0; copyIndex < Math.max(1, copyCount); copyIndex += 1) {
+          allCopies[copyIndex] = { start: 0, end: Math.max(0, itemCount - 1) };
+        }
+        const allEnd = Math.max(0, copyCount - 1);
+        return {
+          copyStart: 0,
+          copyEnd: allEnd,
+          slicesByCopy: allCopies,
+          signature: `all:${itemCount}:${allEnd}`,
+        };
+      }
+
+      const itemPitch = safeSeqWidth / itemCount;
+      if (!Number.isFinite(itemPitch) || itemPitch <= 0) {
+        const allCopies: Record<number, VisibleSlice> = {};
+        for (let copyIndex = 0; copyIndex < Math.max(1, copyCount); copyIndex += 1) {
+          allCopies[copyIndex] = { start: 0, end: Math.max(0, itemCount - 1) };
+        }
+        const allEnd = Math.max(0, copyCount - 1);
+        return {
+          copyStart: 0,
+          copyEnd: allEnd,
+          slicesByCopy: allCopies,
+          signature: `all-pitch:${itemCount}:${allEnd}`,
+        };
+      }
+
+      const overscanPx = itemPitch * MARQUEE_VIRTUAL_OVERSCAN_ITEMS;
+      const leftBound = currentOffset - overscanPx;
+      const rightBound = currentOffset + containerWidth + overscanPx;
+
+      const copyStart = Math.max(0, Math.floor(leftBound / safeSeqWidth));
+      const copyEnd = Math.min(
+        Math.max(0, copyCount - 1),
+        Math.ceil(rightBound / safeSeqWidth),
+      );
+
+      const slicesByCopy: Record<number, VisibleSlice> = {};
+      const signatureParts: string[] = [`${copyStart}:${copyEnd}`];
+
+      for (let copyIndex = copyStart; copyIndex <= copyEnd; copyIndex += 1) {
+        const localLeft = leftBound - copyIndex * safeSeqWidth;
+        const localRight = rightBound - copyIndex * safeSeqWidth;
+        let start = Math.floor(localLeft / itemPitch) - 1;
+        let end = Math.ceil(localRight / itemPitch) + 1;
+        start = Math.max(0, Math.min(itemCount - 1, start));
+        end = Math.max(0, Math.min(itemCount - 1, end));
+        if (end < start) continue;
+        slicesByCopy[copyIndex] = { start, end };
+        signatureParts.push(`${copyIndex}.${start}.${end}`);
+      }
+
+      return {
+        copyStart,
+        copyEnd,
+        slicesByCopy,
+        signature: signatureParts.join("|"),
+      };
+    },
+    [copyCount, items.length, seqWidth, shouldVirtualize],
+  );
+
+  const syncVisibleWindow = useCallback(
+    (force = false) => {
+      const safeSeqWidth =
+        Number.isFinite(seqWidthRef.current) && seqWidthRef.current > 0
+          ? seqWidthRef.current
+          : 1;
+      const normalizedOffset =
+        ((offsetRef.current % safeSeqWidth) + safeSeqWidth) % safeSeqWidth;
+      const nextWindow = computeVisibleWindow(normalizedOffset);
+      if (!force && virtualSignatureRef.current === nextWindow.signature) {
+        return;
+      }
+      virtualSignatureRef.current = nextWindow.signature;
+      setVisibleCopyRange({
+        start: nextWindow.copyStart,
+        end: nextWindow.copyEnd,
+      });
+      setVisibleSlicesByCopy(nextWindow.slicesByCopy);
+    },
+    [computeVisibleWindow],
+  );
 
   const updateDimensions = useCallback(() => {
     const containerWidth = containerRef.current?.clientWidth ?? 0;
@@ -344,12 +462,18 @@ const MarqueeTrack: React.FC<{
     const copiesNeeded =
       Math.ceil(containerWidth / roundedSequenceWidth) + TRACK_COPY_HEADROOM;
     setCopyCount(Math.max(MIN_TRACK_COPIES, copiesNeeded));
-  }, []);
+    syncVisibleWindow(true);
+  }, [syncVisibleWindow]);
 
   useEffect(() => {
     itemsChangedTimeRef.current = Date.now();
+    virtualSignatureRef.current = "";
     updateDimensions();
   }, [updateDimensions, items, rowIndex]);
+
+  useEffect(() => {
+    syncVisibleWindow(true);
+  }, [syncVisibleWindow, copyCount, shouldVirtualize, items.length]);
 
   useEffect(() => {
     if (!window.ResizeObserver) {
@@ -403,6 +527,7 @@ const MarqueeTrack: React.FC<{
 
     if (!shouldAnimate) {
       track.style.transform = "translate3d(0, 0, 0)";
+      syncVisibleWindow(true);
       return;
     }
 
@@ -432,6 +557,10 @@ const MarqueeTrack: React.FC<{
       offsetRef.current = nextOffset;
 
       track.style.transform = `translate3d(-${nextOffset}px, 0, 0)`;
+      if (timestamp - lastVirtualSyncTsRef.current >= MARQUEE_VIRTUAL_SYNC_MS) {
+        lastVirtualSyncTsRef.current = timestamp;
+        syncVisibleWindow();
+      }
       rafRef.current = requestAnimationFrame(animate);
     };
 
@@ -442,8 +571,15 @@ const MarqueeTrack: React.FC<{
         rafRef.current = null;
       }
       lastTimestampRef.current = null;
+      lastVirtualSyncTsRef.current = 0;
     };
-  }, [seqWidth, speedPxSec, hoverSpeed, isPaused, shouldAnimate]);
+  }, [seqWidth, speedPxSec, hoverSpeed, isPaused, shouldAnimate, syncVisibleWindow]);
+
+  const safeItemPitch =
+    items.length > 0 && seqWidth > 0 ? seqWidth / items.length : cardWidthPx + 16;
+  const copyStart = shouldVirtualize ? visibleCopyRange.start : 0;
+  const copyEnd = shouldVirtualize ? visibleCopyRange.end : Math.max(0, copyCount - 1);
+  const renderedCopyCount = Math.max(0, copyEnd - copyStart + 1);
 
   return (
     <div
@@ -454,31 +590,68 @@ const MarqueeTrack: React.FC<{
         ref={trackRef}
         className={`flex ${shouldAnimate ? "w-max will-change-transform" : "w-full justify-center"} ${isPaused ? "photo-marquee-paused" : ""}`}
       >
-        {Array.from({ length: copyCount }, (_, copyIndex) => (
+        {Array.from({ length: renderedCopyCount }, (_, localCopyIndex) => {
+          const copyIndex = copyStart + localCopyIndex;
+          const visibleSlice = visibleSlicesByCopy[copyIndex];
+          const hasVisibleSlice =
+            shouldVirtualize &&
+            visibleSlice != null &&
+            visibleSlice.end >= visibleSlice.start;
+          const startIndex = hasVisibleSlice ? visibleSlice.start : 0;
+          const endIndex = hasVisibleSlice ? visibleSlice.end : items.length - 1;
+          const leftSpacerWidth = Math.max(0, startIndex * safeItemPitch);
+          const rightSpacerWidth = Math.max(
+            0,
+            (items.length - endIndex - 1) * safeItemPitch,
+          );
+
+          return (
           <ul
             key={`row-${rowIndex}-copy-${copyIndex}`}
             ref={copyIndex === 0 ? seqRef : undefined}
             className="flex items-center"
             aria-hidden={copyIndex > 0}
           >
-            {items.map((photo, itemIndex) => {
+            {hasVisibleSlice && leftSpacerWidth > 0 && (
+              <li
+                key={`row-${rowIndex}-copy-${copyIndex}-left-spacer`}
+                className="my-1 flex-shrink-0 list-none"
+                style={{ width: leftSpacerWidth }}
+                aria-hidden
+              />
+            )}
+            {items.slice(startIndex, endIndex + 1).map((photo, localItemIndex) => {
+              const itemIndex = startIndex + localItemIndex;
               const displayIndex = copyIndex * items.length + itemIndex;
               const key =
                 photo != null
                   ? `row-${rowIndex}-${copyIndex}-${photo.id ?? `${photo.staffPin}-${photo.attendanceTime}`}`
                   : `row-${rowIndex}-${copyIndex}-empty-${itemIndex}`;
+              const style =
+                photo == null
+                  ? { width: cardWidthPx }
+                  : undefined;
               return (
                 <li
                   key={key}
                   className="mr-4 my-1 flex-shrink-0 list-none"
-                  style={photo == null ? { width: cardWidthPx } : undefined}
+                  style={style}
                 >
                   {renderItem(photo, displayIndex, copyIndex, itemIndex)}
                 </li>
               );
             })}
+            {hasVisibleSlice && rightSpacerWidth > 0 && (
+              <li
+                key={`row-${rowIndex}-copy-${copyIndex}-right-spacer`}
+                className="my-1 flex-shrink-0 list-none"
+                style={{ width: rightSpacerWidth }}
+                aria-hidden
+              />
+            )}
           </ul>
-        ))}
+        );
+        })}
       </div>
     </div>
   );
@@ -508,6 +681,36 @@ interface WsBatchBucket {
 }
 
 type PhotoVerdictAction = "manual_suspicious" | "manual_clean" | "manual_reset";
+
+const PhotoCardImage: React.FC<{
+  photo: PhotoData;
+  isClone: boolean;
+}> = React.memo(({ photo, isClone }) => {
+  if (photo.hasPhoto === false) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
+          <FaImage className="h-7 w-7" />
+        </div>
+        <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white shadow-md backdrop-blur-sm">
+          Фото не загружено
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={`${apiUrl}${photo.photoUrl}`}
+      alt={photo.staffFullName}
+      className="w-full h-full object-contain transition-opacity duration-300"
+      loading="lazy"
+      decoding={isClone ? "async" : "auto"}
+      draggable={false}
+    />
+  );
+});
+PhotoCardImage.displayName = "PhotoCardImage";
 
 const PhotoDashboard: React.FC = () => {
   const location = useLocation();
@@ -897,6 +1100,10 @@ const PhotoDashboard: React.FC = () => {
     const events = [...withoutId, ...Array.from(dedupById.values())];
 
     const next = [...photosRef.current];
+    const indexById = new Map<number, number>();
+    next.forEach((item, idx) => {
+      if (item.id != null) indexById.set(item.id, idx);
+    });
     for (const rawEvent of events) {
       const eventData = normalizeWsEvent(rawEvent);
       const eventId = eventData.id;
@@ -909,8 +1116,14 @@ const PhotoDashboard: React.FC = () => {
       }
       if (eventData.stateCode === "DELETED" || eventData.op === "deleted") {
         if (eventId != null) {
-          const idx = next.findIndex((x) => x.id === eventId);
+          const idx = indexById.get(eventId) ?? -1;
           if (idx >= 0) next.splice(idx, 1);
+          if (idx >= 0) {
+            indexById.clear();
+            next.forEach((item, mapIdx) => {
+              if (item.id != null) indexById.set(item.id, mapIdx);
+            });
+          }
           noPhotoFirstSeenRef.current.delete(eventId);
           lastVersionByIdRef.current.delete(eventId);
         }
@@ -940,7 +1153,7 @@ const PhotoDashboard: React.FC = () => {
         }
       }
       if (eventId != null) {
-        const idx = next.findIndex((x) => x.id === eventId);
+        const idx = indexById.get(eventId) ?? -1;
         if (idx >= 0) {
           next[idx] = { ...next[idx], ...eventData };
         } else {
@@ -1062,7 +1275,7 @@ const PhotoDashboard: React.FC = () => {
   const wsUrl = useMemo(() => {
     const urlObj = new URL(apiUrl);
     const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
-    return `${protocol}://${urlObj.host}/ws/photos/?date=${date}`;
+    return `${protocol}://${urlObj.host}/ws/photos/?date=${date}&legacy=0`;
   }, [date]);
 
   const { isConnected, reconnect } = useWebSocket({
@@ -1644,6 +1857,7 @@ const PhotoDashboard: React.FC = () => {
       cardIndex: number,
       isInteractive: boolean,
       kioskCardWidth?: number,
+      isClone = false,
     ) => {
       const uiStatus = resolvePhotoUiStatus(photo);
       const statusMeta = PHOTO_STATUS_STYLE[uiStatus];
@@ -1655,6 +1869,49 @@ const PhotoDashboard: React.FC = () => {
       const innerClassName = hasSuspiciousFrame
         ? "photo-electric-border-inner flex flex-col flex-1 overflow-hidden rounded-2xl relative"
         : "flex flex-col flex-1 overflow-hidden rounded-2xl relative bg-white dark:bg-gray-800";
+      const cardBody = (
+        <>
+          <div className={frameClassName}>
+            <div className={innerClassName}>
+              <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
+                <div className="photo-shine-overlay" aria-hidden />
+                {statusMeta.showBadgeOnCard && (
+                  <div
+                    className={`absolute left-2 top-2 z-20 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold shadow-md backdrop-blur-sm ${statusMeta.badgeClass}`}
+                  >
+                    <FaShieldAlt className="h-3 w-3" />
+                    <span>{statusMeta.label}</span>
+                  </div>
+                )}
+                <PhotoCardImage photo={photo} isClone={isClone} />
+              </div>
+              {renderCardMeta(photo)}
+            </div>
+          </div>
+        </>
+      );
+
+      if (!isInteractive) {
+        return (
+          <article
+            key={
+              photo.id != null
+                ? `photo-${photo.id}`
+                : `${photo.photoUrl}-${photo.attendanceTime}-${keyIndex}`
+            }
+            className={`photo-item group relative flex-shrink-0 w-[220px] sm:w-[260px] md:w-[280px] lg:w-[300px] rounded-2xl md:rounded-3xl select-none flex flex-col transition-all duration-300 overflow-hidden bg-white/95 dark:bg-gray-800/95 ring-1 ring-white/80 dark:ring-gray-700/90 shadow-[0_12px_30px_-20px_rgba(15,23,42,0.7)] ${
+              isCheckCard
+                ? "ring-2 ring-amber-300/85 dark:ring-amber-400/50 shadow-[0_16px_34px_-22px_rgba(245,158,11,0.78)]"
+                : ""
+            }`}
+            style={kioskCardWidth != null ? { width: kioskCardWidth } : undefined}
+            aria-hidden
+          >
+            {cardBody}
+          </article>
+        );
+      }
+
       return (
         <motion.article
           key={
@@ -1719,40 +1976,7 @@ const PhotoDashboard: React.FC = () => {
           whileHover={{ y: -4 }}
           whileTap={{ scale: 0.98 }}
         >
-          <div className={frameClassName}>
-            <div className={innerClassName}>
-              <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
-                <div className="photo-shine-overlay" aria-hidden />
-                {statusMeta.showBadgeOnCard && (
-                  <div
-                    className={`absolute left-2 top-2 z-20 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold shadow-md backdrop-blur-sm ${statusMeta.badgeClass}`}
-                  >
-                    <FaShieldAlt className="h-3 w-3" />
-                    <span>{statusMeta.label}</span>
-                  </div>
-                )}
-                {photo.hasPhoto === false ? (
-                  <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
-                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
-                      <FaImage className="h-7 w-7" />
-                    </div>
-                    <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white shadow-md backdrop-blur-sm">
-                      Фото не загружено
-                    </span>
-                  </div>
-                ) : (
-                  <img
-                    src={`${apiUrl}${photo.photoUrl}`}
-                    alt={photo.staffFullName}
-                    className="w-full h-full object-contain transition-opacity duration-300"
-                    loading="lazy"
-                    draggable={false}
-                  />
-                )}
-              </div>
-              {renderCardMeta(photo)}
-            </div>
-          </div>
+          {cardBody}
         </motion.article>
       );
     },
@@ -1948,6 +2172,7 @@ const PhotoDashboard: React.FC = () => {
                       cardIndex,
                       copyIndex === 0,
                       kioskNarrowViewport ? cardWidthPx : undefined,
+                      copyIndex > 0,
                     );
                   }}
                 />

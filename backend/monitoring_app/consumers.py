@@ -43,6 +43,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         self._pad_scan_task = None
         self._pad_last_event_ts = 0.0
         self._pad_device = "auto"
+        self._send_legacy_photos = True
         self._pad_scan_enabled = self._parse_bool_setting(
             getattr(settings, "PHOTO_PAD_WS_SCAN_ENABLED", True),
             default=True,
@@ -147,6 +148,8 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         params = dict(
             param.split("=") for param in query_params.split("&") if "=" in param
         )
+        legacy_param = str(params.get("legacy", "1")).strip().lower()
+        self._send_legacy_photos = legacy_param not in {"0", "false", "no", "off"}
         date_str = params.get("date")
         if date_str:
             try:
@@ -312,10 +315,11 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         sent_at: str,
     ) -> dict[str, Any]:
         legacy_photos = []
-        for event_payload in events:
-            legacy_item = self._event_to_legacy_photo(event_payload)
-            if legacy_item is not None:
-                legacy_photos.append(legacy_item)
+        if self._send_legacy_photos:
+            for event_payload in events:
+                legacy_item = self._event_to_legacy_photo(event_payload)
+                if legacy_item is not None:
+                    legacy_photos.append(legacy_item)
         return {
             "type": message_type,
             "protocol": PHOTO_WS_PROTOCOL,

@@ -1,7 +1,10 @@
 import { log } from "../api";
 import { useEffect, useRef, useCallback, useState } from "react";
 
+const WS_DEBUG = false;
+
 const wsLog = (msg: string, data?: unknown) => {
+  if (!WS_DEBUG) return;
   try {
     console.info(`[WS] ${msg}`, data ?? "");
   } catch {
@@ -129,44 +132,39 @@ const useWebSocket = ({
 
     wsRef.current.onmessage = (event: MessageEvent) => {
       const dataStr = typeof event.data === "string" ? event.data : "";
-      setTimeout(() => {
-        try {
-          const data = JSON.parse(dataStr);
-          wsLog("сообщение", {
-            type: data?.type,
-            hasProfile: !!data?.user_profile,
-          });
+      try {
+        const data = JSON.parse(dataStr);
+        wsLog("сообщение", {
+          type: data?.type,
+          hasProfile: !!data?.user_profile,
+        });
 
-          if (data.type === "pong") {
-            handlePong();
-            if (data.user_profile) {
-              onMessageRef.current?.({
-                ...event,
-                data: dataStr,
-              } as MessageEvent);
-            }
-            return;
+        if (data.type === "pong") {
+          handlePong();
+          if (data.user_profile) {
+            onMessageRef.current?.({
+              ...event,
+              data: dataStr,
+            } as MessageEvent);
           }
-          if (data.type === "heartbeat") return;
-
-          if (
-            data.error === "token_expired" ||
-            data.action === "refresh_token"
-          ) {
-            log.warn("Получено сообщение об истечении токена от WebSocket");
-            if (!isRefreshingTokenRef.current && onTokenExpiredRef.current) {
-              isRefreshingTokenRef.current = true;
-              onTokenExpiredRef.current();
-            }
-            return;
-          }
-
-          onMessageRef.current?.({ ...event, data: dataStr } as MessageEvent);
-        } catch (error) {
-          wsLog("ошибка обработки", error);
-          log.error("Ошибка при обработке сообщения WebSocket:", error);
+          return;
         }
-      }, 0);
+        if (data.type === "heartbeat") return;
+
+        if (data.error === "token_expired" || data.action === "refresh_token") {
+          log.warn("Получено сообщение об истечении токена от WebSocket");
+          if (!isRefreshingTokenRef.current && onTokenExpiredRef.current) {
+            isRefreshingTokenRef.current = true;
+            onTokenExpiredRef.current();
+          }
+          return;
+        }
+
+        onMessageRef.current?.({ ...event, data: dataStr } as MessageEvent);
+      } catch (error) {
+        wsLog("ошибка обработки", error);
+        log.error("Ошибка при обработке сообщения WebSocket:", error);
+      }
     };
 
     wsRef.current.onclose = (event: CloseEvent) => {
