@@ -82,6 +82,11 @@ urlpatterns = [
         views.department_summary,
         name="department-summary",
     ),
+    path(
+        "api/reports/building-attendance.xlsx",
+        views.download_building_attendance_report,
+        name="building-attendance-report",
+    ),
     path("api/download/<str:department_id>/", views.sent_excel, name="sent_excel"),
     path("api/key_check/", views.APIKeyCheckView.as_view(), name="api_key_check"),
     path("api/parent_department_id/", views.get_parent_id, name="get-parent-ids"),

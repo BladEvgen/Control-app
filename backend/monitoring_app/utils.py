@@ -710,9 +710,11 @@ def generate_map_data(
 
             logger.info(f"Начинаем обработку LessonAttendance для даты: {date_at}")
 
-            lesson_attendances_qs = models.LessonAttendance.objects.filter(
-                date_at=date_at
-            ).exclude(staff_id__in=staff_with_attendance)
+            lesson_attendances_qs = (
+                models.LessonAttendance.objects.filter(date_at=date_at)
+                .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
+                .exclude(staff_id__in=staff_with_attendance)
+            )
 
             lesson_count = lesson_attendances_qs.count()
             logger.info(f"Количество LessonAttendance для обработки: {lesson_count}")
@@ -1314,17 +1316,21 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         "effective_work_intervals",
     )
 
-    lesson_attendance_qs = models.LessonAttendance.objects.filter(
-        staff_id__in=staff_ids,
-        date_at__range=[start_date, end_date],
-    ).only(
-        "staff_id",
-        "first_in",
-        "date_at",
-        "last_out",
-        "latitude",
-        "longitude",
-        "duration_seconds",
+    lesson_attendance_qs = (
+        models.LessonAttendance.objects.filter(
+            staff_id__in=staff_ids,
+            date_at__range=[start_date, end_date],
+        )
+        .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
+        .only(
+            "staff_id",
+            "first_in",
+            "date_at",
+            "last_out",
+            "latitude",
+            "longitude",
+            "duration_seconds",
+        )
     )
 
     remote_work_qs = models.RemoteWork.objects.filter(

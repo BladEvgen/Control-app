@@ -677,6 +677,18 @@ class LessonAttendance(models.Model, GeoItem):
         (PHOTO_MANUAL_VERDICT_SUSPICIOUS, "Подозрительное (ручное)"),
     ]
 
+    # For attendance reports we exclude only definitively rejected photos:
+    # - manual suspicious verdicts;
+    # - auto suspicious when no manual verdict yet.
+    # pending/review/error remain included to avoid false absences while
+    # staff are still waiting for manual confirmation.
+    PHOTO_SUSPICIOUS_FOR_REPORTS_Q = Q(
+        photo_manual_verdict=PHOTO_MANUAL_VERDICT_SUSPICIOUS
+    ) | (
+        Q(photo_manual_verdict=PHOTO_MANUAL_VERDICT_NONE)
+        & Q(photo_spoof_status=PHOTO_SPOOF_STATUS_SUSPICIOUS)
+    )
+
     staff = models.ForeignKey(
         Staff,
         on_delete=models.CASCADE,
@@ -827,7 +839,8 @@ class LessonAttendance(models.Model, GeoItem):
             return self.PHOTO_SPOOF_STATUS_CLEAN
         if self.photo_manual_verdict == self.PHOTO_MANUAL_VERDICT_SUSPICIOUS:
             return self.PHOTO_SPOOF_STATUS_SUSPICIOUS
-        return self.photo_spoof_status or self.PHOTO_SPOOF_STATUS_PENDING
+        value = self.photo_spoof_status
+        return str(value) if value else self.PHOTO_SPOOF_STATUS_PENDING
 
     @property
     def photo_can_set_manual_verdict(self) -> bool:
@@ -847,7 +860,8 @@ class LessonAttendance(models.Model, GeoItem):
             return True
         if self.photo_manual_verdict == self.PHOTO_MANUAL_VERDICT_SUSPICIOUS:
             return False
-        return self.photo_trust_confirmed
+        value = self.photo_trust_confirmed
+        return None if value is None else bool(value)
 
     def reset_photo_verdict_state(self) -> None:
         self.photo_spoof_status = self.PHOTO_SPOOF_STATUS_PENDING
