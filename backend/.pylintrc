@@ -4,6 +4,7 @@ init-hook = "import sys, os; sys.path.insert(0, os.path.abspath('backend')); os.
 extension-pkg-allow-list = cv2
 
 ignore = migrations
+ignore-paths = .*[\\/]migrations[\\/].*
 ignore-patterns = (^|.*/)(migrations|venv|\.venv|node_modules|build|dist)(/|$)
 
 [MESSAGES CONTROL]

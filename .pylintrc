@@ -1,0 +1,2 @@
+[MASTER]
+ignore-paths = .*[\\/]migrations[\\/].*,.*[\\/]venv[\\/].*,.*[\\/]\.venv[\\/].*,.*[\\/]node_modules[\\/].*
