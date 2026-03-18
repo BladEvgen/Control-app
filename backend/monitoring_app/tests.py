@@ -1,10 +1,10 @@
-import base64
 import asyncio
+import base64
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, patch
 
 from asgiref.sync import async_to_sync
@@ -13,16 +13,18 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from monitoring_app import signals as lesson_signals
+from monitoring_app import tasks as monitoring_tasks
 from monitoring_app.attendance_fetcher import _compute_attendance_from_events
 from monitoring_app.consumers import (
     PHOTO_WS_PROTOCOL,
     STATE_CREATED_NO_PHOTO,
     STATE_DELETED,
     STATE_PHOTO_ATTACHED,
+    STATE_UPDATED_META,
     PhotoConsumer,
 )
 from monitoring_app.models import APIKey, LessonAttendance, RemoteWork, Staff
-from monitoring_app import signals as lesson_signals, tasks as monitoring_tasks
 from monitoring_app.views import get_staff_detail
 from rest_framework import status
 from rest_framework.authtoken.models import Token
@@ -54,6 +56,61 @@ class StaffDetailTest(TestCase):
         detail = get_staff_detail(self.staff, start_date, end_date)
         self.assertIn("contract_type", detail)
         self.assertIn("salary", detail)
+
+    def test_get_staff_detail_includes_review_but_excludes_suspicious_lesson(self):
+        review_day = timezone.make_aware(datetime(2023, 1, 10, 9, 0))
+        suspicious_day = timezone.make_aware(datetime(2023, 1, 11, 9, 0))
+        clean_day = timezone.make_aware(datetime(2023, 1, 12, 9, 0))
+
+        LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=review_day,
+            last_out=review_day + timedelta(hours=1),
+            latitude=43.2389,
+            longitude=76.8897,
+            date_at=review_day.date(),
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        )
+        LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=suspicious_day,
+            last_out=suspicious_day + timedelta(hours=1),
+            latitude=43.2389,
+            longitude=76.8897,
+            date_at=suspicious_day.date(),
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        )
+        LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=clean_day,
+            last_out=clean_day + timedelta(hours=1),
+            latitude=43.2389,
+            longitude=76.8897,
+            date_at=clean_day.date(),
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        )
+
+        detail = get_staff_detail(
+            self.staff,
+            datetime(2023, 1, 1),
+            datetime(2023, 1, 31),
+        )
+
+        self.assertIn("10-01-2023", detail["attendance"])  # review
+        self.assertIn("12-01-2023", detail["attendance"])  # clean
+        self.assertNotIn("11-01-2023", detail["attendance"])  # suspicious
 
 
 class LessonTaskStatusTest(APITestCase):
@@ -456,9 +513,10 @@ class LessonAttendanceCreateThenPutPhotoTest(APITestCase):
     def test_create_then_put_photo_base64(self):
         lesson_id = self._post_attendance_get_lesson_id()
         image_b64 = base64.b64encode(self._photo_bytes).decode("ascii")
+        payload: Any = {"image": image_b64}
         response = self.client.put(
             reverse("update_lesson_attendance", kwargs={"id": lesson_id}),
-            {"image": image_b64},
+            payload,
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
@@ -473,9 +531,10 @@ class LessonAttendanceCreateThenPutPhotoTest(APITestCase):
             self._photo_bytes,
             content_type="image/jpeg",
         )
+        payload_multipart: Any = {"image": photo_file}
         response = self.client.put(
             reverse("update_lesson_attendance", kwargs={"id": lesson_id}),
-            {"image": photo_file},
+            payload_multipart,
             format="multipart",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
@@ -527,7 +586,9 @@ class PhotoConsumerProtocolTest(SimpleTestCase):
         self.assertEqual(len(batch_ids), 1)
         self.assertEqual([payload["chunkIndex"] for payload in payloads], [1, 2, 3])
         self.assertTrue(all(payload["totalChunks"] == 3 for payload in payloads))
-        self.assertTrue(all(payload["protocol"] == PHOTO_WS_PROTOCOL for payload in payloads))
+        self.assertTrue(
+            all(payload["protocol"] == PHOTO_WS_PROTOCOL for payload in payloads)
+        )
 
     def test_deleted_event_is_sent_without_photo_payload(self):
         consumer = TestablePhotoConsumer()
@@ -570,6 +631,89 @@ class PhotoConsumerProtocolTest(SimpleTestCase):
         async_to_sync(_run)()
 
         self.assertEqual(sorted(consumer._photo_update_buffer.keys()), [11, 12, 13])
+
+    def test_risk_only_snapshot_keeps_manual_suspicious_not_actionable(self):
+        consumer = TestablePhotoConsumer()
+        consumer._risk_only = True
+        consumer.send_json = AsyncMock()
+        consumer.get_photos_for_date = AsyncMock(
+            return_value=[
+                {
+                    "id": 101,
+                    "hasPhoto": True,
+                    "staffPin": "S0101S",
+                    "staffFullName": "Risk Manual",
+                    "department": "Dept",
+                    "photoUrl": "/media/a.jpg",
+                    "attendanceTime": timezone.now().isoformat(),
+                    "tutorInfo": "",
+                    "photoSpoofStatus": "suspicious",
+                    "photoManualVerdict": "suspicious",
+                    "photoCanSetManualVerdict": False,
+                },
+                {
+                    "id": 102,
+                    "hasPhoto": True,
+                    "staffPin": "S0102S",
+                    "staffFullName": "Clean",
+                    "department": "Dept",
+                    "photoUrl": "/media/b.jpg",
+                    "attendanceTime": timezone.now().isoformat(),
+                    "tutorInfo": "",
+                    "photoSpoofStatus": "clean",
+                    "photoManualVerdict": "none",
+                    "photoCanSetManualVerdict": False,
+                },
+            ]
+        )
+
+        async_to_sync(consumer._send_initial_snapshot)()
+
+        self.assertEqual(consumer.send_json.await_count, 1)
+        payload = consumer.send_json.await_args_list[0].args[0]
+        events = payload["events"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["id"], 101)
+
+    def test_risk_only_updates_keep_manual_suspicious_not_actionable(self):
+        consumer = TestablePhotoConsumer()
+        consumer._risk_only = True
+        consumer.send_json = AsyncMock()
+        consumer.get_photo_data_bulk = AsyncMock(
+            return_value=[
+                {
+                    "id": 201,
+                    "hasPhoto": True,
+                    "staffPin": "S0201S",
+                    "staffFullName": "Risk Manual",
+                    "department": "Dept",
+                    "photoUrl": "/media/c.jpg",
+                    "attendanceTime": timezone.now().isoformat(),
+                    "tutorInfo": "",
+                    "photoSpoofStatus": "suspicious",
+                    "photoManualVerdict": "suspicious",
+                    "photoCanSetManualVerdict": False,
+                }
+            ]
+        )
+        consumer.set_update_buffer_for_test(
+            {
+                201: {
+                    "id": 201,
+                    "op": "updated",
+                    "stateCode": STATE_UPDATED_META,
+                    "versionTs": timezone.now().isoformat(),
+                }
+            }
+        )
+
+        async_to_sync(consumer.flush_photo_updates_for_test)()
+
+        self.assertEqual(consumer.send_json.await_count, 1)
+        payload = consumer.send_json.await_args_list[0].args[0]
+        self.assertEqual(payload["type"], "photos_updated")
+        self.assertEqual(len(payload["events"]), 1)
+        self.assertEqual(payload["events"][0]["id"], 201)
 
 
 class LessonAttendanceSignalStateTest(SimpleTestCase):

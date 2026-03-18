@@ -41,6 +41,7 @@ const TRACK_COPY_HEADROOM = 2;
 const STATIC_TRACK_FIT_THRESHOLD = 1.05;
 const HOVER_IDLE_RESUME_MS = 2500;
 const STORAGE_KEY_SHOW_ALL_PHOTOS = "photoDashboard_showAllPhotos";
+const STORAGE_KEY_SHOW_RISK_ONLY = "photoDashboard_showRiskOnly";
 const WS_MERGE_BUFFER_MS = 180;
 const WS_BATCH_FAILSAFE_MS = 300;
 const STAGED_INSERT_COMMIT_MS = 1200;
@@ -53,6 +54,7 @@ const MARQUEE_VIRTUAL_SYNC_MS = 90;
 type PhotoUiStatus =
   | "clean"
   | "check"
+  | "check_error"
   | "suspicious_auto"
   | "suspicious_manual";
 
@@ -78,6 +80,12 @@ const PHOTO_STATUS_STYLE: Record<
     label: "Проверить",
     showBadgeOnCard: true,
   },
+  check_error: {
+    borderClass: "photo-electric-border--review",
+    badgeClass: "bg-orange-600/90 text-orange-50 border border-orange-300/70",
+    label: "Ошибка",
+    showBadgeOnCard: true,
+  },
   suspicious_auto: {
     borderClass: "photo-electric-border--suspicious-auto",
     badgeClass: "bg-rose-600/90 text-rose-50 border border-rose-300/60",
@@ -87,7 +95,8 @@ const PHOTO_STATUS_STYLE: Record<
   },
   suspicious_manual: {
     borderClass: "photo-electric-border--suspicious-manual",
-    badgeClass: "bg-fuchsia-600/90 text-fuchsia-50 border border-fuchsia-300/65",
+    badgeClass:
+      "bg-fuchsia-600/90 text-fuchsia-50 border border-fuchsia-300/65",
     label: "Подозрительное",
     sourceLabel: "ручное",
     showBadgeOnCard: true,
@@ -97,6 +106,15 @@ const PHOTO_STATUS_STYLE: Record<
 const getStoredShowAllPhotos = (): boolean => {
   try {
     const v = localStorage.getItem(STORAGE_KEY_SHOW_ALL_PHOTOS);
+    return v === "true";
+  } catch {
+    return false;
+  }
+};
+
+const getStoredShowRiskOnly = (): boolean => {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY_SHOW_RISK_ONLY);
     return v === "true";
   } catch {
     return false;
@@ -121,10 +139,10 @@ const resolvePhotoUiStatus = (photo: Partial<PhotoData>): PhotoUiStatus => {
   const effectiveStatus = resolvePhotoEffectiveStatus(photo);
   if (manualVerdict === "suspicious") return "suspicious_manual";
   if (effectiveStatus === "suspicious") return "suspicious_auto";
+  if (effectiveStatus === "error") return "check_error";
   if (
     effectiveStatus === "review" ||
-    effectiveStatus === "pending" ||
-    effectiveStatus === "error"
+    effectiveStatus === "pending"
   ) {
     return "check";
   }
@@ -141,6 +159,23 @@ const isManualReviewRequiredByBackend = (
   if (manualVerdict !== "none") return false;
   const status = photo.photoSpoofStatus ?? "pending";
   return status === "pending" || status === "review" || status === "error";
+};
+
+const isRiskPhotoCandidate = (photo: Partial<PhotoData>): boolean => {
+  const manualVerdict = photo.photoManualVerdict ?? "none";
+  // В режиме риска показываем:
+  // 1) все manual suspicious,
+  // 2) auto suspicious,
+  // 3) фото, требующие ручной проверки (pending/review/error без manual verdict).
+  if (manualVerdict === "suspicious") return true;
+  if (manualVerdict === "clean") return false;
+  const status = photo.photoSpoofStatus ?? "pending";
+  return (
+    status === "pending" ||
+    status === "review" ||
+    status === "error" ||
+    status === "suspicious"
+  );
 };
 
 const stableHash = (value: string): number => {
@@ -281,6 +316,7 @@ const MarqueeTrack: React.FC<{
   hoverSpeed?: number;
   isPaused: boolean;
   cardWidthPx: number;
+  forceLoop?: boolean;
   renderItem: (
     photo: PhotoData | null,
     displayIndex: number,
@@ -294,6 +330,7 @@ const MarqueeTrack: React.FC<{
   hoverSpeed = MARQUEE_HOVER_SPEED,
   isPaused,
   cardWidthPx,
+  forceLoop = false,
   renderItem,
 }) => {
   type VisibleSlice = { start: number; end: number };
@@ -321,7 +358,8 @@ const MarqueeTrack: React.FC<{
   const virtualSignatureRef = useRef("");
   const lastVirtualSyncTsRef = useRef(0);
 
-  const shouldVirtualize = shouldAnimate && items.length >= MARQUEE_VIRTUALIZE_MIN_ITEMS;
+  const shouldVirtualize =
+    shouldAnimate && items.length >= MARQUEE_VIRTUALIZE_MIN_ITEMS;
 
   const computeVisibleWindow = useCallback(
     (currentOffset: number) => {
@@ -342,7 +380,11 @@ const MarqueeTrack: React.FC<{
         !shouldVirtualize
       ) {
         const allCopies: Record<number, VisibleSlice> = {};
-        for (let copyIndex = 0; copyIndex < Math.max(1, copyCount); copyIndex += 1) {
+        for (
+          let copyIndex = 0;
+          copyIndex < Math.max(1, copyCount);
+          copyIndex += 1
+        ) {
           allCopies[copyIndex] = { start: 0, end: Math.max(0, itemCount - 1) };
         }
         const allEnd = Math.max(0, copyCount - 1);
@@ -357,7 +399,11 @@ const MarqueeTrack: React.FC<{
       const itemPitch = safeSeqWidth / itemCount;
       if (!Number.isFinite(itemPitch) || itemPitch <= 0) {
         const allCopies: Record<number, VisibleSlice> = {};
-        for (let copyIndex = 0; copyIndex < Math.max(1, copyCount); copyIndex += 1) {
+        for (
+          let copyIndex = 0;
+          copyIndex < Math.max(1, copyCount);
+          copyIndex += 1
+        ) {
           allCopies[copyIndex] = { start: 0, end: Math.max(0, itemCount - 1) };
         }
         const allEnd = Math.max(0, copyCount - 1);
@@ -444,15 +490,17 @@ const MarqueeTrack: React.FC<{
     const previousWidth = seqWidthRef.current;
     if (previousWidth > 0 && roundedSequenceWidth > 0) {
       const normalizedProgress =
-        (((offsetRef.current % previousWidth) + previousWidth) % previousWidth) /
+        (((offsetRef.current % previousWidth) + previousWidth) %
+          previousWidth) /
         previousWidth;
       offsetRef.current = normalizedProgress * roundedSequenceWidth;
     }
     seqWidthRef.current = roundedSequenceWidth;
     setSeqWidth(roundedSequenceWidth);
 
-    const canAnimate =
-      roundedSequenceWidth > containerWidth * STATIC_TRACK_FIT_THRESHOLD;
+    const canAnimate = forceLoop
+      ? items.length > 0
+      : roundedSequenceWidth > containerWidth * STATIC_TRACK_FIT_THRESHOLD;
     setShouldAnimate(canAnimate);
     if (!canAnimate) {
       setCopyCount(1);
@@ -463,7 +511,7 @@ const MarqueeTrack: React.FC<{
       Math.ceil(containerWidth / roundedSequenceWidth) + TRACK_COPY_HEADROOM;
     setCopyCount(Math.max(MIN_TRACK_COPIES, copiesNeeded));
     syncVisibleWindow(true);
-  }, [syncVisibleWindow]);
+  }, [syncVisibleWindow, forceLoop, items.length]);
 
   useEffect(() => {
     itemsChangedTimeRef.current = Date.now();
@@ -573,12 +621,23 @@ const MarqueeTrack: React.FC<{
       lastTimestampRef.current = null;
       lastVirtualSyncTsRef.current = 0;
     };
-  }, [seqWidth, speedPxSec, hoverSpeed, isPaused, shouldAnimate, syncVisibleWindow]);
+  }, [
+    seqWidth,
+    speedPxSec,
+    hoverSpeed,
+    isPaused,
+    shouldAnimate,
+    syncVisibleWindow,
+  ]);
 
   const safeItemPitch =
-    items.length > 0 && seqWidth > 0 ? seqWidth / items.length : cardWidthPx + 16;
+    items.length > 0 && seqWidth > 0
+      ? seqWidth / items.length
+      : cardWidthPx + 16;
   const copyStart = shouldVirtualize ? visibleCopyRange.start : 0;
-  const copyEnd = shouldVirtualize ? visibleCopyRange.end : Math.max(0, copyCount - 1);
+  const copyEnd = shouldVirtualize
+    ? visibleCopyRange.end
+    : Math.max(0, copyCount - 1);
   const renderedCopyCount = Math.max(0, copyEnd - copyStart + 1);
 
   return (
@@ -598,7 +657,9 @@ const MarqueeTrack: React.FC<{
             visibleSlice != null &&
             visibleSlice.end >= visibleSlice.start;
           const startIndex = hasVisibleSlice ? visibleSlice.start : 0;
-          const endIndex = hasVisibleSlice ? visibleSlice.end : items.length - 1;
+          const endIndex = hasVisibleSlice
+            ? visibleSlice.end
+            : items.length - 1;
           const leftSpacerWidth = Math.max(0, startIndex * safeItemPitch);
           const rightSpacerWidth = Math.max(
             0,
@@ -606,51 +667,51 @@ const MarqueeTrack: React.FC<{
           );
 
           return (
-          <ul
-            key={`row-${rowIndex}-copy-${copyIndex}`}
-            ref={copyIndex === 0 ? seqRef : undefined}
-            className="flex items-center"
-            aria-hidden={copyIndex > 0}
-          >
-            {hasVisibleSlice && leftSpacerWidth > 0 && (
-              <li
-                key={`row-${rowIndex}-copy-${copyIndex}-left-spacer`}
-                className="my-1 flex-shrink-0 list-none"
-                style={{ width: leftSpacerWidth }}
-                aria-hidden
-              />
-            )}
-            {items.slice(startIndex, endIndex + 1).map((photo, localItemIndex) => {
-              const itemIndex = startIndex + localItemIndex;
-              const displayIndex = copyIndex * items.length + itemIndex;
-              const key =
-                photo != null
-                  ? `row-${rowIndex}-${copyIndex}-${photo.id ?? `${photo.staffPin}-${photo.attendanceTime}`}`
-                  : `row-${rowIndex}-${copyIndex}-empty-${itemIndex}`;
-              const style =
-                photo == null
-                  ? { width: cardWidthPx }
-                  : undefined;
-              return (
+            <ul
+              key={`row-${rowIndex}-copy-${copyIndex}`}
+              ref={copyIndex === 0 ? seqRef : undefined}
+              className="flex items-center"
+              aria-hidden={copyIndex > 0}
+            >
+              {hasVisibleSlice && leftSpacerWidth > 0 && (
                 <li
-                  key={key}
-                  className="mr-4 my-1 flex-shrink-0 list-none"
-                  style={style}
-                >
-                  {renderItem(photo, displayIndex, copyIndex, itemIndex)}
-                </li>
-              );
-            })}
-            {hasVisibleSlice && rightSpacerWidth > 0 && (
-              <li
-                key={`row-${rowIndex}-copy-${copyIndex}-right-spacer`}
-                className="my-1 flex-shrink-0 list-none"
-                style={{ width: rightSpacerWidth }}
-                aria-hidden
-              />
-            )}
-          </ul>
-        );
+                  key={`row-${rowIndex}-copy-${copyIndex}-left-spacer`}
+                  className="my-1 flex-shrink-0 list-none"
+                  style={{ width: leftSpacerWidth }}
+                  aria-hidden
+                />
+              )}
+              {items
+                .slice(startIndex, endIndex + 1)
+                .map((photo, localItemIndex) => {
+                  const itemIndex = startIndex + localItemIndex;
+                  const displayIndex = copyIndex * items.length + itemIndex;
+                  const key =
+                    photo != null
+                      ? `row-${rowIndex}-${copyIndex}-${photo.id ?? `${photo.staffPin}-${photo.attendanceTime}`}`
+                      : `row-${rowIndex}-${copyIndex}-empty-${itemIndex}`;
+                  const style =
+                    photo == null ? { width: cardWidthPx } : undefined;
+                  return (
+                    <li
+                      key={key}
+                      className="mr-4 my-1 flex-shrink-0 list-none"
+                      style={style}
+                    >
+                      {renderItem(photo, displayIndex, copyIndex, itemIndex)}
+                    </li>
+                  );
+                })}
+              {hasVisibleSlice && rightSpacerWidth > 0 && (
+                <li
+                  key={`row-${rowIndex}-copy-${copyIndex}-right-spacer`}
+                  className="my-1 flex-shrink-0 list-none"
+                  style={{ width: rightSpacerWidth }}
+                  aria-hidden
+                />
+              )}
+            </ul>
+          );
         })}
       </div>
     </div>
@@ -876,6 +937,9 @@ const PhotoDashboard: React.FC = () => {
   const [showAllPhotos, setShowAllPhotos] = useState<boolean>(
     getStoredShowAllPhotos,
   );
+  const [showRiskOnly, setShowRiskOnly] = useState<boolean>(
+    getStoredShowRiskOnly,
+  );
 
   useEffect(() => {
     try {
@@ -884,6 +948,14 @@ const PhotoDashboard: React.FC = () => {
       // ignore storage errors
     }
   }, [showAllPhotos]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_SHOW_RISK_ONLY, String(showRiskOnly));
+    } catch {
+      // ignore storage errors
+    }
+  }, [showRiskOnly]);
   const [hoveredCardKey, setHoveredCardKey] = useState<string | null>(null);
   const lastPointerActivityRef = useRef<number>(Date.now());
   const cardRefs = useRef<Map<string, HTMLElement | null>>(new Map());
@@ -921,7 +993,7 @@ const PhotoDashboard: React.FC = () => {
 
   useEffect(() => {
     initialLoadDoneRef.current = false;
-  }, [date]);
+  }, [date, showRiskOnly]);
 
   const getMaxPhotos = useCallback(() => {
     return getMaxPhotosForViewport(
@@ -936,12 +1008,15 @@ const PhotoDashboard: React.FC = () => {
     maxPhotosRef.current = getMaxPhotos();
   }, [getMaxPhotos]);
 
-  const extractEventsFromMessage = useCallback((data: PhotoWsMessage): PhotoData[] => {
-    if (Array.isArray(data.events)) return data.events;
-    if (Array.isArray(data.photos)) return data.photos;
-    if (data.newPhoto) return [data.newPhoto];
-    return [];
-  }, []);
+  const extractEventsFromMessage = useCallback(
+    (data: PhotoWsMessage): PhotoData[] => {
+      if (Array.isArray(data.events)) return data.events;
+      if (Array.isArray(data.photos)) return data.photos;
+      if (data.newPhoto) return [data.newPhoto];
+      return [];
+    },
+    [],
+  );
 
   const normalizeWsEvent = useCallback((eventData: PhotoData): PhotoData => {
     const normalizedOp =
@@ -1039,7 +1114,10 @@ const PhotoDashboard: React.FC = () => {
           };
           return;
         }
-        stagedInsertByIdRef.current.set(photo.id, stagedInsertQueueRef.current.length);
+        stagedInsertByIdRef.current.set(
+          photo.id,
+          stagedInsertQueueRef.current.length,
+        );
       }
       stagedInsertQueueRef.current.push(photo);
       scheduleStagedInsertCommit();
@@ -1139,7 +1217,9 @@ const PhotoDashboard: React.FC = () => {
         if (seenAt != null) {
           const elapsed = Date.now() - seenAt;
           if (elapsed < CREATED_NO_PHOTO_MIN_VISIBLE_MS) {
-            const pendingTimer = delayedPhotoAttachTimersRef.current.get(eventData.id);
+            const pendingTimer = delayedPhotoAttachTimersRef.current.get(
+              eventData.id,
+            );
             if (pendingTimer != null) window.clearTimeout(pendingTimer);
             const waitMs = CREATED_NO_PHOTO_MIN_VISIBLE_MS - elapsed;
             const timerId = window.setTimeout(() => {
@@ -1242,7 +1322,11 @@ const PhotoDashboard: React.FC = () => {
         const events = extractEventsFromMessage(data);
 
         if (data.type === "initial_photos" || data.type == null) {
-          const snapshotEvents = collectChunkedEvents("initial_photos", data, events);
+          const snapshotEvents = collectChunkedEvents(
+            "initial_photos",
+            data,
+            events,
+          );
           if (snapshotEvents == null) return;
           if (!initialLoadDoneRef.current) {
             applyInitialSnapshot(snapshotEvents);
@@ -1251,7 +1335,11 @@ const PhotoDashboard: React.FC = () => {
         }
 
         if (data.type === "photos_updated") {
-          const chunkEvents = collectChunkedEvents("photos_updated", data, events);
+          const chunkEvents = collectChunkedEvents(
+            "photos_updated",
+            data,
+            events,
+          );
           if (chunkEvents == null) return;
           enqueueWsEvents(chunkEvents);
           return;
@@ -1275,8 +1363,9 @@ const PhotoDashboard: React.FC = () => {
   const wsUrl = useMemo(() => {
     const urlObj = new URL(apiUrl);
     const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
-    return `${protocol}://${urlObj.host}/ws/photos/?date=${date}&legacy=0`;
-  }, [date]);
+    const riskOnly = showRiskOnly ? "1" : "0";
+    return `${protocol}://${urlObj.host}/ws/photos/?date=${date}&legacy=0&risk_only=${riskOnly}`;
+  }, [date, showRiskOnly]);
 
   const { isConnected, reconnect } = useWebSocket({
     url: wsUrl,
@@ -1334,18 +1423,30 @@ const PhotoDashboard: React.FC = () => {
     updateMaxPhotos();
   }, [updateMaxPhotos, viewport.width, viewport.height]);
 
-  const displayPhotos = useMemo(
-    () => (showAllPhotos ? photos : photos.slice(0, getMaxPhotos())),
-    [photos, showAllPhotos, getMaxPhotos],
+  const displayPhotos = useMemo(() => {
+    const source = showRiskOnly ? photos.filter(isRiskPhotoCandidate) : photos;
+    if (showRiskOnly) return source;
+    return showAllPhotos ? source : source.slice(0, getMaxPhotos());
+  }, [photos, showRiskOnly, showAllPhotos, getMaxPhotos]);
+
+  const toggleLabel = useMemo(() => {
+    if (showRiskOnly) {
+      return `Все фото за день (риск: ${displayPhotos.length})`;
+    }
+    return showAllPhotos
+      ? "Все фото"
+      : `Только свежие (${displayPhotos.length} из ${photos.length})`;
+  }, [showRiskOnly, showAllPhotos, displayPhotos.length, photos.length]);
+
+  const riskToggleLabel = useMemo(
+    () =>
+      showRiskOnly
+        ? "Риск: подозрительные / проверка / ошибка"
+        : "Все статусы фото",
+    [showRiskOnly],
   );
 
-  const toggleLabel = useMemo(
-    () =>
-      showAllPhotos
-        ? "Все фото"
-        : `Только свежие (${displayPhotos.length} из ${photos.length})`,
-    [showAllPhotos, displayPhotos.length, photos.length],
-  );
+  const useStaticKioskScrollMode = isKiosk && (showAllPhotos || showRiskOnly);
 
   useEffect(() => {
     const getViewportSize = (): { w: number; h: number } => {
@@ -1541,6 +1642,19 @@ const PhotoDashboard: React.FC = () => {
 
       const next = [...photosRef.current];
       const existingIdx = next.findIndex((item) => item.id === normalizedId);
+      const shouldKeepInList =
+        !showRiskOnly || isRiskPhotoCandidate(normalized);
+      if (!shouldKeepInList) {
+        if (existingIdx >= 0) {
+          next.splice(existingIdx, 1);
+          photosRef.current = next;
+          startTransition(() => setPhotos(next));
+        }
+        setSelectedPhoto((prev) =>
+          prev && prev.id === normalizedId ? null : prev,
+        );
+        return;
+      }
       if (existingIdx >= 0) {
         next[existingIdx] = { ...next[existingIdx], ...normalized };
       } else {
@@ -1552,7 +1666,7 @@ const PhotoDashboard: React.FC = () => {
         prev && prev.id === normalizedId ? { ...prev, ...normalized } : prev,
       );
     },
-    [normalizeWsEvent],
+    [normalizeWsEvent, showRiskOnly],
   );
 
   const submitManualVerdict = useCallback(
@@ -1572,18 +1686,51 @@ const PhotoDashboard: React.FC = () => {
         const skippedIds = Array.isArray(response.data?.skipped_ids)
           ? response.data.skipped_ids.map((id: unknown) => Number(id))
           : [];
+        const skippedReasons = Array.isArray(response.data?.skipped_reasons)
+          ? (response.data.skipped_reasons as { id: number; reason: string }[])
+          : [];
         const updatedRecord = Array.isArray(response.data?.results)
           ? (response.data.results[0] as PhotoData | undefined)
           : undefined;
         if (updatedRecord) {
           applySinglePhotoUpdate(updatedRecord);
         } else if (updatedCount === 0 && skippedIds.includes(currentPhoto.id)) {
-          setVerdictError("Для этой записи ручной вердикт сейчас недоступен.");
+          const reasonEntry = skippedReasons.find(
+            (r) => r.id === currentPhoto.id,
+          );
+          const reasonFromServer = reasonEntry?.reason ?? "unknown";
+          console.warn("[PhotoVerdict] manual verdict unavailable", {
+            photoId: currentPhoto.id,
+            photoManualVerdict: currentPhoto.photoManualVerdict,
+            photoSpoofStatus: currentPhoto.photoSpoofStatus,
+            photoCanSetManualVerdict: currentPhoto.photoCanSetManualVerdict,
+            reasonFromServer,
+          });
+          const reasonMessage: Record<string, string> = {
+            no_photo: "Нет фото для проверки.",
+            verdict_already_set: "Ручной вердикт уже выставлен.",
+            status_not_reviewable:
+              "Запись уже проверена автоматически; ручной вердикт недоступен.",
+            rescan_skipped_has_verdict:
+              "Повторная проверка пропущена: уже есть ручной вердикт.",
+          };
+          setVerdictError(
+            reasonMessage[reasonFromServer] ??
+              "Для этой записи ручной вердикт сейчас недоступен.",
+          );
         }
       } catch (error) {
         log.error("Failed to update manual photo verdict", error);
+        console.error("[PhotoVerdict] submit failed", {
+          photoId: currentPhoto?.id,
+          action,
+          error,
+        });
         const responseError = error as {
-          response?: { status?: number; data?: { detail?: string; error?: string } };
+          response?: {
+            status?: number;
+            data?: { detail?: string; error?: string };
+          };
         };
         const statusCode = responseError.response?.status ?? 0;
         const detail = responseError.response?.data?.detail;
@@ -1598,7 +1745,9 @@ const PhotoDashboard: React.FC = () => {
               "Нет доступа к сохранению. Обновите страницу и войдите заново.",
           );
         } else {
-          setVerdictError(serverMessage || "Не удалось сохранить ручной вердикт.");
+          setVerdictError(
+            serverMessage || "Не удалось сохранить ручной вердикт.",
+          );
         }
       } finally {
         setIsVerdictSubmitting(false);
@@ -1639,7 +1788,36 @@ const PhotoDashboard: React.FC = () => {
     </motion.div>
   );
 
+  const renderNoPhotosForFilter = () => (
+    <motion.div
+      className="py-16 sm:py-20"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.45 }}
+    >
+      <div className="mx-auto w-full max-w-2xl rounded-3xl border border-white/60 dark:border-gray-700/70 bg-white/65 dark:bg-gray-900/50 backdrop-blur-md shadow-xl p-8 sm:p-10">
+        <div className="mx-auto mb-5 w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-secondary-500 text-white flex items-center justify-center shadow-lg">
+          <FaImage className="w-7 h-7" />
+        </div>
+        <h2 className="text-center text-2xl font-semibold text-gray-800 dark:text-gray-100">
+          По текущему фильтру пока нет фотографий
+        </h2>
+        <p className="mt-2 text-center text-sm sm:text-base text-gray-600 dark:text-gray-300">
+          Сейчас нет фото со статусом «Подозрительное», «Проверить» или
+          «Ошибка».
+        </p>
+        <p className="mt-3 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+          Отключите фильтр «Риск: подозрительные / проверка / ошибка», чтобы
+          увидеть все записи за день.
+        </p>
+      </div>
+    </motion.div>
+  );
+
   const photoRows = useMemo(() => {
+    if (useStaticKioskScrollMode) {
+      return [];
+    }
     const w = viewport.width;
     const h = viewport.height;
     const isSingleRowLandscape = isSingleRowLandscapeViewport(w, h);
@@ -1680,6 +1858,7 @@ const PhotoDashboard: React.FC = () => {
     tapeNumRows,
     isKiosk,
     isFullscreen,
+    useStaticKioskScrollMode,
     viewport.width,
     viewport.height,
     viewport.resolutionTier,
@@ -1799,6 +1978,9 @@ const PhotoDashboard: React.FC = () => {
   }, [photoRows]);
 
   useEffect(() => {
+    if (useStaticKioskScrollMode) {
+      return;
+    }
     const isTypingTarget = (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return false;
       const tag = target.tagName.toLowerCase();
@@ -1847,6 +2029,7 @@ const PhotoDashboard: React.FC = () => {
     activeCardCoords,
     getNextCardCoords,
     focusCardByCoords,
+    useStaticKioskScrollMode,
   ]);
 
   const renderPhotoCard = useCallback(
@@ -1858,11 +2041,12 @@ const PhotoDashboard: React.FC = () => {
       isInteractive: boolean,
       kioskCardWidth?: number,
       isClone = false,
+      enableArrowNavigation = true,
     ) => {
       const uiStatus = resolvePhotoUiStatus(photo);
       const statusMeta = PHOTO_STATUS_STYLE[uiStatus];
       const hasSuspiciousFrame = statusMeta.borderClass.length > 0;
-      const isCheckCard = uiStatus === "check";
+      const isCheckCard = uiStatus === "check" || uiStatus === "check_error";
       const frameClassName = hasSuspiciousFrame
         ? `photo-electric-border ${statusMeta.borderClass} w-full flex-1 flex flex-col min-h-0 rounded-2xl`
         : "w-full flex-1 flex flex-col min-h-0 rounded-2xl";
@@ -1904,7 +2088,9 @@ const PhotoDashboard: React.FC = () => {
                 ? "ring-2 ring-amber-300/85 dark:ring-amber-400/50 shadow-[0_16px_34px_-22px_rgba(245,158,11,0.78)]"
                 : ""
             }`}
-            style={kioskCardWidth != null ? { width: kioskCardWidth } : undefined}
+            style={
+              kioskCardWidth != null ? { width: kioskCardWidth } : undefined
+            }
             aria-hidden
           >
             {cardBody}
@@ -1947,6 +2133,9 @@ const PhotoDashboard: React.FC = () => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
               setSelectedPhoto(photo);
+              return;
+            }
+            if (!enableArrowNavigation) {
               return;
             }
             if (
@@ -2035,10 +2224,30 @@ const PhotoDashboard: React.FC = () => {
                 : "gap-2 sm:gap-3 md:gap-4"
             }`}
           >
+            {(photos.length > 0 || showRiskOnly) && (
+              <Toggle
+                checked={showRiskOnly}
+                onChange={(v) => startTransition(() => setShowRiskOnly(v))}
+                labelPosition="left"
+                label={riskToggleLabel}
+                ariaLabel={
+                  showRiskOnly
+                    ? "Показывать все статусы фото"
+                    : "Показывать требующие проверки"
+                }
+                variant="rose"
+                className={
+                  isFullscreen || isKiosk
+                    ? "text-[10px] sm:text-xs lg:text-sm"
+                    : "text-xs sm:text-sm"
+                }
+              />
+            )}
             {photos.length > 0 && (
               <Toggle
                 checked={showAllPhotos}
                 onChange={(v) => startTransition(() => setShowAllPhotos(v))}
+                disabled={showRiskOnly}
                 labelPosition="left"
                 label={toggleLabel}
                 ariaLabel={
@@ -2108,79 +2317,122 @@ const PhotoDashboard: React.FC = () => {
         </div>
       </div>
 
-      <div
-        className={`photo-marquee-lux-edges ${
-          isKiosk || isFullscreen ? "photo-marquee-lux-edges-kiosk" : ""
-        }`}
-      >
+      {useStaticKioskScrollMode ? (
         <div
           ref={containerRef}
-          className={`[scrollbar-width:none] [-ms-overflow-style:none] ${
-            isKiosk
-              ? "photo-kiosk-marquee-mask flex-1 min-h-0 flex flex-col overflow-x-hidden overflow-y-hidden px-4 sm:px-6 md:px-8 lg:px-10 py-2 sm:py-3 md:py-4 pb-4 sm:pb-5 md:pb-6"
-              : "overflow-x-hidden overflow-y-visible py-4 pb-8 px-4 md:px-6"
-          }`}
-          style={
-            isKiosk
-              ? {
-                  paddingBottom: "max(1rem, env(safe-area-inset-bottom, 0px))",
-                }
-              : undefined
-          }
+          className="mx-auto w-full max-w-[1700px] flex-1 min-h-0 px-4 sm:px-6 md:px-8 lg:px-10 pb-4 sm:pb-5 md:pb-6"
+          style={{
+            paddingBottom: "max(1rem, env(safe-area-inset-bottom, 0px))",
+          }}
         >
-          <div
-            className={`flex flex-col flex-1 min-h-0 ${isKiosk ? "gap-2 sm:gap-3 md:gap-4 lg:gap-5 py-1 justify-center" : "gap-4 md:gap-5 py-3 md:py-4"}`}
-          >
-            {photoRows.map((rowPhotos, rowIndex) => (
+          <div className="h-full overflow-y-auto overflow-x-hidden pr-1 [scrollbar-width:thin]">
+            {displayPhotos.length === 0 ? (
+              renderNoPhotosForFilter()
+            ) : (
               <div
-                key={rowIndex}
-                className={
-                  isKiosk
-                    ? "overflow-x-hidden overflow-y-visible py-2 sm:py-3 md:py-4 lg:py-5"
-                    : "overflow-x-hidden overflow-y-visible py-4 md:py-5"
-                }
-                style={{ minHeight: 1 }}
+                className="flex flex-wrap items-start justify-center gap-3 sm:gap-4 md:gap-5 py-2 sm:py-3 md:py-4"
                 onMouseLeave={() => setHoveredCardKey(null)}
               >
-                <MarqueeTrack
-                  items={rowPhotos}
-                  rowIndex={rowIndex}
-                  speedPxSec={marqueeSpeed}
-                  isPaused={!!selectedPhoto || !!hoveredCardKey}
-                  hoverSpeed={MARQUEE_HOVER_SPEED}
-                  cardWidthPx={cardWidthPx}
-                  renderItem={(photo, displayIndex, copyIndex, itemIndex) => {
-                    if (photo == null) {
-                      return (
-                        <div
-                          className="flex-shrink-0 rounded-2xl bg-transparent"
-                          style={{
-                            width: cardWidthPx,
-                            height: cardWidthPx + 80,
-                          }}
-                          aria-hidden
-                        />
-                      );
-                    }
-                    const keyIndex =
-                      rowIndex * 1_000_000 + copyIndex * 10_000 + displayIndex;
-                    const cardIndex = itemIndex;
-                    return renderPhotoCard(
-                      photo,
-                      keyIndex,
-                      rowIndex,
-                      cardIndex,
-                      copyIndex === 0,
-                      kioskNarrowViewport ? cardWidthPx : undefined,
-                      copyIndex > 0,
-                    );
-                  }}
-                />
+                {displayPhotos.map((photo, index) =>
+                  renderPhotoCard(
+                    photo,
+                    index,
+                    0,
+                    index,
+                    true,
+                    kioskNarrowViewport ? cardWidthPx : undefined,
+                    false,
+                    false,
+                  ),
+                )}
               </div>
-            ))}
+            )}
           </div>
         </div>
-      </div>
+      ) : (
+        <div
+          className={`photo-marquee-lux-edges ${
+            isKiosk || isFullscreen ? "photo-marquee-lux-edges-kiosk" : ""
+          }`}
+        >
+          <div
+            ref={containerRef}
+            className={`[scrollbar-width:none] [-ms-overflow-style:none] ${
+              isKiosk
+                ? "photo-kiosk-marquee-mask flex-1 min-h-0 flex flex-col overflow-x-hidden overflow-y-hidden px-4 sm:px-6 md:px-8 lg:px-10 py-2 sm:py-3 md:py-4 pb-4 sm:pb-5 md:pb-6"
+                : "overflow-x-hidden overflow-y-visible py-4 pb-8 px-4 md:px-6"
+            }`}
+            style={
+              isKiosk
+                ? {
+                    paddingBottom:
+                      "max(1rem, env(safe-area-inset-bottom, 0px))",
+                  }
+                : undefined
+            }
+          >
+            <div
+              className={`flex flex-col flex-1 min-h-0 ${isKiosk ? "gap-2 sm:gap-3 md:gap-4 lg:gap-5 py-1 justify-center" : "gap-4 md:gap-5 py-3 md:py-4"}`}
+            >
+              {displayPhotos.length === 0 ? (
+                renderNoPhotosForFilter()
+              ) : (
+                photoRows.map((rowPhotos, rowIndex) => (
+                  <div
+                    key={rowIndex}
+                    className={
+                      isKiosk
+                        ? "overflow-x-hidden overflow-y-visible py-2 sm:py-3 md:py-4 lg:py-5"
+                        : "overflow-x-hidden overflow-y-visible py-4 md:py-5"
+                    }
+                    style={{ minHeight: 1 }}
+                    onMouseLeave={() => setHoveredCardKey(null)}
+                  >
+                    <MarqueeTrack
+                      items={rowPhotos}
+                      rowIndex={rowIndex}
+                      speedPxSec={marqueeSpeed}
+                      isPaused={!!selectedPhoto || !!hoveredCardKey}
+                      hoverSpeed={MARQUEE_HOVER_SPEED}
+                      cardWidthPx={cardWidthPx}
+                      forceLoop={showRiskOnly}
+                      renderItem={(photo, displayIndex, copyIndex, itemIndex) => {
+                        if (photo == null) {
+                          return (
+                            <div
+                              className="flex-shrink-0 rounded-2xl bg-transparent"
+                              style={{
+                                width: cardWidthPx,
+                                height: cardWidthPx + 80,
+                              }}
+                              aria-hidden
+                            />
+                          );
+                        }
+                        const keyIndex =
+                          rowIndex * 1_000_000 +
+                          copyIndex * 10_000 +
+                          displayIndex;
+                        const cardIndex = itemIndex;
+                        return renderPhotoCard(
+                          photo,
+                          keyIndex,
+                          rowIndex,
+                          cardIndex,
+                          true,
+                          kioskNarrowViewport ? cardWidthPx : undefined,
+                          copyIndex > 0,
+                          true,
+                        );
+                      }}
+                    />
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -2190,7 +2442,7 @@ const PhotoDashboard: React.FC = () => {
     const statusMeta = PHOTO_STATUS_STYLE[uiStatus];
     const isSuspicious =
       uiStatus === "suspicious_auto" || uiStatus === "suspicious_manual";
-    const showCheckBadge = uiStatus === "check";
+    const showCheckBadge = uiStatus === "check" || uiStatus === "check_error";
     const manualVerdict: PhotoManualVerdict =
       selectedPhoto.photoManualVerdict ?? "none";
     const canSetManualVerdict = isManualReviewRequiredByBackend(selectedPhoto);
@@ -2286,17 +2538,24 @@ const PhotoDashboard: React.FC = () => {
                         <button
                           type="button"
                           disabled={
-                            isVerdictSubmitting || manualVerdict === "suspicious"
+                            isVerdictSubmitting ||
+                            manualVerdict === "suspicious"
                           }
-                          onClick={() => void submitManualVerdict("manual_suspicious")}
+                          onClick={() =>
+                            void submitManualVerdict("manual_suspicious")
+                          }
                           className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-rose-50 transition-colors hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           Подозрительная
                         </button>
                         <button
                           type="button"
-                          disabled={isVerdictSubmitting || manualVerdict === "clean"}
-                          onClick={() => void submitManualVerdict("manual_clean")}
+                          disabled={
+                            isVerdictSubmitting || manualVerdict === "clean"
+                          }
+                          onClick={() =>
+                            void submitManualVerdict("manual_clean")
+                          }
                           className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-50 transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           Подтвердить
@@ -2322,7 +2581,7 @@ const PhotoDashboard: React.FC = () => {
     <div>
       {loading
         ? renderLoading()
-        : photos.length === 0
+        : photos.length === 0 && !showRiskOnly
           ? renderNoPhotos()
           : renderPhotos()}
 

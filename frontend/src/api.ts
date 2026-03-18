@@ -2,6 +2,10 @@ import { addPrefix } from "./RouterUtils";
 import axios, { AxiosResponse } from "axios";
 import { apiUrl, isDebug } from "../apiConfig";
 
+let _prodWarningCount = 0;
+let _prodWarningShown = false;
+let _prodWarningReportDone = false;
+
 const log = {
   info: (...args: unknown[]) => {
     if (isDebug) {
@@ -25,11 +29,28 @@ const log = {
     }
   },
   prodWarning: () => {
-    console.log(
-      "%cWARNING:",
-      "color: yellow; font-weight: bold; font-size: 16px;",
-      "This function is intended for developers. If you're an ordinary user, it's better to close this."
-    );
+    _prodWarningCount += 1;
+    if (!_prodWarningShown) {
+      _prodWarningShown = true;
+      console.warn(
+        "%cWARNING:",
+        "color: yellow; font-weight: bold; font-size: 16px;",
+        "This function is intended for developers. If you're an ordinary user, it's better to close this.",
+      );
+      const reportCount = () => {
+        if (_prodWarningReportDone) return;
+        _prodWarningReportDone = true;
+        if (_prodWarningCount > 0) {
+          console.warn(
+            "[dev log] Suppressed",
+            _prodWarningCount,
+            "developer-only message(s) on this page.",
+          );
+        }
+      };
+      window.addEventListener("beforeunload", reportCount);
+      setTimeout(reportCount, 5000);
+    }
   },
 };
 export { log };
@@ -42,11 +63,11 @@ export const setCookie = (
     secure?: boolean;
     sameSite?: string;
     maxAge?: number;
-  } = {}
+  } = {},
 ) => {
   try {
     let cookieString = `${encodeURIComponent(name)}=${encodeURIComponent(
-      value
+      value,
     )}; path=${options.path || "/"}`;
 
     if (options.maxAge) {
@@ -70,7 +91,7 @@ export const setCookie = (
 
 export const removeCookie = (
   name: string,
-  options: { path?: string; secure?: boolean; sameSite?: string } = {}
+  options: { path?: string; secure?: boolean; sameSite?: string } = {},
 ) => {
   try {
     setCookie(name, "", {
@@ -84,13 +105,13 @@ export const removeCookie = (
     log.error(`Error removing cookie ${name}:`, error);
     try {
       document.cookie = `${encodeURIComponent(
-        name
+        name,
       )}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=${options.path || "/"}`;
       log.info(`Fallback cookie removal for ${name} attempted.`);
     } catch (fallbackError) {
       log.error(
         `Even fallback cookie removal failed for ${name}:`,
-        fallbackError
+        fallbackError,
       );
     }
   }
@@ -237,7 +258,7 @@ const refreshTokens = async (): Promise<string> => {
 
   if (refreshAttempts >= MAX_REFRESH_ATTEMPTS) {
     log.error(
-      `Maximum refresh attempts (${MAX_REFRESH_ATTEMPTS}) reached. Logging out.`
+      `Maximum refresh attempts (${MAX_REFRESH_ATTEMPTS}) reached. Logging out.`,
     );
     handleLogout();
     resetRefreshAttempts();
@@ -258,7 +279,7 @@ const refreshTokens = async (): Promise<string> => {
     .post(
       `${apiUrl}/api/token/refresh/`,
       { refresh: refreshToken },
-      { skipAuthInterceptor: true }
+      { skipAuthInterceptor: true },
     )
     .then((response) => {
       const newAccessToken = response.data.access;
@@ -289,19 +310,19 @@ const refreshTokens = async (): Promise<string> => {
         if (response.data.access_token_expires) {
           localStorage.setItem(
             "access_token_expires",
-            response.data.access_token_expires
+            response.data.access_token_expires,
           );
         }
         if (response.data.refresh_token_expires) {
           localStorage.setItem(
             "refresh_token_expires",
-            response.data.refresh_token_expires
+            response.data.refresh_token_expires,
           );
         }
       } catch (storageError) {
         log.error(
           "Failed to store token expiration in localStorage:",
-          storageError
+          storageError,
         );
       }
 
@@ -315,7 +336,7 @@ const refreshTokens = async (): Promise<string> => {
             accessTokenExpires: response.data.access_token_expires,
             refreshTokenExpires: response.data.refresh_token_expires,
           },
-        })
+        }),
       );
 
       scheduleNextRefreshBeforeExpiry();
@@ -345,7 +366,6 @@ const refreshTokens = async (): Promise<string> => {
 
   return refreshPromise;
 };
-
 
 export const proactiveRefreshIfNeeded = async (): Promise<void> => {
   const refreshToken = getCookie("refresh_token");
@@ -406,7 +426,7 @@ axiosInstance.interceptors.request.use(
   (error) => {
     log.error("Request interceptor error:", error);
     return Promise.reject(error);
-  }
+  },
 );
 
 axiosInstance.interceptors.response.use(
@@ -437,7 +457,7 @@ axiosInstance.interceptors.response.use(
     }
 
     return Promise.reject(error);
-  }
+  },
 );
 
 export default axiosInstance;

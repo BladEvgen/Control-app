@@ -14,10 +14,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, List, Optional, Tuple, cast
 
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
 import monitoring_app.tasks as tasks
+from asgiref.sync import async_to_sync
 from celery.result import AsyncResult
+from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import authenticate, get_user_model, login, logout
@@ -56,6 +56,7 @@ from monitoring_app.lesson_locations_conf import (
     DEFAULT_ACCEPTANCE_RADIUS_M,
     SAME_POINT_THRESHOLD_M,
 )
+from monitoring_app.services import building_attendance_report
 from monitoring_app.signals import invalidate_class_location_cache_impl
 from openpyxl import load_workbook
 from rest_framework import status
@@ -106,6 +107,7 @@ class FormOnlySwaggerAutoSchema(SwaggerAutoSchema):
 
 logger = logging.getLogger(__name__)
 lesson_attendance_logger = logging.getLogger("monitoring_app.lesson_attendance")
+photo_verdict_logger = logging.getLogger("monitoring_app.photo_verdict")
 
 ExcelRow = Tuple[Any, ...]
 User = get_user_model()
@@ -156,7 +158,9 @@ def _parse_staff_pins_header(raw_header_value: Optional[str]) -> List[str]:
     return parsed
 
 
-def _department_confirmation_hour_bucket(now_dt: Optional[datetime.datetime] = None) -> str:
+def _department_confirmation_hour_bucket(
+    now_dt: Optional[datetime.datetime] = None,
+) -> str:
     current = now_dt or timezone.localtime()
     fallback = current.strftime("%Y%m%d%H")
     epoch = Cache.get(DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY)
@@ -439,18 +443,22 @@ def fetch_attendance_by_event_dates(staff_ids, date_from, date_to):
             sa_by_event_date[d - one_day].append(r)
 
     la_by_event_date = defaultdict(list)
-    for r in models.LessonAttendance.objects.filter(
-        staff_id__in=staff_ids,
-        date_at__gte=date_from,
-        date_at__lte=date_to,
-    ).values(
-        "staff_id",
-        "date_at",
-        "first_in",
-        "last_out",
-        "latitude",
-        "longitude",
-        "duration_seconds",
+    for r in (
+        models.LessonAttendance.objects.filter(
+            staff_id__in=staff_ids,
+            date_at__gte=date_from,
+            date_at__lte=date_to,
+        )
+        .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
+        .values(
+            "staff_id",
+            "date_at",
+            "first_in",
+            "last_out",
+            "latitude",
+            "longitude",
+            "duration_seconds",
+        )
     ):
         d = _to_date(r["date_at"])
         if d is not None:
@@ -990,6 +998,7 @@ class StaffAttendanceStatsView(APIView):
                 date_at=target_date,
                 staff_id__in=staff_ids,
             )
+            .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
             .values_list("staff_id", flat=True)
             .distinct()
         )
@@ -1309,6 +1318,7 @@ def _build_one_day_confirmation(
             staff_id__in=staff_ids,
             date_at=target_date,
         )
+        .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
         .exclude(staff_id__in=staff_with_sa)
         .values("staff_id", "first_in", "latitude", "longitude")
     )
@@ -1530,8 +1540,10 @@ def _build_one_day_from_records(
 
     if dates_with_any_sa is not None:
         data_insert_date = target_date + datetime.timedelta(days=1)
-        data_available = bool(staff_to_location) or bool(la_records) or (
-            data_insert_date in dates_with_any_sa
+        data_available = (
+            bool(staff_to_location)
+            or bool(la_records)
+            or (data_insert_date in dates_with_any_sa)
         )
     elif data_available is None:
         data_available = False
@@ -4903,9 +4915,9 @@ def create_lesson_attendance_json(request):
         "4. Нажмите Execute.\n\n"
         "Пример JSON (для Postman/curl):\n"
         "{\n"
-        "  \"last_out\": \"2026-03-16T11:40:00+05:00\",\n"
-        "  \"latitude\": 43.2389,\n"
-        "  \"longitude\": 76.8897\n"
+        '  "last_out": "2026-03-16T11:40:00+05:00",\n'
+        '  "latitude": 43.2389,\n'
+        '  "longitude": 76.8897\n'
         "}"
     ),
     tags=["Lesson Attendance"],
@@ -5169,6 +5181,11 @@ PHOTO_VERDICT_ONLY_FIELDS = (
 
 
 def _photo_verdict_choices_payload() -> dict[str, Any]:
+    manual_reviewable_statuses = [
+        models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
+        models.LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+        models.LessonAttendance.PHOTO_SPOOF_STATUS_ERROR,
+    ]
     return {
         "photo_spoof_statuses": [
             {"value": value, "label": label}
@@ -5196,6 +5213,7 @@ def _photo_verdict_choices_payload() -> dict[str, Any]:
                 "label": "Пересканировать автоматически",
             },
         ],
+        "manual_reviewable_statuses": manual_reviewable_statuses,
     }
 
 
@@ -5268,7 +5286,9 @@ def _extract_photo_ids_from_request(request, attendance_id: Optional[int]) -> li
     return []
 
 
-def _serialize_lesson_attendance_photo(record: models.LessonAttendance) -> dict[str, Any]:
+def _serialize_lesson_attendance_photo(
+    record: models.LessonAttendance,
+) -> dict[str, Any]:
     checked_at = (
         timezone.localtime(record.photo_spoof_checked_at).isoformat()
         if record.photo_spoof_checked_at
@@ -5298,7 +5318,9 @@ def _serialize_lesson_attendance_photo(record: models.LessonAttendance) -> dict[
         "tutorInfo": record.tutor_info,
         "photoSpoofStatus": record.photo_spoof_status,
         "photoSpoofScore": record.photo_spoof_score,
-        "photoSpoofTags": list(record.photo_spoof_tags or []),
+        "photoSpoofTags": (
+            record.photo_spoof_tags if isinstance(record.photo_spoof_tags, list) else []
+        ),
         "photoSpoofCheckedAt": checked_at,
         "photoSpoofModelVersion": record.photo_spoof_model_version,
         "photoTrustConfirmed": record.photo_trust_confirmed,
@@ -5316,17 +5338,27 @@ def _serialize_lesson_attendance_photo(record: models.LessonAttendance) -> dict[
 def _effective_status_filter(status_value: str) -> Q:
     lesson = models.LessonAttendance
     if status_value == lesson.PHOTO_SPOOF_STATUS_CLEAN:
-        return Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_CLEAN) | (
-            Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_NONE)
-            & Q(photo_spoof_status=lesson.PHOTO_SPOOF_STATUS_CLEAN)
+        return cast(
+            Q,
+            Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_CLEAN)
+            | (
+                Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_NONE)
+                & Q(photo_spoof_status=lesson.PHOTO_SPOOF_STATUS_CLEAN)
+            ),
         )
     if status_value == lesson.PHOTO_SPOOF_STATUS_SUSPICIOUS:
-        return Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_SUSPICIOUS) | (
-            Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_NONE)
-            & Q(photo_spoof_status=lesson.PHOTO_SPOOF_STATUS_SUSPICIOUS)
+        return cast(
+            Q,
+            Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_SUSPICIOUS)
+            | (
+                Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_NONE)
+                & Q(photo_spoof_status=lesson.PHOTO_SPOOF_STATUS_SUSPICIOUS)
+            ),
         )
-    return Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_NONE) & Q(
-        photo_spoof_status=status_value
+    return cast(
+        Q,
+        Q(photo_manual_verdict=lesson.PHOTO_MANUAL_VERDICT_NONE)
+        & Q(photo_spoof_status=status_value),
     )
 
 
@@ -5384,7 +5416,9 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
     """GET — список/детали PAD статусов; POST/PUT/PATCH — ручные и bulk-вердикты."""
     attendance_id = int(attendance_id) if attendance_id is not None else None
     base_qs = (
-        models.LessonAttendance.objects.select_related("staff__department", "photo_manual_by")
+        models.LessonAttendance.objects.select_related(
+            "staff__department", "photo_manual_by"
+        )
         .only(*PHOTO_VERDICT_ONLY_FIELDS)
         .order_by("-first_in", "-id")
     )
@@ -5427,16 +5461,15 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
         auto_status = str(request.query_params.get("photo_spoof_status") or "").strip()
         if auto_status:
             allowed_auto_statuses = {
-                value
-                for value, _ in models.LessonAttendance.PHOTO_SPOOF_STATUS_CHOICES
+                value for value, _ in models.LessonAttendance.PHOTO_SPOOF_STATUS_CHOICES
             }
             if auto_status not in allowed_auto_statuses:
-                raise ValidationError(
-                    f"Некорректный photo_spoof_status={auto_status}."
-                )
+                raise ValidationError(f"Некорректный photo_spoof_status={auto_status}.")
             qs = qs.filter(photo_spoof_status=auto_status)
 
-        manual_verdict = str(request.query_params.get("photo_manual_verdict") or "").strip()
+        manual_verdict = str(
+            request.query_params.get("photo_manual_verdict") or ""
+        ).strip()
         if manual_verdict:
             allowed_manual_verdicts = {
                 value
@@ -5453,8 +5486,7 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
         ).strip()
         if effective_status:
             allowed_effective_statuses = {
-                value
-                for value, _ in models.LessonAttendance.PHOTO_SPOOF_STATUS_CHOICES
+                value for value, _ in models.LessonAttendance.PHOTO_SPOOF_STATUS_CHOICES
             }
             if effective_status not in allowed_effective_statuses:
                 raise ValidationError(
@@ -5466,9 +5498,13 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
         if has_photo_param is not None:
             has_photo = _parse_bool(has_photo_param, default=True)
             if has_photo:
-                qs = qs.filter(staff_image_path__isnull=False).exclude(staff_image_path="")
+                qs = qs.filter(staff_image_path__isnull=False).exclude(
+                    staff_image_path=""
+                )
             else:
-                qs = qs.filter(Q(staff_image_path__isnull=True) | Q(staff_image_path=""))
+                qs = qs.filter(
+                    Q(staff_image_path__isnull=True) | Q(staff_image_path="")
+                )
 
         limit = _parse_positive_int(
             request.query_params.get("limit"),
@@ -5528,11 +5564,27 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
 
     by_id = {record.id: record for record in records}
     ordered_records = [by_id[id_value] for id_value in ids if id_value in by_id]
-    resolved_ids = [record.id for record in ordered_records]
 
     changed_records: list[models.LessonAttendance] = []
     skipped_ids: list[int] = []
+    skipped_reasons: list[dict[str, Any]] = []
     error_items: list[dict[str, Any]] = []
+
+    def _reason_manual_verdict_unavailable(record: models.LessonAttendance) -> str:
+        if not bool(record.staff_image_path):
+            return "no_photo"
+        if (
+            record.photo_manual_verdict
+            != models.LessonAttendance.PHOTO_MANUAL_VERDICT_NONE
+        ):
+            return "verdict_already_set"
+        if record.photo_spoof_status not in {
+            models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
+            models.LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+            models.LessonAttendance.PHOTO_SPOOF_STATUS_ERROR,
+        }:
+            return "status_not_reviewable"
+        return "unknown"
 
     if action in {
         PHOTO_VERDICT_ACTION_MANUAL_CLEAN,
@@ -5540,7 +5592,9 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
         PHOTO_VERDICT_ACTION_MANUAL_RESET,
     }:
         now_dt = timezone.now()
-        actor = request.user if getattr(request.user, "is_authenticated", False) else None
+        actor = (
+            request.user if getattr(request.user, "is_authenticated", False) else None
+        )
         actor_id = actor.id if actor is not None else None
         manual_comment = str(payload.get("manual_comment") or "").strip()
 
@@ -5565,13 +5619,23 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
             PHOTO_VERDICT_ACTION_MANUAL_SUSPICIOUS,
         }:
             updatable_records = [
-                record for record in ordered_records if record.photo_can_set_manual_verdict
-            ]
-            skipped_ids.extend(
-                record.id
+                record
                 for record in ordered_records
-                if not record.photo_can_set_manual_verdict
-            )
+                if record.photo_can_set_manual_verdict
+            ]
+            for record in ordered_records:
+                if not record.photo_can_set_manual_verdict:
+                    skipped_ids.append(record.id)
+                    reason = _reason_manual_verdict_unavailable(record)
+                    skipped_reasons.append({"id": record.id, "reason": reason})
+                    photo_verdict_logger.warning(
+                        "manual verdict unavailable attendance_id=%s reason=%s "
+                        "photo_manual_verdict=%s photo_spoof_status=%s",
+                        record.id,
+                        reason,
+                        record.photo_manual_verdict,
+                        record.photo_spoof_status,
+                    )
 
         updatable_ids = [record.id for record in updatable_records]
         if not updatable_ids:
@@ -5601,11 +5665,17 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
             if not image_path:
                 error_items.append({"id": record.id, "error": "no_photo"})
                 continue
-            if (
-                not force_manual
-                and record.photo_manual_verdict != MANUAL_NONE
-            ):
+            if not force_manual and record.photo_manual_verdict != MANUAL_NONE:
                 skipped_ids.append(record.id)
+                skipped_reasons.append(
+                    {"id": record.id, "reason": "rescan_skipped_has_verdict"}
+                )
+                photo_verdict_logger.warning(
+                    "rescan skipped attendance_id=%s reason=rescan_skipped_has_verdict "
+                    "photo_manual_verdict=%s",
+                    record.id,
+                    record.photo_manual_verdict,
+                )
                 continue
             try:
                 result = check_photo(image_path=image_path, device=device)
@@ -5625,7 +5695,9 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
             record.photo_spoof_score = update_kwargs["photo_spoof_score"]
             record.photo_spoof_tags = update_kwargs["photo_spoof_tags"]
             record.photo_spoof_checked_at = update_kwargs["photo_spoof_checked_at"]
-            record.photo_spoof_model_version = update_kwargs["photo_spoof_model_version"]
+            record.photo_spoof_model_version = update_kwargs[
+                "photo_spoof_model_version"
+            ]
             changed_records.append(record)
 
     _invalidate_photo_cache_for_records(changed_records)
@@ -5636,6 +5708,7 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
             "action": action,
             "updated_count": len(changed_records),
             "skipped_ids": skipped_ids,
+            "skipped_reasons": skipped_reasons,
             "errors": error_items,
             "results": [
                 _serialize_lesson_attendance_photo(record) for record in changed_records
@@ -5850,16 +5923,20 @@ def staff_detail_by_department_id(request, department_id):
                 date_at__range=(start_date, end_date),
             ).values("staff_id", "date_at", "first_in", "last_out", "area_name_in")
 
-            lesson_attendance_qs = models.LessonAttendance.objects.filter(
-                staff_id__in=staff_ids,
-                date_at__range=(start_date, end_date),
-            ).values(
-                "staff_id",
-                "date_at",
-                "first_in",
-                "last_out",
-                "latitude",
-                "longitude",
+            lesson_attendance_qs = (
+                models.LessonAttendance.objects.filter(
+                    staff_id__in=staff_ids,
+                    date_at__range=(start_date, end_date),
+                )
+                .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
+                .values(
+                    "staff_id",
+                    "date_at",
+                    "first_in",
+                    "last_out",
+                    "latitude",
+                    "longitude",
+                )
             )
 
             absent_reasons_qs = (
@@ -6512,6 +6589,102 @@ async def fetch_data_view(request):
     finally:
         if lock_acquired:
             cache.delete(lock_key)
+
+
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Выгрузка посещаемости зданий по кафедрам",
+    operation_description=(
+        "Возвращает Excel-отчёт по посещаемости зданий в разрезе кафедр (ChildDepartment). "
+        "По умолчанию формируется по последним 7 датам с данными. "
+        "Если передать date_from/date_to, отчёт строится по датам с данными внутри указанного диапазона. "
+        "Если date_to не указан, а date_from задан — date_to принимается равным текущей дате."
+    ),
+    tags=["Files & Downloads"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ для аутентификации (альтернатива JWT токену).",
+        ),
+        openapi.Parameter(
+            name="date_from",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_STRING,
+            format="date",
+            required=False,
+            description="Дата начала периода (YYYY-MM-DD).",
+        ),
+        openapi.Parameter(
+            name="date_to",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_STRING,
+            format="date",
+            required=False,
+            description="Дата конца периода (YYYY-MM-DD). Используется только с date_from.",
+        ),
+        openapi.Parameter(
+            name="days_with_data",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_INTEGER,
+            required=False,
+            description="Количество последних дат с данными (по умолчанию 7, применяется без date_from/date_to).",
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Excel-файл отчёта.",
+            examples={
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Binary Excel data"
+            },
+        ),
+        400: "Bad Request: invalid query parameters.",
+        500: "Internal Server Error: failed to generate report.",
+    },
+)
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def download_building_attendance_report(request):
+    try:
+        params = building_attendance_report.parse_report_request_params(
+            date_from_raw=request.query_params.get("date_from"),
+            date_to_raw=request.query_params.get("date_to"),
+            days_with_data_raw=request.query_params.get("days_with_data"),
+        )
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        report_result = (
+            building_attendance_report.build_building_attendance_report_excel(
+                date_from=params.date_from,
+                date_to=params.date_to,
+                days_with_data=params.days_with_data,
+            )
+        )
+        filename = building_attendance_report.build_report_filename(
+            report_result.selected_dates
+        )
+
+        response = HttpResponse(
+            report_result.excel_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        response["X-Report-Dates-Count"] = str(len(report_result.selected_dates))
+        return response
+    except Exception as exc:
+        logger.error(
+            "Failed to generate building attendance report: %s",
+            str(exc),
+            exc_info=True,
+        )
+        return Response(
+            {"error": "Failed to generate building attendance report."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 @swagger_auto_schema(

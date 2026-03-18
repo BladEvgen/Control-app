@@ -12,6 +12,7 @@ from django.utils import timezone
 from monitoring_app import models
 
 logger = logging.getLogger(__name__)
+photo_ws_logger = logging.getLogger("monitoring_app.photo_verdict")
 
 HEARTBEAT_INTERVAL = 20
 PHOTO_UPDATE_FLUSH_DELAY = 0.6
@@ -44,6 +45,8 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         self._pad_last_event_ts = 0.0
         self._pad_device = "auto"
         self._send_legacy_photos = True
+        self._risk_only = False
+        self._visible_ids: set[int] = set()
         self._pad_scan_enabled = self._parse_bool_setting(
             getattr(settings, "PHOTO_PAD_WS_SCAN_ENABLED", True),
             default=True,
@@ -150,6 +153,8 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         )
         legacy_param = str(params.get("legacy", "1")).strip().lower()
         self._send_legacy_photos = legacy_param not in {"0", "false", "no", "off"}
+        risk_only_param = str(params.get("risk_only", "0")).strip().lower()
+        self._risk_only = risk_only_param in {"1", "true", "yes", "on", "y"}
         date_str = params.get("date")
         if date_str:
             try:
@@ -225,6 +230,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             self.date = new_date
             self._photo_update_buffer.clear()
             self._pad_scan_queue.clear()
+            self._visible_ids.clear()
 
             await self._send_initial_snapshot()
             logger.info(f"Client switched to group {self.group_name}")
@@ -276,7 +282,9 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         state_code: str | None = None,
         version_ts: str | None = None,
     ) -> dict[str, Any]:
-        normalized_op = op if op in {"snapshot", "created", "updated", "deleted"} else "updated"
+        normalized_op = (
+            op if op in {"snapshot", "created", "updated", "deleted"} else "updated"
+        )
         resolved_state = self._resolve_event_state(
             has_photo=bool(photo_payload.get("hasPhoto")),
             op=normalized_op,
@@ -370,6 +378,20 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
 
     async def _send_initial_snapshot(self):
         photos = await self.get_photos_for_date(self.date)
+        filtered_photos = photos
+        if self._risk_only:
+            filtered_photos = [
+                photo
+                for photo in photos
+                if self._is_risk_candidate(photo)
+            ]
+            self._visible_ids = {
+                int(photo["id"])
+                for photo in filtered_photos
+                if photo.get("id") is not None
+            }
+        else:
+            self._visible_ids.clear()
         snapshot_ts = timezone.now().isoformat()
         events = [
             self._photo_payload_to_event(
@@ -378,7 +400,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                 state_code=STATE_SNAPSHOT,
                 version_ts=snapshot_ts,
             )
-            for photo in photos
+            for photo in filtered_photos
         ]
         await self._send_batched_events(message_type="initial_photos", events=events)
         self._queue_pad_scan_ids(
@@ -439,7 +461,10 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
     def _queue_photo_event(self, event: dict[str, Any]) -> None:
         attendance_ids = self._extract_event_attendance_ids(event)
         if not attendance_ids:
-            logger.error("attendance_id(s) not found in event new_photo/attendance_deleted")
+            photo_ws_logger.error(
+                "attendance_id(s) not found in event new_photo/attendance_deleted event=%s",
+                event,
+            )
             return
         op = str(event.get("op") or "updated").lower()
         if op not in {"created", "updated", "deleted", "snapshot"}:
@@ -503,60 +528,119 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             return
         ordered_ids = [meta["id"] for meta in pending_meta]
         meta_by_id = {meta["id"]: meta for meta in pending_meta}
-        upsert_ids = [meta["id"] for meta in pending_meta if meta.get("op") != "deleted"]
+        upsert_ids = [
+            meta["id"] for meta in pending_meta if meta.get("op") != "deleted"
+        ]
         events: list[dict[str, Any]] = []
         candidate_scan_ids: list[int] = []
         try:
             fetched_photos = await self.get_photo_data_bulk(upsert_ids)
-            fetched_by_id = {photo["id"]: photo for photo in fetched_photos if photo.get("id")}
+            fetched_by_id = {
+                photo["id"]: photo for photo in fetched_photos if photo.get("id")
+            }
 
             for attendance_id in ordered_ids:
                 meta = meta_by_id.get(attendance_id, {})
                 op = str(meta.get("op") or "updated")
                 version_ts = str(meta.get("versionTs") or timezone.now().isoformat())
                 state_code = (
-                    str(meta.get("stateCode")) if meta.get("stateCode") is not None else None
+                    str(meta.get("stateCode"))
+                    if meta.get("stateCode") is not None
+                    else None
                 )
+                was_visible = attendance_id in self._visible_ids
                 if op == "deleted":
-                    events.append(
-                        {
-                            "id": attendance_id,
-                            "op": "deleted",
-                            "stateCode": STATE_DELETED,
-                            "versionTs": version_ts,
-                        }
-                    )
+                    if self._risk_only:
+                        if was_visible:
+                            events.append(
+                                {
+                                    "id": attendance_id,
+                                    "op": "deleted",
+                                    "stateCode": STATE_DELETED,
+                                    "versionTs": version_ts,
+                                }
+                            )
+                        self._visible_ids.discard(attendance_id)
+                    else:
+                        events.append(
+                            {
+                                "id": attendance_id,
+                                "op": "deleted",
+                                "stateCode": STATE_DELETED,
+                                "versionTs": version_ts,
+                            }
+                        )
                     continue
                 photo_payload = fetched_by_id.get(attendance_id)
                 if photo_payload is None:
-                    events.append(
-                        {
-                            "id": attendance_id,
-                            "op": "deleted",
-                            "stateCode": STATE_DELETED,
-                            "versionTs": version_ts,
-                        }
+                    photo_ws_logger.warning(
+                        "photos_updated: record not in DB attendance_id=%s ordered_ids=%s",
+                        attendance_id,
+                        ordered_ids[:20],
                     )
+                    if self._risk_only:
+                        if was_visible:
+                            events.append(
+                                {
+                                    "id": attendance_id,
+                                    "op": "deleted",
+                                    "stateCode": STATE_DELETED,
+                                    "versionTs": version_ts,
+                                }
+                            )
+                        self._visible_ids.discard(attendance_id)
+                    else:
+                        events.append(
+                            {
+                                "id": attendance_id,
+                                "op": "deleted",
+                                "stateCode": STATE_DELETED,
+                                "versionTs": version_ts,
+                            }
+                        )
                     continue
-                events.append(
-                    self._photo_payload_to_event(
-                        photo_payload,
-                        op=op,
-                        state_code=state_code,
-                        version_ts=version_ts,
-                    )
+                normalized_event = self._photo_payload_to_event(
+                    photo_payload,
+                    op=op,
+                    state_code=state_code,
+                    version_ts=version_ts,
                 )
+                if self._risk_only:
+                    is_risk_candidate = self._is_risk_candidate(photo_payload)
+                    if is_risk_candidate:
+                        events.append(normalized_event)
+                        self._visible_ids.add(attendance_id)
+                    elif was_visible:
+                        events.append(
+                            {
+                                "id": attendance_id,
+                                "op": "deleted",
+                                "stateCode": STATE_DELETED,
+                                "versionTs": version_ts,
+                            }
+                        )
+                        self._visible_ids.discard(attendance_id)
+                else:
+                    events.append(normalized_event)
                 if self._is_pad_scan_candidate(photo_payload):
                     candidate_scan_ids.append(attendance_id)
-            await self._send_batched_events(message_type="photos_updated", events=events)
-            logger.info(
-                "Sent photos_updated events to client, count=%s ids=%s",
+            await self._send_batched_events(
+                message_type="photos_updated", events=events
+            )
+            if not events and ordered_ids:
+                photo_ws_logger.warning(
+                    "photos_updated: empty events after filter (risk_only=%s) ordered_ids=%s",
+                    self._risk_only,
+                    ordered_ids[:20],
+                )
+            photo_ws_logger.info(
+                "photos_updated sent to client count=%s ids=%s",
                 len(events),
                 ordered_ids[:10] if len(ordered_ids) > 10 else ordered_ids,
             )
             self._queue_pad_scan_ids(candidate_scan_ids)
         except Exception as e:
-            logger.warning(
+            photo_ws_logger.warning(
                 "Failed to send photos_updated (connection may be closed): %s",
                 e,
             )
@@ -579,6 +663,27 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         status = str(photo_payload.get("photoSpoofStatus") or "")
         return status == models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING
 
+    @staticmethod
+    def _is_risk_candidate(photo_payload: dict[str, Any]) -> bool:
+        manual_verdict = str(
+            photo_payload.get("photoManualVerdict")
+            or models.LessonAttendance.PHOTO_MANUAL_VERDICT_NONE
+        )
+        if manual_verdict == models.LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS:
+            return True
+        if manual_verdict == models.LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN:
+            return False
+        status = str(
+            photo_payload.get("photoSpoofStatus")
+            or models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING
+        )
+        return status in {
+            models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
+            models.LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+            models.LessonAttendance.PHOTO_SPOOF_STATUS_ERROR,
+            models.LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+        }
+
     def _queue_pad_scan_ids(self, attendance_ids: list[int]) -> None:
         if not self._pad_scan_enabled or not attendance_ids:
             return
@@ -595,7 +700,9 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             return
         self._pad_last_event_ts = now
         if self._pad_scan_task is None or self._pad_scan_task.done():
-            self._pad_scan_task = asyncio.create_task(self._flush_pad_scan_after_delay())
+            self._pad_scan_task = asyncio.create_task(
+                self._flush_pad_scan_after_delay()
+            )
 
     async def _flush_pad_scan_after_delay(self) -> None:
         loop = asyncio.get_running_loop()
@@ -605,7 +712,10 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             now = loop.time()
             quiet_for = now - self._pad_last_event_ts
             waited = now - started_at
-            if quiet_for >= self._pad_scan_flush_delay or waited >= self._pad_scan_max_wait:
+            if (
+                quiet_for >= self._pad_scan_flush_delay
+                or waited >= self._pad_scan_max_wait
+            ):
                 break
         await self._flush_pad_scan()
 
@@ -629,13 +739,20 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                 thread_sensitive=False,
             )(batch_ids)
         except Exception as exc:
-            logger.exception("PAD websocket batch scan failed ids=%s error=%s", batch_ids, exc)
+            logger.exception(
+                "PAD websocket batch scan failed ids=%s error=%s", batch_ids, exc
+            )
+            photo_ws_logger.exception(
+                "PAD websocket batch scan failed ids=%s error=%s", batch_ids, exc
+            )
 
         if changed_ids:
             await self._broadcast_scanned_updates(changed_ids)
 
         if self._pad_scan_queue:
-            self._pad_scan_task = asyncio.create_task(self._flush_pad_scan_after_delay())
+            self._pad_scan_task = asyncio.create_task(
+                self._flush_pad_scan_after_delay()
+            )
         else:
             self._pad_scan_task = None
 
@@ -645,7 +762,9 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
 
         from monitoring_app.photo_pad import MANUAL_NONE, PAD_MODEL_VERSION, check_photo
 
-        id_order = {attendance_id: idx for idx, attendance_id in enumerate(attendance_ids)}
+        id_order = {
+            attendance_id: idx for idx, attendance_id in enumerate(attendance_ids)
+        }
         records = list(
             models.LessonAttendance.objects.filter(id__in=attendance_ids).only(
                 "id",
@@ -666,7 +785,8 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             if record.photo_manual_verdict != MANUAL_NONE:
                 continue
             if (
-                record.photo_spoof_status != models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING
+                record.photo_spoof_status
+                != models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING
                 and record.photo_spoof_checked_at is not None
                 and record.photo_spoof_model_version == PAD_MODEL_VERSION
             ):
@@ -684,6 +804,11 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                 result = check_photo(image_path=image_path, device=self._pad_device)
             except Exception:
                 logger.exception(
+                    "PAD websocket scan failed for id=%s path=%s",
+                    record.id,
+                    image_path,
+                )
+                photo_ws_logger.exception(
                     "PAD websocket scan failed for id=%s path=%s",
                     record.id,
                     image_path,
