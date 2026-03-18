@@ -10,13 +10,11 @@ from typing import Any, Optional, cast
 import cv2
 import numpy as np
 from django.conf import settings
-
 from monitoring_app import ml
-
 
 logger = logging.getLogger(__name__)
 
-PAD_MODEL_VERSION = "pad_v2"
+PAD_MODEL_VERSION = "pad_v3"
 
 STATUS_PENDING = "pending"
 STATUS_CLEAN = "clean"
@@ -74,6 +72,12 @@ _CV2_RETR_EXTERNAL = int(_cv2_get_attr("RETR_EXTERNAL"))
 _CV2_CHAIN_APPROX_SIMPLE = int(_cv2_get_attr("CHAIN_APPROX_SIMPLE"))
 _CV2_CV_64F = int(_cv2_get_attr("CV_64F"))
 
+_CV2_CREATE_CLAHE: Optional[Callable[..., Any]] = None
+try:
+    _CV2_CREATE_CLAHE = _cv2_get_callable("createCLAHE")
+except RuntimeError:
+    pass
+
 _PAD_DEFAULT_NUMBERS: dict[str, float | int] = {
     "device_min_conf": 0.20,
     "device_min_area_ratio": 0.02,
@@ -116,8 +120,17 @@ _PAD_DEFAULT_NUMBERS: dict[str, float | int] = {
     "decision_deepfake_review_min": 0.65,
     "decision_deepfake_device_min": 0.90,
     "decision_deepfake_very_high": 0.96,
+    "decision_deepfake_mid_suspicious_min": 0.82,
+    "decision_mid_device_min": 0.20,
+    "decision_mid_frame_min": 0.24,
+    "decision_quality_combined_review_sum_min": 0.46,
+    "decision_quality_device_review_min": 0.20,
+    "decision_quality_frame_review_min": 0.24,
     "decision_suspicious_device_min": 0.25,
     "decision_suspicious_frame_min": 0.45,
+    "decision_weak_device_min": 0.12,
+    "decision_weak_frame_min": 0.18,
+    "decision_weak_combined_sum_min": 0.22,
 }
 
 
@@ -180,7 +193,9 @@ class DecisionInputs:
 
 
 def normalize_device(device: Optional[str] = None) -> str:
-    configured = (device or getattr(settings, "PHOTO_PAD_DEVICE", DEVICE_AUTO) or DEVICE_AUTO)
+    configured = (
+        device or getattr(settings, "PHOTO_PAD_DEVICE", DEVICE_AUTO) or DEVICE_AUTO
+    )
     normalized = str(configured).strip().lower()
     if normalized not in DEVICE_VALUES:
         return DEVICE_AUTO
@@ -195,7 +210,11 @@ def _resolve_torch_device(preferred_device: str) -> tuple[Optional[Any], str]:
 
     if preferred_device == DEVICE_CUDA:
         return (
-            (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")),
+            (
+                torch.device("cuda")
+                if torch.cuda.is_available()
+                else torch.device("cpu")
+            ),
             (DEVICE_CUDA if torch.cuda.is_available() else DEVICE_CPU),
         )
     if preferred_device == DEVICE_CPU:
@@ -245,7 +264,9 @@ def _get_primary_face_bbox(img_bgr: np.ndarray) -> Optional[tuple[int, int, int,
         return None
 
 
-def _signal_deepface(img_bgr: np.ndarray, face_bbox: Optional[tuple[int, int, int, int]]) -> tuple[float, list[str]]:
+def _signal_deepface(
+    img_bgr: np.ndarray, face_bbox: Optional[tuple[int, int, int, int]]
+) -> tuple[float, list[str]]:
     if face_bbox is None:
         return 0.0, ["no_face"]
 
@@ -264,7 +285,9 @@ def _signal_deepface(img_bgr: np.ndarray, face_bbox: Optional[tuple[int, int, in
         return 0.0, ["deepface_error"]
 
 
-def _get_device_detector(preferred_device: str) -> tuple[Optional[Any], Optional[Any], str]:
+def _get_device_detector(
+    preferred_device: str,
+) -> tuple[Optional[Any], Optional[Any], str]:
     cache_key = f"detector:{preferred_device}"
     if cache_key in _runtime_cache:
         model, torch_module, resolved = _runtime_cache[cache_key]
@@ -292,7 +315,9 @@ def _get_device_detector(preferred_device: str) -> tuple[Optional[Any], Optional
         return None, None, resolved
 
 
-def _signal_device(img_bgr: np.ndarray, preferred_device: str) -> tuple[float, list[str]]:
+def _signal_device(
+    img_bgr: np.ndarray, preferred_device: str
+) -> tuple[float, list[str]]:
     model, torch_module, _resolved_device = _get_device_detector(preferred_device)
     if model is None or torch_module is None:
         return 0.0, []
@@ -344,25 +369,14 @@ def _signal_device(img_bgr: np.ndarray, preferred_device: str) -> tuple[float, l
         return 0.0, []
 
 
-def _signal_screen_frame(
-    img_bgr: np.ndarray, face_bbox: Optional[tuple[int, int, int, int]]
-) -> tuple[float, list[str]]:
-    h, w = img_bgr.shape[:2]
-    frame_area = float(max(1, h * w))
-    face_center = None
-    if face_bbox is not None:
-        x, y, fw, fh = face_bbox
-        face_center = (x + fw / 2.0, y + fh / 2.0)
-
-    gray = _CV2_CVT_COLOR(img_bgr, _CV2_COLOR_BGR2GRAY)
-    gaussian_kernel = max(3, _pad_int("frame_gaussian_kernel"))
-    if gaussian_kernel % 2 == 0:
-        gaussian_kernel += 1
-    edges = _CV2_CANNY(
-        _CV2_GAUSSIAN_BLUR(gray, (gaussian_kernel, gaussian_kernel), 0),
-        _pad_int("frame_canny_low"),
-        _pad_int("frame_canny_high"),
-    )
+def _frame_score_from_edges(
+    edges: np.ndarray,
+    frame_area: float,
+    w: int,
+    h: int,
+    face_center: Optional[tuple[float, float]],
+) -> float:
+    """Считает оценку рамки по бинарной карте рёбер (Canny)."""
     dilate_kernel = max(1, _pad_int("frame_dilate_kernel"))
     kernel = _CV2_GET_STRUCTURING_ELEMENT(
         _CV2_MORPH_RECT,
@@ -374,7 +388,6 @@ def _signal_screen_frame(
         _CV2_RETR_EXTERNAL,
         _CV2_CHAIN_APPROX_SIMPLE,
     )
-
     best_score = 0.0
     for contour in contours:
         area = _CV2_CONTOUR_AREA(contour)
@@ -389,20 +402,16 @@ def _signal_screen_frame(
         )
         if len(approx) != 4:
             continue
-
         x, y, bw, bh = _CV2_BOUNDING_RECT(approx)
         rect_area = float(max(1, bw * bh))
         solidity = float(area) / rect_area
         if solidity < _pad_float("frame_min_solidity"):
             continue
-
         candidate = min(1.0, area_ratio / _pad_float("frame_ratio_ref"))
-
         if face_center is not None:
             cx, cy = face_center
             if x <= cx <= (x + bw) and y <= cy <= (y + bh):
                 candidate = min(1.0, candidate + _pad_float("frame_face_bonus"))
-
         border_margin = _pad_int("frame_border_margin_px")
         near_borders = (
             (x <= border_margin)
@@ -412,8 +421,45 @@ def _signal_screen_frame(
         )
         if near_borders:
             candidate = min(1.0, candidate + _pad_float("frame_border_bonus"))
-
         best_score = max(best_score, candidate)
+    return best_score
+
+
+def _signal_screen_frame(
+    img_bgr: np.ndarray, face_bbox: Optional[tuple[int, int, int, int]]
+) -> tuple[float, list[str]]:
+    h, w = img_bgr.shape[:2]
+    frame_area = float(max(1, h * w))
+    face_center = None
+    if face_bbox is not None:
+        x, y, fw, fh = face_bbox
+        face_center = (x + fw / 2.0, y + fh / 2.0)
+
+    gray = _CV2_CVT_COLOR(img_bgr, _CV2_COLOR_BGR2GRAY)
+    gaussian_kernel = max(3, _pad_int("frame_gaussian_kernel"))
+    if gaussian_kernel % 2 == 0:
+        gaussian_kernel += 1
+    blurred = _CV2_GAUSSIAN_BLUR(gray, (gaussian_kernel, gaussian_kernel), 0)
+    canny_low = _pad_int("frame_canny_low")
+    canny_high = _pad_int("frame_canny_high")
+    edges = _CV2_CANNY(blurred, canny_low, canny_high)
+    best_score = _frame_score_from_edges(edges, frame_area, w, h, face_center)
+
+    brightness = float(gray.mean())
+    if _CV2_CREATE_CLAHE is not None and (brightness < 70.0 or brightness > 180.0):
+        try:
+            clahe_obj = _CV2_CREATE_CLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray_enhanced = clahe_obj.apply(gray)
+            blurred_enh = _CV2_GAUSSIAN_BLUR(
+                gray_enhanced, (gaussian_kernel, gaussian_kernel), 0
+            )
+            edges_enh = _CV2_CANNY(blurred_enh, max(20, canny_low - 25), canny_high)
+            score_enh = _frame_score_from_edges(
+                edges_enh, frame_area, w, h, face_center
+            )
+            best_score = max(best_score, score_enh)
+        except Exception as exc:
+            logger.debug("PAD CLAHE frame fallback failed: %s", exc)
 
     if best_score >= _pad_float("frame_tag_threshold"):
         return best_score, ["screen_frame"]
@@ -440,9 +486,8 @@ def _signal_quality(
     if blur_var < _pad_float("quality_blur_min"):
         penalty += _pad_float("quality_penalty_blur")
         tags.append("quality_blur")
-    if (
-        brightness < _pad_float("quality_brightness_min")
-        or brightness > _pad_float("quality_brightness_max")
+    if brightness < _pad_float("quality_brightness_min") or brightness > _pad_float(
+        "quality_brightness_max"
     ):
         penalty += _pad_float("quality_penalty_exposure")
         tags.append("quality_exposure")
@@ -488,15 +533,23 @@ def _decide(inputs: DecisionInputs) -> PadResult:
     deepfake = "fasnet_fake" in tags
     has_device = inputs.device_score >= _pad_float("decision_device_present_min")
     has_frame = inputs.frame_score >= _pad_float("decision_frame_present_min")
+    mid_device = inputs.device_score >= _pad_float("decision_mid_device_min")
+    mid_frame = inputs.frame_score >= _pad_float("decision_mid_frame_min")
     strong_screen = (
         inputs.device_score >= _pad_float("decision_strong_device_min")
         and inputs.frame_score >= _pad_float("decision_strong_frame_min")
-    ) or (
-        inputs.device_score >= _pad_float("decision_very_strong_device_min")
-    )
+    ) or (inputs.device_score >= _pad_float("decision_very_strong_device_min"))
     quality_poor = (
         inputs.quality_penalty >= _pad_float("decision_quality_poor_min")
         or "quality_poor" in tags
+    )
+    quality_review_signal = (
+        inputs.device_score >= _pad_float("decision_quality_device_review_min")
+        or inputs.frame_score >= _pad_float("decision_quality_frame_review_min")
+        or (
+            inputs.device_score + inputs.frame_score
+            >= _pad_float("decision_quality_combined_review_sum_min")
+        )
     )
 
     risk = (
@@ -524,7 +577,25 @@ def _decide(inputs: DecisionInputs) -> PadResult:
     elif (
         deepfake
         and inputs.deepface_score >= _pad_float("decision_deepfake_very_high")
-        and (has_device or has_frame)
+        and not quality_poor
+    ):
+        status = STATUS_SUSPICIOUS
+        trust = False
+    elif (
+        deepfake
+        and inputs.deepface_score
+        >= _pad_float("decision_deepfake_mid_suspicious_min")
+        and (
+            (mid_device and mid_frame)
+            or inputs.device_score >= _pad_float("decision_strong_device_min")
+            or inputs.frame_score >= _pad_float("decision_strong_frame_min")
+        )
+    ):
+        status = STATUS_SUSPICIOUS
+        trust = False
+    elif (
+        deepfake
+        and (mid_device or mid_frame)
         and not quality_poor
     ):
         status = STATUS_SUSPICIOUS
@@ -539,8 +610,8 @@ def _decide(inputs: DecisionInputs) -> PadResult:
     elif deepfake:
         if (
             inputs.deepface_score < _pad_float("decision_deepfake_review_min")
-            and not has_device
-            and not has_frame
+            and not mid_device
+            and not mid_frame
             and not quality_poor
         ):
             status = STATUS_CLEAN
@@ -551,9 +622,23 @@ def _decide(inputs: DecisionInputs) -> PadResult:
     elif strong_screen and not quality_poor:
         status = STATUS_REVIEW
         trust = None
+    elif quality_poor and quality_review_signal:
+        status = STATUS_REVIEW
+        trust = None
     else:
-        status = STATUS_CLEAN
-        trust = True
+        weak_dev = _pad_float("decision_weak_device_min")
+        weak_frm = _pad_float("decision_weak_frame_min")
+        weak_sum = _pad_float("decision_weak_combined_sum_min")
+        if (
+            not quality_poor
+            and (inputs.device_score >= weak_dev or inputs.frame_score >= weak_frm)
+            and (inputs.device_score + inputs.frame_score >= weak_sum)
+        ):
+            status = STATUS_REVIEW
+            trust = None
+        else:
+            status = STATUS_CLEAN
+            trust = True
 
     return PadResult(
         status=status,

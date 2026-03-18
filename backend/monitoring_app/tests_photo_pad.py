@@ -44,6 +44,76 @@ class PadDecisionTests(SimpleTestCase):
         )
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
 
+    def test_very_high_deepfake_without_screen_signal_goes_to_suspicious(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.98,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.1,
+                tags=["fasnet_fake"],
+            )
+        )
+        self.assertEqual(result.status, STATUS_SUSPICIOUS)
+
+    def test_mid_deepfake_with_mid_screen_signal_goes_to_suspicious(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.84,
+                device_score=0.24,
+                frame_score=0.26,
+                quality_penalty=0.1,
+                tags=["fasnet_fake", "device_present:laptop"],
+            )
+        )
+        self.assertEqual(result.status, STATUS_SUSPICIOUS)
+
+    def test_tagged_deepfake_with_device_only_goes_to_suspicious(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.52,
+                device_score=0.22,
+                frame_score=0.03,
+                quality_penalty=0.1,
+                tags=["fasnet_fake", "device_present:cell phone"],
+            )
+        )
+        self.assertEqual(result.status, STATUS_SUSPICIOUS)
+
+    def test_strong_device_only_signal_goes_to_review(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.56,
+                frame_score=0.0,
+                quality_penalty=0.1,
+                tags=["device_present:tv"],
+            )
+        )
+        self.assertEqual(result.status, STATUS_REVIEW)
+
+    def test_quality_poor_with_screen_signal_stays_in_review(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.22,
+                frame_score=0.26,
+                quality_penalty=0.6,
+                tags=["quality_poor"],
+            )
+        )
+        self.assertEqual(result.status, STATUS_REVIEW)
+
     def test_clean_signal_goes_to_clean(self):
         result = _decide(
             DecisionInputs(

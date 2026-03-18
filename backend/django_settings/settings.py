@@ -527,7 +527,9 @@ PHOTO_PAD_NUMBERS = {
     "device_min_area_ratio": _float_env("PHOTO_PAD_DEVICE_MIN_AREA_RATIO", 0.02),
     "device_ratio_ref": _float_env("PHOTO_PAD_DEVICE_RATIO_REF", 0.25),
     "device_score_conf_weight": _float_env("PHOTO_PAD_DEVICE_SCORE_CONF_WEIGHT", 0.60),
-    "device_score_ratio_weight": _float_env("PHOTO_PAD_DEVICE_SCORE_RATIO_WEIGHT", 0.40),
+    "device_score_ratio_weight": _float_env(
+        "PHOTO_PAD_DEVICE_SCORE_RATIO_WEIGHT", 0.40
+    ),
     # Поиск прямоугольной рамки экрана
     "frame_canny_low": _int_env("PHOTO_PAD_FRAME_CANNY_LOW", 60),
     "frame_canny_high": _int_env("PHOTO_PAD_FRAME_CANNY_HIGH", 160),
@@ -550,26 +552,73 @@ PHOTO_PAD_NUMBERS = {
     "quality_penalty_blur": _float_env("PHOTO_PAD_QUALITY_PENALTY_BLUR", 0.35),
     "quality_penalty_exposure": _float_env("PHOTO_PAD_QUALITY_PENALTY_EXPOSURE", 0.20),
     "quality_penalty_contrast": _float_env("PHOTO_PAD_QUALITY_PENALTY_CONTRAST", 0.20),
-    "quality_penalty_small_face": _float_env("PHOTO_PAD_QUALITY_PENALTY_SMALL_FACE", 0.25),
+    "quality_penalty_small_face": _float_env(
+        "PHOTO_PAD_QUALITY_PENALTY_SMALL_FACE", 0.25
+    ),
     "quality_poor_threshold": _float_env("PHOTO_PAD_QUALITY_POOR_THRESHOLD", 0.45),
     # Интегральный риск
     "risk_weight_deepface": _float_env("PHOTO_PAD_RISK_WEIGHT_DEEPFACE", 0.50),
     "risk_weight_device": _float_env("PHOTO_PAD_RISK_WEIGHT_DEVICE", 0.30),
     "risk_weight_frame": _float_env("PHOTO_PAD_RISK_WEIGHT_FRAME", 0.20),
-    "risk_quality_discount_max": _float_env("PHOTO_PAD_RISK_QUALITY_DISCOUNT_MAX", 0.18),
-    "risk_quality_discount_scale": _float_env("PHOTO_PAD_RISK_QUALITY_DISCOUNT_SCALE", 0.25),
+    "risk_quality_discount_max": _float_env(
+        "PHOTO_PAD_RISK_QUALITY_DISCOUNT_MAX", 0.18
+    ),
+    "risk_quality_discount_scale": _float_env(
+        "PHOTO_PAD_RISK_QUALITY_DISCOUNT_SCALE", 0.25
+    ),
     # Decision thresholds
-    "decision_device_present_min": _float_env("PHOTO_PAD_DECISION_DEVICE_PRESENT_MIN", 0.25),
-    "decision_frame_present_min": _float_env("PHOTO_PAD_DECISION_FRAME_PRESENT_MIN", 0.40),
-    "decision_strong_device_min": _float_env("PHOTO_PAD_DECISION_STRONG_DEVICE_MIN", 0.35),
-    "decision_strong_frame_min": _float_env("PHOTO_PAD_DECISION_STRONG_FRAME_MIN", 0.30),
-    "decision_very_strong_device_min": _float_env("PHOTO_PAD_DECISION_VERY_STRONG_DEVICE_MIN", 0.55),
-    "decision_quality_poor_min": _float_env("PHOTO_PAD_DECISION_QUALITY_POOR_MIN", 0.45),
-    "decision_deepfake_review_min": _float_env("PHOTO_PAD_DECISION_DEEPFAKE_REVIEW_MIN", 0.65),
-    "decision_deepfake_device_min": _float_env("PHOTO_PAD_DECISION_DEEPFAKE_DEVICE_MIN", 0.90),
-    "decision_deepfake_very_high": _float_env("PHOTO_PAD_DECISION_DEEPFAKE_VERY_HIGH", 0.96),
-    "decision_suspicious_device_min": _float_env("PHOTO_PAD_DECISION_SUSPICIOUS_DEVICE_MIN", 0.25),
-    "decision_suspicious_frame_min": _float_env("PHOTO_PAD_DECISION_SUSPICIOUS_FRAME_MIN", 0.45),
+    "decision_device_present_min": _float_env(
+        "PHOTO_PAD_DECISION_DEVICE_PRESENT_MIN", 0.25
+    ),
+    "decision_frame_present_min": _float_env(
+        "PHOTO_PAD_DECISION_FRAME_PRESENT_MIN", 0.40
+    ),
+    "decision_strong_device_min": _float_env(
+        "PHOTO_PAD_DECISION_STRONG_DEVICE_MIN", 0.35
+    ),
+    "decision_strong_frame_min": _float_env(
+        "PHOTO_PAD_DECISION_STRONG_FRAME_MIN", 0.30
+    ),
+    "decision_very_strong_device_min": _float_env(
+        "PHOTO_PAD_DECISION_VERY_STRONG_DEVICE_MIN", 0.55
+    ),
+    "decision_quality_poor_min": _float_env(
+        "PHOTO_PAD_DECISION_QUALITY_POOR_MIN", 0.45
+    ),
+    "decision_deepfake_review_min": _float_env(
+        "PHOTO_PAD_DECISION_DEEPFAKE_REVIEW_MIN", 0.65
+    ),
+    "decision_deepfake_device_min": _float_env(
+        "PHOTO_PAD_DECISION_DEEPFAKE_DEVICE_MIN", 0.90
+    ),
+    "decision_deepfake_very_high": _float_env(
+        "PHOTO_PAD_DECISION_DEEPFAKE_VERY_HIGH", 0.96
+    ),
+    "decision_deepfake_mid_suspicious_min": _float_env(
+        "PHOTO_PAD_DECISION_DEEPFAKE_MID_SUSPICIOUS_MIN", 0.82
+    ),
+    "decision_mid_device_min": _float_env("PHOTO_PAD_DECISION_MID_DEVICE_MIN", 0.20),
+    "decision_mid_frame_min": _float_env("PHOTO_PAD_DECISION_MID_FRAME_MIN", 0.24),
+    "decision_quality_combined_review_sum_min": _float_env(
+        "PHOTO_PAD_DECISION_QUALITY_COMBINED_REVIEW_SUM_MIN", 0.46
+    ),
+    "decision_quality_device_review_min": _float_env(
+        "PHOTO_PAD_DECISION_QUALITY_DEVICE_REVIEW_MIN", 0.20
+    ),
+    "decision_quality_frame_review_min": _float_env(
+        "PHOTO_PAD_DECISION_QUALITY_FRAME_REVIEW_MIN", 0.24
+    ),
+    "decision_suspicious_device_min": _float_env(
+        "PHOTO_PAD_DECISION_SUSPICIOUS_DEVICE_MIN", 0.25
+    ),
+    "decision_suspicious_frame_min": _float_env(
+        "PHOTO_PAD_DECISION_SUSPICIOUS_FRAME_MIN", 0.45
+    ),
+    "decision_weak_device_min": _float_env("PHOTO_PAD_DECISION_WEAK_DEVICE_MIN", 0.12),
+    "decision_weak_frame_min": _float_env("PHOTO_PAD_DECISION_WEAK_FRAME_MIN", 0.18),
+    "decision_weak_combined_sum_min": _float_env(
+        "PHOTO_PAD_DECISION_WEAK_COMBINED_SUM_MIN", 0.22
+    ),
 }
 
 CELERY_TASK_QUEUES = (Queue("control_app_queue", routing_key="control_app_queue"),)
@@ -797,6 +846,19 @@ LOGGING = {
             "level": "INFO",
             "filters": ["ignore_shutdown", "ignore_pylint"],
         },
+        "photo_verdict_file": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "photo_verdict.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 14,
+            "utc": True,
+            "encoding": "utf-8",
+            "delay": True,
+            "formatter": "standard",
+            "level": "INFO",
+            "filters": ["ignore_shutdown", "ignore_pylint"],
+        },
     },
     "loggers": {
         "": {
@@ -836,6 +898,11 @@ LOGGING = {
         },
         "monitoring_app.lesson_locations.not_found": {
             "handlers": ["lesson_locations_not_found_file"],
+            "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "monitoring_app.photo_verdict": {
+            "handlers": ["photo_verdict_file"],
             "level": "INFO" if DEBUG else "WARNING",
             "propagate": False,
         },

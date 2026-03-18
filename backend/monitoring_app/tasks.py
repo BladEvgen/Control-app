@@ -2,7 +2,7 @@ import datetime
 import logging
 import os
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Union, cast
 
 from celery import shared_task
 from django.conf import settings
@@ -333,39 +333,33 @@ def scan_lesson_attendance_photos_hourly(
     log_prefix = "[lesson_photo_pad_hourly]"
     batch_size = max(
         1,
-        int(
-            batch_size
-            or getattr(settings, "PHOTO_PAD_HOURLY_BATCH_SIZE", 100)
-        ),
+        int(batch_size or getattr(settings, "PHOTO_PAD_HOURLY_BATCH_SIZE", 100)),
     )
     max_records = max(
         1,
-        int(
-            max_records
-            or getattr(settings, "PHOTO_PAD_HOURLY_MAX_RECORDS", 200)
-        ),
+        int(max_records or getattr(settings, "PHOTO_PAD_HOURLY_MAX_RECORDS", 200)),
     )
     resolved_device = normalize_device(device)
     target_date = timezone.localdate() if only_today else None
 
-    candidates_q = (
-        Q(staff_image_path__isnull=False)
-        & ~Q(staff_image_path="")
-        & Q(photo_manual_verdict=MANUAL_NONE)
-        & (
-            Q(photo_spoof_checked_at__isnull=True)
-            | ~Q(photo_spoof_model_version=PAD_MODEL_VERSION)
-            | Q(photo_spoof_status=models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING)
-        )
+    q_checked_null = cast(Q, Q(photo_spoof_checked_at__isnull=True))
+    q_version_old = cast(Q, ~Q(photo_spoof_model_version=PAD_MODEL_VERSION))
+    q_pending = cast(
+        Q,
+        Q(photo_spoof_status=models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING),
+    )
+    inner_q = cast(Q, cast(Q, q_checked_null | q_version_old) | q_pending)
+    q_has_path = cast(Q, Q(staff_image_path__isnull=False))
+    q_non_empty = cast(Q, ~Q(staff_image_path=""))
+    q_manual_none = cast(Q, Q(photo_manual_verdict=MANUAL_NONE))
+    candidates_q = cast(
+        Q,
+        cast(Q, cast(Q, q_has_path & q_non_empty) & q_manual_none) & inner_q,
     )
     qs = models.LessonAttendance.objects.filter(candidates_q)
     if target_date is not None:
         qs = qs.filter(date_at=target_date)
-    qs = (
-        qs
-        .only("id", "staff_image_path")
-        .order_by("id")
-    )
+    qs = qs.only("id", "staff_image_path").order_by("id")
     if max_records:
         records = list(qs[:max_records])
     else:
@@ -528,10 +522,7 @@ def rescan_lesson_attendance_photo_ids(
             if not image_path:
                 stats["skipped_no_photo"] += 1
                 continue
-            if (
-                not force_manual
-                and record.photo_manual_verdict != MANUAL_NONE
-            ):
+            if not force_manual and record.photo_manual_verdict != MANUAL_NONE:
                 stats["skipped_manual"] += 1
                 continue
             try:
