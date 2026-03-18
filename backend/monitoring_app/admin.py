@@ -25,6 +25,7 @@ from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
+from django.utils.formats import date_format
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.html import format_html, format_html_join
@@ -1133,6 +1134,7 @@ class StaffAdmin(admin.ModelAdmin):
             LessonAttendance.objects.filter(
                 staff=obj, date_at__range=(start_date, end_date)
             )
+            .exclude(LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
             .only("id", "date_at", "first_in", "last_out", "staff_id")
             .order_by("date_at", "first_in")
         )
@@ -2789,6 +2791,7 @@ class ClassLocationAdmin(ModelAdmin):
                 first_in__gte=six_months_ago,
                 first_in__lte=now,
             )
+            .exclude(LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
             .annotate(month=TruncMonth("first_in"))
             .values("month")
             .annotate(count=Count("id"))
@@ -3078,11 +3081,91 @@ class SalaryAdmin(admin.ModelAdmin):
 
 @admin.register(PublicHoliday, site=admin_site)
 class PublicHolidayAdmin(admin.ModelAdmin):
-    list_display = ("date", "name", "is_working_day", "days_until")
-    list_filter = ("is_working_day", "date")
-    search_fields = ("name",)
-    ordering = ("-date",)
-    actions = ["mark_as_working", "mark_as_non_working"]
+    class HolidayPeriodFilter(SimpleListFilter):
+        title = "Период"
+        parameter_name = "holiday_period"
+
+        def lookups(self, request, model_admin):
+            _ = request
+            _ = model_admin
+            return (
+                ("today", "Сегодня"),
+                ("week", "Ближайшие 7 дней"),
+                ("month", "Ближайшие 30 дней"),
+                ("future", "Будущие"),
+                ("past", "Прошедшие"),
+            )
+
+        def queryset(self, request, queryset):
+            _ = request
+            today = timezone.localdate()
+            value = self.value()
+            if value == "today":
+                return queryset.filter(date=today)
+            if value == "week":
+                return queryset.filter(date__gte=today, date__lte=today + timedelta(days=7))
+            if value == "month":
+                return queryset.filter(date__gte=today, date__lte=today + timedelta(days=30))
+            if value == "future":
+                return queryset.filter(date__gte=today)
+            if value == "past":
+                return queryset.filter(date__lt=today)
+            return queryset
+
+    class HolidayYearFilter(SimpleListFilter):
+        title = "Год"
+        parameter_name = "holiday_year"
+
+        def lookups(self, request, model_admin):
+            years = (
+                model_admin.get_queryset(request)
+                .dates("date", "year")
+            )
+            return [(str(item.year), str(item.year)) for item in years]
+
+        def queryset(self, request, queryset):
+            _ = request
+            value = self.value()
+            if not value:
+                return queryset
+            return queryset.filter(date__year=value)
+
+    class HolidayMonthFilter(SimpleListFilter):
+        title = "Месяц"
+        parameter_name = "holiday_month"
+
+        def lookups(self, request, model_admin):
+            _ = request
+            _ = model_admin
+            return [(str(month), month_abbr[month]) for month in range(1, 13)]
+
+        def queryset(self, request, queryset):
+            _ = request
+            value = self.value()
+            if not value:
+                return queryset
+            return queryset.filter(date__month=value)
+
+    list_display = ("date", "weekday_name", "name", "is_working_day", "days_until")
+    list_display_links = ("date", "name")
+    list_editable = ("is_working_day",)
+    list_filter = (
+        HolidayPeriodFilter,
+        HolidayYearFilter,
+        HolidayMonthFilter,
+        "is_working_day",
+    )
+    search_fields = ("name", "=date")
+    ordering = ("date",)
+    date_hierarchy = "date"
+    list_per_page = 50
+    save_on_top = True
+    save_as = True
+    actions = [
+        "mark_as_working",
+        "mark_as_non_working",
+        "copy_selected_to_next_year",
+    ]
 
     fieldsets = (
         (
@@ -3092,24 +3175,58 @@ class PublicHolidayAdmin(admin.ModelAdmin):
                 "classes": ("wide",),
             },
         ),
+        (
+            "Календарный контекст",
+            {
+                "fields": ("weekday_name", "days_until"),
+                "classes": ("wide",),
+            },
+        ),
     )
+    readonly_fields = ("weekday_name", "days_until")
+
+    def get_ordering(self, request):
+        if request.GET.get("holiday_period") == "past":
+            return ("-date",)
+        return ("date",)
+
+    def get_changeform_initial_data(self, request):
+        initial = super().get_changeform_initial_data(request)
+        initial.setdefault("date", timezone.localdate())
+        initial.setdefault("is_working_day", False)
+        return initial
+
+    def weekday_name(self, obj):
+        if obj is None or not getattr(obj, "date", None):
+            return "—"
+        return date_format(obj.date, "l")
+
+    weekday_name.short_description = "День недели"
+    weekday_name.admin_order_field = "date"
 
     def days_until(self, obj):
-        today = timezone.now().date()
+        if obj is None or not getattr(obj, "date", None):
+            return "—"
+        today = timezone.localdate()
         days = (obj.date - today).days
 
         if days < 0:
-            return "Прошел"
-        elif days == 0:
             return format_html(
-                '<span style="color: green; font-weight: bold;">Сегодня!</span>'
+                '<span style="color:#64748b;">{} дн. назад</span>',
+                abs(days),
             )
-        elif days <= 7:
-            return format_html('<span style="color: orange;">{} дн.</span>', days)
-        else:
-            return f"{days} дн."
+        if days == 0:
+            return format_html(
+                '<span style="color:#047857; font-weight:600;">Сегодня</span>'
+            )
+        if days <= 7:
+            return format_html('<span style="color:#b45309; font-weight:600;">через {} дн.</span>', days)
+        if days <= 30:
+            return format_html('<span style="color:#1d4ed8;">через {} дн.</span>', days)
+        return f"через {days} дн."
 
     days_until.short_description = "Дней до праздника"
+    days_until.admin_order_field = "date"
 
     def mark_as_working(self, request, queryset):
         updated = queryset.update(is_working_day=True)
@@ -3122,6 +3239,46 @@ class PublicHolidayAdmin(admin.ModelAdmin):
         self.message_user(request, f"{updated} праздников отмечены как нерабочие дни.")
 
     mark_as_non_working.short_description = "Отметить как нерабочие дни"
+
+    def copy_selected_to_next_year(self, request, queryset):
+        created = 0
+        skipped = 0
+        for holiday in queryset:
+            try:
+                next_date = holiday.date.replace(year=holiday.date.year + 1)
+            except ValueError:
+                # 29 Feb fallback for non-leap year.
+                next_date = holiday.date.replace(year=holiday.date.year + 1, day=28)
+
+            _, is_created = PublicHoliday.objects.get_or_create(
+                date=next_date,
+                defaults={
+                    "name": holiday.name,
+                    "is_working_day": holiday.is_working_day,
+                },
+            )
+            if is_created:
+                created += 1
+            else:
+                skipped += 1
+
+        if created and skipped:
+            self.message_user(
+                request,
+                f"Скопировано в следующий год: {created}; уже существовали: {skipped}.",
+                level=messages.WARNING,
+            )
+            return
+        if created:
+            self.message_user(request, f"Скопировано в следующий год: {created}.")
+            return
+        self.message_user(
+            request,
+            "Новые записи не созданы: все выбранные даты на следующий год уже существуют.",
+            level=messages.INFO,
+        )
+
+    copy_selected_to_next_year.short_description = "Скопировать выбранные праздники на следующий год"
 
 
 @admin.register(AbsentReason, site=admin_site)

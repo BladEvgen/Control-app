@@ -9,33 +9,33 @@
     flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
-    gap: 10px;
+    gap: 8px;
   }
   .reset-filters-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    min-height: 44px;
-    padding: 10px 20px;
-    font-size: 15px;
+    gap: 6px;
+    min-height: 32px;
+    padding: 6px 10px;
+    font-size: 12px;
     font-weight: 600;
-    color: #ffffff !important;
-    background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
-    border: none;
-    border-radius: 10px;
-    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4);
+    line-height: 1;
+    color: #334155 !important;
+    background: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-radius: 7px;
+    box-shadow: none;
     transition: all 0.2s ease;
     text-decoration: none;
   }
   .reset-filters-btn:hover {
-    background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
-    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.5);
-    transform: translateY(-1px);
-    color: #ffffff !important;
+    background: #eef2f7;
+    border-color: #94a3b8;
+    color: #1f2937 !important;
   }
   .reset-filters-btn:active {
-    transform: translateY(0);
+    background: #e2e8f0;
   }
   @media (max-width: 768px) {
     .object-tools {
@@ -43,7 +43,8 @@
       align-items: stretch;
     }
     .reset-filters-btn {
-      width: 100%;
+      width: auto;
+      justify-content: center;
     }
   }
 </style>
@@ -52,9 +53,11 @@
 {% block object-tools %}
 <div class="object-tools">
   {{ block.super }}
+  {% if request.GET %}
   <a href="{{ request.path }}" class="reset-filters-btn">
     <i class="fas fa-undo"></i>
     Сбросить фильтры
   </a>
+  {% endif %}
 </div>
 {% endblock %}
