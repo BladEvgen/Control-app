@@ -86,28 +86,85 @@ def sync_staff_from_api_task(dry_run: bool = False):
     return result
 
 
+def _normalize_lesson_datetime(
+    value: datetime.datetime, current_tz: datetime.tzinfo
+) -> datetime.datetime:
+    if timezone.is_aware(value):
+        return timezone.localtime(value, current_tz)
+    return timezone.make_aware(value, current_tz)
+
+
+def _get_lesson_auto_close_minutes(first_in: datetime.datetime) -> int:
+    """Ступенчатое авто-закрытие занятия.
+
+    Базовая идея:
+    - дневные занятия живут до 2 часов;
+    - вечерние (с 18:00) до 1.5 часов;
+    - поздние (с 20:00) до 1 часа.
+
+    Это заметно уменьшает "накрутку" от вечерних отметок, но остаётся
+    достаточно мягким для реальных дежурств и поздних активностей.
+    """
+    local_first_in = timezone.localtime(first_in)
+    evening_start_hour = max(
+        0,
+        int(settings.LESSON_ATTENDANCE_AUTO_CLOSE_EVENING_START_HOUR),
+    )
+    late_start_hour = max(
+        evening_start_hour,
+        int(settings.LESSON_ATTENDANCE_AUTO_CLOSE_LATE_START_HOUR),
+    )
+    if local_first_in.hour >= late_start_hour:
+        return max(1, int(settings.LESSON_ATTENDANCE_AUTO_CLOSE_LATE_MINUTES))
+    if local_first_in.hour >= evening_start_hour:
+        return max(1, int(settings.LESSON_ATTENDANCE_AUTO_CLOSE_EVENING_MINUTES))
+    return max(1, int(settings.LESSON_ATTENDANCE_AUTO_CLOSE_DEFAULT_MINUTES))
+
+
+def _calculate_lesson_auto_last_out(
+    *,
+    lesson_date: datetime.date,
+    first_in: datetime.datetime,
+    current_tz: datetime.tzinfo,
+) -> tuple[datetime.datetime, int]:
+    normalized_first_in = _normalize_lesson_datetime(first_in, current_tz)
+    auto_close_minutes = _get_lesson_auto_close_minutes(normalized_first_in)
+    end_of_lesson_day = timezone.make_aware(
+        datetime.datetime.combine(lesson_date, datetime.time(23, 59, 59, 999999)),
+        current_tz,
+    )
+    target_time = normalized_first_in + datetime.timedelta(minutes=auto_close_minutes)
+    return (
+        end_of_lesson_day if target_time > end_of_lesson_day else target_time,
+        auto_close_minutes,
+    )
+
+
 @shared_task(name="monitoring_app.tasks.update_lesson_attendance_last_out")
 def update_lesson_attendance_last_out():
     """Автоматически проставляет last_out для занятий без отметки об окончании.
 
-    Студенты не ставят отметку «занятие закончилось», поэтому last_out выставляется
-    автоматически: first_in + 3 часа, но НЕ ПОЗЖЕ конца дня занятия (date_at).
+    Используем ступенчатое правило по локальному времени начала занятия:
+    - до 18:00: first_in + 120 мин;
+    - c 18:00: first_in + 90 мин;
+    - c 20:00: first_in + 60 мин.
 
-    Правила:
-    1. Берём занятия без last_out, у которых first_in был более 3 часов назад
-    2. last_out = min(first_in + 3ч, 23:59:59.999999 дня date_at)
-    3. Гарантия: last_out никогда не выходит за пределы date_at (защита от 22:00→01:00)
-
-    Используется date_at (дата занятия), а не first_in.date(), чтобы избежать
-    косяков с часовыми поясами и корректно считать выгрузки по дням.
+    Любой рассчитанный last_out дополнительно ограничивается концом `date_at`,
+    чтобы занятие не перетекало на следующий день.
     """
     log_prefix = "[update_lesson_attendance_last_out]"
     try:
         now = timezone.now()
-        three_hours_ago = now - datetime.timedelta(hours=3)
+        min_auto_close_minutes = min(
+            max(1, int(settings.LESSON_ATTENDANCE_AUTO_CLOSE_DEFAULT_MINUTES)),
+            max(1, int(settings.LESSON_ATTENDANCE_AUTO_CLOSE_EVENING_MINUTES)),
+            max(1, int(settings.LESSON_ATTENDANCE_AUTO_CLOSE_LATE_MINUTES)),
+        )
+        oldest_open_cutoff = now - datetime.timedelta(minutes=min_auto_close_minutes)
 
         lessons_to_update = models.LessonAttendance.objects.filter(
-            last_out__isnull=True, first_in__lte=three_hours_ago
+            last_out__isnull=True,
+            first_in__lte=oldest_open_cutoff,
         ).only("id", "first_in", "last_out", "date_at")
 
         if not lessons_to_update.exists():
@@ -118,33 +175,34 @@ def update_lesson_attendance_last_out():
         total_updated = 0
         total_records = lessons_to_update.count()
         current_tz = timezone.get_current_timezone()
+        skipped_not_due = 0
 
         for offset in range(0, total_records, BATCH_SIZE):
             batch = lessons_to_update[offset : offset + BATCH_SIZE]
             updates = []
 
             for lesson in batch.iterator(chunk_size=100):
-                first_in = lesson.first_in
-                if not timezone.is_aware(first_in):
-                    first_in = timezone.make_aware(first_in, current_tz)
-
-                lesson_date = lesson.date_at
-                end_of_lesson_day = timezone.make_aware(
-                    datetime.datetime.combine(
-                        lesson_date, datetime.time(23, 59, 59, 999999)
-                    ),
-                    current_tz,
+                last_out, auto_close_minutes = _calculate_lesson_auto_last_out(
+                    lesson_date=lesson.date_at,
+                    first_in=lesson.first_in,
+                    current_tz=current_tz,
                 )
+                if last_out > now:
+                    skipped_not_due += 1
+                    continue
 
-                target_time = first_in + datetime.timedelta(hours=3)
-                last_out = (
-                    end_of_lesson_day
-                    if target_time > end_of_lesson_day
-                    else target_time
+                lesson.first_in = _normalize_lesson_datetime(
+                    lesson.first_in, current_tz
                 )
-
                 lesson.last_out = last_out
                 updates.append(lesson)
+                logger.debug(
+                    "%s prepared lesson_id=%s auto_close_minutes=%s last_out=%s",
+                    log_prefix,
+                    lesson.id,
+                    auto_close_minutes,
+                    last_out.isoformat(),
+                )
 
             if updates:
                 models.LessonAttendance.objects.bulk_update(
@@ -161,10 +219,11 @@ def update_lesson_attendance_last_out():
                 )
 
         logger.info(
-            "%s done updated=%s total=%s",
+            "%s done updated=%s total=%s skipped_not_due=%s",
             log_prefix,
             total_updated,
             total_records,
+            skipped_not_due,
         )
 
     except Exception as e:

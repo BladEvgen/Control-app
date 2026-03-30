@@ -410,6 +410,336 @@ class LessonTaskStatusTest(APITestCase):
             self.assertIn("message", response.data)
 
 
+class LessonAttendanceAutoCloseTaskTest(TestCase):
+    def setUp(self):
+        self.staff = Staff.objects.create(
+            pin="S7000S",
+            name="Late",
+            surname="Lesson",
+        )
+
+    def _create_lesson(self, first_in, *, date_at=None):
+        return LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Duty",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=first_in,
+            last_out=None,
+            latitude=43.2389,
+            longitude=76.8897,
+            date_at=date_at or first_in.date(),
+        )
+
+    @override_settings(
+        LESSON_ATTENDANCE_AUTO_CLOSE_DEFAULT_MINUTES=120,
+        LESSON_ATTENDANCE_AUTO_CLOSE_EVENING_START_HOUR=18,
+        LESSON_ATTENDANCE_AUTO_CLOSE_EVENING_MINUTES=90,
+        LESSON_ATTENDANCE_AUTO_CLOSE_LATE_START_HOUR=20,
+        LESSON_ATTENDANCE_AUTO_CLOSE_LATE_MINUTES=60,
+    )
+    def test_update_lesson_attendance_last_out_uses_time_bands_and_caps_day_end(self):
+        target_day = timezone.localdate() - timedelta(days=1)
+        day_lesson = self._create_lesson(
+            timezone.make_aware(
+                datetime.combine(target_day, datetime.min.time())
+            ).replace(
+                hour=14,
+                minute=0,
+            )
+        )
+        evening_lesson = self._create_lesson(
+            timezone.make_aware(
+                datetime.combine(target_day, datetime.min.time())
+            ).replace(
+                hour=18,
+                minute=0,
+            )
+        )
+        late_lesson = self._create_lesson(
+            timezone.make_aware(
+                datetime.combine(target_day, datetime.min.time())
+            ).replace(
+                hour=20,
+                minute=30,
+            )
+        )
+        end_of_day_lesson = self._create_lesson(
+            timezone.make_aware(
+                datetime.combine(target_day, datetime.min.time())
+            ).replace(
+                hour=23,
+                minute=30,
+            )
+        )
+
+        monitoring_tasks.update_lesson_attendance_last_out()
+
+        day_lesson.refresh_from_db()
+        evening_lesson.refresh_from_db()
+        late_lesson.refresh_from_db()
+        end_of_day_lesson.refresh_from_db()
+
+        self.assertEqual(
+            timezone.localtime(day_lesson.last_out),
+            timezone.localtime(day_lesson.first_in) + timedelta(minutes=120),
+        )
+        self.assertEqual(
+            timezone.localtime(evening_lesson.last_out),
+            timezone.localtime(evening_lesson.first_in) + timedelta(minutes=90),
+        )
+        self.assertEqual(
+            timezone.localtime(late_lesson.last_out),
+            timezone.localtime(late_lesson.first_in) + timedelta(minutes=60),
+        )
+        self.assertEqual(
+            timezone.localtime(end_of_day_lesson.last_out),
+            timezone.make_aware(
+                datetime.combine(target_day, datetime.max.time()),
+                timezone.get_current_timezone(),
+            ),
+        )
+
+    @override_settings(
+        LESSON_ATTENDANCE_AUTO_CLOSE_DEFAULT_MINUTES=120,
+        LESSON_ATTENDANCE_AUTO_CLOSE_EVENING_START_HOUR=18,
+        LESSON_ATTENDANCE_AUTO_CLOSE_EVENING_MINUTES=90,
+        LESSON_ATTENDANCE_AUTO_CLOSE_LATE_START_HOUR=20,
+        LESSON_ATTENDANCE_AUTO_CLOSE_LATE_MINUTES=60,
+    )
+    def test_update_lesson_attendance_last_out_does_not_close_day_lesson_too_early(
+        self,
+    ):
+        fixed_now = timezone.make_aware(datetime(2026, 3, 20, 15, 0))
+        lesson = self._create_lesson(
+            fixed_now - timedelta(minutes=70),
+            date_at=fixed_now.date(),
+        )
+
+        with patch("monitoring_app.tasks.timezone.now", return_value=fixed_now):
+            monitoring_tasks.update_lesson_attendance_last_out()
+
+        lesson.refresh_from_db()
+        self.assertIsNone(lesson.last_out)
+
+
+class StaffAdminAttendanceHistoryTest(TestCase):
+    def setUp(self):
+        Cache.clear()
+        self.staff_admin = StaffAdmin(Staff, admin_site)
+        self.staff = Staff.objects.create(
+            pin="S8123S",
+            name="Admin",
+            surname="History",
+        )
+
+    def test_attendance_history_uses_staff_event_day_not_save_day(self):
+        event_in = timezone.make_aware(datetime(2026, 3, 10, 9, 5))
+        StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=datetime(2026, 3, 11).date(),
+            first_in=event_in,
+            last_out=event_in + timedelta(hours=8),
+            area_name_in="цос",
+            area_name_out="цос",
+        )
+
+        with patch(
+            "monitoring_app.admin.timezone.localdate",
+            return_value=datetime(2026, 3, 12).date(),
+        ):
+            html = str(self.staff_admin.attendance_history(self.staff))
+
+        self.assertRegex(
+            html,
+            r'(?s)data-attendance-day="2026-03-10".*?09:05.*?Выгрузка.*?11\.03\.2026',
+        )
+
+
+class ClassLocationAdminAttendanceStatsTest(TestCase):
+    def setUp(self):
+        Cache.clear()
+        self.factory = RequestFactory()
+        self.location_admin = ClassLocationAdmin(ClassLocation, admin_site)
+        self.staff = Staff.objects.create(
+            pin="S9001S",
+            name="Geo",
+            surname="Case",
+        )
+        self.location = ClassLocation.objects.create(
+            name="Точка А",
+            address="Адрес А",
+            latitude=43.2389,
+            longitude=76.8897,
+            acceptance_radius_m=90,
+        )
+
+    def test_attendance_stats_uses_configured_location_radius(self):
+        lesson_time = timezone.make_aware(datetime(2026, 3, 5, 9, 0))
+        LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=lesson_time,
+            last_out=lesson_time + timedelta(hours=1),
+            latitude=self.location.latitude,
+            longitude=self.location.longitude + 0.0011,
+            date_at=lesson_time.date(),
+        )
+        LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=lesson_time + timedelta(days=1),
+            last_out=lesson_time + timedelta(days=1, hours=1),
+            latitude=self.location.latitude,
+            longitude=self.location.longitude + 0.0020,
+            date_at=(lesson_time + timedelta(days=1)).date(),
+        )
+
+        fixed_now = timezone.make_aware(datetime(2026, 3, 20, 12, 0))
+        with patch("monitoring_app.admin.timezone.now", return_value=fixed_now), patch(
+            "monitoring_app.admin.timezone.localdate",
+            return_value=fixed_now.date(),
+        ):
+            html = str(self.location_admin.attendance_stats(self.location))
+
+        self.assertIn("Всего отметок 1", html)
+        self.assertIn("аналитический радиус 90 м", html)
+
+    def test_changelist_queryset_annotates_counts_for_sorting_and_filtering(self):
+        busy_location = ClassLocation.objects.create(
+            name="Точка B",
+            address="Адрес B",
+            latitude=43.24,
+            longitude=76.89,
+            acceptance_radius_m=120,
+        )
+        quiet_location = ClassLocation.objects.create(
+            name="Точка C",
+            address="Адрес C",
+            latitude=43.25,
+            longitude=76.90,
+            acceptance_radius_m=80,
+        )
+        lesson_time = timezone.make_aware(datetime(2026, 3, 10, 9, 0))
+        for offset in range(3):
+            LessonAttendance.objects.create(
+                staff=self.staff,
+                subject_name=f"Busy {offset}",
+                tutor_id=1,
+                tutor="Tutor",
+                first_in=lesson_time + timedelta(days=offset),
+                last_out=lesson_time + timedelta(days=offset, hours=1),
+                latitude=busy_location.latitude,
+                longitude=busy_location.longitude + 0.0004,
+                date_at=(lesson_time + timedelta(days=offset)).date(),
+            )
+        request = self.factory.get(
+            "/admin/monitoring_app/classlocation/",
+            {"attendance_period": "180"},
+        )
+
+        queryset = self.location_admin.get_queryset(request).order_by(
+            "-_attendance_hits_period",
+            "id",
+        )
+        counts_by_id = {
+            item.id: item._attendance_hits_period
+            for item in queryset
+            if item.id in {busy_location.id, quiet_location.id}
+        }
+
+        self.assertEqual(counts_by_id[busy_location.id], 3)
+        self.assertEqual(counts_by_id[quiet_location.id], 0)
+
+        zero_qs = queryset.filter(_attendance_hits_period=0)
+        self.assertIn(quiet_location.id, list(zero_qs.values_list("id", flat=True)))
+        self.assertNotIn(busy_location.id, list(zero_qs.values_list("id", flat=True)))
+
+    def test_changelist_default_period_uses_calendar_month_window(self):
+        lesson_in_old_partial_month = timezone.make_aware(datetime(2025, 9, 25, 9, 0))
+        lesson_in_default_window = timezone.make_aware(datetime(2025, 10, 5, 9, 0))
+        for lesson_time in (lesson_in_old_partial_month, lesson_in_default_window):
+            LessonAttendance.objects.create(
+                staff=self.staff,
+                subject_name=f"Window {lesson_time.date()}",
+                tutor_id=1,
+                tutor="Tutor",
+                first_in=lesson_time,
+                last_out=lesson_time + timedelta(hours=1),
+                latitude=self.location.latitude,
+                longitude=self.location.longitude,
+                date_at=lesson_time.date(),
+            )
+
+        fixed_now = timezone.make_aware(datetime(2026, 3, 20, 12, 0))
+        request = self.factory.get("/admin/monitoring_app/classlocation/")
+        with patch("monitoring_app.admin.timezone.now", return_value=fixed_now), patch(
+            "monitoring_app.admin.timezone.localdate",
+            return_value=fixed_now.date(),
+        ):
+            queryset = self.location_admin.get_queryset(request)
+            location = queryset.get(pk=self.location.pk)
+
+        self.assertEqual(location._attendance_hits_period, 1)
+
+    def test_changelist_assigns_overlapping_visit_to_nearest_location(self):
+        near_location = ClassLocation.objects.create(
+            name="Точка B",
+            address="Адрес B",
+            latitude=43.2389,
+            longitude=76.8910,
+            acceptance_radius_m=250,
+        )
+        lesson_time = timezone.make_aware(datetime(2026, 3, 10, 9, 0))
+        LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Nearest",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=lesson_time,
+            last_out=lesson_time + timedelta(hours=1),
+            latitude=43.2389,
+            longitude=76.8901,
+            date_at=lesson_time.date(),
+        )
+        request = self.factory.get(
+            "/admin/monitoring_app/classlocation/",
+            {"attendance_period": "180"},
+        )
+
+        queryset = self.location_admin.get_queryset(request)
+        counts_by_id = {
+            item.id: item._attendance_hits_period
+            for item in queryset
+            if item.id in {self.location.id, near_location.id}
+        }
+
+        self.assertEqual(counts_by_id[self.location.id], 1)
+        self.assertEqual(counts_by_id[near_location.id], 0)
+
+
+class PublicHolidayAdminInitialDataTest(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.admin = PublicHolidayAdmin(PublicHoliday, admin_site)
+
+    def test_get_changeform_initial_data_sets_typed_defaults(self):
+        request = self.factory.get("/admin/monitoring_app/publicholiday/add/")
+
+        with patch(
+            "monitoring_app.admin.timezone.localdate",
+            return_value=datetime(2026, 3, 20).date(),
+        ):
+            initial = self.admin.get_changeform_initial_data(request)
+
+        self.assertEqual(initial["date"], datetime(2026, 3, 20).date())
+        self.assertIs(initial["is_working_day"], False)
+
+
 class FetcherViewTest(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="fetcher_user", password="12345")

@@ -1,9 +1,10 @@
 import logging
+import math
 import os
 from calendar import month_abbr
 from collections import defaultdict
 from contextlib import AbstractContextManager
-from datetime import timedelta
+from datetime import date, datetime, time, timedelta
 from functools import reduce
 from operator import or_
 from typing import Any, cast
@@ -18,16 +19,15 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Avg, Count, F, Q
-from django.db.models.functions import TruncMonth
+from django.db.models import Avg, Case, Count, F, IntegerField, Q, Value, When
 from django.db.utils import DatabaseError, OperationalError
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
-from django.utils.formats import date_format
 from django.utils import timezone
 from django.utils.decorators import method_decorator
+from django.utils.formats import date_format
 from django.utils.html import format_html, format_html_join
 from django_admin_geomap import ModelAdmin
 from monitoring_app import utils as monitoring_utils
@@ -68,6 +68,47 @@ _MARKER = object()
 def _db_atomic() -> AbstractContextManager[None]:
     """Типизированная обёртка над transaction.atomic() для статического анализа."""
     return cast(AbstractContextManager[None], transaction.atomic())
+
+
+def _to_local_datetime(value):
+    if value is None:
+        return None
+    if timezone.is_aware(value):
+        return timezone.localtime(value)
+    return timezone.make_aware(value, timezone.get_current_timezone())
+
+
+def _format_local_time(value) -> str | None:
+    local_value = _to_local_datetime(value)
+    if local_value is None:
+        return None
+    return local_value.strftime("%H:%M")
+
+
+def _shift_month_start(current_month_start: date, months_back: int) -> date:
+    year = current_month_start.year
+    month = current_month_start.month - months_back
+    while month <= 0:
+        month += 12
+        year -= 1
+    return current_month_start.replace(year=year, month=month, day=1)
+
+
+def _radius_bbox(latitude: float, radius_m: int) -> tuple[float, float]:
+    lat_margin = radius_m / 111_320
+    cos_lat = max(math.cos(math.radians(latitude)), 0.01)
+    lon_margin = radius_m / (111_320 * cos_lat)
+    return lat_margin, lon_margin
+
+
+def _admin_badge(label: str, *, background: str, color: str = "#fff"):
+    return format_html(
+        '<span style="display:inline-flex; align-items:center; gap:4px; padding:3px 8px; '
+        'border-radius:999px; font-size:11px; font-weight:600; background:{}; color:{};">{}</span>',
+        background,
+        color,
+        label,
+    )
 
 
 # ===== Admin Site Configuration =====
@@ -920,6 +961,9 @@ class RemoteWorkInline(admin.TabularInline):
 
 @admin.register(Staff, site=admin_site)
 class StaffAdmin(admin.ModelAdmin):
+    ATTENDANCE_HISTORY_DAYS = 7
+    ATTENDANCE_HISTORY_CACHE_TTL = 3600
+    ATTENDANCE_HISTORY_CACHE_VERSION = "event_day_v2"
     change_list_template = "admin/change_list_filter_sidebar.html"
     list_display = (
         "pin",
@@ -1111,38 +1155,253 @@ class StaffAdmin(admin.ModelAdmin):
 
     attendance_today.short_description = "Присутсвие сегодня/вчера"
 
+    def _attendance_history_cache_key(self, staff):
+        return (
+            f"attendance_history_{self.ATTENDANCE_HISTORY_CACHE_VERSION}_"
+            f"{staff.pin}_{timezone.localdate().isoformat()}"
+        )
+
+    def _staff_attendance_event_date(self, record):
+        for value in (record.first_in, record.last_out):
+            local_value = _to_local_datetime(value)
+            if local_value is not None:
+                return local_value.date()
+        return record.date_at - timedelta(days=1)
+
+    def _is_remote_on_date(self, current_date, remote_periods):
+        return any(
+            (start is None and end is None)
+            or (start is not None and end is not None and start <= current_date <= end)
+            for start, end in remote_periods
+        )
+
+    def _render_attendance_history_line(
+        self,
+        label,
+        value,
+        *,
+        color="#334155",
+        emphasized=False,
+    ):
+        font_weight = "600" if emphasized else "500"
+        return format_html(
+            '<div style="margin-top:4px; font-size:12px; color:{};">'
+            '<span style="font-weight:{};">{}:</span> {}</div>',
+            color,
+            font_weight,
+            label,
+            value,
+        )
+
+    def _render_attendance_history_card(
+        self,
+        *,
+        current_date,
+        record,
+        lessons,
+        is_remote,
+        holiday,
+    ):
+        is_weekend = current_date.weekday() >= 5
+        badges = []
+        if record:
+            badges.append(_admin_badge("СКУД", background="#0f766e"))
+        if lessons:
+            badges.append(_admin_badge(f"Занятий {len(lessons)}", background="#7c3aed"))
+        if holiday:
+            badges.append(_admin_badge("Праздник", background="#9333ea"))
+        elif is_weekend:
+            badges.append(_admin_badge("Выходной", background="#64748b"))
+        elif is_remote and not record:
+            badges.append(_admin_badge("Удаленно", background="#2563eb"))
+
+        lines = []
+        if holiday:
+            lines.append(
+                format_html(
+                    '<div style="font-size:13px; font-weight:600; color:#7e22ce;">{}</div>',
+                    holiday.name,
+                )
+            )
+        elif is_remote and not record and not lessons:
+            lines.append(
+                format_html(
+                    '<div style="font-size:13px; font-weight:600; color:#1d4ed8;">Удаленная работа</div>'
+                )
+            )
+
+        if record:
+            first_in = _format_local_time(record.first_in)
+            last_out = _format_local_time(record.last_out)
+            lines.append(
+                self._render_attendance_history_line(
+                    "Вход",
+                    first_in or "Нет входа",
+                    color="#047857" if first_in else "#b91c1c",
+                    emphasized=True,
+                )
+            )
+            lines.append(
+                self._render_attendance_history_line(
+                    "Выход",
+                    last_out or "Нет выхода",
+                    color="#1d4ed8" if last_out else "#64748b",
+                    emphasized=True,
+                )
+            )
+            if record.absence_reason:
+                lines.append(
+                    self._render_attendance_history_line(
+                        "Причина",
+                        record.absence_reason.get_reason_display(),
+                        color="#b45309",
+                    )
+                )
+            if record.date_at != current_date:
+                lines.append(
+                    self._render_attendance_history_line(
+                        "Выгрузка",
+                        record.date_at.strftime("%d.%m.%Y"),
+                        color="#64748b",
+                    )
+                )
+
+        if lessons:
+            for lesson in lessons[:2]:
+                lesson_name = lesson.subject_name
+                if len(lesson_name) > 18:
+                    lesson_name = f"{lesson_name[:18]}..."
+                lines.append(
+                    self._render_attendance_history_line(
+                        "Пара",
+                        f"{lesson_name} {_format_local_time(lesson.first_in) or ''}".strip(),
+                        color="#6d28d9",
+                    )
+                )
+            if len(lessons) > 2:
+                lines.append(
+                    format_html(
+                        '<div style="margin-top:4px; font-size:12px; color:#7c3aed;">'
+                        "...и еще {} занятия</div>",
+                        len(lessons) - 2,
+                    )
+                )
+
+        if not lines:
+            lines.append(
+                format_html(
+                    '<div style="font-size:13px; color:#94a3b8;">Нет данных по посещаемости</div>'
+                )
+            )
+
+        card_background = "#ffffff"
+        if holiday or is_weekend:
+            card_background = "#f8fafc"
+        elif record:
+            card_background = "#f0fdf4"
+        elif lessons:
+            card_background = "#faf5ff"
+        elif is_remote:
+            card_background = "#eff6ff"
+
+        badges_html = (
+            format_html_join(
+                "",
+                "{}",
+                ((badge,) for badge in badges),
+            )
+            if badges
+            else ""
+        )
+        lines_html = format_html_join("", "{}", ((line,) for line in lines))
+        source_flags = []
+        if record:
+            source_flags.append("staff")
+        if lessons:
+            source_flags.append("lesson")
+        if is_remote:
+            source_flags.append("remote")
+        if holiday:
+            source_flags.append("holiday")
+        elif is_weekend:
+            source_flags.append("weekend")
+
+        return format_html(
+            '<div data-attendance-day="{}" data-attendance-source="{}" '
+            'style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:{}; '
+            'box-shadow:0 1px 2px rgba(15, 23, 42, 0.06); min-height:180px;">'
+            '<div style="display:flex; justify-content:space-between; gap:8px; align-items:flex-start;">'
+            "<div>"
+            '<div style="font-weight:700; color:#0f172a;">{}</div>'
+            '<div style="font-size:12px; color:#64748b;">{}</div>'
+            "</div>"
+            '<div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">{}</div>'
+            "</div>"
+            '<div style="margin-top:10px;">{}</div>'
+            "</div>",
+            current_date.isoformat(),
+            " ".join(source_flags) or "none",
+            card_background,
+            current_date.strftime("%d.%m.%Y"),
+            date_format(current_date, "l"),
+            badges_html,
+            lines_html,
+        )
+
     def attendance_history(self, obj):
-        cache_key = f"attendance_history_{obj.pin}_{timezone.now().date()}"
+        cache_key = self._attendance_history_cache_key(obj)
         cached_html = cache.get(cache_key)
         if cached_html:
             return format_html(cached_html)
 
-        end_date = timezone.now().date()
-        start_date = end_date - timedelta(days=6)
+        end_date = timezone.localdate()
+        start_date = end_date - timedelta(days=self.ATTENDANCE_HISTORY_DAYS - 1)
 
         attendance_records = (
             StaffAttendance.objects.filter(
-                staff=obj, date_at__range=(start_date, end_date)
+                staff=obj,
+                date_at__range=(start_date, end_date + timedelta(days=1)),
             )
             .select_related("absence_reason")
-            .only("id", "date_at", "first_in", "last_out", "absence_reason_id")
+            .only(
+                "id",
+                "date_at",
+                "first_in",
+                "last_out",
+                "absence_reason_id",
+                "absence_reason__reason",
+            )
             .order_by("date_at")
         )
-        records_dict = {rec.date_at: rec for rec in attendance_records}
+        records_dict = {}
+        for record in attendance_records:
+            event_date = self._staff_attendance_event_date(record)
+            if not (start_date <= event_date <= end_date):
+                continue
+            existing_record = records_dict.get(event_date)
+            if existing_record is None or (
+                existing_record.first_in is None and record.first_in is not None
+            ):
+                records_dict[event_date] = record
 
         lesson_records = (
-            LessonAttendance.objects.filter(
-                staff=obj, date_at__range=(start_date, end_date)
+            LessonAttendance.exclude_report_invalid_days(
+                LessonAttendance.objects.filter(
+                    staff=obj, date_at__range=(start_date, end_date)
+                )
             )
-            .exclude(LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
-            .only("id", "date_at", "first_in", "last_out", "staff_id")
+            .only("id", "date_at", "first_in", "last_out", "staff_id", "subject_name")
             .order_by("date_at", "first_in")
         )
         lessons_dict = defaultdict(list)
         for lesson in lesson_records:
             lessons_dict[lesson.date_at].append(lesson)
 
-        remote_works = RemoteWork.objects.filter(staff=obj).order_by("start_date")
+        remote_works = (
+            RemoteWork.objects.filter(staff=obj)
+            .only("start_date", "end_date", "permanent_remote")
+            .order_by("start_date")
+        )
         remote_periods = []
         for rw in remote_works:
             if rw.permanent_remote:
@@ -1150,84 +1409,57 @@ class StaffAdmin(admin.ModelAdmin):
             elif rw.start_date and rw.end_date:
                 remote_periods.append((rw.start_date, rw.end_date))
 
-        holidays = PublicHoliday.objects.filter(date__range=(start_date, end_date))
+        holidays = PublicHoliday.objects.filter(
+            date__range=(start_date, end_date)
+        ).only(
+            "date",
+            "name",
+        )
         holidays_dict = {hol.date: hol for hol in holidays}
 
-        html = '<div style="display: flex; gap: 10px; flex-wrap: wrap;">'
-
+        cards = []
         current_date = start_date
         while current_date <= end_date:
             record = records_dict.get(current_date)
             lessons = lessons_dict.get(current_date, [])
-            is_remote = any(
-                (start is None and end is None)
-                or (start and end and start <= current_date <= end)
-                for start, end in remote_periods
-            )
-
-            is_weekend = current_date.weekday() >= 5
+            is_remote = self._is_remote_on_date(current_date, remote_periods)
             holiday = holidays_dict.get(current_date)
-            is_holiday_or_weekend = is_weekend or holiday
-            bg_color = "#f5f5f5" if is_holiday_or_weekend else "white"
-
-            html += f'<div style="border: 1px solid #ddd; padding: 10px; background: {bg_color}; width: 140px;">'
-            html += f'<div style="font-weight: bold;">{current_date.strftime("%d.%m.%Y")}</div>'
-
-            if holiday:
-                html += f'<div style="color: purple; font-weight: bold;">{holiday.name}</div>'
-                if record:
-                    if record.first_in:
-                        in_time = timezone.localtime(record.first_in).strftime("%H:%M")
-                        html += f'<div style="color: green; font-size: 0.9em;">Вход: {in_time}</div>'
-                    if record.last_out:
-                        out_time = timezone.localtime(record.last_out).strftime("%H:%M")
-                        html += f'<div style="color: blue; font-size: 0.9em;">Выход: {out_time}</div>'
-                    if record.absence_reason:
-                        html += f'<div style="color: orange; font-size: 0.9em;">{record.absence_reason.get_reason_display()}</div>'
-            elif is_weekend:
-                html += '<div style="color: gray; font-weight: bold;">Выходной</div>'
-                if record:
-                    if record.first_in:
-                        in_time = timezone.localtime(record.first_in).strftime("%H:%M")
-                        html += f'<div style="color: green; font-size: 0.9em;">Вход: {in_time}</div>'
-                    if record.last_out:
-                        out_time = timezone.localtime(record.last_out).strftime("%H:%M")
-                        html += f'<div style="color: blue; font-size: 0.9em;">Выход: {out_time}</div>'
-                    if record.absence_reason:
-                        html += f'<div style="color: orange; font-size: 0.9em;">{record.absence_reason.get_reason_display()}</div>'
-            elif is_remote:
-                html += '<div style="color: blue; font-weight: bold;">Удаленно</div>'
-            elif record:
-                if record.first_in:
-                    in_time = timezone.localtime(record.first_in).strftime("%H:%M")
-                    html += f'<div style="color: green;">Вход: {in_time}</div>'
-                else:
-                    html += '<div style="color: red;">Нет входа</div>'
-
-                if record.last_out:
-                    out_time = timezone.localtime(record.last_out).strftime("%H:%M")
-                    html += f'<div style="color: blue;">Выход: {out_time}</div>'
-                else:
-                    html += '<div style="color: gray;">Нет выхода</div>'
-
-                if record.absence_reason:
-                    html += f'<div style="color: orange;">{record.absence_reason.get_reason_display()}</div>'
-            elif lessons:
-                html += f'<div style="color: purple; font-weight: bold;">Занятий: {len(lessons)}</div>'
-                for lesson in lessons[:2]:
-                    in_time = timezone.localtime(lesson.first_in).strftime("%H:%M")
-                    html += f'<div style="color: purple; font-size: 0.9em;">{lesson.subject_name[:15]} {in_time}</div>'
-                if len(lessons) > 2:
-                    html += f'<div style="color: purple; font-size: 0.9em;">...и еще {len(lessons) - 2}</div>'
-            else:
-                html += '<div style="color: red;">Нет данных</div>'
-
-            html += "</div>"
+            cards.append(
+                self._render_attendance_history_card(
+                    current_date=current_date,
+                    record=record,
+                    lessons=lessons,
+                    is_remote=is_remote,
+                    holiday=holiday,
+                )
+            )
             current_date += timedelta(days=1)
 
-        html += "</div>"
-        cache.set(cache_key, html, 3600)
-        return format_html(html)
+        legend_html = format_html_join(
+            "",
+            "{}",
+            (
+                (_admin_badge("СКУД", background="#0f766e"),),
+                (_admin_badge("Занятия", background="#7c3aed"),),
+                (_admin_badge("Удаленно", background="#2563eb"),),
+                (_admin_badge("Выходной / праздник", background="#64748b"),),
+            ),
+        )
+        cards_html = format_html_join("", "{}", ((card,) for card in cards))
+        html = format_html(
+            '<div style="display:flex; flex-direction:column; gap:12px;">'
+            '<div style="display:flex; flex-wrap:wrap; gap:8px;">{}</div>'
+            '<div style="font-size:12px; color:#64748b;">'
+            "Для СКУД день определяется по фактическому времени входа/выхода. "
+            "Если запись пришла на следующий день, дата выгрузки показывается отдельно."
+            "</div>"
+            '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px;">{}</div>'
+            "</div>",
+            legend_html,
+            cards_html,
+        )
+        cache.set(cache_key, str(html), self.ATTENDANCE_HISTORY_CACHE_TTL)
+        return html
 
     attendance_history.short_description = "История посещаемости за 7 дней"
 
@@ -1738,7 +1970,6 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
     def formatted_effective_work_intervals(self, obj):
         """Рендерит интервалы «в здании» (effective_work_intervals) в читаемом виде."""
-        from datetime import datetime
 
         if obj is None:
             return format_html("<span style='color: #999;'>—</span>")
@@ -1950,7 +2181,9 @@ class PhotoEffectiveStatusFilter(SimpleListFilter):
                 Q(photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS)
                 | (
                     Q(photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE)
-                    & Q(photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS)
+                    & Q(
+                        photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS
+                    )
                 )
             )
 
@@ -2328,11 +2561,16 @@ class LessonAttendanceAdmin(ModelAdmin):
         status_map = {
             LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN: ("#2e7d32", "Нормальное"),
             LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW: ("#f57c00", "На проверку"),
-            LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS: ("#c62828", "Подозрительное"),
+            LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS: (
+                "#c62828",
+                "Подозрительное",
+            ),
             LessonAttendance.PHOTO_SPOOF_STATUS_PENDING: ("#6d6d6d", "Ожидает"),
             LessonAttendance.PHOTO_SPOOF_STATUS_ERROR: ("#616161", "Ошибка"),
         }
-        color, label = status_map.get(status_value, ("#616161", status_value or "Неизвестно"))
+        color, label = status_map.get(
+            status_value, ("#616161", status_value or "Неизвестно")
+        )
         return format_html(
             "<span style='color:{}; font-weight:600;'>{}</span><br><small style='color:#666;'>{}</small>",
             color,
@@ -2355,9 +2593,15 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     def photo_manual_verdict_badge(self, obj):
         verdict_map = {
-            LessonAttendance.PHOTO_MANUAL_VERDICT_NONE: ("#6b7280", "Нет ручного вердикта"),
+            LessonAttendance.PHOTO_MANUAL_VERDICT_NONE: (
+                "#6b7280",
+                "Нет ручного вердикта",
+            ),
             LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN: ("#2e7d32", "Нормальное"),
-            LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS: ("#ad1457", "Подозрительное (ручное)"),
+            LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS: (
+                "#ad1457",
+                "Подозрительное (ручное)",
+            ),
         }
         color, label = verdict_map.get(
             obj.photo_manual_verdict,
@@ -2444,7 +2688,11 @@ class LessonAttendanceAdmin(ModelAdmin):
             if obj.photo_manual_at
             else "—"
         )
-        score = "—" if obj.photo_spoof_score is None else f"{float(obj.photo_spoof_score):.3f}"
+        score = (
+            "—"
+            if obj.photo_spoof_score is None
+            else f"{float(obj.photo_spoof_score):.3f}"
+        )
         manual_display = obj.get_photo_manual_verdict_display()
         auto_display = obj.get_photo_spoof_status_display()
         need_review = obj.photo_spoof_status in {
@@ -2496,7 +2744,9 @@ class LessonAttendanceAdmin(ModelAdmin):
             verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN,
             comment="Manual clean via admin action",
         )
-        self.message_user(request, f"Ручной вердикт «Нормальное» установлен: {updated}.")
+        self.message_user(
+            request, f"Ручной вердикт «Нормальное» установлен: {updated}."
+        )
 
     mark_photo_manual_clean.short_description = "Отметить как нормальное (manual)"
 
@@ -2512,7 +2762,9 @@ class LessonAttendanceAdmin(ModelAdmin):
             f"Ручной вердикт «Подозрительное (ручное)» установлен: {updated}.",
         )
 
-    mark_photo_manual_suspicious.short_description = "Отметить как подозрительное (manual)"
+    mark_photo_manual_suspicious.short_description = (
+        "Отметить как подозрительное (manual)"
+    )
 
     def reset_photo_manual_verdict(self, request, queryset):
         updated = queryset.update(
@@ -2674,6 +2926,11 @@ admin_site.register(LessonAttendance, LessonAttendanceAdmin)
 
 
 class ClassLocationAdmin(ModelAdmin):
+    ATTENDANCE_STATS_MONTHS = 6
+    ATTENDANCE_STATS_CACHE_TTL = 3600
+    ATTENDANCE_STATS_CACHE_VERSION = "geo_v3"
+    ATTENDANCE_PERIOD_CACHE_VERSION = "attendance_period_v2"
+    ATTENDANCE_PERIOD_DEFAULT_MONTHS = 6
     geomap_field_longitude = "longitude"
     geomap_field_latitude = "latitude"
     geomap_show_map_on_list = True
@@ -2683,6 +2940,51 @@ class ClassLocationAdmin(ModelAdmin):
     geomap_autozoom = "15.9"
 
     readonly_fields = ("created_at", "updated_at", "attendance_stats")
+
+    class AttendancePeriodFilter(SimpleListFilter):
+        title = "Период посещаемости"
+        parameter_name = "attendance_period"
+
+        def lookups(self, request, model_admin):
+            _ = request
+            _ = model_admin
+            return (
+                ("30", "30 дней"),
+                ("90", "90 дней"),
+                ("180", "180 дней"),
+                ("365", "365 дней"),
+            )
+
+        def queryset(self, request, queryset):
+            _ = request
+            return queryset
+
+    class AttendanceVolumeFilter(SimpleListFilter):
+        title = "Активность локации"
+        parameter_name = "attendance_volume"
+
+        def lookups(self, request, model_admin):
+            _ = request
+            _ = model_admin
+            return (
+                ("zero", "Нет посещений"),
+                ("low", "1-9 посещений"),
+                ("medium", "10-49 посещений"),
+                ("high", "50+ посещений"),
+            )
+
+        def queryset(self, request, queryset):
+            _ = request
+            value = self.value()
+            if value == "zero":
+                return queryset.filter(_attendance_hits_period=0)
+            if value == "low":
+                return queryset.filter(_attendance_hits_period__gte=1, _attendance_hits_period__lte=9)
+            if value == "medium":
+                return queryset.filter(_attendance_hits_period__gte=10, _attendance_hits_period__lte=49)
+            if value == "high":
+                return queryset.filter(_attendance_hits_period__gte=50)
+            return queryset
 
     fieldsets = (
         (
@@ -2718,13 +3020,19 @@ class ClassLocationAdmin(ModelAdmin):
 
     list_display = (
         "name",
+        "attendance_hits_period",
+        "attendance_activity_status",
         "address",
         "formatted_latitude",
         "formatted_longitude",
         "acceptance_radius_m",
         "created_at",
     )
-    list_filter = ("created_at",)
+    list_filter = (
+        AttendancePeriodFilter,
+        AttendanceVolumeFilter,
+        "created_at",
+    )
     search_fields = ("name", "address")
     actions = ["export_for_upload"]
 
@@ -2743,8 +3051,127 @@ class ClassLocationAdmin(ModelAdmin):
 
     export_for_upload.short_description = "Экспорт в Excel для загрузки"
 
+    def _resolve_attendance_period_window(self, request):
+        now = timezone.now()
+        raw_value = request.GET.get("attendance_period")
+        if not raw_value:
+            current_month_start = timezone.localdate().replace(day=1)
+            start_date = _shift_month_start(
+                current_month_start,
+                self.ATTENDANCE_PERIOD_DEFAULT_MONTHS - 1,
+            )
+            period_start = timezone.make_aware(
+                datetime.combine(start_date, time.min),
+                timezone.get_current_timezone(),
+            )
+            period_label = f"month_window_{self.ATTENDANCE_PERIOD_DEFAULT_MONTHS}"
+            return period_start, now, period_label
+        try:
+            days = int(raw_value)
+        except (TypeError, ValueError):
+            current_month_start = timezone.localdate().replace(day=1)
+            start_date = _shift_month_start(
+                current_month_start,
+                self.ATTENDANCE_PERIOD_DEFAULT_MONTHS - 1,
+            )
+            period_start = timezone.make_aware(
+                datetime.combine(start_date, time.min),
+                timezone.get_current_timezone(),
+            )
+            period_label = f"month_window_{self.ATTENDANCE_PERIOD_DEFAULT_MONTHS}"
+            return period_start, now, period_label
+        days = max(1, days)
+        period_start = now - timedelta(days=days)
+        return period_start, now, f"days_{days}"
+
+    def _distance_to_location_m(self, location_meta, lesson) -> float:
+        return monitoring_utils.calculate_distance_haversine(
+            location_meta["latitude"],
+            location_meta["longitude"],
+            lesson.latitude,
+            lesson.longitude,
+        )
+
+    def _get_location_attendance_period_counts(self, locations, *, period_start, now, period_label: str):
+        locations = [
+            location
+            for location in locations
+            if getattr(location, "pk", None) is not None
+            and getattr(location, "latitude", None) is not None
+            and getattr(location, "longitude", None) is not None
+        ]
+        if not locations:
+            return {}
+
+        cache_key = (
+            f"class_location_attendance_period_counts_{self.ATTENDANCE_PERIOD_CACHE_VERSION}_"
+            f"{LessonAttendance.REPORT_FILTER_CACHE_VERSION}_{period_label}_"
+            f"{timezone.localdate().isoformat()}"
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        radii = self._get_acceptance_radii(locations)
+        location_meta = []
+        max_lat_margin = 0.0
+        max_lon_margin = 0.0
+        for location in locations:
+            radius_m = max(1, monitoring_utils.get_location_radius(location, radii))
+            lat_margin, lon_margin = _radius_bbox(location.latitude, radius_m)
+            max_lat_margin = max(max_lat_margin, lat_margin)
+            max_lon_margin = max(max_lon_margin, lon_margin)
+            location_meta.append(
+                {
+                    "id": location.pk,
+                    "latitude": location.latitude,
+                    "longitude": location.longitude,
+                    "radius_m": radius_m,
+                    "lat_margin": lat_margin,
+                    "lon_margin": lon_margin,
+                }
+            )
+
+        candidate_lessons = LessonAttendance.exclude_report_invalid_days(
+            LessonAttendance.objects.filter(
+                first_in__gte=period_start,
+                first_in__lte=now,
+                latitude__gte=min(item["latitude"] for item in location_meta) - max_lat_margin,
+                latitude__lte=max(item["latitude"] for item in location_meta) + max_lat_margin,
+                longitude__gte=min(item["longitude"] for item in location_meta) - max_lon_margin,
+                longitude__lte=max(item["longitude"] for item in location_meta) + max_lon_margin,
+            )
+        ).only("id", "latitude", "longitude")
+
+        counts = {location.pk: 0 for location in locations}
+        for lesson in candidate_lessons.iterator(chunk_size=1000):
+            nearest_location_id = None
+            nearest_distance = float("inf")
+            for item in location_meta:
+                if abs(lesson.latitude - item["latitude"]) > item["lat_margin"]:
+                    continue
+                if abs(lesson.longitude - item["longitude"]) > item["lon_margin"]:
+                    continue
+                distance_m = self._distance_to_location_m(item, lesson)
+                if distance_m > item["radius_m"]:
+                    continue
+                if distance_m < nearest_distance:
+                    nearest_distance = distance_m
+                    nearest_location_id = item["id"]
+            if nearest_location_id is not None:
+                counts[nearest_location_id] += 1
+
+        cache.set(cache_key, counts, timeout=self.ATTENDANCE_STATS_CACHE_TTL)
+        return counts
+
+    def _should_attach_attendance_counts(self, request) -> bool:
+        resolver_name = getattr(getattr(request, "resolver_match", None), "url_name", "")
+        if resolver_name:
+            return resolver_name.endswith("_changelist")
+        return True
+
     def get_queryset(self, request):
-        return (
+        queryset = (
             super()
             .get_queryset(request)
             .only(
@@ -2758,6 +3185,100 @@ class ClassLocationAdmin(ModelAdmin):
                 "updated_at",
             )
         )
+        if not self._should_attach_attendance_counts(request):
+            return queryset
+        period_start, period_end, period_label = self._resolve_attendance_period_window(
+            request
+        )
+        locations = list(queryset)
+        counts = self._get_location_attendance_period_counts(
+            locations,
+            period_start=period_start,
+            now=period_end,
+            period_label=period_label,
+        )
+        if not counts:
+            return queryset.annotate(
+                _attendance_hits_period=Value(0, output_field=IntegerField())
+            )
+        count_cases = [
+            When(pk=location_id, then=Value(hit_count))
+            for location_id, hit_count in counts.items()
+        ]
+        return queryset.annotate(
+            _attendance_hits_period=Case(
+                *count_cases,
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        )
+
+    def _get_acceptance_radii(self, locations=None):
+        radii = cache.get(CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY)
+        if radii is not None:
+            return radii
+        if locations is None:
+            locations = list(
+                ClassLocation.objects.filter(
+                    latitude__isnull=False,
+                    longitude__isnull=False,
+                ).only("id", "latitude", "longitude", "acceptance_radius_m")
+            )
+        else:
+            locations = [
+                location
+                for location in locations
+                if getattr(location, "latitude", None) is not None
+                and getattr(location, "longitude", None) is not None
+            ]
+        if not locations:
+            return {}
+        radii = monitoring_utils.compute_class_location_acceptance_radii(
+            locations,
+            r_same_point=ACCEPTANCE_R_SAME_POINT,
+            r_cluster=ACCEPTANCE_R_CLUSTER,
+            r_standalone=ACCEPTANCE_R_STANDALONE,
+            same_point_threshold=SAME_POINT_THRESHOLD_M,
+            cluster_threshold=CLUSTER_THRESHOLD_M,
+        )
+        cache.set(
+            CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+            radii,
+            CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+        )
+        return radii
+
+    def attendance_hits_period(self, obj):
+        return getattr(obj, "_attendance_hits_period", 0)
+
+    attendance_hits_period.short_description = "Посещений за период"
+    attendance_hits_period.admin_order_field = "_attendance_hits_period"
+
+    def attendance_activity_status(self, obj):
+        hits = getattr(obj, "_attendance_hits_period", 0)
+        if hits == 0:
+            return _admin_badge("Пустая", background="#94a3b8")
+        if hits < 10:
+            return _admin_badge("Низкая", background="#b45309")
+        if hits < 50:
+            return _admin_badge("Средняя", background="#2563eb")
+        return _admin_badge("Высокая", background="#0f766e")
+
+    attendance_activity_status.short_description = "Активность"
+
+    def _attendance_stats_cache_key(self, obj):
+        return (
+            f"attendance_stats_{self.ATTENDANCE_STATS_CACHE_VERSION}_"
+            f"{LessonAttendance.REPORT_FILTER_CACHE_VERSION}_{obj.pk}_"
+            f"{timezone.localdate().isoformat()}"
+        )
+
+    def _attendance_stats_month_order(self):
+        current_month_start = timezone.localdate().replace(day=1)
+        return [
+            _shift_month_start(current_month_start, month_back)
+            for month_back in range(self.ATTENDANCE_STATS_MONTHS - 1, -1, -1)
+        ]
 
     def attendance_stats(self, obj):
         if (
@@ -2771,65 +3292,111 @@ class ClassLocationAdmin(ModelAdmin):
                 "Сохраните локацию с координатами для отображения статистики посещаемости."
                 "</div>"
             )
-        cache_key = f"attendance_stats_{obj.pk}_{timezone.now().date().isoformat()}"
+        cache_key = self._attendance_stats_cache_key(obj)
         cached = cache.get(cache_key)
         if cached is not None:
             return format_html(cached)
 
         now = timezone.now()
-        six_months_ago = (now - timedelta(days=30 * 6)).replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
+        months_order = self._attendance_stats_month_order()
+        stats_start = timezone.make_aware(
+            datetime.combine(months_order[0], time.min),
+            timezone.get_current_timezone(),
         )
-        radius = 0.0027
+        radii = self._get_acceptance_radii()
+        analysis_radius_m = max(1, monitoring_utils.get_location_radius(obj, radii))
+        lat_margin, lon_margin = _radius_bbox(obj.latitude, analysis_radius_m)
 
-        qs = (
+        candidate_lessons = LessonAttendance.exclude_report_invalid_days(
             LessonAttendance.objects.filter(
-                latitude__gte=obj.latitude - radius,
-                latitude__lte=obj.latitude + radius,
-                longitude__gte=obj.longitude - radius,
-                longitude__lte=obj.longitude + radius,
-                first_in__gte=six_months_ago,
+                latitude__gte=obj.latitude - lat_margin,
+                latitude__lte=obj.latitude + lat_margin,
+                longitude__gte=obj.longitude - lon_margin,
+                longitude__lte=obj.longitude + lon_margin,
+                first_in__gte=stats_start,
                 first_in__lte=now,
             )
-            .exclude(LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
-            .annotate(month=TruncMonth("first_in"))
-            .values("month")
-            .annotate(count=Count("id"))
-        )
-        counts_by_ym = {
-            (row["month"].year, row["month"].month): row["count"]
-            for row in qs
-            if row["month"]
+        ).only("id", "latitude", "longitude", "first_in")
+
+        counts_by_ym = defaultdict(int)
+        total_hits = 0
+        location_meta = {
+            "latitude": obj.latitude,
+            "longitude": obj.longitude,
+            "radius_m": analysis_radius_m,
         }
+        for lesson in candidate_lessons.iterator(chunk_size=500):
+            distance_m = self._distance_to_location_m(location_meta, lesson)
+            if distance_m > analysis_radius_m:
+                continue
+            local_first_in = _to_local_datetime(lesson.first_in)
+            if local_first_in is None:
+                continue
+            counts_by_ym[(local_first_in.year, local_first_in.month)] += 1
+            total_hits += 1
 
-        months_order = []
-        for i in range(5, -1, -1):
-            month_date = now - timedelta(days=30 * i)
-            month_start = month_date.replace(
-                day=1, hour=0, minute=0, second=0, microsecond=0
-            )
-            months_order.append(month_start)
+        months_data = [
+            counts_by_ym.get((month.year, month.month), 0) for month in months_order
+        ]
+        month_names = [
+            date_format(month, "M") or month_abbr[month.month] for month in months_order
+        ]
+        max_count = max(months_data) if any(months_data) else 1
 
-        months_data = [counts_by_ym.get((m.year, m.month), 0) for m in months_order]
-        month_names = [month_abbr[m.month] for m in months_order]
-
-        max_count = max(months_data) if months_data else 1
-
-        html = '<div style="width: 100%; height: 300px; background-color: #f9f9f9; padding: 20px; border-radius: 5px;">'
-        html += "<h3>Статистика посещаемости по месяцам (последние 6 месяцев)</h3>"
-        html += '<div style="display: flex; height: 200px; align-items: flex-end; justify-content: space-around;">'
-
+        columns = []
         for month_name, count in zip(month_names, months_data):
             height_percent = (count / max_count * 100) if max_count > 0 else 0
-            html += '<div style="flex: 1; margin: 0 5px; display: flex; flex-direction: column; align-items: center;">'
-            html += f'<div style="background-color: #4CAF50; height: {height_percent}%; width: 100%; min-height: 5px;"></div>'
-            html += f'<div style="text-align: center; padding-top: 5px; font-size: 0.9em;">{month_name}</div>'
-            html += f'<div style="text-align: center; font-size: 0.8em; color: #666;">{count}</div>'
-            html += "</div>"
+            bar_height = max(10, int(height_percent * 1.8)) if count else 10
+            columns.append(
+                format_html(
+                    '<div style="flex:1; min-width:64px; display:flex; flex-direction:column; align-items:center; gap:6px;">'
+                    '<div style="font-size:12px; font-weight:600; color:#475569;">{}</div>'
+                    '<div style="width:100%; max-width:56px; height:180px; display:flex; align-items:flex-end;">'
+                    '<div style="width:100%; border-radius:10px 10px 4px 4px; background:linear-gradient(180deg, #22c55e 0%, #15803d 100%); height:{}px;"></div>'
+                    "</div>"
+                    '<div style="font-size:12px; color:#0f172a;">{}</div>'
+                    "</div>",
+                    month_name,
+                    bar_height,
+                    count,
+                )
+            )
 
-        html += "</div></div>"
-        cache.set(cache_key, html, timeout=3600)
-        return format_html(html)
+        columns_html = format_html_join("", "{}", ((column,) for column in columns))
+        empty_state_html = ""
+        if total_hits == 0:
+            empty_state_html = format_html(
+                '<div style="margin-top:12px; padding:12px; border-radius:10px; background:#f8fafc; color:#64748b; font-size:13px;">'
+                "За выбранный период рядом с этой локацией не найдено ни одной подтвержденной отметки."
+                "</div>"
+            )
+
+        html = format_html(
+            '<div style="padding:20px; border-radius:14px; background:linear-gradient(180deg, #ffffff 0%, #f8fafc 100%); border:1px solid #e2e8f0;">'
+            '<div style="display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; align-items:flex-start;">'
+            "<div>"
+            '<div style="font-size:16px; font-weight:700; color:#0f172a;">Статистика посещаемости</div>'
+            '<div style="font-size:13px; color:#64748b;">Последние {} месяцев, аналитический радиус {} м.</div>'
+            "</div>"
+            '<div style="display:flex; gap:8px; flex-wrap:wrap;">'
+            "{}{}"
+            "</div>"
+            "</div>"
+            '<div style="margin-top:18px; display:flex; gap:12px; align-items:flex-end;">{}</div>'
+            "{}"
+            "</div>",
+            self.ATTENDANCE_STATS_MONTHS,
+            analysis_radius_m,
+            _admin_badge(f"Всего отметок {total_hits}", background="#0f766e"),
+            _admin_badge(
+                f"Максимум за месяц {max(months_data) if months_data else 0}",
+                background="#1d4ed8",
+            ),
+            columns_html,
+            empty_state_html,
+        )
+        cache.set(cache_key, str(html), timeout=self.ATTENDANCE_STATS_CACHE_TTL)
+        return html
 
     attendance_stats.short_description = "Статистика посещаемости"
 
@@ -2902,26 +3469,7 @@ class ClassLocationAdmin(ModelAdmin):
             and getattr(item, "geomap_longitude", None)
             and getattr(item, "geomap_latitude", None)
         ):
-            radii = cache.get(CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY)
-            if radii is None:
-                locs = list(
-                    ClassLocation.objects.filter(
-                        latitude__isnull=False, longitude__isnull=False
-                    ).only("id", "latitude", "longitude", "acceptance_radius_m")
-                )
-                radii = monitoring_utils.compute_class_location_acceptance_radii(
-                    locs,
-                    r_same_point=ACCEPTANCE_R_SAME_POINT,
-                    r_cluster=ACCEPTANCE_R_CLUSTER,
-                    r_standalone=ACCEPTANCE_R_STANDALONE,
-                    same_point_threshold=SAME_POINT_THRESHOLD_M,
-                    cluster_threshold=CLUSTER_THRESHOLD_M,
-                )
-                cache.set(
-                    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
-                    radii,
-                    CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
-                )
+            radii = self._get_acceptance_radii()
             ctx = getattr(response, "context_data", None)
             if ctx is not None:
                 ctx["geomap_draw_radius_circles"] = True
@@ -2975,21 +3523,7 @@ class ClassLocationAdmin(ModelAdmin):
             ctx.setdefault("geomap_radius_by_id", {})
             ctx.setdefault("geomap_color_by_id", {})
             return response
-        radii = cache.get(CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY)
-        if radii is None:
-            radii = monitoring_utils.compute_class_location_acceptance_radii(
-                locs,
-                r_same_point=ACCEPTANCE_R_SAME_POINT,
-                r_cluster=ACCEPTANCE_R_CLUSTER,
-                r_standalone=ACCEPTANCE_R_STANDALONE,
-                same_point_threshold=SAME_POINT_THRESHOLD_M,
-                cluster_threshold=CLUSTER_THRESHOLD_M,
-            )
-            cache.set(
-                CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
-                radii,
-                CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
-            )
+        radii = self._get_acceptance_radii(locs)
         loc_ids_str = "_".join(str(o.id) for o in sorted(locs, key=lambda x: x.id))
         colors_cache_key = f"class_location_neighbor_colors_{loc_ids_str}"
         geomap_color_by_id = cache.get(colors_cache_key)
@@ -3103,9 +3637,13 @@ class PublicHolidayAdmin(admin.ModelAdmin):
             if value == "today":
                 return queryset.filter(date=today)
             if value == "week":
-                return queryset.filter(date__gte=today, date__lte=today + timedelta(days=7))
+                return queryset.filter(
+                    date__gte=today, date__lte=today + timedelta(days=7)
+                )
             if value == "month":
-                return queryset.filter(date__gte=today, date__lte=today + timedelta(days=30))
+                return queryset.filter(
+                    date__gte=today, date__lte=today + timedelta(days=30)
+                )
             if value == "future":
                 return queryset.filter(date__gte=today)
             if value == "past":
@@ -3117,10 +3655,7 @@ class PublicHolidayAdmin(admin.ModelAdmin):
         parameter_name = "holiday_year"
 
         def lookups(self, request, model_admin):
-            years = (
-                model_admin.get_queryset(request)
-                .dates("date", "year")
-            )
+            years = model_admin.get_queryset(request).dates("date", "year")
             return [(str(item.year), str(item.year)) for item in years]
 
         def queryset(self, request, queryset):
@@ -3191,9 +3726,11 @@ class PublicHolidayAdmin(admin.ModelAdmin):
         return ("date",)
 
     def get_changeform_initial_data(self, request):
-        initial = super().get_changeform_initial_data(request)
-        initial.setdefault("date", timezone.localdate())
-        initial.setdefault("is_working_day", False)
+        initial: dict[str, Any] = dict(super().get_changeform_initial_data(request))
+        if "date" not in initial:
+            initial["date"] = timezone.localdate()
+        if "is_working_day" not in initial:
+            initial["is_working_day"] = False
         return initial
 
     def weekday_name(self, obj):
@@ -3220,7 +3757,10 @@ class PublicHolidayAdmin(admin.ModelAdmin):
                 '<span style="color:#047857; font-weight:600;">Сегодня</span>'
             )
         if days <= 7:
-            return format_html('<span style="color:#b45309; font-weight:600;">через {} дн.</span>', days)
+            return format_html(
+                '<span style="color:#b45309; font-weight:600;">через {} дн.</span>',
+                days,
+            )
         if days <= 30:
             return format_html('<span style="color:#1d4ed8;">через {} дн.</span>', days)
         return f"через {days} дн."
@@ -3278,7 +3818,9 @@ class PublicHolidayAdmin(admin.ModelAdmin):
             level=messages.INFO,
         )
 
-    copy_selected_to_next_year.short_description = "Скопировать выбранные праздники на следующий год"
+    copy_selected_to_next_year.short_description = (
+        "Скопировать выбранные праздники на следующий год"
+    )
 
 
 @admin.register(AbsentReason, site=admin_site)
