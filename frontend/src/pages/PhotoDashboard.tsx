@@ -1,6 +1,7 @@
 import React, {
   useState,
   useEffect,
+  useLayoutEffect,
   useRef,
   useCallback,
   useMemo,
@@ -42,14 +43,15 @@ const STATIC_TRACK_FIT_THRESHOLD = 1.05;
 const HOVER_IDLE_RESUME_MS = 2500;
 const STORAGE_KEY_SHOW_ALL_PHOTOS = "photoDashboard_showAllPhotos";
 const STORAGE_KEY_SHOW_RISK_ONLY = "photoDashboard_showRiskOnly";
+const STORAGE_KEY_VIEW_MODE = "photoDashboard_viewMode";
+const STORAGE_KEY_LAST_NON_RISK_MODE = "photoDashboard_lastNonRiskMode";
 const WS_MERGE_BUFFER_MS = 180;
 const WS_BATCH_FAILSAFE_MS = 300;
-const STAGED_INSERT_COMMIT_MS = 1200;
-const STAGED_INSERT_MAX_ITEMS = 8;
 const CREATED_NO_PHOTO_MIN_VISIBLE_MS = 2500;
 const MARQUEE_VIRTUALIZE_MIN_ITEMS = 120;
 const MARQUEE_VIRTUAL_OVERSCAN_ITEMS = 4;
-const MARQUEE_VIRTUAL_SYNC_MS = 90;
+const MARQUEE_VIRTUAL_SYNC_MS = 180;
+const FILTER_SWITCH_FEEDBACK_MS = 260;
 
 type PhotoUiStatus =
   | "clean"
@@ -58,47 +60,47 @@ type PhotoUiStatus =
   | "suspicious_auto"
   | "suspicious_manual";
 
+type PhotoDashboardBaseMode = "fresh" | "all";
+type PhotoDashboardViewMode = PhotoDashboardBaseMode | "risk";
+
 const PHOTO_STATUS_STYLE: Record<
   PhotoUiStatus,
   {
-    borderClass: string;
+    cardClass: string;
     badgeClass: string;
     label: string;
-    sourceLabel?: string;
     showBadgeOnCard: boolean;
   }
 > = {
   clean: {
-    borderClass: "",
+    cardClass: "",
     badgeClass: "bg-slate-700/85 text-slate-100 border border-slate-400/50",
     label: "Нормальное",
     showBadgeOnCard: false,
   },
   check: {
-    borderClass: "photo-electric-border--review",
+    cardClass: "card-state-check",
     badgeClass: "bg-amber-500/90 text-amber-50 border border-amber-300/70",
     label: "Проверить",
     showBadgeOnCard: true,
   },
   check_error: {
-    borderClass: "photo-electric-border--review",
+    cardClass: "card-state-check-error",
     badgeClass: "bg-orange-600/90 text-orange-50 border border-orange-300/70",
     label: "Ошибка",
     showBadgeOnCard: true,
   },
   suspicious_auto: {
-    borderClass: "photo-electric-border--suspicious-auto",
+    cardClass: "card-state-suspicious-auto",
     badgeClass: "bg-rose-600/90 text-rose-50 border border-rose-300/60",
     label: "Подозрительное",
-    sourceLabel: "авто",
     showBadgeOnCard: true,
   },
   suspicious_manual: {
-    borderClass: "photo-electric-border--suspicious-manual",
+    cardClass: "card-state-suspicious-manual",
     badgeClass:
       "bg-fuchsia-600/90 text-fuchsia-50 border border-fuchsia-300/65",
     label: "Подозрительное",
-    sourceLabel: "ручное",
     showBadgeOnCard: true,
   },
 };
@@ -119,6 +121,49 @@ const getStoredShowRiskOnly = (): boolean => {
   } catch {
     return false;
   }
+};
+
+const isPhotoDashboardBaseMode = (
+  value: string | null,
+): value is PhotoDashboardBaseMode => value === "fresh" || value === "all";
+
+const isPhotoDashboardViewMode = (
+  value: string | null,
+): value is PhotoDashboardViewMode =>
+  value === "fresh" || value === "all" || value === "risk";
+
+const getInitialDashboardModeState = (): {
+  viewMode: PhotoDashboardViewMode;
+  lastNonRiskViewMode: PhotoDashboardBaseMode;
+} => {
+  try {
+    const storedViewMode = localStorage.getItem(STORAGE_KEY_VIEW_MODE);
+    const storedLastNonRiskMode = localStorage.getItem(
+      STORAGE_KEY_LAST_NON_RISK_MODE,
+    );
+    if (
+      isPhotoDashboardViewMode(storedViewMode) &&
+      isPhotoDashboardBaseMode(storedLastNonRiskMode)
+    ) {
+      return {
+        viewMode: storedViewMode,
+        lastNonRiskViewMode: storedLastNonRiskMode,
+      };
+    }
+  } catch {
+    // ignore storage errors
+  }
+
+  const showAllPhotos = getStoredShowAllPhotos();
+  const showRiskOnly = getStoredShowRiskOnly();
+  const lastNonRiskViewMode: PhotoDashboardBaseMode = showAllPhotos
+    ? "all"
+    : "fresh";
+
+  return {
+    viewMode: showRiskOnly ? "risk" : lastNonRiskViewMode,
+    lastNonRiskViewMode,
+  };
 };
 
 const getLabelForDepartment = (photo: PhotoData): string =>
@@ -186,11 +231,26 @@ const stableHash = (value: string): number => {
   return Math.abs(hash >>> 0);
 };
 
-const getStableRowKey = (photo: PhotoData, fallbackIndex: number): string => {
+const getPhotoIdentity = (
+  photo: Partial<PhotoData>,
+  fallbackIndex?: number,
+): string => {
   if (photo.id != null) {
     return `id:${photo.id}`;
   }
-  return `pin:${photo.staffPin}|time:${photo.attendanceTime}|i:${fallbackIndex}`;
+  return [
+    `pin:${photo.staffPin ?? ""}`,
+    `time:${photo.attendanceTime ?? ""}`,
+    `url:${photo.photoUrl ?? ""}`,
+    `dept:${photo.department ?? ""}`,
+    fallbackIndex != null ? `i:${fallbackIndex}` : "",
+  ]
+    .filter(Boolean)
+    .join("|");
+};
+
+const getStableRowKey = (photo: PhotoData, fallbackIndex: number): string => {
+  return getPhotoIdentity(photo, fallbackIndex);
 };
 
 const formatTime = (iso: string): string => {
@@ -202,6 +262,32 @@ const formatTime = (iso: string): string => {
   });
 };
 
+const comparePhotoSortOrder = (left: PhotoData, right: PhotoData): number => {
+  const leftTimestamp = Date.parse(left.attendanceTime ?? "");
+  const rightTimestamp = Date.parse(right.attendanceTime ?? "");
+  const normalizedLeftTimestamp = Number.isFinite(leftTimestamp)
+    ? leftTimestamp
+    : 0;
+  const normalizedRightTimestamp = Number.isFinite(rightTimestamp)
+    ? rightTimestamp
+    : 0;
+  if (normalizedRightTimestamp !== normalizedLeftTimestamp) {
+    return normalizedRightTimestamp - normalizedLeftTimestamp;
+  }
+
+  const leftId = left.id ?? -1;
+  const rightId = right.id ?? -1;
+  if (rightId !== leftId) {
+    return rightId - leftId;
+  }
+
+  return getPhotoIdentity(left).localeCompare(getPhotoIdentity(right));
+};
+
+const sortPhotosDeterministically = (items: PhotoData[]): PhotoData[] => {
+  return [...items].sort(comparePhotoSortOrder);
+};
+
 const CARD_WIDTH_BASE = 220;
 const CARD_WIDTH_SM = 260;
 const CARD_WIDTH_MD = 280;
@@ -210,6 +296,7 @@ const CARD_WIDTH_XL = 336;
 const CARD_WIDTH_2XL = 372;
 const CARD_META_HEIGHT = 100;
 const ROW_GAP_PX = 12;
+const CARD_ITEM_GAP_PX = 16;
 const HEADER_ESTIMATE_PX = 200;
 const BOTTOM_RESERVE_KIOSK_PX = 40;
 const KIOSK_HEADER_RESERVE_PX = 132;
@@ -334,6 +421,12 @@ const MarqueeTrack: React.FC<{
   renderItem,
 }) => {
   type VisibleSlice = { start: number; end: number };
+  type VirtualWindowState = {
+    copyStart: number;
+    copyEnd: number;
+    slicesByCopy: Record<number, VisibleSlice>;
+    signature: string;
+  };
   const containerRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const seqRef = useRef<HTMLUListElement>(null);
@@ -341,25 +434,32 @@ const MarqueeTrack: React.FC<{
   const [seqWidth, setSeqWidth] = useState(0);
   const [copyCount, setCopyCount] = useState(MIN_TRACK_COPIES);
   const [shouldAnimate, setShouldAnimate] = useState(true);
-  const [visibleCopyRange, setVisibleCopyRange] = useState<{
-    start: number;
-    end: number;
-  }>({ start: 0, end: MIN_TRACK_COPIES - 1 });
-  const [visibleSlicesByCopy, setVisibleSlicesByCopy] = useState<
-    Record<number, VisibleSlice>
-  >({});
+  const [virtualWindow, setVirtualWindow] = useState<VirtualWindowState>({
+    copyStart: 0,
+    copyEnd: MIN_TRACK_COPIES - 1,
+    slicesByCopy: {},
+    signature: "",
+  });
 
   const offsetRef = useRef(0);
   const velocityRef = useRef(0);
   const lastTimestampRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
   const seqWidthRef = useRef(0);
-  const itemsChangedTimeRef = useRef(0);
   const virtualSignatureRef = useRef("");
   const lastVirtualSyncTsRef = useRef(0);
 
   const shouldVirtualize =
     shouldAnimate && items.length >= MARQUEE_VIRTUALIZE_MIN_ITEMS;
+  const itemSignature = useMemo(
+    () =>
+      items
+        .map((photo, index) =>
+          photo ? getStableRowKey(photo, index) : `empty:${index}`,
+        )
+        .join("|"),
+    [items],
+  );
 
   const computeVisibleWindow = useCallback(
     (currentOffset: number) => {
@@ -367,9 +467,7 @@ const MarqueeTrack: React.FC<{
       const safeSeqWidth =
         Number.isFinite(seqWidthRef.current) && seqWidthRef.current > 0
           ? seqWidthRef.current
-          : Number.isFinite(seqWidth) && seqWidth > 0
-            ? seqWidth
-            : 0;
+          : 0;
       const containerWidth = containerRef.current?.clientWidth ?? 0;
 
       if (
@@ -447,7 +545,7 @@ const MarqueeTrack: React.FC<{
         signature: signatureParts.join("|"),
       };
     },
-    [copyCount, items.length, seqWidth, shouldVirtualize],
+    [copyCount, items.length, shouldVirtualize],
   );
 
   const syncVisibleWindow = useCallback(
@@ -463,30 +561,20 @@ const MarqueeTrack: React.FC<{
         return;
       }
       virtualSignatureRef.current = nextWindow.signature;
-      setVisibleCopyRange({
-        start: nextWindow.copyStart,
-        end: nextWindow.copyEnd,
-      });
-      setVisibleSlicesByCopy(nextWindow.slicesByCopy);
+      setVirtualWindow((prev) =>
+        prev.signature === nextWindow.signature ? prev : nextWindow,
+      );
     },
     [computeVisibleWindow],
   );
 
   const updateDimensions = useCallback(() => {
+    if (items.length === 0) return;
     const containerWidth = containerRef.current?.clientWidth ?? 0;
-    const sequenceWidth = seqRef.current?.getBoundingClientRect().width ?? 0;
-    if (sequenceWidth <= 0) return;
 
+    const sequenceWidth = items.length * (cardWidthPx + CARD_ITEM_GAP_PX);
     const roundedSequenceWidth = Math.ceil(sequenceWidth);
-    const now = Date.now();
-    const recentlyChanged = now - itemsChangedTimeRef.current < 500;
-    if (
-      roundedSequenceWidth < seqWidthRef.current &&
-      seqWidthRef.current > 0 &&
-      recentlyChanged
-    ) {
-      return;
-    }
+
     const previousWidth = seqWidthRef.current;
     if (previousWidth > 0 && roundedSequenceWidth > 0) {
       const normalizedProgress =
@@ -496,28 +584,37 @@ const MarqueeTrack: React.FC<{
       offsetRef.current = normalizedProgress * roundedSequenceWidth;
     }
     seqWidthRef.current = roundedSequenceWidth;
-    setSeqWidth(roundedSequenceWidth);
+    setSeqWidth((prev) =>
+      prev === roundedSequenceWidth ? prev : roundedSequenceWidth,
+    );
 
     const canAnimate = forceLoop
       ? items.length > 0
       : roundedSequenceWidth > containerWidth * STATIC_TRACK_FIT_THRESHOLD;
-    setShouldAnimate(canAnimate);
+    setShouldAnimate((prev) => (prev === canAnimate ? prev : canAnimate));
     if (!canAnimate) {
-      setCopyCount(1);
+      setCopyCount((prev) => (prev === 1 ? prev : 1));
       return;
     }
 
     const copiesNeeded =
       Math.ceil(containerWidth / roundedSequenceWidth) + TRACK_COPY_HEADROOM;
-    setCopyCount(Math.max(MIN_TRACK_COPIES, copiesNeeded));
+    const nextCopyCount = Math.max(MIN_TRACK_COPIES, copiesNeeded);
+    setCopyCount((prev) => (prev === nextCopyCount ? prev : nextCopyCount));
     syncVisibleWindow(true);
-  }, [syncVisibleWindow, forceLoop, items.length]);
+  }, [syncVisibleWindow, forceLoop, items.length, cardWidthPx]);
 
-  useEffect(() => {
-    itemsChangedTimeRef.current = Date.now();
+  useLayoutEffect(() => {
     virtualSignatureRef.current = "";
+    offsetRef.current = 0;
+    velocityRef.current = 0;
+    lastTimestampRef.current = null;
+    lastVirtualSyncTsRef.current = 0;
+    if (trackRef.current) {
+      trackRef.current.style.transform = "translate3d(0, 0, 0)";
+    }
     updateDimensions();
-  }, [updateDimensions, items, rowIndex]);
+  }, [updateDimensions, itemSignature, rowIndex]);
 
   useEffect(() => {
     syncVisibleWindow(true);
@@ -531,50 +628,24 @@ const MarqueeTrack: React.FC<{
 
     const ro = new ResizeObserver(updateDimensions);
     if (containerRef.current) ro.observe(containerRef.current);
-    if (seqRef.current) ro.observe(seqRef.current);
 
     return () => ro.disconnect();
   }, [updateDimensions]);
 
-  useEffect(() => {
-    const images = seqRef.current?.querySelectorAll("img") ?? [];
-    if (images.length === 0) {
-      updateDimensions();
-      return;
-    }
-
-    let remaining = images.length;
-    const handleImage = () => {
-      remaining -= 1;
-      if (remaining <= 0) {
-        updateDimensions();
-      }
-    };
-
-    images.forEach((img) => {
-      const htmlImg = img as HTMLImageElement;
-      if (htmlImg.complete) {
-        handleImage();
-      } else {
-        htmlImg.addEventListener("load", handleImage, { once: true });
-        htmlImg.addEventListener("error", handleImage, { once: true });
-      }
-    });
-
-    return () => {
-      images.forEach((img) => {
-        img.removeEventListener("load", handleImage);
-        img.removeEventListener("error", handleImage);
-      });
-    };
-  }, [items, updateDimensions]);
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     const track = trackRef.current;
     if (!track || seqWidth <= 0) return;
 
     if (!shouldAnimate) {
       track.style.transform = "translate3d(0, 0, 0)";
+      syncVisibleWindow(true);
+      return;
+    }
+
+    if (isPaused && hoverSpeed === 0) {
+      velocityRef.current = 0;
+      lastTimestampRef.current = null;
+      track.style.transform = `translate3d(-${offsetRef.current}px, 0, 0)`;
       syncVisibleWindow(true);
       return;
     }
@@ -634,11 +705,14 @@ const MarqueeTrack: React.FC<{
     items.length > 0 && seqWidth > 0
       ? seqWidth / items.length
       : cardWidthPx + 16;
-  const copyStart = shouldVirtualize ? visibleCopyRange.start : 0;
+  const maxCopyIndex = Math.max(0, copyCount - 1);
+  const copyStart = shouldVirtualize
+    ? Math.min(virtualWindow.copyStart, maxCopyIndex)
+    : 0;
   const copyEnd = shouldVirtualize
-    ? visibleCopyRange.end
-    : Math.max(0, copyCount - 1);
-  const renderedCopyCount = Math.max(0, copyEnd - copyStart + 1);
+    ? Math.max(copyStart, Math.min(virtualWindow.copyEnd, maxCopyIndex))
+    : maxCopyIndex;
+  const renderedCopyCount = Math.max(1, copyEnd - copyStart + 1);
 
   return (
     <div
@@ -651,7 +725,7 @@ const MarqueeTrack: React.FC<{
       >
         {Array.from({ length: renderedCopyCount }, (_, localCopyIndex) => {
           const copyIndex = copyStart + localCopyIndex;
-          const visibleSlice = visibleSlicesByCopy[copyIndex];
+          const visibleSlice = virtualWindow.slicesByCopy[copyIndex];
           const hasVisibleSlice =
             shouldVirtualize &&
             visibleSlice != null &&
@@ -933,36 +1007,119 @@ const PhotoDashboard: React.FC = () => {
 
   const [loading, setLoading] = useState<boolean>(true);
   const initialLoadDoneRef = useRef<boolean>(false);
-  const maxPhotosRef = useRef<number>(12);
-  const [showAllPhotos, setShowAllPhotos] = useState<boolean>(
-    getStoredShowAllPhotos,
+  const [viewMode, setViewMode] = useState<PhotoDashboardViewMode>(
+    () => getInitialDashboardModeState().viewMode,
   );
-  const [showRiskOnly, setShowRiskOnly] = useState<boolean>(
-    getStoredShowRiskOnly,
+  const [lastNonRiskViewMode, setLastNonRiskViewMode] =
+    useState<PhotoDashboardBaseMode>(
+      () => getInitialDashboardModeState().lastNonRiskViewMode,
+    );
+  const [isDisplayFilterPending, setIsDisplayFilterPending] =
+    useState<boolean>(false);
+  const filterSwitchTimerRef = useRef<number | null>(null);
+  const [isPageVisible, setIsPageVisible] = useState<boolean>(() =>
+    typeof document === "undefined" ? true : document.visibilityState === "visible",
   );
+  const [hoveredPhotoKey, setHoveredPhotoKey] = useState<string | null>(null);
+  const showRiskOnly = viewMode === "risk";
+  const showAllPhotos =
+    (showRiskOnly ? lastNonRiskViewMode : viewMode) === "all";
+  const isFreshMode = viewMode === "fresh";
+  const useStaticPhotoGridMode = isFullscreen;
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY_SHOW_ALL_PHOTOS, String(showAllPhotos));
+      localStorage.setItem(STORAGE_KEY_VIEW_MODE, viewMode);
+      localStorage.setItem(
+        STORAGE_KEY_LAST_NON_RISK_MODE,
+        lastNonRiskViewMode,
+      );
+      localStorage.removeItem(STORAGE_KEY_SHOW_ALL_PHOTOS);
+      localStorage.removeItem(STORAGE_KEY_SHOW_RISK_ONLY);
     } catch {
       // ignore storage errors
     }
-  }, [showAllPhotos]);
+  }, [lastNonRiskViewMode, viewMode]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_SHOW_RISK_ONLY, String(showRiskOnly));
-    } catch {
-      // ignore storage errors
+    const handleVisibilityChange = () => {
+      setIsPageVisible(document.visibilityState === "visible");
+    };
+
+    handleVisibilityChange();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
+  const clearPendingFilterWork = useCallback(() => {
+    if (filterSwitchTimerRef.current != null) {
+      window.clearTimeout(filterSwitchTimerRef.current);
+      filterSwitchTimerRef.current = null;
     }
-  }, [showRiskOnly]);
-  const [hoveredCardKey, setHoveredCardKey] = useState<string | null>(null);
+  }, []);
+
+  const schedulePendingFilterReset = useCallback(() => {
+    clearPendingFilterWork();
+    filterSwitchTimerRef.current = window.setTimeout(() => {
+      filterSwitchTimerRef.current = null;
+      setIsDisplayFilterPending(false);
+    }, FILTER_SWITCH_FEEDBACK_MS);
+  }, [clearPendingFilterWork]);
+
+  const queueAppliedFilterUpdate = useCallback(() => {
+    setHoveredPhotoKey(null);
+    setIsDisplayFilterPending(true);
+    schedulePendingFilterReset();
+  }, [schedulePendingFilterReset]);
+
+  const handleRiskOnlyToggleChange = useCallback(
+    (nextValue: boolean) => {
+      const nextViewMode: PhotoDashboardViewMode = nextValue
+        ? "risk"
+        : lastNonRiskViewMode;
+      if (nextViewMode === viewMode) {
+        return;
+      }
+      setViewMode(nextViewMode);
+      queueAppliedFilterUpdate();
+    },
+    [lastNonRiskViewMode, queueAppliedFilterUpdate, viewMode],
+  );
+
+  const handleShowAllPhotosToggleChange = useCallback(
+    (nextValue: boolean) => {
+      const nextBaseMode: PhotoDashboardBaseMode = nextValue ? "all" : "fresh";
+      if (showRiskOnly) {
+        if (lastNonRiskViewMode === nextBaseMode) {
+          return;
+        }
+        setLastNonRiskViewMode(nextBaseMode);
+        queueAppliedFilterUpdate();
+        return;
+      }
+      if (viewMode === nextBaseMode && lastNonRiskViewMode === nextBaseMode) {
+        return;
+      }
+      setViewMode(nextBaseMode);
+      setLastNonRiskViewMode(nextBaseMode);
+      queueAppliedFilterUpdate();
+    },
+    [lastNonRiskViewMode, queueAppliedFilterUpdate, showRiskOnly, viewMode],
+  );
+
+  useEffect(() => {
+    return () => {
+      clearPendingFilterWork();
+    };
+  }, [clearPendingFilterWork]);
+
   const lastPointerActivityRef = useRef<number>(Date.now());
   const cardRefs = useRef<Map<string, HTMLElement | null>>(new Map());
   const [activeCardCoords, setActiveCardCoords] = useState<{
     row: number;
     col: number;
   } | null>(null);
+  const [activePhotoKey, setActivePhotoKey] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [cardWidthPx, setCardWidthPx] = useState<number>(CARD_WIDTH_MD);
   const [tapeNumRows, setTapeNumRows] = useState<number>(3);
@@ -972,9 +1129,6 @@ const PhotoDashboard: React.FC = () => {
   const wsMergeBufferRef = useRef<PhotoData[]>([]);
   const wsMergeTimerRef = useRef<number | null>(null);
   const wsBatchBucketsRef = useRef<Map<string, WsBatchBucket>>(new Map());
-  const stagedInsertQueueRef = useRef<PhotoData[]>([]);
-  const stagedInsertByIdRef = useRef<Map<number, number>>(new Map());
-  const stagedInsertTimerRef = useRef<number | null>(null);
   const noPhotoFirstSeenRef = useRef<Map<number, number>>(new Map());
   const delayedPhotoAttachTimersRef = useRef<Map<number, number>>(new Map());
   const lastVersionByIdRef = useRef<Map<number, string>>(new Map());
@@ -993,7 +1147,8 @@ const PhotoDashboard: React.FC = () => {
 
   useEffect(() => {
     initialLoadDoneRef.current = false;
-  }, [date, showRiskOnly]);
+    setLoading(true);
+  }, [date]);
 
   const getMaxPhotos = useCallback(() => {
     return getMaxPhotosForViewport(
@@ -1003,10 +1158,6 @@ const PhotoDashboard: React.FC = () => {
       isKiosk,
     );
   }, [isKiosk, viewport.width, viewport.aspectBucket, viewport.resolutionTier]);
-
-  const updateMaxPhotos = useCallback(() => {
-    maxPhotosRef.current = getMaxPhotos();
-  }, [getMaxPhotos]);
 
   const extractEventsFromMessage = useCallback(
     (data: PhotoWsMessage): PhotoData[] => {
@@ -1063,104 +1214,160 @@ const PhotoDashboard: React.FC = () => {
     };
   }, []);
 
-  const rebuildStagedInsertIndex = useCallback(() => {
-    stagedInsertByIdRef.current.clear();
-    stagedInsertQueueRef.current.forEach((item, idx) => {
-      if (item.id != null) {
-        stagedInsertByIdRef.current.set(item.id, idx);
-      }
+  const clearDelayedPhotoAttachTimers = useCallback(() => {
+    delayedPhotoAttachTimersRef.current.forEach((timerId) =>
+      window.clearTimeout(timerId),
+    );
+    delayedPhotoAttachTimersRef.current.clear();
+  }, []);
+
+  const syncSelectedPhotoWithList = useCallback((nextPhotos: PhotoData[]) => {
+    setSelectedPhoto((prev) => {
+      if (!prev) return prev;
+      const prevKey = getPhotoIdentity(prev);
+      const matched = nextPhotos.find(
+        (photo) => getPhotoIdentity(photo) === prevKey,
+      );
+      return matched ?? null;
     });
   }, []);
 
-  const scheduleStagedInsertCommit = useCallback(() => {
-    if (stagedInsertTimerRef.current != null) return;
-    stagedInsertTimerRef.current = window.setTimeout(() => {
-      stagedInsertTimerRef.current = null;
-      const queue = stagedInsertQueueRef.current;
-      if (queue.length === 0) return;
-      const chunk = queue.splice(0, STAGED_INSERT_MAX_ITEMS);
-      rebuildStagedInsertIndex();
+  const commitCanonicalPhotos = useCallback(
+    (
+      nextPhotos: PhotoData[],
+      options: {
+        finishLoading?: boolean;
+      } = {},
+    ) => {
+      const sorted = sortPhotosDeterministically(nextPhotos);
+      photosRef.current = sorted;
+      syncSelectedPhotoWithList(sorted);
+      startTransition(() => {
+        setPhotos(sorted);
+        if (options.finishLoading) {
+          setLoading(false);
+        }
+      });
+    },
+    [syncSelectedPhotoWithList],
+  );
 
-      const base = photosRef.current;
-      const next = [...base];
-      for (let i = chunk.length - 1; i >= 0; i -= 1) {
-        const item = chunk[i];
-        if (item.id != null) {
-          const idx = next.findIndex((x) => x.id === item.id);
-          if (idx >= 0) {
-            next[idx] = { ...next[idx], ...item };
+  const mergeCanonicalPhotoEvents = useCallback(
+    (
+      events: PhotoData[],
+      options: {
+        replace?: boolean;
+        finishLoading?: boolean;
+      } = {},
+    ) => {
+      const normalizedEvents = events.map(normalizeWsEvent);
+      const isReplace = options.replace === true;
+
+      if (isReplace) {
+        noPhotoFirstSeenRef.current.clear();
+        clearDelayedPhotoAttachTimers();
+        lastVersionByIdRef.current.clear();
+      }
+
+      const next = isReplace ? [] : [...photosRef.current];
+      for (const eventData of normalizedEvents) {
+        const eventId = eventData.id;
+        if (eventId != null && eventData.versionTs) {
+          const lastVersion = lastVersionByIdRef.current.get(eventId);
+          if (!isReplace && lastVersion && eventData.versionTs < lastVersion) {
             continue;
           }
+          lastVersionByIdRef.current.set(eventId, eventData.versionTs);
         }
-        next.unshift(item);
-      }
-      photosRef.current = next;
-      startTransition(() => setPhotos(next));
 
-      if (queue.length > 0) {
-        scheduleStagedInsertCommit();
-      }
-    }, STAGED_INSERT_COMMIT_MS);
-  }, [rebuildStagedInsertIndex]);
-
-  const enqueueStagedInsert = useCallback(
-    (photo: PhotoData) => {
-      if (photo.id != null) {
-        const existingQueueIndex = stagedInsertByIdRef.current.get(photo.id);
-        if (existingQueueIndex != null) {
-          stagedInsertQueueRef.current[existingQueueIndex] = {
-            ...stagedInsertQueueRef.current[existingQueueIndex],
-            ...photo,
-          };
-          return;
+        if (eventData.stateCode === "DELETED" || eventData.op === "deleted") {
+          if (eventId != null) {
+            const existingIdx = next.findIndex((item) => item.id === eventId);
+            if (existingIdx >= 0) {
+              next.splice(existingIdx, 1);
+            }
+            const pendingTimer = delayedPhotoAttachTimersRef.current.get(eventId);
+            if (pendingTimer != null) {
+              window.clearTimeout(pendingTimer);
+              delayedPhotoAttachTimersRef.current.delete(eventId);
+            }
+            noPhotoFirstSeenRef.current.delete(eventId);
+            lastVersionByIdRef.current.delete(eventId);
+          }
+          continue;
         }
-        stagedInsertByIdRef.current.set(
-          photo.id,
-          stagedInsertQueueRef.current.length,
-        );
+
+        if (eventId != null && eventData.stateCode === "CREATED_NO_PHOTO") {
+          if (!noPhotoFirstSeenRef.current.has(eventId)) {
+            noPhotoFirstSeenRef.current.set(eventId, Date.now());
+          }
+        }
+
+        if (eventId != null && eventData.stateCode === "PHOTO_ATTACHED") {
+          const seenAt = noPhotoFirstSeenRef.current.get(eventId);
+          if (seenAt != null) {
+            const elapsed = Date.now() - seenAt;
+            if (elapsed < CREATED_NO_PHOTO_MIN_VISIBLE_MS) {
+              const pendingTimer = delayedPhotoAttachTimersRef.current.get(
+                eventId,
+              );
+              if (pendingTimer != null) {
+                window.clearTimeout(pendingTimer);
+              }
+              const waitMs = CREATED_NO_PHOTO_MIN_VISIBLE_MS - elapsed;
+              const timerId = window.setTimeout(() => {
+                delayedPhotoAttachTimersRef.current.delete(eventId);
+                enqueueWsEventsRef.current([eventData]);
+              }, waitMs);
+              delayedPhotoAttachTimersRef.current.set(eventId, timerId);
+              continue;
+            }
+            noPhotoFirstSeenRef.current.delete(eventId);
+          }
+        }
+
+        const eventKey = getPhotoIdentity(eventData);
+        const existingIdx =
+          eventId != null
+            ? next.findIndex((item) => item.id === eventId)
+            : next.findIndex((item) => getPhotoIdentity(item) === eventKey);
+
+        if (existingIdx >= 0) {
+          next[existingIdx] = { ...next[existingIdx], ...eventData };
+        } else {
+          next.push(eventData);
+        }
       }
-      stagedInsertQueueRef.current.push(photo);
-      scheduleStagedInsertCommit();
+
+      commitCanonicalPhotos(next, { finishLoading: options.finishLoading });
     },
-    [scheduleStagedInsertCommit],
+    [clearDelayedPhotoAttachTimers, commitCanonicalPhotos, normalizeWsEvent],
   );
 
   const applyInitialSnapshot = useCallback(
     (events: PhotoData[]) => {
-      const normalized = events
-        .map(normalizeWsEvent)
-        .filter((item) => item.stateCode !== "DELETED");
-      noPhotoFirstSeenRef.current.clear();
-      delayedPhotoAttachTimersRef.current.forEach((timerId) =>
-        window.clearTimeout(timerId),
-      );
-      delayedPhotoAttachTimersRef.current.clear();
-      lastVersionByIdRef.current.clear();
-      stagedInsertQueueRef.current = [];
-      stagedInsertByIdRef.current.clear();
-      if (stagedInsertTimerRef.current != null) {
-        window.clearTimeout(stagedInsertTimerRef.current);
-        stagedInsertTimerRef.current = null;
+      wsMergeBufferRef.current = [];
+      if (wsMergeTimerRef.current != null) {
+        window.clearTimeout(wsMergeTimerRef.current);
+        wsMergeTimerRef.current = null;
       }
-      normalized.forEach((item) => {
-        if (item.id != null && item.versionTs) {
-          lastVersionByIdRef.current.set(item.id, item.versionTs);
-        }
-        if (item.id != null && item.stateCode === "CREATED_NO_PHOTO") {
-          noPhotoFirstSeenRef.current.set(item.id, Date.now());
-        }
+      wsBatchBucketsRef.current.forEach((bucket) => {
+        window.clearTimeout(bucket.timeoutId);
       });
-      photosRef.current = normalized;
-      startTransition(() => {
-        setPhotos(normalized);
-        setLoading(false);
+      wsBatchBucketsRef.current.clear();
+      mergeCanonicalPhotoEvents(events, {
+        replace: true,
+        finishLoading: true,
       });
       initialLoadDoneRef.current = true;
     },
-    [normalizeWsEvent],
+    [mergeCanonicalPhotoEvents],
   );
 
   const flushWsMergeBuffer = useCallback(() => {
+    if (wsMergeTimerRef.current != null) {
+      window.clearTimeout(wsMergeTimerRef.current);
+    }
     wsMergeTimerRef.current = null;
     const buffered = wsMergeBufferRef.current;
     if (buffered.length === 0) return;
@@ -1175,78 +1382,8 @@ const PhotoDashboard: React.FC = () => {
       }
       dedupById.set(evt.id, evt);
     });
-    const events = [...withoutId, ...Array.from(dedupById.values())];
-
-    const next = [...photosRef.current];
-    const indexById = new Map<number, number>();
-    next.forEach((item, idx) => {
-      if (item.id != null) indexById.set(item.id, idx);
-    });
-    for (const rawEvent of events) {
-      const eventData = normalizeWsEvent(rawEvent);
-      const eventId = eventData.id;
-      if (eventId != null && eventData.versionTs) {
-        const lastVersion = lastVersionByIdRef.current.get(eventId);
-        if (lastVersion && eventData.versionTs < lastVersion) {
-          continue;
-        }
-        lastVersionByIdRef.current.set(eventId, eventData.versionTs);
-      }
-      if (eventData.stateCode === "DELETED" || eventData.op === "deleted") {
-        if (eventId != null) {
-          const idx = indexById.get(eventId) ?? -1;
-          if (idx >= 0) next.splice(idx, 1);
-          if (idx >= 0) {
-            indexById.clear();
-            next.forEach((item, mapIdx) => {
-              if (item.id != null) indexById.set(item.id, mapIdx);
-            });
-          }
-          noPhotoFirstSeenRef.current.delete(eventId);
-          lastVersionByIdRef.current.delete(eventId);
-        }
-        continue;
-      }
-      if (eventData.id != null && eventData.stateCode === "CREATED_NO_PHOTO") {
-        if (!noPhotoFirstSeenRef.current.has(eventData.id)) {
-          noPhotoFirstSeenRef.current.set(eventData.id, Date.now());
-        }
-      }
-      if (eventData.id != null && eventData.stateCode === "PHOTO_ATTACHED") {
-        const seenAt = noPhotoFirstSeenRef.current.get(eventData.id);
-        if (seenAt != null) {
-          const elapsed = Date.now() - seenAt;
-          if (elapsed < CREATED_NO_PHOTO_MIN_VISIBLE_MS) {
-            const pendingTimer = delayedPhotoAttachTimersRef.current.get(
-              eventData.id,
-            );
-            if (pendingTimer != null) window.clearTimeout(pendingTimer);
-            const waitMs = CREATED_NO_PHOTO_MIN_VISIBLE_MS - elapsed;
-            const timerId = window.setTimeout(() => {
-              delayedPhotoAttachTimersRef.current.delete(eventData.id!);
-              enqueueWsEventsRef.current([eventData]);
-            }, waitMs);
-            delayedPhotoAttachTimersRef.current.set(eventData.id, timerId);
-            continue;
-          }
-          noPhotoFirstSeenRef.current.delete(eventData.id);
-        }
-      }
-      if (eventId != null) {
-        const idx = indexById.get(eventId) ?? -1;
-        if (idx >= 0) {
-          next[idx] = { ...next[idx], ...eventData };
-        } else {
-          enqueueStagedInsert(eventData);
-        }
-      } else {
-        enqueueStagedInsert(eventData);
-      }
-    }
-
-    photosRef.current = next;
-    startTransition(() => setPhotos(next));
-  }, [enqueueStagedInsert, normalizeWsEvent]);
+    mergeCanonicalPhotoEvents([...withoutId, ...Array.from(dedupById.values())]);
+  }, [mergeCanonicalPhotoEvents]);
 
   const enqueueWsEvents = useCallback(
     (events: PhotoData[]) => {
@@ -1328,9 +1465,7 @@ const PhotoDashboard: React.FC = () => {
             events,
           );
           if (snapshotEvents == null) return;
-          if (!initialLoadDoneRef.current) {
-            applyInitialSnapshot(snapshotEvents);
-          }
+          applyInitialSnapshot(snapshotEvents);
           return;
         }
 
@@ -1363,9 +1498,8 @@ const PhotoDashboard: React.FC = () => {
   const wsUrl = useMemo(() => {
     const urlObj = new URL(apiUrl);
     const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
-    const riskOnly = showRiskOnly ? "1" : "0";
-    return `${protocol}://${urlObj.host}/ws/photos/?date=${date}&legacy=0&risk_only=${riskOnly}`;
-  }, [date, showRiskOnly]);
+    return `${protocol}://${urlObj.host}/ws/photos/?date=${date}&legacy=0&risk_only=0`;
+  }, [date]);
 
   const { isConnected, reconnect } = useWebSocket({
     url: wsUrl,
@@ -1387,21 +1521,15 @@ const PhotoDashboard: React.FC = () => {
       window.clearTimeout(wsMergeTimerRef.current);
       wsMergeTimerRef.current = null;
     }
-    if (stagedInsertTimerRef.current != null) {
-      window.clearTimeout(stagedInsertTimerRef.current);
-      stagedInsertTimerRef.current = null;
-    }
-
-    const delayedTimers = delayedPhotoAttachTimersRef.current;
-    delayedTimers.forEach((timerId) => window.clearTimeout(timerId));
-    delayedTimers.clear();
+    wsMergeBufferRef.current = [];
+    clearDelayedPhotoAttachTimers();
 
     const batchBuckets = wsBatchBucketsRef.current;
     batchBuckets.forEach((bucket) => {
       window.clearTimeout(bucket.timeoutId);
     });
     batchBuckets.clear();
-  }, []);
+  }, [clearDelayedPhotoAttachTimers]);
 
   useEffect(() => {
     return () => {
@@ -1419,24 +1547,58 @@ const PhotoDashboard: React.FC = () => {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [isConnected, reconnect]);
 
-  useEffect(() => {
-    updateMaxPhotos();
-  }, [updateMaxPhotos, viewport.width, viewport.height]);
+  const riskPhotos = useMemo(
+    () => photos.filter(isRiskPhotoCandidate),
+    [photos],
+  );
+  const freshPhotos = useMemo(
+    () => photos.slice(0, getMaxPhotos()),
+    [photos, getMaxPhotos],
+  );
 
   const displayPhotos = useMemo(() => {
-    const source = showRiskOnly ? photos.filter(isRiskPhotoCandidate) : photos;
-    if (showRiskOnly) return source;
-    return showAllPhotos ? source : source.slice(0, getMaxPhotos());
-  }, [photos, showRiskOnly, showAllPhotos, getMaxPhotos]);
+    if (viewMode === "risk") {
+      return riskPhotos;
+    }
+    if (viewMode === "all") {
+      return photos;
+    }
+    return freshPhotos;
+  }, [freshPhotos, photos, riskPhotos, viewMode]);
+  const pendingFilterLabel = showRiskOnly
+    ? "Обновляем ленту: только фото с рисками"
+    : showAllPhotos
+      ? "Обновляем ленту: все фото за день"
+      : "Обновляем ленту: только свежие фото";
+  const hasAnyPhotos = photos.length > 0;
+  const hasDisplayPhotos = displayPhotos.length > 0;
+  const shouldShowPendingFilterUi = isDisplayFilterPending && hasAnyPhotos;
+  const shouldDimDisplayContent =
+    shouldShowPendingFilterUi && hasDisplayPhotos;
 
   const toggleLabel = useMemo(() => {
     if (showRiskOnly) {
-      return `Все фото за день (риск: ${displayPhotos.length})`;
+      return isDisplayFilterPending
+        ? lastNonRiskViewMode === "all"
+          ? "Все фото за день..."
+          : "Только свежие..."
+        : lastNonRiskViewMode === "all"
+          ? `Все фото за день (риск: ${displayPhotos.length})`
+          : `Только свежие (риск: ${displayPhotos.length})`;
     }
-    return showAllPhotos
-      ? "Все фото"
+    if (showAllPhotos) {
+      return "Все фото";
+    }
+    return isDisplayFilterPending
+      ? "Только свежие..."
       : `Только свежие (${displayPhotos.length} из ${photos.length})`;
-  }, [showRiskOnly, showAllPhotos, displayPhotos.length, photos.length]);
+  }, [
+    showRiskOnly,
+    showAllPhotos,
+    isDisplayFilterPending,
+    displayPhotos.length,
+    photos.length,
+  ]);
 
   const riskToggleLabel = useMemo(
     () =>
@@ -1445,8 +1607,17 @@ const PhotoDashboard: React.FC = () => {
         : "Все статусы фото",
     [showRiskOnly],
   );
-
-  const useStaticKioskScrollMode = isKiosk && (showAllPhotos || showRiskOnly);
+  const displayContentStyle = useMemo<React.CSSProperties>(
+    () => ({
+      transform: shouldDimDisplayContent ? "scale(0.995)" : "scale(1)",
+      filter: shouldDimDisplayContent
+        ? "saturate(0.75) blur(0.5px)"
+        : "saturate(1) blur(0px)",
+      transition: "transform 0.24s ease-out, filter 0.24s ease-out",
+      willChange: shouldDimDisplayContent ? "transform, filter" : "auto",
+    }),
+    [shouldDimDisplayContent],
+  );
 
   useEffect(() => {
     const getViewportSize = (): { w: number; h: number } => {
@@ -1589,18 +1760,28 @@ const PhotoDashboard: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!hoveredCardKey || selectedPhoto) return;
+    if (!hoveredPhotoKey || selectedPhoto) return;
     const timerId = window.setInterval(() => {
       const inactiveMs = Date.now() - lastPointerActivityRef.current;
       if (inactiveMs < HOVER_IDLE_RESUME_MS) return;
       const hasHoveredCard = !!document.querySelector(".photo-item:hover");
       if (!hasHoveredCard) {
-        setHoveredCardKey(null);
+        setHoveredPhotoKey(null);
       }
     }, 300);
 
     return () => window.clearInterval(timerId);
-  }, [hoveredCardKey, selectedPhoto]);
+  }, [hoveredPhotoKey, selectedPhoto]);
+
+  useEffect(() => {
+    if (!hoveredPhotoKey) return;
+    const stillVisible = displayPhotos.some(
+      (photo) => getPhotoIdentity(photo) === hoveredPhotoKey,
+    );
+    if (!stillVisible) {
+      setHoveredPhotoKey(null);
+    }
+  }, [displayPhotos, hoveredPhotoKey]);
 
   const getHints = useCallback(() => {
     if (typeof window === "undefined") return "";
@@ -1629,44 +1810,16 @@ const PhotoDashboard: React.FC = () => {
 
   const applySinglePhotoUpdate = useCallback(
     (incomingPhoto: PhotoData) => {
-      const normalized = normalizeWsEvent({
-        ...incomingPhoto,
-        op: incomingPhoto.op ?? "updated",
-        stateCode: incomingPhoto.stateCode ?? "UPDATED_META",
-        versionTs: incomingPhoto.versionTs ?? timezoneIsoNow(),
-      });
-      const normalizedId = normalized.id;
-      if (normalizedId == null) {
-        return;
-      }
-
-      const next = [...photosRef.current];
-      const existingIdx = next.findIndex((item) => item.id === normalizedId);
-      const shouldKeepInList =
-        !showRiskOnly || isRiskPhotoCandidate(normalized);
-      if (!shouldKeepInList) {
-        if (existingIdx >= 0) {
-          next.splice(existingIdx, 1);
-          photosRef.current = next;
-          startTransition(() => setPhotos(next));
-        }
-        setSelectedPhoto((prev) =>
-          prev && prev.id === normalizedId ? null : prev,
-        );
-        return;
-      }
-      if (existingIdx >= 0) {
-        next[existingIdx] = { ...next[existingIdx], ...normalized };
-      } else {
-        next.unshift(normalized);
-      }
-      photosRef.current = next;
-      startTransition(() => setPhotos(next));
-      setSelectedPhoto((prev) =>
-        prev && prev.id === normalizedId ? { ...prev, ...normalized } : prev,
-      );
+      mergeCanonicalPhotoEvents([
+        {
+          ...incomingPhoto,
+          op: incomingPhoto.op ?? "updated",
+          stateCode: incomingPhoto.stateCode ?? "UPDATED_META",
+          versionTs: incomingPhoto.versionTs ?? timezoneIsoNow(),
+        },
+      ]);
     },
-    [normalizeWsEvent, showRiskOnly],
+    [mergeCanonicalPhotoEvents],
   );
 
   const submitManualVerdict = useCallback(
@@ -1757,10 +1910,44 @@ const PhotoDashboard: React.FC = () => {
   );
 
   const renderLoading = () => (
-    <div className="flex flex-col justify-center items-center py-24 text-gray-700 dark:text-gray-300">
-      <LoaderComponent />
-      <p className="mt-6 text-lg animate-pulse">Загрузка посещаемости...</p>
-    </div>
+    <motion.div
+      key="overlay-loader"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.22 }}
+      className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none"
+    >
+      <div className="relative pointer-events-auto">
+        {/* Ambient glow blobs */}
+        <div
+          className="absolute rounded-full bg-primary-500/18 blur-3xl pointer-events-none"
+          style={{
+            inset: "-4rem",
+            animation: "loaderGlowPulse 3.2s ease-in-out infinite",
+          }}
+        />
+        <div
+          className="absolute rounded-full bg-secondary-500/12 blur-2xl pointer-events-none"
+          style={{
+            inset: "-2.5rem",
+            animation: "loaderGlowPulse 3.2s ease-in-out infinite",
+            animationDelay: "1.6s",
+          }}
+        />
+        {/* Frosted glass card */}
+        <div className="relative rounded-[28px] border border-white/30 dark:border-white/10 bg-white/82 dark:bg-slate-900/82 backdrop-blur-2xl shadow-2xl shadow-primary-900/15 px-14 py-11 flex flex-col items-center gap-4">
+          <LoaderComponent
+            fullscreen={false}
+            className="min-h-0"
+            message=""
+          />
+          <p className="text-sm text-gray-500 dark:text-gray-400 tracking-wide">
+            Загрузка посещаемости…
+          </p>
+        </div>
+      </div>
+    </motion.div>
   );
 
   const renderNoPhotos = () => (
@@ -1775,14 +1962,14 @@ const PhotoDashboard: React.FC = () => {
           <FaImage className="w-7 h-7" />
         </div>
         <h2 className="text-center text-2xl font-semibold text-gray-800 dark:text-gray-100">
-          Пока нет фотографий
+          Фотографий пока нет
         </h2>
         <p className="mt-2 text-center text-sm sm:text-base text-gray-600 dark:text-gray-300">
-          Карточки сотрудников и студентов появятся здесь после отметки
-          посещаемости.
+          За выбранный день ещё не пришло ни одной фотографии посещаемости.
         </p>
         <p className="mt-3 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400">
-          Оставьте страницу открытой: обновление происходит автоматически.
+          Оставьте страницу открытой: как только фотографии появятся, лента
+          обновится автоматически.
         </p>
       </div>
     </motion.div>
@@ -1807,15 +1994,50 @@ const PhotoDashboard: React.FC = () => {
           «Ошибка».
         </p>
         <p className="mt-3 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400">
-          Отключите фильтр «Риск: подозрительные / проверка / ошибка», чтобы
-          увидеть все записи за день.
+          {showAllPhotos
+            ? "Отключите фильтр «Риск: подозрительные / проверка / ошибка», чтобы увидеть все записи за день."
+            : "Отключите фильтр «Риск: подозрительные / проверка / ошибка», чтобы вернуться к свежим фото."}
         </p>
       </div>
     </motion.div>
   );
 
+  const renderEmptyStateCard = useCallback(() => {
+    if (hasAnyPhotos) {
+      return renderNoPhotosForFilter();
+    }
+    return renderNoPhotos();
+  }, [hasAnyPhotos, showAllPhotos]);
+
+  const renderFilterTransitionState = useCallback(
+    () => (
+      <motion.div
+        className="py-16 sm:py-20"
+        initial={{ opacity: 0, scale: 0.96, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 6 }}
+        transition={{ type: "spring", damping: 26, stiffness: 300, mass: 0.85 }}
+      >
+        <div className="mx-auto w-full max-w-lg rounded-[28px] border border-white/20 dark:border-primary-400/20 bg-slate-900/45 dark:bg-slate-900/60 p-6 sm:p-7 shadow-[0_28px_80px_-28px_rgba(37,99,235,0.65)] backdrop-blur-2xl">
+          <LoaderComponent
+            fullscreen={false}
+            compact
+            inline
+            variant="bars"
+            className="min-h-0 justify-center text-slate-100 dark:text-primary-100"
+            message={pendingFilterLabel}
+          />
+        </div>
+      </motion.div>
+    ),
+    [pendingFilterLabel],
+  );
+
   const photoRows = useMemo(() => {
-    if (useStaticKioskScrollMode) {
+    if (useStaticPhotoGridMode) {
+      return [];
+    }
+    if (displayPhotos.length === 0) {
       return [];
     }
     const w = viewport.width;
@@ -1838,7 +2060,7 @@ const PhotoDashboard: React.FC = () => {
     const numRows = isSingleRowLandscape
       ? 1
       : Math.max(1, Math.min(tapeNumRows, maxRowsByDensity));
-    if (numRows <= 0 || displayPhotos.length === 0) {
+    if (numRows <= 0) {
       return [];
     }
 
@@ -1846,19 +2068,20 @@ const PhotoDashboard: React.FC = () => {
       { length: numRows },
       () => [],
     );
-    displayPhotos.forEach((photo, index) => {
+    for (let index = 0; index < displayPhotos.length; index += 1) {
+      const photo = displayPhotos[index];
       const stableKey = getStableRowKey(photo, index);
       const rowIndex = stableHash(stableKey) % numRows;
       rows[rowIndex].push(photo);
-    });
+    }
 
     return rows;
   }, [
     displayPhotos,
     tapeNumRows,
+    useStaticPhotoGridMode,
     isKiosk,
     isFullscreen,
-    useStaticKioskScrollMode,
     viewport.width,
     viewport.height,
     viewport.resolutionTier,
@@ -1964,7 +2187,25 @@ const PhotoDashboard: React.FC = () => {
   useEffect(() => {
     if (photoRows.length === 0) {
       setActiveCardCoords(null);
+      setActivePhotoKey(null);
       return;
+    }
+
+    if (activePhotoKey) {
+      for (let rowIndex = 0; rowIndex < photoRows.length; rowIndex += 1) {
+        const colIndex = photoRows[rowIndex].findIndex(
+          (photo) => photo != null && getPhotoIdentity(photo) === activePhotoKey,
+        );
+        if (colIndex >= 0) {
+          setActiveCardCoords((prev) => {
+            if (prev && prev.row === rowIndex && prev.col === colIndex) {
+              return prev;
+            }
+            return { row: rowIndex, col: colIndex };
+          });
+          return;
+        }
+      }
     }
 
     setActiveCardCoords((prev) => {
@@ -1973,12 +2214,21 @@ const PhotoDashboard: React.FC = () => {
       const rowLen = photoRows[row]?.length ?? 0;
       if (rowLen <= 0) return { row: 0, col: 0 };
       const col = Math.min(prev.col, rowLen - 1);
+      if (prev.row === row && prev.col === col) return prev;
       return { row, col };
     });
-  }, [photoRows]);
+  }, [activePhotoKey, photoRows]);
 
   useEffect(() => {
-    if (useStaticKioskScrollMode) {
+    if (!activeCardCoords) return;
+    const activePhoto = photoRows[activeCardCoords.row]?.[activeCardCoords.col];
+    if (!activePhoto) return;
+    const nextPhotoKey = getPhotoIdentity(activePhoto);
+    setActivePhotoKey((prev) => (prev === nextPhotoKey ? prev : nextPhotoKey));
+  }, [activeCardCoords, photoRows]);
+
+  useEffect(() => {
+    if (useStaticPhotoGridMode) {
       return;
     }
     const isTypingTarget = (target: EventTarget | null): boolean => {
@@ -2009,7 +2259,9 @@ const PhotoDashboard: React.FC = () => {
       if (hasArrow) {
         e.preventDefault();
         const next = getNextCardCoords(current.row, current.col, e.key);
-        setActiveCardCoords(next);
+        setActiveCardCoords((prev) =>
+          prev?.row === next.row && prev?.col === next.col ? prev : next,
+        );
         focusCardByCoords(next.row, next.col);
         return;
       }
@@ -2029,7 +2281,7 @@ const PhotoDashboard: React.FC = () => {
     activeCardCoords,
     getNextCardCoords,
     focusCardByCoords,
-    useStaticKioskScrollMode,
+    useStaticPhotoGridMode,
   ]);
 
   const renderPhotoCard = useCallback(
@@ -2043,51 +2295,35 @@ const PhotoDashboard: React.FC = () => {
       isClone = false,
       enableArrowNavigation = true,
     ) => {
+      const photoIdentity = getPhotoIdentity(photo);
+      const photoKey =
+        photo.id != null ? photoIdentity : getPhotoIdentity(photo, keyIndex);
+      const isActionableCard = isInteractive && !isClone;
+      const canTrackActiveCard = isActionableCard && enableArrowNavigation;
       const uiStatus = resolvePhotoUiStatus(photo);
       const statusMeta = PHOTO_STATUS_STYLE[uiStatus];
-      const hasSuspiciousFrame = statusMeta.borderClass.length > 0;
-      const isCheckCard = uiStatus === "check" || uiStatus === "check_error";
-      const frameClassName = hasSuspiciousFrame
-        ? `photo-electric-border ${statusMeta.borderClass} w-full flex-1 flex flex-col min-h-0 rounded-2xl`
-        : "w-full flex-1 flex flex-col min-h-0 rounded-2xl";
-      const innerClassName = hasSuspiciousFrame
-        ? "photo-electric-border-inner flex flex-col flex-1 overflow-hidden rounded-2xl relative"
-        : "flex flex-col flex-1 overflow-hidden rounded-2xl relative bg-white dark:bg-gray-800";
       const cardBody = (
-        <>
-          <div className={frameClassName}>
-            <div className={innerClassName}>
-              <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
-                <div className="photo-shine-overlay" aria-hidden />
-                {statusMeta.showBadgeOnCard && (
-                  <div
-                    className={`absolute left-2 top-2 z-20 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold shadow-md backdrop-blur-sm ${statusMeta.badgeClass}`}
-                  >
-                    <FaShieldAlt className="h-3 w-3" />
-                    <span>{statusMeta.label}</span>
-                  </div>
-                )}
-                <PhotoCardImage photo={photo} isClone={isClone} />
+        <div className="w-full flex-1 flex flex-col min-h-0 overflow-hidden rounded-2xl bg-white dark:bg-gray-800">
+          <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
+            {statusMeta.showBadgeOnCard && (
+              <div
+                className={`absolute left-2 top-2 z-20 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold shadow backdrop-blur-sm ${statusMeta.badgeClass}`}
+              >
+                <FaShieldAlt className="h-3 w-3" />
+                <span>{statusMeta.label}</span>
               </div>
-              {renderCardMeta(photo)}
-            </div>
+            )}
+            <PhotoCardImage photo={photo} isClone={isClone} />
           </div>
-        </>
+          {renderCardMeta(photo)}
+        </div>
       );
 
-      if (!isInteractive) {
+      if (!isActionableCard) {
         return (
           <article
-            key={
-              photo.id != null
-                ? `photo-${photo.id}`
-                : `${photo.photoUrl}-${photo.attendanceTime}-${keyIndex}`
-            }
-            className={`photo-item group relative flex-shrink-0 w-[220px] sm:w-[260px] md:w-[280px] lg:w-[300px] rounded-2xl md:rounded-3xl select-none flex flex-col transition-all duration-300 overflow-hidden bg-white/95 dark:bg-gray-800/95 ring-1 ring-white/80 dark:ring-gray-700/90 shadow-[0_12px_30px_-20px_rgba(15,23,42,0.7)] ${
-              isCheckCard
-                ? "ring-2 ring-amber-300/85 dark:ring-amber-400/50 shadow-[0_16px_34px_-22px_rgba(245,158,11,0.78)]"
-                : ""
-            }`}
+            key={photoKey}
+            className={`photo-item group relative flex-shrink-0 w-[220px] sm:w-[260px] md:w-[280px] lg:w-[300px] rounded-2xl md:rounded-3xl select-none flex flex-col transition-shadow duration-300 overflow-hidden bg-white/95 dark:bg-gray-800/95 ring-1 ring-white/80 dark:ring-gray-700/90 shadow-[0_12px_30px_-20px_rgba(15,23,42,0.7)] ${statusMeta.cardClass}`}
             style={
               kioskCardWidth != null ? { width: kioskCardWidth } : undefined
             }
@@ -2100,34 +2336,40 @@ const PhotoDashboard: React.FC = () => {
 
       return (
         <motion.article
-          key={
-            photo.id != null
-              ? `photo-${photo.id}`
-              : `${photo.photoUrl}-${photo.attendanceTime}-${keyIndex}`
-          }
+          key={photoKey}
           initial={false}
-          className={`photo-item group relative flex-shrink-0 w-[220px] sm:w-[260px] md:w-[280px] lg:w-[300px] rounded-2xl md:rounded-3xl cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60 focus-visible:ring-offset-2 flex flex-col transition-all duration-300 overflow-hidden bg-white/95 dark:bg-gray-800/95 ring-1 ring-white/80 dark:ring-gray-700/90 shadow-[0_12px_30px_-20px_rgba(15,23,42,0.7)] hover:shadow-[0_20px_45px_-25px_rgba(37,99,235,0.55)] hover:ring-primary-300/70 dark:hover:ring-primary-400/45 ${
-            isCheckCard
-              ? "ring-2 ring-amber-300/85 dark:ring-amber-400/50 shadow-[0_16px_34px_-22px_rgba(245,158,11,0.78)]"
-              : ""
-          }`}
+          className={`photo-item group relative flex-shrink-0 w-[220px] sm:w-[260px] md:w-[280px] lg:w-[300px] rounded-2xl md:rounded-3xl cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60 focus-visible:ring-offset-2 flex flex-col transition-shadow duration-300 overflow-hidden bg-white/95 dark:bg-gray-800/95 ring-1 ring-white/80 dark:ring-gray-700/90 shadow-[0_12px_30px_-20px_rgba(15,23,42,0.7)] hover:shadow-[0_20px_45px_-25px_rgba(37,99,235,0.55)] hover:ring-primary-300/70 dark:hover:ring-primary-400/45 ${statusMeta.cardClass}`}
           style={kioskCardWidth != null ? { width: kioskCardWidth } : undefined}
           onClick={() => setSelectedPhoto(photo)}
-          onMouseEnter={() => setHoveredCardKey(`r${rowIndex}-i${cardIndex}`)}
-          onMouseLeave={() => setHoveredCardKey(null)}
-          onTouchStart={() => setHoveredCardKey(`r${rowIndex}-i${cardIndex}`)}
-          onTouchEnd={() => setHoveredCardKey(null)}
+          onMouseEnter={() => setHoveredPhotoKey(photoIdentity)}
+          onMouseLeave={() => setHoveredPhotoKey(null)}
+          onTouchStart={() => setHoveredPhotoKey(photoIdentity)}
+          onTouchEnd={() => setHoveredPhotoKey(null)}
           onFocus={() => {
-            setHoveredCardKey(`r${rowIndex}-i${cardIndex}`);
-            setActiveCardCoords({ row: rowIndex, col: cardIndex });
+            setHoveredPhotoKey(photoIdentity);
+            if (canTrackActiveCard) {
+              setActiveCardCoords((prev) =>
+                prev?.row === rowIndex && prev?.col === cardIndex
+                  ? prev
+                  : { row: rowIndex, col: cardIndex },
+              );
+              setActivePhotoKey(photoIdentity);
+            }
           }}
           onBlur={() =>
-            setHoveredCardKey((prev) =>
-              prev === `r${rowIndex}-i${cardIndex}` ? null : prev,
+            setHoveredPhotoKey((prev) =>
+              prev === photoIdentity ? null : prev,
             )
           }
           onMouseMove={() => {
-            setActiveCardCoords({ row: rowIndex, col: cardIndex });
+            if (canTrackActiveCard) {
+              setActiveCardCoords((prev) =>
+                prev?.row === rowIndex && prev?.col === cardIndex
+                  ? prev
+                  : { row: rowIndex, col: cardIndex },
+              );
+              setActivePhotoKey(photoIdentity);
+            }
           }}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
@@ -2151,19 +2393,20 @@ const PhotoDashboard: React.FC = () => {
             focusCardByCoords(next.row, next.col);
           }}
           role="button"
-          tabIndex={isInteractive ? 0 : -1}
-          aria-hidden={isInteractive ? undefined : true}
+          tabIndex={0}
+          aria-hidden={undefined}
           aria-label={`${photo.staffFullName}, ${photo.department}`}
           ref={(el) => {
             const key = `r${rowIndex}-i${cardIndex}`;
-            if (isInteractive) {
+            if (canTrackActiveCard) {
               cardRefs.current.set(key, el);
             } else {
               cardRefs.current.delete(key);
             }
           }}
-          whileHover={{ y: -4 }}
-          whileTap={{ scale: 0.98 }}
+          whileHover={{ y: -5 }}
+          whileTap={{ scale: 0.975 }}
+          transition={{ type: "spring", damping: 22, stiffness: 340, mass: 0.75 }}
         >
           {cardBody}
         </motion.article>
@@ -2171,6 +2414,13 @@ const PhotoDashboard: React.FC = () => {
     },
     [renderCardMeta, focusCardByCoords, getNextCardCoords],
   );
+
+  const isMarqueePaused =
+    !useStaticPhotoGridMode &&
+    (!!selectedPhoto ||
+      !!hoveredPhotoKey ||
+      isDisplayFilterPending ||
+      !isPageVisible);
 
   const renderPhotos = () => (
     <div
@@ -2184,7 +2434,7 @@ const PhotoDashboard: React.FC = () => {
         </p>
       )}
       <div
-        className={`mx-auto w-full max-w-[1500px] flex-shrink-0 ${
+        className={`mx-auto w-full max-w-[1500px] flex-shrink-0 relative ${
           isFullscreen
             ? "mb-1.5 rounded-xl border border-white/55 dark:border-slate-700/70 bg-white/65 dark:bg-slate-900/45 backdrop-blur-md px-2 py-1.5 shadow-lg lg:mb-4 lg:rounded-2xl lg:px-5 lg:py-3"
             : isKiosk
@@ -2192,146 +2442,226 @@ const PhotoDashboard: React.FC = () => {
               : "mb-4"
         }`}
       >
-        <div
-          className={`flex flex-wrap items-center justify-between ${
-            isFullscreen || isKiosk ? "gap-2 lg:gap-4" : "gap-3 md:gap-4"
-          }`}
-        >
-          <div className="min-w-0">
-            <h1
-              className={`font-semibold text-gray-800 dark:text-white truncate ${
-                isFullscreen || isKiosk
-                  ? "text-sm sm:text-base lg:text-xl xl:text-2xl"
-                  : "text-lg sm:text-xl md:text-2xl"
-              }`}
-            >
-              {pageTitle}
-            </h1>
-            <p
-              className={`text-gray-600 dark:text-gray-300 ${
-                isFullscreen || isKiosk
-                  ? "mt-0 text-[10px] sm:text-xs lg:text-sm"
-                  : "mt-0.5 text-[11px] sm:text-xs md:text-sm"
-              }`}
-            >
-              {pageSubtitle}
-            </p>
-          </div>
-          <div
-            className={`flex flex-wrap items-center ${
-              isFullscreen || isKiosk
-                ? "gap-1.5 sm:gap-2 lg:gap-4"
-                : "gap-2 sm:gap-3 md:gap-4"
-            }`}
-          >
-            {(photos.length > 0 || showRiskOnly) && (
-              <Toggle
-                checked={showRiskOnly}
-                onChange={(v) => startTransition(() => setShowRiskOnly(v))}
-                labelPosition="left"
-                label={riskToggleLabel}
-                ariaLabel={
-                  showRiskOnly
-                    ? "Показывать все статусы фото"
-                    : "Показывать требующие проверки"
-                }
-                variant="rose"
-                className={
-                  isFullscreen || isKiosk
-                    ? "text-[10px] sm:text-xs lg:text-sm"
-                    : "text-xs sm:text-sm"
-                }
-              />
-            )}
-            {photos.length > 0 && (
-              <Toggle
-                checked={showAllPhotos}
-                onChange={(v) => startTransition(() => setShowAllPhotos(v))}
-                disabled={showRiskOnly}
-                labelPosition="left"
-                label={toggleLabel}
-                ariaLabel={
-                  showAllPhotos
-                    ? "Показать только последние фото"
-                    : "Показать все фото за день"
-                }
-                className={
-                  isFullscreen || isKiosk
-                    ? "text-[10px] sm:text-xs lg:text-sm"
-                    : "text-xs sm:text-sm"
-                }
-              />
-            )}
-            <motion.button
-              onClick={handleFullscreenToggle}
-              disabled={isFullscreenBusy}
-              className={`flex items-center gap-1.5 rounded-lg font-semibold text-white transition-colors ${
-                isFullscreen || isKiosk
-                  ? "px-2 py-1 text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-sm"
-                  : "gap-2 px-3.5 py-1.5 text-xs md:px-4 md:py-2 md:text-sm"
-              } ${
-                isFullscreenBusy
-                  ? "bg-primary-400 cursor-not-allowed"
-                  : "bg-primary-600 hover:bg-primary-700"
-              }`}
-              aria-label={
-                isFullscreen
-                  ? "Выйти из полноэкранного режима"
-                  : "Полноэкранный режим"
-              }
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              {isFullscreen && !isFullscreenBusy ? (
-                <FaCompress
-                  className={`${isFullscreen || isKiosk ? "w-3.5 h-3.5 lg:w-4 lg:h-4" : "w-4 h-4"}`}
-                />
-              ) : (
-                <FaExpand
-                  className={`${isFullscreen || isKiosk ? "w-3.5 h-3.5 lg:w-4 lg:h-4" : "w-4 h-4"}`}
+        {isFullscreen || isKiosk ? (
+          /* ── Compact header: kiosk / fullscreen ─────────────────────── */
+          <div className="flex items-center justify-between gap-2 lg:gap-4">
+            <div className="min-w-0 flex-1">
+              <h1 className="font-semibold text-gray-800 dark:text-white truncate text-sm sm:text-base lg:text-xl xl:text-2xl">
+                {pageTitle}
+              </h1>
+              <p className="text-gray-600 dark:text-gray-300 mt-0 text-[10px] sm:text-xs lg:text-sm">
+                {pageSubtitle}
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 sm:gap-2 lg:gap-4 shrink-0">
+              {(photos.length > 0 || showRiskOnly) && (
+                <Toggle
+                  checked={showRiskOnly}
+                  onChange={handleRiskOnlyToggleChange}
+                  labelPosition="left"
+                  label={riskToggleLabel}
+                  ariaLabel={
+                    showRiskOnly
+                      ? "Показывать все статусы фото"
+                      : "Показывать требующие проверки"
+                  }
+                  variant="rose"
+                  className="text-[10px] sm:text-xs lg:text-sm"
                 />
               )}
-              <span>
-                {isFullscreenBusy
-                  ? isFullscreen
-                    ? "Выход..."
-                    : "Открытие..."
-                  : isFullscreen
-                    ? "Выход"
-                    : "Полный экран"}
+              {photos.length > 0 && (
+                <Toggle
+                  checked={showAllPhotos}
+                  onChange={handleShowAllPhotosToggleChange}
+                  disabled={showRiskOnly}
+                  labelPosition="left"
+                  label={toggleLabel}
+                  ariaLabel={
+                    showAllPhotos
+                      ? "Показать только последние фото"
+                      : "Показать все фото за день"
+                  }
+                  className="text-[10px] sm:text-xs lg:text-sm"
+                />
+              )}
+              <motion.button
+                onClick={handleFullscreenToggle}
+                disabled={isFullscreenBusy}
+                className={`flex items-center gap-1 rounded-lg font-semibold text-white transition-colors px-2 py-1 text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-sm ${
+                  isFullscreenBusy
+                    ? "bg-primary-400 cursor-not-allowed"
+                    : "bg-primary-600 hover:bg-primary-700"
+                }`}
+                aria-label={
+                  isFullscreen
+                    ? "Выйти из полноэкранного режима"
+                    : "Полноэкранный режим"
+                }
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                {isFullscreen && !isFullscreenBusy ? (
+                  <FaCompress className="w-3.5 h-3.5 lg:w-4 lg:h-4" />
+                ) : (
+                  <FaExpand className="w-3.5 h-3.5 lg:w-4 lg:h-4" />
+                )}
+                <span>
+                  {isFullscreenBusy
+                    ? isFullscreen
+                      ? "Выход..."
+                      : "Открытие..."
+                    : isFullscreen
+                      ? "Выход"
+                      : "Полный экран"}
+                </span>
+              </motion.button>
+              <span className="inline-flex items-center gap-1 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2 py-1 text-[10px] sm:text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-base">
+                <FaRegCalendarAlt className="opacity-80 w-3 h-3 lg:w-4 lg:h-4" />
+                <span className="capitalize">{todayLabel}</span>
               </span>
-            </motion.button>
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap ${
-                isFullscreen || isKiosk
-                  ? "px-2 py-1 text-[10px] sm:text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-base"
-                  : "gap-2 px-2.5 py-1.5 text-xs sm:px-3 sm:text-sm md:px-4 md:py-2 md:text-base"
-              }`}
-            >
-              <FaRegCalendarAlt
-                className={`opacity-80 ${isFullscreen || isKiosk ? "w-3 h-3 lg:w-4 lg:h-4" : "w-3.5 h-3.5 md:w-4 md:h-4"}`}
-              />
-              <span className="capitalize">{todayLabel}</span>
-            </span>
+            </div>
           </div>
-        </div>
+        ) : (
+          /* ── Two-row header: normal mode ─────────────────────────────
+           *  Row 1: page identity (title + subtitle) on the left,
+           *         date badge anchored on the right — these never shift.
+           *  Row 2: filter controls on the left, fullscreen on the right —
+           *         completely separated from Row 1 so dynamic label text
+           *         (e.g. "Все фото (риск: 12)") never pushes the title.
+           * ─────────────────────────────────────────────────────────── */
+          <div className="flex flex-col gap-2 sm:gap-3">
+            {/* Row 1 — identity + date */}
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <h1 className="text-lg sm:text-xl md:text-2xl font-semibold text-gray-800 dark:text-white truncate">
+                  {pageTitle}
+                </h1>
+                <p className="mt-0.5 text-[11px] sm:text-xs md:text-sm text-gray-600 dark:text-gray-300">
+                  {pageSubtitle}
+                </p>
+              </div>
+              <span className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2.5 py-1.5 text-xs sm:gap-2 sm:px-3 sm:text-sm md:px-4 md:py-2 md:text-base">
+                <FaRegCalendarAlt className="w-3.5 h-3.5 md:w-4 md:h-4 opacity-80" />
+                <span className="capitalize">{todayLabel}</span>
+              </span>
+            </div>
+            {/* Row 2 — filter toggles (left) + fullscreen button (right) */}
+            <div className="flex items-center gap-2 sm:gap-3 md:gap-4">
+              {(photos.length > 0 || showRiskOnly) && (
+                <Toggle
+                  checked={showRiskOnly}
+                  onChange={handleRiskOnlyToggleChange}
+                  labelPosition="left"
+                  label={riskToggleLabel}
+                  ariaLabel={
+                    showRiskOnly
+                      ? "Показывать все статусы фото"
+                      : "Показывать требующие проверки"
+                  }
+                  variant="rose"
+                  className="text-xs sm:text-sm"
+                />
+              )}
+              {photos.length > 0 && (photos.length > 0 || showRiskOnly) && (
+                <div
+                  className="w-px h-4 shrink-0 bg-gray-200 dark:bg-gray-700"
+                  aria-hidden
+                />
+              )}
+              {photos.length > 0 && (
+                <Toggle
+                  checked={showAllPhotos}
+                  onChange={handleShowAllPhotosToggleChange}
+                  disabled={showRiskOnly}
+                  labelPosition="left"
+                  label={toggleLabel}
+                  ariaLabel={
+                    showAllPhotos
+                      ? "Показать только последние фото"
+                      : "Показать все фото за день"
+                  }
+                  className="text-xs sm:text-sm"
+                />
+              )}
+              <motion.button
+                onClick={handleFullscreenToggle}
+                disabled={isFullscreenBusy}
+                className={`ml-auto shrink-0 flex items-center gap-2 rounded-lg font-semibold text-white transition-colors px-3.5 py-1.5 text-xs md:px-4 md:py-2 md:text-sm ${
+                  isFullscreenBusy
+                    ? "bg-primary-400 cursor-not-allowed"
+                    : "bg-primary-600 hover:bg-primary-700"
+                }`}
+                aria-label="Полноэкранный режим"
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                <FaExpand className="w-4 h-4" />
+                <span>{isFullscreenBusy ? "Открытие…" : "Полный экран"}</span>
+              </motion.button>
+            </div>
+          </div>
+        )}
+        {/* Pending filter banner — absolutely positioned so it overlays
+            the first photo row instead of pushing the rows down. */}
+        <AnimatePresence initial={false}>
+          {shouldShowPendingFilterUi && (
+            <motion.div
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ type: "spring", damping: 28, stiffness: 340, mass: 0.7 }}
+              className="absolute left-0 right-0 top-full mt-2 z-30 flex justify-center pointer-events-none"
+            >
+              <div className="pointer-events-auto w-full max-w-lg rounded-[22px] border border-white/20 dark:border-primary-400/20 bg-slate-900/45 dark:bg-slate-900/60 px-5 py-3.5 shadow-[0_20px_60px_-28px_rgba(37,99,235,0.7)] backdrop-blur-2xl">
+                <LoaderComponent
+                  fullscreen={false}
+                  compact
+                  inline
+                  variant="bars"
+                  className="min-h-0 w-full justify-center text-slate-100 dark:text-primary-100"
+                  message={pendingFilterLabel}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
-      {useStaticKioskScrollMode ? (
-        <div
-          ref={containerRef}
-          className="mx-auto w-full max-w-[1700px] flex-1 min-h-0 px-4 sm:px-6 md:px-8 lg:px-10 pb-4 sm:pb-5 md:pb-6"
-          style={{
-            paddingBottom: "max(1rem, env(safe-area-inset-bottom, 0px))",
-          }}
+      <div style={displayContentStyle}>
+        <AnimatePresence initial={false}>
+        <motion.div
+          key={viewMode}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.22, ease: "easeOut" }}
         >
-          <div className="h-full overflow-y-auto overflow-x-hidden pr-1 [scrollbar-width:thin]">
-            {displayPhotos.length === 0 ? (
-              renderNoPhotosForFilter()
-            ) : (
+        {!hasDisplayPhotos ? (
+          loading ? null : (
+            <div className="mx-auto w-full max-w-[1700px] flex-1 min-h-0 px-4 sm:px-6 md:px-8 lg:px-10 pb-4 sm:pb-5 md:pb-6">
+              {shouldShowPendingFilterUi
+                ? renderFilterTransitionState()
+                : renderEmptyStateCard()}
+            </div>
+          )
+        ) : useStaticPhotoGridMode ? (
+          <div
+            ref={containerRef}
+            className="mx-auto w-full max-w-[1700px] flex-1 min-h-0 px-4 sm:px-6 md:px-8 lg:px-10 pb-4 sm:pb-5 md:pb-6"
+            style={{
+              paddingBottom: "max(1rem, env(safe-area-inset-bottom, 0px))",
+            }}
+          >
+            <div
+              className={
+                isKiosk || isFullscreen
+                  ? "h-full overflow-y-auto overflow-x-hidden pr-1 [scrollbar-width:thin]"
+                  : "overflow-visible"
+              }
+            >
               <div
                 className="flex flex-wrap items-start justify-center gap-3 sm:gap-4 md:gap-5 py-2 sm:py-3 md:py-4"
-                onMouseLeave={() => setHoveredCardKey(null)}
+                onMouseLeave={() => setHoveredPhotoKey(null)}
               >
                 {displayPhotos.map((photo, index) =>
                   renderPhotoCard(
@@ -2346,38 +2676,34 @@ const PhotoDashboard: React.FC = () => {
                   ),
                 )}
               </div>
-            )}
+            </div>
           </div>
-        </div>
-      ) : (
-        <div
-          className={`photo-marquee-lux-edges ${
-            isKiosk || isFullscreen ? "photo-marquee-lux-edges-kiosk" : ""
-          }`}
-        >
+        ) : (
           <div
-            ref={containerRef}
-            className={`[scrollbar-width:none] [-ms-overflow-style:none] ${
-              isKiosk
-                ? "photo-kiosk-marquee-mask flex-1 min-h-0 flex flex-col overflow-x-hidden overflow-y-hidden px-4 sm:px-6 md:px-8 lg:px-10 py-2 sm:py-3 md:py-4 pb-4 sm:pb-5 md:pb-6"
-                : "overflow-x-hidden overflow-y-visible py-4 pb-8 px-4 md:px-6"
+            className={`photo-marquee-lux-edges ${
+              isKiosk || isFullscreen ? "photo-marquee-lux-edges-kiosk" : ""
             }`}
-            style={
-              isKiosk
-                ? {
-                    paddingBottom:
-                      "max(1rem, env(safe-area-inset-bottom, 0px))",
-                  }
-                : undefined
-            }
           >
             <div
-              className={`flex flex-col flex-1 min-h-0 ${isKiosk ? "gap-2 sm:gap-3 md:gap-4 lg:gap-5 py-1 justify-center" : "gap-4 md:gap-5 py-3 md:py-4"}`}
+              ref={containerRef}
+              className={`[scrollbar-width:none] [-ms-overflow-style:none] ${
+                isKiosk
+                  ? "photo-kiosk-marquee-mask flex-1 min-h-0 flex flex-col overflow-x-hidden overflow-y-hidden px-4 sm:px-6 md:px-8 lg:px-10 py-2 sm:py-3 md:py-4 pb-4 sm:pb-5 md:pb-6"
+                  : "overflow-x-hidden overflow-y-visible py-4 pb-8 px-4 md:px-6"
+              }`}
+              style={
+                isKiosk
+                  ? {
+                      paddingBottom:
+                        "max(1rem, env(safe-area-inset-bottom, 0px))",
+                    }
+                  : undefined
+              }
             >
-              {displayPhotos.length === 0 ? (
-                renderNoPhotosForFilter()
-              ) : (
-                photoRows.map((rowPhotos, rowIndex) => (
+              <div
+                className={`flex flex-col flex-1 min-h-0 ${isKiosk ? "gap-2 sm:gap-3 md:gap-4 lg:gap-5 py-1 justify-center" : "gap-4 md:gap-5 py-3 md:py-4"}`}
+              >
+                {photoRows.map((rowPhotos, rowIndex) => (
                   <div
                     key={rowIndex}
                     className={
@@ -2386,17 +2712,22 @@ const PhotoDashboard: React.FC = () => {
                         : "overflow-x-hidden overflow-y-visible py-4 md:py-5"
                     }
                     style={{ minHeight: 1 }}
-                    onMouseLeave={() => setHoveredCardKey(null)}
+                    onMouseLeave={() => setHoveredPhotoKey(null)}
                   >
                     <MarqueeTrack
                       items={rowPhotos}
                       rowIndex={rowIndex}
                       speedPxSec={marqueeSpeed}
-                      isPaused={!!selectedPhoto || !!hoveredCardKey}
+                      isPaused={isMarqueePaused}
                       hoverSpeed={MARQUEE_HOVER_SPEED}
                       cardWidthPx={cardWidthPx}
-                      forceLoop={showRiskOnly}
-                      renderItem={(photo, displayIndex, copyIndex, itemIndex) => {
+                      forceLoop={!isFreshMode}
+                      renderItem={(
+                        photo,
+                        displayIndex,
+                        copyIndex,
+                        itemIndex,
+                      ) => {
                         if (photo == null) {
                           return (
                             <div
@@ -2419,7 +2750,7 @@ const PhotoDashboard: React.FC = () => {
                           keyIndex,
                           rowIndex,
                           cardIndex,
-                          true,
+                          copyIndex === 0,
                           kioskNarrowViewport ? cardWidthPx : undefined,
                           copyIndex > 0,
                           true,
@@ -2427,12 +2758,14 @@ const PhotoDashboard: React.FC = () => {
                       }}
                     />
                   </div>
-                ))
-              )}
+                ))}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+        </motion.div>
+        </AnimatePresence>
+      </div>
     </div>
   );
 
@@ -2579,11 +2912,12 @@ const PhotoDashboard: React.FC = () => {
 
   return (
     <div>
-      {loading
-        ? renderLoading()
-        : photos.length === 0 && !showRiskOnly
-          ? renderNoPhotos()
-          : renderPhotos()}
+      {/* Content is always mounted so the marquee can measure and the header
+          is immediately visible. The loader overlays it via fixed positioning. */}
+      {renderPhotos()}
+
+      {/* Fixed-center overlay loader — exits/enters with opacity only, zero layout shift */}
+      <AnimatePresence>{loading && renderLoading()}</AnimatePresence>
 
       {renderSelectedPhoto()}
     </div>
