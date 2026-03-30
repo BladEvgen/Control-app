@@ -8,10 +8,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
-from openpyxl import load_workbook
-from rest_framework import status
-from rest_framework.test import APITestCase
-
+from monitoring_app.cache_conf import Cache
 from monitoring_app.models import (
     APIKey,
     ChildDepartment,
@@ -22,7 +19,9 @@ from monitoring_app.models import (
     StaffAttendance,
 )
 from monitoring_app.services import building_attendance_report
-
+from openpyxl import load_workbook
+from rest_framework import status
+from rest_framework.test import APITestCase
 
 ABILAI_ADDRESS = "Проспект Абылай хана, 51/53"
 TOREKULOVA_ADDRESS = "Улица Торекулова, 71"
@@ -43,6 +42,37 @@ def _workbook_snapshot(raw_bytes: bytes) -> dict[str, list[tuple[object, ...]]]:
             rows.append(normalized)
         snapshot[sheet.title] = rows
     return snapshot
+
+
+def _get_attendance_cell_value(
+    raw_bytes: bytes,
+    *,
+    staff_fio: str,
+    target_day: datetime.date,
+) -> object:
+    workbook = load_workbook(BytesIO(raw_bytes), data_only=True)
+    worksheet = workbook["Отчет посещаемости"]
+    target_header = target_day.strftime("%d.%m.%Y")
+
+    header_row_idx = None
+    target_col_idx = None
+    for row in worksheet.iter_rows():
+        values = [cell.value for cell in row]
+        if "ФИО" not in values or target_header not in values:
+            continue
+        header_row_idx = row[0].row
+        target_col_idx = values.index(target_header) + 1
+        break
+
+    if header_row_idx is None or target_col_idx is None:
+        raise AssertionError(f"Date column {target_header} not found in workbook")
+
+    for row_idx in range(header_row_idx + 1, worksheet.max_row + 1):
+        if worksheet.cell(row=row_idx, column=1).value != staff_fio:
+            continue
+        return worksheet.cell(row=row_idx, column=target_col_idx).value
+
+    raise AssertionError(f"Staff row {staff_fio} not found in workbook")
 
 
 class BuildingAttendanceReportServiceTests(TestCase):
@@ -73,7 +103,9 @@ class BuildingAttendanceReportServiceTests(TestCase):
         staff.positions.add(self.student_position)
         return staff
 
-    def _create_sa(self, staff: Staff, event_day: datetime.date, area_name: str) -> None:
+    def _create_sa(
+        self, staff: Staff, event_day: datetime.date, area_name: str
+    ) -> None:
         StaffAttendance.objects.create(
             staff=staff,
             date_at=event_day + datetime.timedelta(days=1),
@@ -244,6 +276,58 @@ class BuildingAttendanceReportServiceTests(TestCase):
         self.assertEqual(row["day_total_students"], 5)
         self.assertEqual(row["pct"], 100.0)
 
+    def test_excludes_entire_staff_day_when_any_lesson_is_suspicious(self):
+        student = self._create_student("S1400S", self.dept_a)
+        target_day = datetime.date(2026, 3, 14)
+
+        self._create_la(
+            student,
+            target_day,
+            latitude=43.2389,
+            longitude=76.8897,
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+        )
+        self._create_la(
+            student,
+            target_day,
+            latitude=43.2389,
+            longitude=76.8897,
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+        )
+
+        result = building_attendance_report.build_building_attendance_report_excel(
+            date_from=target_day,
+            date_to=target_day,
+            days_with_data=7,
+        )
+
+        self.assertEqual(result.selected_dates, [])
+        self.assertEqual(result.daily_rows, [])
+        self.assertEqual(result.summary_rows, [])
+
+    def test_keeps_day_when_staff_attendance_exists_even_if_lesson_is_suspicious(self):
+        student = self._create_student("S1401S", self.dept_a)
+        target_day = datetime.date(2026, 3, 15)
+
+        self._create_sa(student, target_day, "цос")
+        self._create_la(
+            student,
+            target_day,
+            latitude=43.2389,
+            longitude=76.8897,
+            manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS,
+        )
+
+        result = building_attendance_report.build_building_attendance_report_excel(
+            date_from=target_day,
+            date_to=target_day,
+            days_with_data=7,
+        )
+
+        self.assertEqual(result.selected_dates, [target_day])
+        self.assertEqual(len(result.daily_rows), 1)
+        self.assertEqual(result.daily_rows[0]["students_count"], 1)
+
     def test_deduplicates_staff_between_sa_and_la_with_sa_priority(self):
         student = self._create_student("S104S", self.dept_a)
         target_day = datetime.date(2026, 3, 10)
@@ -337,6 +421,7 @@ class BuildingAttendanceReportServiceTests(TestCase):
 class BuildingAttendanceReportApiAndCommandTests(APITestCase):
     def setUp(self):
         super().setUp()
+        Cache.clear()
         self.student_position = Position.objects.create(name="Студент")
         self.department = ChildDepartment.objects.create(id="D-API", name="Кафедра API")
         self.staff = Staff.objects.create(
@@ -444,3 +529,183 @@ class BuildingAttendanceReportApiAndCommandTests(APITestCase):
             )
             forced_from_wrong = Path(f"{tmp_dir}/my_report.xlsx")
             self.assertTrue(forced_from_wrong.exists())
+
+
+class DepartmentAttendanceExcelTests(APITestCase):
+    def setUp(self):
+        super().setUp()
+        Cache.clear()
+        self.student_position = Position.objects.create(name="Студент")
+        self.department = ChildDepartment.objects.create(
+            id="D-EXCEL",
+            name="Кафедра Excel",
+        )
+        self.staff = Staff.objects.create(
+            pin="S300S",
+            name="Api",
+            surname="Student",
+            department=self.department,
+        )
+        self.staff.positions.add(self.student_position)
+        ClassLocation.objects.create(
+            name="Абылай",
+            address=ABILAI_ADDRESS,
+            latitude=43.2389,
+            longitude=76.8897,
+        )
+        self.target_day = datetime.date(2026, 3, 10)
+
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            username="department-excel-user",
+            password="strong-pass-123",
+        )
+        self.api_key = APIKey.objects.create(
+            key_name="department-excel-api-key",
+            created_by=self.user,
+        )
+        self.client.credentials(HTTP_X_API_KEY=self.api_key.key)
+
+    def _create_lesson(
+        self,
+        *,
+        hour: int,
+        auto_status: str = LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+        manual_verdict: str = LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+    ) -> None:
+        LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=_aware_dt(self.target_day, hour, 0),
+            last_out=_aware_dt(self.target_day, hour + 1, 0),
+            latitude=43.2389,
+            longitude=76.8897,
+            date_at=self.target_day,
+            photo_spoof_status=auto_status,
+            photo_manual_verdict=manual_verdict,
+        )
+
+    def _create_sa(self) -> None:
+        StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=self.target_day + datetime.timedelta(days=1),
+            first_in=_aware_dt(self.target_day, 8, 30),
+            last_out=_aware_dt(self.target_day, 14, 30),
+            area_name_in="цос",
+            area_name_out="цос",
+        )
+
+    def _download_excel(self):
+        response = self.client.get(
+            reverse("sent_excel", kwargs={"department_id": self.department.id}),
+            {
+                "startDate": self.target_day.isoformat(),
+                "endDate": self.target_day.isoformat(),
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.content
+
+    def test_department_excel_marks_day_absent_when_any_lesson_is_suspicious(self):
+        self._create_lesson(hour=9)
+        self._create_lesson(
+            hour=11,
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+        )
+
+        excel_bytes = self._download_excel()
+        attendance_value = _get_attendance_cell_value(
+            excel_bytes,
+            staff_fio="Student Api",
+            target_day=self.target_day,
+        )
+
+        self.assertEqual(attendance_value, "Отсутствие")
+
+    def test_department_excel_keeps_staff_attendance_when_lesson_day_is_suspicious(
+        self,
+    ):
+        self._create_sa()
+        self._create_lesson(
+            hour=11,
+            manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS,
+        )
+
+        excel_bytes = self._download_excel()
+        attendance_value = _get_attendance_cell_value(
+            excel_bytes,
+            staff_fio="Student Api",
+            target_day=self.target_day,
+        )
+
+        self.assertIn("08:30:00 - 14:30:00", str(attendance_value))
+
+
+class SuspiciousLessonAttendanceExportCommandTests(TestCase):
+    def setUp(self):
+        self.department = ChildDepartment.objects.create(
+            id="D-SUSP",
+            name="Кафедра Suspicious",
+        )
+        self.staff = Staff.objects.create(
+            pin="S400S",
+            name="Api",
+            surname="Student",
+            department=self.department,
+        )
+        ClassLocation.objects.create(
+            name="Абылай",
+            address=ABILAI_ADDRESS,
+            latitude=43.2389,
+            longitude=76.8897,
+        )
+        self.target_day = datetime.date(2026, 3, 10)
+
+    def _create_lesson(
+        self,
+        *,
+        hour: int,
+        auto_status: str = LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+    ) -> None:
+        LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=_aware_dt(self.target_day, hour, 0),
+            last_out=_aware_dt(self.target_day, hour + 1, 0),
+            latitude=43.2389,
+            longitude=76.8897,
+            date_at=self.target_day,
+            photo_spoof_status=auto_status,
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        )
+
+    def test_suspicious_export_command_keeps_only_truly_suspicious_rows(self):
+        self._create_lesson(
+            hour=9, auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN
+        )
+        self._create_lesson(
+            hour=11,
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+        )
+
+        with TemporaryDirectory() as tmp_dir:
+            output_path = f"{tmp_dir}/suspicious_report.xlsx"
+            call_command(
+                "export_suspicious_lesson_attendance",
+                "--date-from",
+                self.target_day.isoformat(),
+                "--date-to",
+                self.target_day.isoformat(),
+                "--output",
+                output_path,
+            )
+            workbook = load_workbook(output_path, data_only=True)
+
+        rows = list(workbook["Suspicious"].iter_rows(values_only=True))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1][1], "Student Api")
+        self.assertEqual(rows[1][3], self.target_day.strftime("%d.%m.%Y"))
