@@ -415,10 +415,19 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
     def get_photos_for_date(self, date):
         """
         Получаем список фотографий для заданной даты.
-        Используем кэш, чтобы снизить нагрузку при повторных запросах.
+
+        Кэш используем ТОЛЬКО для сегодняшней даты: для неё поток live-событий
+        исправляет устаревшие данные, поэтому короткий TTL безопасен.
+        Для исторических дат кэш пропускаем полностью — туда live-события
+        больше не приходят, а значит устаревший снимок с данными до ручных
+        вердиктов (manual verdict) никогда не будет исправлен через сокет.
         """
+        today = timezone.now().date()
+        is_today = date == today
+
         cache_key = f"photos_for_{date}"
-        photos = cache.get(cache_key)
+        photos = cache.get(cache_key) if is_today else None
+
         if photos is None:
             qs = (
                 models.LessonAttendance.objects.filter(date_at=date)
@@ -442,7 +451,8 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             photos = []
             for record in qs:
                 photos.append(self._record_to_photo_payload(record))
-            cache.set(cache_key, photos, timeout=60)
+            if is_today:
+                cache.set(cache_key, photos, timeout=60)
         return photos
 
     async def new_photo(self, event):
