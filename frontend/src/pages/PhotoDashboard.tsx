@@ -25,18 +25,20 @@ import {
   PhotoWsMessage,
 } from "../schemas/IData";
 import { apiUrl } from "../../apiConfig";
+import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import apiClient, { log } from "../api";
 import useWebSocket from "../hooks/useWebSocket";
 import LoaderComponent from "../components/LoaderComponent";
 import { Toggle } from "../components/Toggle";
 import useWindowSize from "../hooks/useWindowSize";
+import EditableDateField from "../components/EditableDateField";
 
 const PING_INTERVAL = 15000;
 const PONG_TIMEOUT = 8000;
 const MARQUEE_SPEED = 95;
 const MARQUEE_HOVER_SPEED = 0;
-const SMOOTH_TAU = 0.25;
+const SMOOTH_TAU = 0.08;
 const MIN_TRACK_COPIES = 2;
 const TRACK_COPY_HEADROOM = 2;
 const STATIC_TRACK_FIT_THRESHOLD = 1.05;
@@ -49,8 +51,7 @@ const WS_MERGE_BUFFER_MS = 180;
 const WS_BATCH_FAILSAFE_MS = 300;
 const CREATED_NO_PHOTO_MIN_VISIBLE_MS = 2500;
 const MARQUEE_VIRTUALIZE_MIN_ITEMS = 120;
-const MARQUEE_VIRTUAL_OVERSCAN_ITEMS = 4;
-const MARQUEE_VIRTUAL_SYNC_MS = 180;
+const MARQUEE_VIRTUAL_OVERSCAN_ITEMS = 8;
 const FILTER_SWITCH_FEEDBACK_MS = 260;
 
 type PhotoUiStatus =
@@ -420,7 +421,11 @@ const MarqueeTrack: React.FC<{
   forceLoop = false,
   renderItem,
 }) => {
-  type VisibleSlice = { start: number; end: number };
+  type VisibleSlice = {
+    start: number;
+    end: number;
+    seamHeadEnd?: number;
+  };
   type VirtualWindowState = {
     copyStart: number;
     copyEnd: number;
@@ -432,6 +437,7 @@ const MarqueeTrack: React.FC<{
   const seqRef = useRef<HTMLUListElement>(null);
 
   const [seqWidth, setSeqWidth] = useState(0);
+  const seqWidthReady = seqWidth > 0;
   const [copyCount, setCopyCount] = useState(MIN_TRACK_COPIES);
   const [shouldAnimate, setShouldAnimate] = useState(true);
   const [virtualWindow, setVirtualWindow] = useState<VirtualWindowState>({
@@ -447,7 +453,11 @@ const MarqueeTrack: React.FC<{
   const rafRef = useRef<number | null>(null);
   const seqWidthRef = useRef(0);
   const virtualSignatureRef = useRef("");
-  const lastVirtualSyncTsRef = useRef(0);
+  const updateDimensionsFnRef = useRef<() => void>(() => {});
+  const cardWidthPxRef = useRef(cardWidthPx);
+  const syncVisibleWindowRef = useRef<
+    (force?: boolean, opts?: { flush?: boolean }) => void
+  >(() => {});
 
   const shouldVirtualize =
     shouldAnimate && items.length >= MARQUEE_VIRTUALIZE_MIN_ITEMS;
@@ -525,6 +535,7 @@ const MarqueeTrack: React.FC<{
 
       const slicesByCopy: Record<number, VisibleSlice> = {};
       const signatureParts: string[] = [`${copyStart}:${copyEnd}`];
+      let copy0SigIdx = -1;
 
       for (let copyIndex = copyStart; copyIndex <= copyEnd; copyIndex += 1) {
         const localLeft = leftBound - copyIndex * safeSeqWidth;
@@ -535,7 +546,16 @@ const MarqueeTrack: React.FC<{
         end = Math.max(0, Math.min(itemCount - 1, end));
         if (end < start) continue;
         slicesByCopy[copyIndex] = { start, end };
+        if (copyIndex === 0) copy0SigIdx = signatureParts.length;
         signatureParts.push(`${copyIndex}.${start}.${end}`);
+      }
+
+      const copy0Slice = slicesByCopy[0];
+      if (copy0Slice != null && copy0Slice.start > 0 && copy0SigIdx >= 0) {
+        const headEnd = Math.ceil((containerWidth + overscanPx) / itemPitch);
+        const seamHeadEnd = Math.min(headEnd, copy0Slice.start - 1);
+        slicesByCopy[0] = { ...copy0Slice, seamHeadEnd };
+        signatureParts[copy0SigIdx] += `.h${seamHeadEnd}`;
       }
 
       return {
@@ -549,7 +569,7 @@ const MarqueeTrack: React.FC<{
   );
 
   const syncVisibleWindow = useCallback(
-    (force = false) => {
+    (force = false, opts?: { flush?: boolean }) => {
       const safeSeqWidth =
         Number.isFinite(seqWidthRef.current) && seqWidthRef.current > 0
           ? seqWidthRef.current
@@ -561,9 +581,16 @@ const MarqueeTrack: React.FC<{
         return;
       }
       virtualSignatureRef.current = nextWindow.signature;
-      setVirtualWindow((prev) =>
-        prev.signature === nextWindow.signature ? prev : nextWindow,
-      );
+      const apply = () => {
+        setVirtualWindow((prev) =>
+          prev.signature === nextWindow.signature ? prev : nextWindow,
+        );
+      };
+      if (opts?.flush) {
+        flushSync(apply);
+      } else {
+        apply();
+      }
     },
     [computeVisibleWindow],
   );
@@ -576,13 +603,18 @@ const MarqueeTrack: React.FC<{
     const roundedSequenceWidth = Math.ceil(sequenceWidth);
 
     const previousWidth = seqWidthRef.current;
-    if (previousWidth > 0 && roundedSequenceWidth > 0) {
+    if (
+      cardWidthPxRef.current !== cardWidthPx &&
+      previousWidth > 0 &&
+      roundedSequenceWidth > 0
+    ) {
       const normalizedProgress =
         (((offsetRef.current % previousWidth) + previousWidth) %
           previousWidth) /
         previousWidth;
       offsetRef.current = normalizedProgress * roundedSequenceWidth;
     }
+    cardWidthPxRef.current = cardWidthPx;
     seqWidthRef.current = roundedSequenceWidth;
     setSeqWidth((prev) =>
       prev === roundedSequenceWidth ? prev : roundedSequenceWidth,
@@ -601,20 +633,31 @@ const MarqueeTrack: React.FC<{
       Math.ceil(containerWidth / roundedSequenceWidth) + TRACK_COPY_HEADROOM;
     const nextCopyCount = Math.max(MIN_TRACK_COPIES, copiesNeeded);
     setCopyCount((prev) => (prev === nextCopyCount ? prev : nextCopyCount));
-    syncVisibleWindow(true);
+    syncVisibleWindow(true, { flush: true });
   }, [syncVisibleWindow, forceLoop, items.length, cardWidthPx]);
+
+  useLayoutEffect(() => {
+    updateDimensionsFnRef.current = updateDimensions;
+  }, [updateDimensions]);
 
   useLayoutEffect(() => {
     virtualSignatureRef.current = "";
     offsetRef.current = 0;
     velocityRef.current = 0;
     lastTimestampRef.current = null;
-    lastVirtualSyncTsRef.current = 0;
     if (trackRef.current) {
       trackRef.current.style.transform = "translate3d(0, 0, 0)";
     }
-    updateDimensions();
-  }, [updateDimensions, itemSignature, rowIndex]);
+    updateDimensionsFnRef.current();
+  }, [rowIndex]);
+
+  useLayoutEffect(() => {
+    updateDimensionsFnRef.current();
+  }, [itemSignature]);
+
+  useLayoutEffect(() => {
+    syncVisibleWindowRef.current = syncVisibleWindow;
+  }, [syncVisibleWindow]);
 
   useEffect(() => {
     syncVisibleWindow(true);
@@ -632,13 +675,23 @@ const MarqueeTrack: React.FC<{
     return () => ro.disconnect();
   }, [updateDimensions]);
 
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) {
+        lastTimestampRef.current = null;
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
   useLayoutEffect(() => {
     const track = trackRef.current;
-    if (!track || seqWidth <= 0) return;
+    if (!track || seqWidthRef.current <= 0) return;
 
     if (!shouldAnimate) {
       track.style.transform = "translate3d(0, 0, 0)";
-      syncVisibleWindow(true);
+      syncVisibleWindowRef.current(true);
       return;
     }
 
@@ -646,12 +699,15 @@ const MarqueeTrack: React.FC<{
       velocityRef.current = 0;
       lastTimestampRef.current = null;
       track.style.transform = `translate3d(-${offsetRef.current}px, 0, 0)`;
-      syncVisibleWindow(true);
+      syncVisibleWindowRef.current(true);
       return;
     }
 
+    const currentSeqWidth = seqWidthRef.current;
     const safeSeqWidth =
-      Number.isFinite(seqWidth) && seqWidth > 0 ? seqWidth : 1;
+      Number.isFinite(currentSeqWidth) && currentSeqWidth > 0
+        ? currentSeqWidth
+        : 1;
     offsetRef.current =
       ((offsetRef.current % safeSeqWidth) + safeSeqWidth) % safeSeqWidth;
     track.style.transform = `translate3d(-${offsetRef.current}px, 0, 0)`;
@@ -661,7 +717,7 @@ const MarqueeTrack: React.FC<{
         lastTimestampRef.current = timestamp;
       }
 
-      const dt = Math.max(0, timestamp - lastTimestampRef.current) / 1000;
+      const dt = Math.min(0.1, Math.max(0, timestamp - lastTimestampRef.current) / 1000);
       lastTimestampRef.current = timestamp;
 
       const targetVelocity = isPaused ? hoverSpeed : speedPxSec;
@@ -669,17 +725,17 @@ const MarqueeTrack: React.FC<{
       velocityRef.current +=
         (targetVelocity - velocityRef.current) * easingFactor;
 
-      const safeSeqWidth =
-        Number.isFinite(seqWidth) && seqWidth > 0 ? seqWidth : 1;
-      let nextOffset = offsetRef.current + velocityRef.current * dt;
-      nextOffset = ((nextOffset % safeSeqWidth) + safeSeqWidth) % safeSeqWidth;
+      const sw = seqWidthRef.current;
+      const safeSw = Number.isFinite(sw) && sw > 0 ? sw : 1;
+      const prevOffset = offsetRef.current;
+      let nextOffset = prevOffset + velocityRef.current * dt;
+      const didWrap =
+        Math.floor(nextOffset / safeSw) !== Math.floor(prevOffset / safeSw);
+      nextOffset = ((nextOffset % safeSw) + safeSw) % safeSw;
       offsetRef.current = nextOffset;
 
       track.style.transform = `translate3d(-${nextOffset}px, 0, 0)`;
-      if (timestamp - lastVirtualSyncTsRef.current >= MARQUEE_VIRTUAL_SYNC_MS) {
-        lastVirtualSyncTsRef.current = timestamp;
-        syncVisibleWindow();
-      }
+      syncVisibleWindowRef.current(didWrap, didWrap ? { flush: true } : undefined);
       rafRef.current = requestAnimationFrame(animate);
     };
 
@@ -690,21 +746,16 @@ const MarqueeTrack: React.FC<{
         rafRef.current = null;
       }
       lastTimestampRef.current = null;
-      lastVirtualSyncTsRef.current = 0;
     };
   }, [
-    seqWidth,
+    seqWidthReady,
     speedPxSec,
     hoverSpeed,
     isPaused,
     shouldAnimate,
-    syncVisibleWindow,
   ]);
 
-  const safeItemPitch =
-    items.length > 0 && seqWidth > 0
-      ? seqWidth / items.length
-      : cardWidthPx + 16;
+  const safeItemPitch = cardWidthPx + CARD_ITEM_GAP_PX;
   const maxCopyIndex = Math.max(0, copyCount - 1);
   const copyStart = shouldVirtualize
     ? Math.min(virtualWindow.copyStart, maxCopyIndex)
@@ -734,11 +785,43 @@ const MarqueeTrack: React.FC<{
           const endIndex = hasVisibleSlice
             ? visibleSlice.end
             : items.length - 1;
-          const leftSpacerWidth = Math.max(0, startIndex * safeItemPitch);
+          const seamHeadEnd =
+            hasVisibleSlice ? visibleSlice.seamHeadEnd : undefined;
+
+          const leftSpacerWidth =
+            hasVisibleSlice && seamHeadEnd == null
+              ? Math.max(0, startIndex * safeItemPitch)
+              : 0;
+          const gapSpacerWidth =
+            seamHeadEnd != null
+              ? Math.max(0, (startIndex - seamHeadEnd - 1) * safeItemPitch)
+              : 0;
           const rightSpacerWidth = Math.max(
             0,
             (items.length - endIndex - 1) * safeItemPitch,
           );
+
+          const renderItem_ = (
+            photo: (typeof items)[number],
+            itemIndex: number,
+          ) => {
+            const displayIndex = copyIndex * items.length + itemIndex;
+            const key =
+              photo != null
+                ? `row-${rowIndex}-${copyIndex}-${photo.id ?? `${photo.staffPin}-${photo.attendanceTime}`}`
+                : `row-${rowIndex}-${copyIndex}-empty-${itemIndex}`;
+            const style =
+              photo == null ? { width: cardWidthPx } : undefined;
+            return (
+              <li
+                key={key}
+                className="mr-4 my-1 flex-shrink-0 list-none"
+                style={style}
+              >
+                {renderItem(photo, displayIndex, copyIndex, itemIndex)}
+              </li>
+            );
+          };
 
           return (
             <ul
@@ -747,7 +830,20 @@ const MarqueeTrack: React.FC<{
               className="flex items-center"
               aria-hidden={copyIndex > 0}
             >
-              {hasVisibleSlice && leftSpacerWidth > 0 && (
+              {seamHeadEnd != null &&
+                items
+                  .slice(0, seamHeadEnd + 1)
+                  .map((photo, i) => renderItem_(photo, i))}
+
+              {seamHeadEnd != null && gapSpacerWidth > 0 && (
+                <li
+                  key={`row-${rowIndex}-copy-${copyIndex}-gap-spacer`}
+                  className="my-1 flex-shrink-0 list-none"
+                  style={{ width: gapSpacerWidth }}
+                  aria-hidden
+                />
+              )}
+              {hasVisibleSlice && seamHeadEnd == null && leftSpacerWidth > 0 && (
                 <li
                   key={`row-${rowIndex}-copy-${copyIndex}-left-spacer`}
                   className="my-1 flex-shrink-0 list-none"
@@ -755,27 +851,13 @@ const MarqueeTrack: React.FC<{
                   aria-hidden
                 />
               )}
+
               {items
                 .slice(startIndex, endIndex + 1)
-                .map((photo, localItemIndex) => {
-                  const itemIndex = startIndex + localItemIndex;
-                  const displayIndex = copyIndex * items.length + itemIndex;
-                  const key =
-                    photo != null
-                      ? `row-${rowIndex}-${copyIndex}-${photo.id ?? `${photo.staffPin}-${photo.attendanceTime}`}`
-                      : `row-${rowIndex}-${copyIndex}-empty-${itemIndex}`;
-                  const style =
-                    photo == null ? { width: cardWidthPx } : undefined;
-                  return (
-                    <li
-                      key={key}
-                      className="mr-4 my-1 flex-shrink-0 list-none"
-                      style={style}
-                    >
-                      {renderItem(photo, displayIndex, copyIndex, itemIndex)}
-                    </li>
-                  );
-                })}
+                .map((photo, localItemIndex) =>
+                  renderItem_(photo, startIndex + localItemIndex),
+                )}
+
               {hasVisibleSlice && rightSpacerWidth > 0 && (
                 <li
                   key={`row-${rowIndex}-copy-${copyIndex}-right-spacer`}
@@ -990,20 +1072,9 @@ const PhotoDashboard: React.FC = () => {
     }
   }, [isKiosk, navigate, location.pathname, getFullscreenElement]);
 
-  const todayLabel = new Date().toLocaleDateString("ru-RU", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  });
-
   const pageTitle = isFullscreen
     ? "Лента фотографий посещаемости"
     : "Фотографии посещаемости";
-
-  const pageSubtitle = isFullscreen
-    ? "Режим показа в реальном времени"
-    : "Актуальные отметки за текущий день";
 
   const [loading, setLoading] = useState<boolean>(true);
   const initialLoadDoneRef = useRef<boolean>(false);
@@ -1142,8 +1213,35 @@ const PhotoDashboard: React.FC = () => {
     return `${year}-${month}-${day}`;
   }, []);
 
-  const date = getCurrentLocalDate();
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = `0${today.getMonth() + 1}`.slice(-2);
+    const day = `0${today.getDate()}`.slice(-2);
+    return `${year}-${month}-${day}`;
+  });
+
+  const date = selectedDate;
   log.info("Connecting with date:", date);
+
+  const isSelectedDateToday = selectedDate === getCurrentLocalDate();
+
+  const todayLabel = useMemo(() => {
+    const parts = selectedDate.split("-").map(Number);
+    const d = new Date(parts[0], parts[1] - 1, parts[2]);
+    return d.toLocaleDateString("ru-RU", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    });
+  }, [selectedDate]);
+
+  const pageSubtitle = isFullscreen
+    ? "Режим показа в реальном времени"
+    : isSelectedDateToday
+      ? "Актуальные отметки за текущий день"
+      : "Архивные отметки за выбранный день";
 
   useEffect(() => {
     initialLoadDoneRef.current = false;
@@ -2298,8 +2396,8 @@ const PhotoDashboard: React.FC = () => {
       const photoIdentity = getPhotoIdentity(photo);
       const photoKey =
         photo.id != null ? photoIdentity : getPhotoIdentity(photo, keyIndex);
-      const isActionableCard = isInteractive && !isClone;
-      const canTrackActiveCard = isActionableCard && enableArrowNavigation;
+      const isActionableCard = isInteractive;
+      const canTrackActiveCard = isActionableCard && enableArrowNavigation && !isClone;
       const uiStatus = resolvePhotoUiStatus(photo);
       const statusMeta = PHOTO_STATUS_STYLE[uiStatus];
       const cardBody = (
@@ -2515,10 +2613,18 @@ const PhotoDashboard: React.FC = () => {
                       : "Полный экран"}
                 </span>
               </motion.button>
-              <span className="inline-flex items-center gap-1 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2 py-1 text-[10px] sm:text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-base">
-                <FaRegCalendarAlt className="opacity-80 w-3 h-3 lg:w-4 lg:h-4" />
-                <span className="capitalize">{todayLabel}</span>
-              </span>
+              <EditableDateField
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                displayLabel={todayLabel}
+                isLoading={loading}
+                ariaLabel="Изменить дату показа"
+                startIcon={
+                  <FaRegCalendarAlt className="opacity-80 w-3 h-3 lg:w-4 lg:h-4 shrink-0" />
+                }
+                containerClassName="shrink-0"
+                displayClassName="inline-flex items-center gap-1 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2 py-1 text-[10px] sm:text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-base hover:bg-white/75 dark:hover:bg-slate-800/70 transition-colors capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              />
             </div>
           </div>
         ) : (
@@ -2540,10 +2646,18 @@ const PhotoDashboard: React.FC = () => {
                   {pageSubtitle}
                 </p>
               </div>
-              <span className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2.5 py-1.5 text-xs sm:gap-2 sm:px-3 sm:text-sm md:px-4 md:py-2 md:text-base">
-                <FaRegCalendarAlt className="w-3.5 h-3.5 md:w-4 md:h-4 opacity-80" />
-                <span className="capitalize">{todayLabel}</span>
-              </span>
+              <EditableDateField
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                displayLabel={todayLabel}
+                isLoading={loading}
+                ariaLabel="Изменить дату показа"
+                startIcon={
+                  <FaRegCalendarAlt className="w-3.5 h-3.5 md:w-4 md:h-4 opacity-80 shrink-0" />
+                }
+                containerClassName="shrink-0"
+                displayClassName="inline-flex items-center gap-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2.5 py-1.5 text-xs sm:gap-2 sm:px-3 sm:text-sm md:px-4 md:py-2 md:text-base hover:bg-white/75 dark:hover:bg-slate-800/70 transition-colors capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              />
             </div>
             {/* Row 2 — filter toggles (left) + fullscreen button (right) */}
             <div className="flex items-center gap-2 sm:gap-3 md:gap-4">
@@ -2750,7 +2864,7 @@ const PhotoDashboard: React.FC = () => {
                           keyIndex,
                           rowIndex,
                           cardIndex,
-                          copyIndex === 0,
+                          true,
                           kioskNarrowViewport ? cardWidthPx : undefined,
                           copyIndex > 0,
                           true,
