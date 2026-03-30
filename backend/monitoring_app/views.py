@@ -3596,7 +3596,10 @@ def staff_detail(request, staff_pin):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    cache_key = f"staff_detail_{staff_pin}_{start_date}_{end_date}"
+    cache_key = (
+        f"staff_detail_{LESSON_REPORT_CACHE_VERSION}_{staff_pin}_"
+        f"{start_date}_{end_date}"
+    )
     logger.debug(f"Generated cache key: {cache_key}")
 
     data = get_cache(

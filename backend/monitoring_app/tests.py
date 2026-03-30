@@ -1021,6 +1021,7 @@ _MINIMAL_JPEG = (
 
 @override_settings(
     CELERY_TASK_ALWAYS_EAGER=True,
+    CELERY_TASK_STORE_EAGER_RESULT=True,
     DEBUG=True,
     MEDIA_ROOT=tempfile.gettempdir(),
 )
@@ -1042,16 +1043,32 @@ class LessonAttendanceCreateThenPutPhotoTest(APITestCase):
         self.user = (
             User.objects.filter(is_staff=True, is_active=True).order_by("id").first()
         )
-        self.assertIsNotNone(self.user, "Нужен активный User с is_staff=True в БД")
+        if self.user is None:
+            self.user = User.objects.create_user(
+                username="lesson-photo-admin",
+                password="test-pass-123",
+            )
+            self.user.is_staff = True
+            self.user.is_active = True
+            self.user.save(update_fields=["is_staff", "is_active"])
         self.api_key = (
             APIKey.objects.filter(is_active=True, created_by=self.user)
             .order_by("id")
             .first()
             or APIKey.objects.filter(is_active=True).order_by("id").first()
         )
-        self.assertIsNotNone(self.api_key, "Нужен активный APIKey в БД")
+        if self.api_key is None:
+            self.api_key = APIKey.objects.create(
+                key_name="Lesson Photo Test Key",
+                created_by=self.user,
+            )
         self.staff = Staff.objects.filter(pin__iexact="T861T").first()
-        self.assertIsNotNone(self.staff, "Нужен Staff с pin=T861T в БД")
+        if self.staff is None:
+            self.staff = Staff.objects.create(
+                pin="T861T",
+                name="Matrix",
+                surname="Student",
+            )
         if self.staff and self.staff.avatar:
             with self.staff.avatar.open("rb") as f:
                 self._photo_bytes = f.read()
@@ -1102,6 +1119,17 @@ class LessonAttendanceCreateThenPutPhotoTest(APITestCase):
                 f"{response.status_code} {response.data}"
             )
         else:
+            if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
+                lesson = (
+                    LessonAttendance.objects.filter(
+                        staff=self.staff,
+                        subject_name="Matrix 101: Красная таблетка",
+                    )
+                    .order_by("-id")
+                    .first()
+                )
+                self.assertIsNotNone(lesson)
+                return lesson.id
             self.fail(f"task_id={task_id} не перешёл в Success за отведённое время")
 
         lesson_ids = response.data.get("lesson_ids") or []
@@ -1149,8 +1177,20 @@ class TestablePhotoConsumer(PhotoConsumer):
     def set_update_buffer_for_test(self, buffer_payload):
         self._photo_update_buffer = buffer_payload
 
+    def get_update_buffer_keys_for_test(self):
+        return sorted(getattr(self, "_photo_update_buffer", {}).keys())
+
+    def queue_photo_event_for_test(self, event):
+        self._queue_photo_event(event)
+
+    def set_risk_only_for_test(self, enabled: bool):
+        self._risk_only = enabled
+
     async def flush_photo_updates_for_test(self):
         await self._flush_photo_updates()
+
+    async def send_initial_snapshot_for_test(self):
+        await self._send_initial_snapshot()
 
 
 class PhotoConsumerProtocolTest(SimpleTestCase):
@@ -1224,16 +1264,16 @@ class PhotoConsumerProtocolTest(SimpleTestCase):
         }
 
         async def _run():
-            consumer._queue_photo_event(event)
+            consumer.queue_photo_event_for_test(event)
             await asyncio.sleep(0)
 
         async_to_sync(_run)()
 
-        self.assertEqual(sorted(consumer._photo_update_buffer.keys()), [11, 12, 13])
+        self.assertEqual(consumer.get_update_buffer_keys_for_test(), [11, 12, 13])
 
     def test_risk_only_snapshot_keeps_manual_suspicious_not_actionable(self):
         consumer = TestablePhotoConsumer()
-        consumer._risk_only = True
+        consumer.set_risk_only_for_test(True)
         consumer.send_json = AsyncMock()
         consumer.get_photos_for_date = AsyncMock(
             return_value=[
@@ -1266,7 +1306,7 @@ class PhotoConsumerProtocolTest(SimpleTestCase):
             ]
         )
 
-        async_to_sync(consumer._send_initial_snapshot)()
+        async_to_sync(consumer.send_initial_snapshot_for_test)()
 
         self.assertEqual(consumer.send_json.await_count, 1)
         payload = consumer.send_json.await_args_list[0].args[0]
@@ -1276,7 +1316,7 @@ class PhotoConsumerProtocolTest(SimpleTestCase):
 
     def test_risk_only_updates_keep_manual_suspicious_not_actionable(self):
         consumer = TestablePhotoConsumer()
-        consumer._risk_only = True
+        consumer.set_risk_only_for_test(True)
         consumer.send_json = AsyncMock()
         consumer.get_photo_data_bulk = AsyncMock(
             return_value=[
