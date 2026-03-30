@@ -45,6 +45,7 @@ const useWebSocket = ({
   onRefreshExpired,
 }: UseWebSocketOptions) => {
   const wsRef = useRef<WebSocket | null>(null);
+  const connectionIdRef = useRef<number>(0);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const isMountedRef = useRef<boolean>(false);
   const pingIntervalRef = useRef<number | null>(null);
@@ -85,52 +86,122 @@ const useWebSocket = ({
     onRefreshExpiredRef.current = onRefreshExpired;
   }, [onRefreshExpired]);
 
-  const handlePong = useCallback(() => {
-    wsLog("pong получен");
-    if (pongTimeoutRefLocal.current) {
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimeoutRef.current != null) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearPingTimer = useCallback(() => {
+    if (pingIntervalRef.current != null) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
+    }
+  }, []);
+
+  const clearPongTimer = useCallback(() => {
+    if (pongTimeoutRefLocal.current != null) {
       clearTimeout(pongTimeoutRefLocal.current);
       pongTimeoutRefLocal.current = null;
     }
-    attemptRef.current = 0;
   }, []);
 
-  const sendPing = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+  const isActiveSocket = useCallback(
+    (socket: WebSocket | null, connectionId: number): boolean => {
+      return (
+        socket != null &&
+        wsRef.current === socket &&
+        connectionIdRef.current === connectionId
+      );
+    },
+    [],
+  );
+
+  const handlePong = useCallback(() => {
+    wsLog("pong получен");
+    clearPongTimer();
+    attemptRef.current = 0;
+  }, [clearPongTimer]);
+
+  const sendPing = useCallback(
+    (
+      socket: WebSocket | null = wsRef.current,
+      connectionId: number = connectionIdRef.current,
+    ) => {
+      if (!isActiveSocket(socket, connectionId)) return;
+      if (socket == null) return;
+      if (socket.readyState !== WebSocket.OPEN) return;
+
       wsLog("ping отправлен");
-      wsRef.current.send(JSON.stringify({ type: "ping" }));
+      socket.send(JSON.stringify({ type: "ping" }));
+      clearPongTimer();
 
       pongTimeoutRefLocal.current = window.setTimeout(() => {
+        if (!isActiveSocket(socket, connectionId)) return;
         log.warn("Не получен pong от сервера, закрытие соединения");
-        wsRef.current?.close();
+        socket.close();
       }, pongTimeout);
-    }
-  }, [pongTimeout]);
+    },
+    [clearPongTimer, isActiveSocket, pongTimeout],
+  );
 
   const connect = useCallback(() => {
     if (!urlRef.current) {
       wsLog("URL не задан, соединение не устанавливается");
       return;
     }
-    wsLog("подключение", urlRef.current);
-    wsRef.current = new WebSocket(urlRef.current);
+    clearReconnectTimer();
+    clearPingTimer();
+    clearPongTimer();
+    setIsConnected(false);
 
-    wsRef.current.onopen = () => {
+    const previousSocket = wsRef.current;
+    const connectionId = connectionIdRef.current + 1;
+    connectionIdRef.current = connectionId;
+
+    if (
+      previousSocket &&
+      (previousSocket.readyState === WebSocket.OPEN ||
+        previousSocket.readyState === WebSocket.CONNECTING)
+    ) {
+      try {
+        previousSocket.close();
+      } catch {
+        // ignore close errors for stale sockets
+      }
+    }
+
+    wsLog("подключение", { url: urlRef.current, connectionId });
+    const socket = new WebSocket(urlRef.current);
+    wsRef.current = socket;
+
+    socket.onopen = () => {
+      if (!isActiveSocket(socket, connectionId)) {
+        if (
+          socket.readyState === WebSocket.OPEN ||
+          socket.readyState === WebSocket.CONNECTING
+        ) {
+          socket.close();
+        }
+        return;
+      }
       wsLog("соединение установлено");
       setIsConnected(true);
       onOpenRef.current?.();
 
-      pingIntervalRef.current = window.setInterval(sendPing, pingInterval);
+      pingIntervalRef.current = window.setInterval(() => {
+        sendPing(socket, connectionId);
+      }, pingInterval);
 
-      sendPing();
-
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
+      sendPing(socket, connectionId);
       attemptRef.current = 0;
     };
 
-    wsRef.current.onmessage = (event: MessageEvent) => {
+    socket.onmessage = (event: MessageEvent) => {
+      if (!isActiveSocket(socket, connectionId)) {
+        return;
+      }
       const dataStr = typeof event.data === "string" ? event.data : "";
       try {
         const data = JSON.parse(dataStr);
@@ -167,9 +238,15 @@ const useWebSocket = ({
       }
     };
 
-    wsRef.current.onclose = (event: CloseEvent) => {
+    socket.onclose = (event: CloseEvent) => {
+      if (!isActiveSocket(socket, connectionId)) {
+        return;
+      }
+      wsRef.current = null;
       setIsConnected(false);
       wsLog("соединение закрыто", { code: event.code, reason: event.reason });
+      clearPingTimer();
+      clearPongTimer();
 
       if (
         event.code === WS_CLOSE_TOKEN_EXPIRED ||
@@ -206,16 +283,6 @@ const useWebSocket = ({
 
       onCloseRef.current?.(event);
 
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current);
-        pingIntervalRef.current = null;
-      }
-
-      if (pongTimeoutRefLocal.current) {
-        clearTimeout(pongTimeoutRefLocal.current);
-        pongTimeoutRefLocal.current = null;
-      }
-
       if (
         shouldReconnect &&
         isMountedRef.current &&
@@ -226,19 +293,40 @@ const useWebSocket = ({
           60000,
         );
         wsLog(`переподключение через ${nextReconnectInterval} мс`);
+        clearReconnectTimer();
         reconnectTimeoutRef.current = window.setTimeout(() => {
+          if (
+            connectionIdRef.current !== connectionId ||
+            wsRef.current !== null ||
+            !isMountedRef.current
+          ) {
+            return;
+          }
           attemptRef.current += 1;
           connect();
         }, nextReconnectInterval);
       }
     };
 
-    wsRef.current.onerror = (error) => {
+    socket.onerror = (error) => {
+      if (!isActiveSocket(socket, connectionId)) {
+        return;
+      }
       wsLog("ошибка WebSocket", error);
       onErrorRef.current?.(error);
-      wsRef.current?.close();
+      socket.close();
     };
-  }, [handlePong, pingInterval, reconnectInterval, sendPing, shouldReconnect]);
+  }, [
+    clearPingTimer,
+    clearPongTimer,
+    clearReconnectTimer,
+    handlePong,
+    isActiveSocket,
+    pingInterval,
+    reconnectInterval,
+    sendPing,
+    shouldReconnect,
+  ]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -248,18 +336,15 @@ const useWebSocket = ({
 
     return () => {
       isMountedRef.current = false;
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current);
-      }
-      if (pongTimeoutRefLocal.current) {
-        clearTimeout(pongTimeoutRefLocal.current);
-      }
-      wsRef.current?.close();
+      clearReconnectTimer();
+      clearPingTimer();
+      clearPongTimer();
+      connectionIdRef.current += 1;
+      const socket = wsRef.current;
+      wsRef.current = null;
+      socket?.close();
     };
-  }, [connect, url]);
+  }, [clearPingTimer, clearPongTimer, clearReconnectTimer, connect, url]);
 
   const sendMessage = useCallback((message: string) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -271,9 +356,6 @@ const useWebSocket = ({
 
   const reconnect = useCallback(() => {
     isRefreshingTokenRef.current = false;
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
     attemptRef.current = 0;
     connect();
   }, [connect]);
