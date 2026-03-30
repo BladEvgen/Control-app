@@ -127,6 +127,7 @@ DEPARTMENT_CONFIRMATION_CACHE_TTL = 4 * 60 * 60
 DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY = "department_confirmation_epoch_hour"
 DEPARTMENT_CONFIRMATION_EPOCH_TTL = DEPARTMENT_CONFIRMATION_CACHE_TTL + 60 * 60
 STAFF_PINS_HEADER_NAME = "X-Staff-Pins"
+LESSON_REPORT_CACHE_VERSION = models.LessonAttendance.REPORT_FILTER_CACHE_VERSION
 
 _STAFF_PIN_WRAPPED_RE = re.compile(r"^S\d+S$")
 _STAFF_PIN_NUMERIC_RE = re.compile(r"^\d+$")
@@ -185,7 +186,7 @@ def _build_department_confirmation_cache_key(
     staff_pins: List[str],
     hour_bucket: str,
 ) -> str:
-    suffix = f"hour_{hour_bucket}"
+    suffix = f"{LESSON_REPORT_CACHE_VERSION}_hour_{hour_bucket}"
     if not use_staff_pins_mode:
         if use_range:
             return (
@@ -443,22 +444,21 @@ def fetch_attendance_by_event_dates(staff_ids, date_from, date_to):
             sa_by_event_date[d - one_day].append(r)
 
     la_by_event_date = defaultdict(list)
-    for r in (
+    lesson_attendance_qs = models.LessonAttendance.exclude_report_invalid_days(
         models.LessonAttendance.objects.filter(
             staff_id__in=staff_ids,
             date_at__gte=date_from,
             date_at__lte=date_to,
         )
-        .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
-        .values(
-            "staff_id",
-            "date_at",
-            "first_in",
-            "last_out",
-            "latitude",
-            "longitude",
-            "duration_seconds",
-        )
+    )
+    for r in lesson_attendance_qs.values(
+        "staff_id",
+        "date_at",
+        "first_in",
+        "last_out",
+        "latitude",
+        "longitude",
+        "duration_seconds",
     ):
         d = _to_date(r["date_at"])
         if d is not None:
@@ -809,7 +809,10 @@ class StaffAttendanceStatsView(APIView):
         try:
             target_date = self.get_last_working_day(date_param)
             next_date = target_date + datetime.timedelta(days=1)
-            cache_key = f"staff_attendance_stats_{target_date}_{pin_param}"
+            cache_key = (
+                f"staff_attendance_stats_{LESSON_REPORT_CACHE_VERSION}_"
+                f"{target_date}_{pin_param}"
+            )
 
             logger.debug(f"Generated cache_key: {cache_key}")
 
@@ -994,11 +997,12 @@ class StaffAttendanceStatsView(APIView):
         }
 
         lesson_staff_ids = set(
-            models.LessonAttendance.objects.filter(
-                date_at=target_date,
-                staff_id__in=staff_ids,
+            models.LessonAttendance.exclude_report_invalid_days(
+                models.LessonAttendance.objects.filter(
+                    date_at=target_date,
+                    staff_id__in=staff_ids,
+                )
             )
-            .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
             .values_list("staff_id", flat=True)
             .distinct()
         )
@@ -1242,7 +1246,10 @@ def map_location(request):
 
         logger.info(f"Using date: {date_at}")
 
-        cache_key = f"map_location_{date_at}_{employees_required}"
+        cache_key = (
+            f"map_location_{LESSON_REPORT_CACHE_VERSION}_{date_at}_"
+            f"{employees_required}"
+        )
 
         def generate_map_data():
             locations = models.ClassLocation.objects.only(
@@ -1313,14 +1320,14 @@ def _build_one_day_confirmation(
     sa_records = list(sa_qs)
     staff_with_sa = {r["staff_id"] for r in sa_records}
 
-    la_qs = (
+    la_qs = models.LessonAttendance.exclude_report_invalid_days(
         models.LessonAttendance.objects.filter(
             staff_id__in=staff_ids,
             date_at=target_date,
         )
-        .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
-        .exclude(staff_id__in=staff_with_sa)
-        .values("staff_id", "first_in", "latitude", "longitude")
+    )
+    la_qs = la_qs.exclude(staff_id__in=staff_with_sa).values(
+        "staff_id", "first_in", "latitude", "longitude"
     )
     la_records = list(la_qs)
 
@@ -4900,7 +4907,7 @@ _lesson_attendance_json_schema = openapi.Schema(
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])
 def create_lesson_attendance_json(request):
-    return create_lesson_attendance(request)
+    return create_lesson_attendance(getattr(request, "_request", request))
 
 
 @swagger_auto_schema(
@@ -5898,7 +5905,8 @@ def staff_detail_by_department_id(request, department_id):
         logger.info(f"Departments for ID {department_id}: {department_ids}")
 
         cache_key = (
-            f"staff_detail_{department_id}_{start_date_str}_{end_date_str}_page_{page}"
+            f"staff_detail_{LESSON_REPORT_CACHE_VERSION}_{department_id}_"
+            f"{start_date_str}_{end_date_str}_page_{page}"
         )
         logger.info(f"Generated cache key: {cache_key}")
 
@@ -5923,20 +5931,18 @@ def staff_detail_by_department_id(request, department_id):
                 date_at__range=(start_date, end_date),
             ).values("staff_id", "date_at", "first_in", "last_out", "area_name_in")
 
-            lesson_attendance_qs = (
+            lesson_attendance_qs = models.LessonAttendance.exclude_report_invalid_days(
                 models.LessonAttendance.objects.filter(
                     staff_id__in=staff_ids,
                     date_at__range=(start_date, end_date),
                 )
-                .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
-                .values(
-                    "staff_id",
-                    "date_at",
-                    "first_in",
-                    "last_out",
-                    "latitude",
-                    "longitude",
-                )
+            ).values(
+                "staff_id",
+                "date_at",
+                "first_in",
+                "last_out",
+                "latitude",
+                "longitude",
             )
 
             absent_reasons_qs = (

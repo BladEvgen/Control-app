@@ -8,14 +8,22 @@ from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, patch
 
 from asgiref.sync import async_to_sync
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from monitoring_app import signals as lesson_signals
 from monitoring_app import tasks as monitoring_tasks
+from monitoring_app.admin import (
+    ClassLocationAdmin,
+    PublicHolidayAdmin,
+    StaffAdmin,
+    admin_site,
+)
 from monitoring_app.attendance_fetcher import _compute_attendance_from_events
+from monitoring_app.cache_conf import Cache
 from monitoring_app.consumers import (
     PHOTO_WS_PROTOCOL,
     STATE_CREATED_NO_PHOTO,
@@ -24,7 +32,17 @@ from monitoring_app.consumers import (
     STATE_UPDATED_META,
     PhotoConsumer,
 )
-from monitoring_app.models import APIKey, LessonAttendance, RemoteWork, Staff
+from monitoring_app.models import (
+    APIKey,
+    ChildDepartment,
+    ClassLocation,
+    LessonAttendance,
+    Position,
+    PublicHoliday,
+    RemoteWork,
+    Staff,
+    StaffAttendance,
+)
 from monitoring_app.views import get_staff_detail
 from rest_framework import status
 from rest_framework.authtoken.models import Token
@@ -48,11 +66,42 @@ class RemoteWorkAdminTest(TestCase):
 
 class StaffDetailTest(TestCase):
     def setUp(self):
-        self.staff = Staff.objects.create(name="John", surname="Doe")
+        self.staff = Staff.objects.create(pin="S1000S", name="John", surname="Doe")
+
+    def _create_lesson(
+        self,
+        event_dt,
+        *,
+        auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+        manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+    ):
+        return LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=event_dt,
+            last_out=event_dt + timedelta(hours=1),
+            latitude=43.2389,
+            longitude=76.8897,
+            date_at=event_dt.date(),
+            photo_spoof_status=auto_status,
+            photo_manual_verdict=manual_verdict,
+        )
+
+    def _create_staff_attendance(self, event_dt, area_name="цос"):
+        return StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=event_dt.date() + timedelta(days=1),
+            first_in=event_dt,
+            last_out=event_dt + timedelta(hours=6),
+            area_name_in=area_name,
+            area_name_out=area_name,
+        )
 
     def test_get_staff_detail(self):
-        start_date = datetime(2023, 1, 1)
-        end_date = datetime(2023, 1, 31)
+        start_date = datetime(2023, 1, 1).date()
+        end_date = datetime(2023, 1, 31).date()
         detail = get_staff_detail(self.staff, start_date, end_date)
         self.assertIn("contract_type", detail)
         self.assertIn("salary", detail)
@@ -62,55 +111,275 @@ class StaffDetailTest(TestCase):
         suspicious_day = timezone.make_aware(datetime(2023, 1, 11, 9, 0))
         clean_day = timezone.make_aware(datetime(2023, 1, 12, 9, 0))
 
-        LessonAttendance.objects.create(
-            staff=self.staff,
-            subject_name="Math",
-            tutor_id=1,
-            tutor="Tutor",
-            first_in=review_day,
-            last_out=review_day + timedelta(hours=1),
-            latitude=43.2389,
-            longitude=76.8897,
-            date_at=review_day.date(),
-            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
-            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        self._create_lesson(
+            review_day,
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
         )
-        LessonAttendance.objects.create(
-            staff=self.staff,
-            subject_name="Math",
-            tutor_id=1,
-            tutor="Tutor",
-            first_in=suspicious_day,
-            last_out=suspicious_day + timedelta(hours=1),
-            latitude=43.2389,
-            longitude=76.8897,
-            date_at=suspicious_day.date(),
-            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
-            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        self._create_lesson(
+            suspicious_day,
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
         )
-        LessonAttendance.objects.create(
-            staff=self.staff,
-            subject_name="Math",
-            tutor_id=1,
-            tutor="Tutor",
-            first_in=clean_day,
-            last_out=clean_day + timedelta(hours=1),
-            latitude=43.2389,
-            longitude=76.8897,
-            date_at=clean_day.date(),
-            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
-            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
-        )
+        self._create_lesson(clean_day)
 
         detail = get_staff_detail(
             self.staff,
-            datetime(2023, 1, 1),
-            datetime(2023, 1, 31),
+            datetime(2023, 1, 1).date(),
+            datetime(2023, 1, 31).date(),
         )
 
         self.assertIn("10-01-2023", detail["attendance"])  # review
         self.assertIn("12-01-2023", detail["attendance"])  # clean
         self.assertNotIn("11-01-2023", detail["attendance"])  # suspicious
+
+    def test_get_staff_detail_excludes_entire_lesson_day_when_any_lesson_is_suspicious(
+        self,
+    ):
+        mixed_day = timezone.make_aware(datetime(2023, 1, 13, 9, 0))
+
+        self._create_lesson(mixed_day)
+        self._create_lesson(
+            mixed_day + timedelta(hours=2),
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+        )
+
+        detail = get_staff_detail(
+            self.staff,
+            datetime(2023, 1, 1).date(),
+            datetime(2023, 1, 31).date(),
+        )
+
+        self.assertNotIn("13-01-2023", detail["attendance"])
+
+    def test_get_staff_detail_excludes_entire_day_for_manual_suspicious_lesson(self):
+        mixed_day = timezone.make_aware(datetime(2023, 1, 14, 9, 0))
+
+        self._create_lesson(mixed_day)
+        self._create_lesson(
+            mixed_day + timedelta(hours=2),
+            manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS,
+        )
+
+        detail = get_staff_detail(
+            self.staff,
+            datetime(2023, 1, 1).date(),
+            datetime(2023, 1, 31).date(),
+        )
+
+        self.assertNotIn("14-01-2023", detail["attendance"])
+
+    def test_get_staff_detail_keeps_staff_attendance_when_lesson_day_is_suspicious(
+        self,
+    ):
+        mixed_day = timezone.make_aware(datetime(2023, 1, 15, 9, 0))
+
+        self._create_staff_attendance(mixed_day)
+        self._create_lesson(
+            mixed_day + timedelta(hours=2),
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+        )
+
+        detail = get_staff_detail(
+            self.staff,
+            datetime(2023, 1, 1).date(),
+            datetime(2023, 1, 31).date(),
+        )
+
+        self.assertIn("15-01-2023", detail["attendance"])
+
+    def test_get_staff_detail_keeps_day_when_lessons_are_not_suspicious(self):
+        mixed_day = timezone.make_aware(datetime(2023, 1, 16, 9, 0))
+
+        self._create_lesson(
+            mixed_day,
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
+        )
+        self._create_lesson(
+            mixed_day + timedelta(hours=2),
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+        )
+        self._create_lesson(
+            mixed_day + timedelta(hours=4),
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_ERROR,
+        )
+
+        detail = get_staff_detail(
+            self.staff,
+            datetime(2023, 1, 1).date(),
+            datetime(2023, 1, 31).date(),
+        )
+
+        self.assertIn("16-01-2023", detail["attendance"])
+
+
+class LessonAttendanceDayLevelApiFiltersTest(APITestCase):
+    def setUp(self):
+        super().setUp()
+        Cache.clear()
+        self.user = User.objects.create_user(
+            username="lesson-day-api-user",
+            password="12345",
+        )
+        self.api_key = APIKey.objects.create(
+            key_name="Lesson Day API Key",
+            created_by=self.user,
+        )
+        self.client.credentials(HTTP_X_API_KEY=self.api_key.key)
+
+        self.department = ChildDepartment.objects.create(
+            id="D-LESSON-DAY",
+            name="Lesson Day Department",
+        )
+        self.student_position = Position.objects.create(name="Студент")
+        self.staff = Staff.objects.create(
+            pin="S5555S",
+            name="Api",
+            surname="Student",
+            department=self.department,
+        )
+        self.staff.positions.add(self.student_position)
+        ClassLocation.objects.create(
+            name="Абылай",
+            address="Проспект Абылай хана, 51/53",
+            latitude=43.2389,
+            longitude=76.8897,
+        )
+        self.target_day = datetime(2026, 3, 10).date()
+
+    def _create_lesson(
+        self,
+        *,
+        auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+        manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        hour=9,
+    ):
+        first_in = timezone.make_aware(
+            datetime(
+                self.target_day.year,
+                self.target_day.month,
+                self.target_day.day,
+                hour,
+                0,
+            )
+        )
+        return LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=first_in,
+            last_out=first_in + timedelta(hours=1),
+            latitude=43.2389,
+            longitude=76.8897,
+            date_at=self.target_day,
+            photo_spoof_status=auto_status,
+            photo_manual_verdict=manual_verdict,
+        )
+
+    def _create_staff_attendance(self):
+        first_in = timezone.make_aware(
+            datetime(
+                self.target_day.year,
+                self.target_day.month,
+                self.target_day.day,
+                8,
+                30,
+            )
+        )
+        return StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=self.target_day + timedelta(days=1),
+            first_in=first_in,
+            last_out=first_in + timedelta(hours=6),
+            area_name_in="цос",
+            area_name_out="цос",
+        )
+
+    def test_map_location_excludes_all_lessons_for_suspicious_day(self):
+        self._create_lesson(hour=9)
+        self._create_lesson(
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+            hour=11,
+        )
+
+        response = self.client.get(
+            reverse("locations"),
+            {"employees": "true", "date_at": self.target_day.isoformat()},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_map_location_keeps_staff_attendance_when_lesson_day_is_suspicious(self):
+        self._create_staff_attendance()
+        self._create_lesson(
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+            hour=11,
+        )
+
+        response = self.client.get(
+            reverse("locations"),
+            {"employees": "true", "date_at": self.target_day.isoformat()},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["employees"], 1)
+
+    def test_staff_attendance_stats_excludes_suspicious_lesson_day(self):
+        self._create_lesson(hour=9)
+        self._create_lesson(
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+            hour=11,
+        )
+
+        response = self.client.get(
+            reverse("staff-attendance-stats"),
+            {"date": self.target_day.isoformat(), "pin": self.department.id},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["present_staff_count"], 0)
+        self.assertEqual(response.data["absent_staff_count"], 1)
+
+    def test_staff_attendance_stats_keeps_staff_attendance_when_lesson_day_is_suspicious(
+        self,
+    ):
+        self._create_staff_attendance()
+        self._create_lesson(
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+            hour=11,
+        )
+
+        response = self.client.get(
+            reverse("staff-attendance-stats"),
+            {"date": self.target_day.isoformat(), "pin": self.department.id},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["present_staff_count"], 1)
+        self.assertEqual(response.data["absent_staff_count"], 0)
+
+    def test_department_stats_excludes_suspicious_lesson_day(self):
+        self._create_lesson(hour=9)
+        self._create_lesson(
+            manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS,
+            hour=11,
+        )
+
+        response = self.client.get(
+            reverse("department-stats", kwargs={"department_id": self.department.id}),
+            {
+                "start_date": self.target_day.isoformat(),
+                "end_date": self.target_day.isoformat(),
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        attendance_entry = response.data["results"][0][self.target_day.isoformat()][
+            "attendance"
+        ][0]
+        self.assertIsNone(attendance_entry["first_in"])
+        self.assertIsNone(attendance_entry["last_out"])
 
 
 class LessonTaskStatusTest(APITestCase):

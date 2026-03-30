@@ -1,17 +1,25 @@
+import datetime
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase
 from django.urls import reverse
-from rest_framework import status
-from rest_framework.test import APITestCase
-
+from django.utils import timezone
 from monitoring_app.cache_conf import Cache
-from monitoring_app.models import APIKey, ChildDepartment, Staff
+from monitoring_app.models import (
+    APIKey,
+    ChildDepartment,
+    ClassLocation,
+    LessonAttendance,
+    Staff,
+    StaffAttendance,
+)
 from monitoring_app.views import (
     get_confirmable_threshold,
     is_main_location_confirmable,
 )
+from rest_framework import status
+from rest_framework.test import APITestCase
 
 
 class DepartmentAttendanceConfirmationPinsModeTests(APITestCase):
@@ -199,3 +207,132 @@ class DepartmentConfirmationSmallGroupsThresholdTests(SimpleTestCase):
                 total_with_attendance=4,
             )
         )
+
+
+class DepartmentAttendanceConfirmationLessonDayTests(APITestCase):
+    def setUp(self):
+        super().setUp()
+        Cache.clear()
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(
+            username="department_confirmation_lesson_day_user",
+            password="test-pass-123",
+        )
+        self.api_key = APIKey.objects.create(
+            key_name="Department Confirmation Lesson Day API Key",
+            created_by=self.user,
+        )
+        self.client.credentials(HTTP_X_API_KEY=self.api_key.key)
+
+        self.url = reverse("department-attendance-confirmation")
+        self.department = ChildDepartment.objects.create(
+            id="200500",
+            name="Lesson Day Group",
+        )
+        self.staff = Staff.objects.create(
+            pin="S7777S",
+            name="Ainur",
+            surname="Lesson",
+            department=self.department,
+        )
+        ClassLocation.objects.create(
+            name="Абылай",
+            address="Проспект Абылай хана, 51/53",
+            latitude=43.2389,
+            longitude=76.8897,
+        )
+        self.target_date = datetime.date(2026, 3, 10)
+
+    def _create_lesson(
+        self,
+        *,
+        hour: int,
+        auto_status: str = LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+        manual_verdict: str = LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+    ) -> None:
+        first_in = timezone.make_aware(
+            datetime.datetime(
+                self.target_date.year,
+                self.target_date.month,
+                self.target_date.day,
+                hour,
+                0,
+            )
+        )
+        LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=first_in,
+            last_out=first_in + datetime.timedelta(hours=1),
+            latitude=43.2389,
+            longitude=76.8897,
+            date_at=self.target_date,
+            photo_spoof_status=auto_status,
+            photo_manual_verdict=manual_verdict,
+        )
+
+    def _create_staff_attendance(self) -> None:
+        first_in = timezone.make_aware(
+            datetime.datetime(
+                self.target_date.year,
+                self.target_date.month,
+                self.target_date.day,
+                8,
+                30,
+            )
+        )
+        StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=self.target_date + datetime.timedelta(days=1),
+            first_in=first_in,
+            last_out=first_in + datetime.timedelta(hours=6),
+            area_name_in="цос",
+            area_name_out="цос",
+        )
+
+    def test_suspicious_lesson_day_marks_staff_as_waiting_without_staff_attendance(
+        self,
+    ):
+        self._create_lesson(hour=9)
+        self._create_lesson(
+            hour=11,
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+        )
+
+        response = self.client.get(
+            self.url,
+            {
+                "child_department_id": self.department.id,
+                "date": self.target_date.isoformat(),
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        staff_state = response.data["by_pin_short"]["7777"]
+        self.assertFalse(response.data["data_available"])
+        self.assertTrue(staff_state["waiting"])
+        self.assertFalse(staff_state["confirmed"])
+        self.assertEqual(response.data["locations"], [])
+
+    def test_suspicious_lesson_day_keeps_staff_attendance_confirmation(self):
+        self._create_staff_attendance()
+        self._create_lesson(
+            hour=11,
+            manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS,
+        )
+
+        response = self.client.get(
+            self.url,
+            {
+                "child_department_id": self.department.id,
+                "date": self.target_date.isoformat(),
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        staff_state = response.data["by_pin_short"]["7777"]
+        self.assertTrue(response.data["data_available"])
+        self.assertFalse(staff_state["waiting"])
+        self.assertTrue(staff_state["confirmed"])

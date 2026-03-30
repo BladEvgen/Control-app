@@ -11,7 +11,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.db.models.fields.files import FieldFile
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 from django.dispatch import receiver
@@ -676,6 +676,7 @@ class LessonAttendance(models.Model, GeoItem):
         (PHOTO_MANUAL_VERDICT_CLEAN, "Нормальное"),
         (PHOTO_MANUAL_VERDICT_SUSPICIOUS, "Подозрительное (ручное)"),
     ]
+    REPORT_FILTER_CACHE_VERSION = "lesson_day_ban_v1"
 
     # For attendance reports we exclude only definitively rejected photos:
     # - manual suspicious verdicts;
@@ -688,6 +689,24 @@ class LessonAttendance(models.Model, GeoItem):
         Q(photo_manual_verdict=PHOTO_MANUAL_VERDICT_NONE)
         & Q(photo_spoof_status=PHOTO_SPOOF_STATUS_SUSPICIOUS)
     )
+
+    @classmethod
+    def suspicious_for_reports_day_subquery(cls):
+        return cls.objects.filter(
+            cls.PHOTO_SUSPICIOUS_FOR_REPORTS_Q,
+            staff_id=OuterRef("staff_id"),
+            date_at=OuterRef("date_at"),
+        )
+
+    @classmethod
+    def exclude_report_invalid_days(cls, queryset=None):
+        if queryset is None:
+            queryset = cls.objects.all()
+        return queryset.annotate(
+            _report_has_invalid_lesson_day=Exists(
+                cls.suspicious_for_reports_day_subquery()
+            )
+        ).filter(_report_has_invalid_lesson_day=False)
 
     staff = models.ForeignKey(
         Staff,

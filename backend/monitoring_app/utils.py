@@ -710,11 +710,9 @@ def generate_map_data(
 
             logger.info(f"Начинаем обработку LessonAttendance для даты: {date_at}")
 
-            lesson_attendances_qs = (
+            lesson_attendances_qs = models.LessonAttendance.exclude_report_invalid_days(
                 models.LessonAttendance.objects.filter(date_at=date_at)
-                .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
-                .exclude(staff_id__in=staff_with_attendance)
-            )
+            ).exclude(staff_id__in=staff_with_attendance)
 
             lesson_count = lesson_attendances_qs.count()
             logger.info(f"Количество LessonAttendance для обработки: {lesson_count}")
@@ -1241,7 +1239,11 @@ def collect_attendance_data(staff_list, start_date, end_date):
         staff_ids = sorted(staff_list.values_list("id", flat=True))
         staff_count = len(staff_ids)
 
-        return f"attendance_data_{start_str}_to_{end_str}_{dept_str}_staff_count_{staff_count}"
+        cache_version = models.LessonAttendance.REPORT_FILTER_CACHE_VERSION
+        return (
+            f"attendance_data_{cache_version}_{start_str}_to_{end_str}_"
+            f"{dept_str}_staff_count_{staff_count}"
+        )
 
     cache_key = generate_cache_key()
     cached_results = get_cache(
@@ -1316,21 +1318,19 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         "effective_work_intervals",
     )
 
-    lesson_attendance_qs = (
+    lesson_attendance_qs = models.LessonAttendance.exclude_report_invalid_days(
         models.LessonAttendance.objects.filter(
             staff_id__in=staff_ids,
             date_at__range=[start_date, end_date],
         )
-        .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
-        .only(
-            "staff_id",
-            "first_in",
-            "date_at",
-            "last_out",
-            "latitude",
-            "longitude",
-            "duration_seconds",
-        )
+    ).only(
+        "staff_id",
+        "first_in",
+        "date_at",
+        "last_out",
+        "latitude",
+        "longitude",
+        "duration_seconds",
     )
 
     remote_work_qs = models.RemoteWork.objects.filter(

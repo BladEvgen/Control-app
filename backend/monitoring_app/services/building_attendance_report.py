@@ -8,11 +8,10 @@ from typing import Any, Optional
 
 from django.db.models import Prefetch
 from django.utils import timezone
+from monitoring_app import models, utils
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import Alignment, Font
-
-from monitoring_app import models, utils
 
 DEFAULT_DAYS_WITH_DATA = 7
 UNKNOWN_LOCATION_NAME = "Неизвестная локация"
@@ -243,8 +242,8 @@ def _get_la_event_dates(
     date_from: Optional[datetime.date],
     date_to: Optional[datetime.date],
 ) -> set[datetime.date]:
-    qs = models.LessonAttendance.objects.filter(staff_id__in=staff_ids).exclude(
-        models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q
+    qs = models.LessonAttendance.exclude_report_invalid_days(
+        models.LessonAttendance.objects.filter(staff_id__in=staff_ids)
     )
     if date_from is not None and date_to is not None:
         qs = qs.filter(date_at__range=(date_from, date_to))
@@ -329,14 +328,12 @@ def _collect_daily_and_summary_rows(
         key = (event_date, int(record["staff_id"]))
         sa_by_key[key].append(record)
 
-    la_qs = (
+    la_qs = models.LessonAttendance.exclude_report_invalid_days(
         models.LessonAttendance.objects.filter(
             staff_id__in=staff_ids,
             date_at__range=(date_from, date_to),
         )
-        .exclude(models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q)
-        .values("staff_id", "date_at", "first_in", "latitude", "longitude")
-    )
+    ).values("staff_id", "date_at", "first_in", "latitude", "longitude")
 
     for record in la_qs:
         event_date = _normalize_to_date(record.get("date_at"))
@@ -349,7 +346,9 @@ def _collect_daily_and_summary_rows(
 
     holidays = {
         holiday.date: holiday.is_working_day
-        for holiday in models.PublicHoliday.objects.filter(date__range=(date_from, date_to))
+        for holiday in models.PublicHoliday.objects.filter(
+            date__range=(date_from, date_to)
+        )
     }
 
     daily_bucket: dict[tuple[datetime.date, str], dict[str, Any]] = defaultdict(
@@ -416,9 +415,9 @@ def _collect_daily_and_summary_rows(
                 "day_of_week": _weekday_ru(event_date),
                 "is_weekend": event_date.weekday() >= 5,
                 "is_public_holiday": event_date in holidays,
-                "is_working_day_override": holidays.get(event_date)
-                if event_date in holidays
-                else None,
+                "is_working_day_override": (
+                    holidays.get(event_date) if event_date in holidays else None
+                ),
                 "department_name": dept_name,
                 "building_name": building_name,
                 "building_address": building_address,
@@ -437,7 +436,11 @@ def _collect_daily_and_summary_rows(
     ):
         day_total_students = len(global_day_staff_ids.get(event_date, set()))
         students_count = len(staff_set)
-        pct = round((students_count / day_total_students) * 100, 2) if day_total_students else 0.0
+        pct = (
+            round((students_count / day_total_students) * 100, 2)
+            if day_total_students
+            else 0.0
+        )
         summary_key = (building_name, building_address)
         summary_acc[summary_key]["total_visits"] += students_count
         summary_acc[summary_key]["days"] += 1
@@ -609,9 +612,11 @@ def _build_excel_file(
                 row["day_of_week"],
                 row["is_weekend"],
                 row["is_public_holiday"],
-                ""
-                if row["is_working_day_override"] is None
-                else row["is_working_day_override"],
+                (
+                    ""
+                    if row["is_working_day_override"] is None
+                    else row["is_working_day_override"]
+                ),
                 row["department_name"],
                 row["building_name"],
                 row["building_address"],
@@ -652,7 +657,12 @@ def _build_excel_file(
         ]
     )
     ws_graph.append([])
-    graph_headers = ["Локация", "Адрес", "Средняя доля, %", "Среднее кол-во студентов в день"]
+    graph_headers = [
+        "Локация",
+        "Адрес",
+        "Средняя доля, %",
+        "Среднее кол-во студентов в день",
+    ]
     ws_graph.append(graph_headers)
 
     chart_source_rows = sorted(
