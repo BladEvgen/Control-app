@@ -14,6 +14,7 @@ import {
 } from "./utils/appVersionGuard";
 import { CURRENT_APP_BUILD_META } from "./utils/appBuild";
 import { tryRecoverChunkLoadError } from "./utils/chunkRecovery";
+import { isNavigationTransitionPending } from "./utils/pageLifecycle";
 
 declare global {
   interface Window {
@@ -37,29 +38,21 @@ window.__APP_VERSION_GUARD__ = {
   checkNow: (reason = "manual-debug") => requestAppVersionCheck(reason),
 };
 
-let isPageUnloading = false;
-window.addEventListener("beforeunload", () => {
-  isPageUnloading = true;
-});
-window.addEventListener("pagehide", () => {
-  isPageUnloading = true;
-});
-
 window.addEventListener("vite:preloadError", (event) => {
-  if (isPageUnloading) return;
+  if (isNavigationTransitionPending()) return;
   event.preventDefault();
   void handleBuildSkewDetected("vite:preloadError", event.payload);
 });
 
 window.addEventListener("unhandledrejection", (event) => {
-  if (isPageUnloading) return;
+  if (isNavigationTransitionPending()) return;
   if (tryRecoverChunkLoadError(event.reason)) {
     event.preventDefault();
   }
 });
 
 window.addEventListener("error", (event) => {
-  if (isPageUnloading) return;
+  if (isNavigationTransitionPending()) return;
   if (tryRecoverChunkLoadError(event.error ?? event.message)) {
     event.preventDefault();
   }

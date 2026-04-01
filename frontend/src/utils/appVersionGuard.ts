@@ -2,6 +2,7 @@ import {
   APP_VERSION_BROADCAST_STORAGE_KEY,
   APP_VERSION_ENDPOINT,
   CURRENT_APP_BUILD_META,
+  compareAppBuildMeta,
   parseAppBuildMeta,
   type AppBuildMeta,
 } from "./appBuild";
@@ -63,11 +64,11 @@ const maybeReloadToBuild = (
   reason: string,
   { shouldBroadcast = true }: { shouldBroadcast?: boolean } = {},
 ): boolean => {
-  if (buildMeta.buildId === CURRENT_APP_BUILD_META.buildId) {
+  rememberLatestBuild(buildMeta);
+  if (compareAppBuildMeta(buildMeta, CURRENT_APP_BUILD_META) <= 0) {
     return false;
   }
 
-  rememberLatestBuild(buildMeta);
   if (shouldBroadcast) {
     broadcastLatestBuild(buildMeta);
   }

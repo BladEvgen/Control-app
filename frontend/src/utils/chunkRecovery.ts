@@ -1,4 +1,5 @@
 import { guardedAutoReload, forceHardReload } from "./appAutoReload";
+import { isNavigationTransitionPending } from "./pageLifecycle";
 
 const CHUNK_RETRY_STATE_STORAGE_KEY = "__app_chunk_retry_state__";
 const CHUNK_DUPLICATE_ERROR_WINDOW_MS = 2500;
@@ -87,6 +88,7 @@ const writeRetryState = (state: ChunkRetryState): void => {
 export const tryRecoverChunkLoadError = (error: unknown): boolean => {
   if (isAbortLikeLoadError(error)) return false;
   if (!isChunkLoadError(error)) return false;
+  if (isNavigationTransitionPending()) return false;
   if (typeof document !== "undefined" && document.visibilityState === "hidden") {
     return false;
   }

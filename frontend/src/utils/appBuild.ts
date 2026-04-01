@@ -30,3 +30,19 @@ export const parseAppBuildMeta = (value: unknown): AppBuildMeta | null => {
     buildEpochMs: Number(candidate.buildEpochMs),
   };
 };
+
+export const compareAppBuildMeta = (
+  left: AppBuildMeta,
+  right: AppBuildMeta,
+): number => {
+  if (left.buildId === right.buildId) {
+    return 0;
+  }
+
+  const epochDiff = left.buildEpochMs - right.buildEpochMs;
+  if (epochDiff !== 0) {
+    return epochDiff;
+  }
+
+  return left.buildId.localeCompare(right.buildId);
+};

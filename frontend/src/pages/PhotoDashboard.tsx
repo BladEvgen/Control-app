@@ -975,31 +975,109 @@ interface WsBatchBucket {
 
 type PhotoVerdictAction = "manual_suspicious" | "manual_clean" | "manual_reset";
 
+const resolvePhotoSrc = (photoUrl: string): string => {
+  if (!photoUrl) return "";
+  if (/^https?:\/\//i.test(photoUrl)) return photoUrl;
+  return `${apiUrl}${photoUrl}`;
+};
+
+const PhotoImageFallback: React.FC<{
+  reason: "missing" | "error";
+  containerClassName: string;
+  iconWrapperClassName: string;
+  iconClassName: string;
+  labelClassName: string;
+}> = React.memo(
+  ({
+    reason,
+    containerClassName,
+    iconWrapperClassName,
+    iconClassName,
+    labelClassName,
+  }) => (
+    <div className={containerClassName}>
+      <div className={iconWrapperClassName}>
+        <FaImage className={iconClassName} />
+      </div>
+      <span className={labelClassName}>
+        {reason === "error" ? "Фото недоступно" : "Фото не загружено"}
+      </span>
+    </div>
+  ),
+);
+PhotoImageFallback.displayName = "PhotoImageFallback";
+
+const PhotoImageAsset: React.FC<{
+  photo: PhotoData;
+  imageClassName: string;
+  placeholderContainerClassName: string;
+  placeholderIconWrapperClassName: string;
+  placeholderIconClassName: string;
+  placeholderLabelClassName: string;
+  decoding?: "async" | "auto" | "sync";
+  loading?: "eager" | "lazy";
+}> = React.memo(
+  ({
+    photo,
+    imageClassName,
+    placeholderContainerClassName,
+    placeholderIconWrapperClassName,
+    placeholderIconClassName,
+    placeholderLabelClassName,
+    decoding,
+    loading,
+  }) => {
+    const src = useMemo(() => resolvePhotoSrc(photo.photoUrl), [photo.photoUrl]);
+    const [isImageUnavailable, setIsImageUnavailable] = useState(false);
+
+    useEffect(() => {
+      setIsImageUnavailable(false);
+    }, [photo.id, src]);
+
+    const fallbackReason: "missing" | "error" =
+      photo.hasPhoto === false || !src ? "missing" : "error";
+
+    if (photo.hasPhoto === false || !src || isImageUnavailable) {
+      return (
+        <PhotoImageFallback
+          reason={fallbackReason}
+          containerClassName={placeholderContainerClassName}
+          iconWrapperClassName={placeholderIconWrapperClassName}
+          iconClassName={placeholderIconClassName}
+          labelClassName={placeholderLabelClassName}
+        />
+      );
+    }
+
+    return (
+      <img
+        src={src}
+        alt={photo.staffFullName}
+        className={imageClassName}
+        loading={loading}
+        decoding={decoding}
+        draggable={false}
+        onError={() => setIsImageUnavailable(true)}
+      />
+    );
+  },
+);
+PhotoImageAsset.displayName = "PhotoImageAsset";
+
 const PhotoCardImage: React.FC<{
   photo: PhotoData;
   isClone: boolean;
 }> = React.memo(({ photo, isClone }) => {
-  if (photo.hasPhoto === false) {
-    return (
-      <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
-          <FaImage className="h-7 w-7" />
-        </div>
-        <span className="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white shadow-md backdrop-blur-sm">
-          Фото не загружено
-        </span>
-      </div>
-    );
-  }
-
   return (
-    <img
-      src={`${apiUrl}${photo.photoUrl}`}
-      alt={photo.staffFullName}
-      className="w-full h-full object-contain transition-opacity duration-300"
+    <PhotoImageAsset
+      photo={photo}
+      imageClassName="w-full h-full object-contain transition-opacity duration-300"
       loading="lazy"
       decoding={isClone ? "async" : "auto"}
-      draggable={false}
+      placeholderContainerClassName="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900"
+      placeholderIconWrapperClassName="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200"
+      placeholderIconClassName="h-7 w-7"
+      placeholderLabelClassName="rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white shadow-md backdrop-blur-sm"
     />
   );
 });
@@ -3158,24 +3236,14 @@ const PhotoDashboard: React.FC = () => {
 
             <div className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain [@media(orientation:landscape)]:flex-row [@media(orientation:landscape)]:overflow-hidden">
               <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex-shrink-0 max-h-[50vh] [@media(orientation:landscape)]:max-h-none [@media(orientation:landscape)]:w-[min(42%,85vh)] [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:aspect-square [@media(orientation:landscape)]:shrink-0">
-                {selectedPhoto.hasPhoto === false ? (
-                  <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
-                    <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200">
-                      <FaImage className="h-10 w-10" />
-                    </div>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-black/60 px-3 py-1.5 text-xs font-medium text-white shadow-md backdrop-blur-sm">
-                      <FaImage className="h-4 w-4" />
-                      Фото не загружено
-                    </span>
-                  </div>
-                ) : (
-                  <img
-                    src={`${apiUrl}${selectedPhoto.photoUrl}`}
-                    alt={selectedPhoto.staffFullName}
-                    className="w-full h-full object-contain"
-                    draggable={false}
-                  />
-                )}
+                <PhotoImageAsset
+                  photo={selectedPhoto}
+                  imageClassName="w-full h-full object-contain"
+                  placeholderContainerClassName="w-full h-full flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900"
+                  placeholderIconWrapperClassName="flex h-20 w-20 items-center justify-center rounded-3xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200"
+                  placeholderIconClassName="h-10 w-10"
+                  placeholderLabelClassName="inline-flex items-center rounded-full bg-black/60 px-3 py-1.5 text-xs font-medium text-white shadow-md backdrop-blur-sm"
+                />
               </div>
 
               <div className="p-5 sm:p-6 md:p-7 flex flex-col gap-3 flex-shrink-0 [@media(orientation:landscape)]:flex-1 [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:overflow-y-auto [@media(orientation:landscape)]:justify-center">

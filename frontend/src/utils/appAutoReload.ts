@@ -1,4 +1,5 @@
 import { CURRENT_APP_BUILD_META } from "./appBuild";
+import { isNavigationTransitionPending } from "./pageLifecycle";
 
 const AUTO_RELOAD_STATE_STORAGE_KEY = "__app_auto_reload_state__";
 const HARD_RELOAD_QUERY_PARAM = "__hard_reload";
@@ -141,6 +142,7 @@ export const guardedAutoReload = ({
   message?: string;
 }): boolean => {
   if (!isBrowser) return false;
+  if (isNavigationTransitionPending()) return false;
 
   const normalizedTargetBuildId = normalizeTargetBuildId(targetBuildId, reason);
   const currentState = readAutoReloadState();
