@@ -4,8 +4,11 @@ import os
 from pathlib import Path
 from typing import Any, Union, cast
 
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from celery import shared_task
 from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 from monitoring_app import models, utils
@@ -13,6 +16,54 @@ from monitoring_app import models, utils
 logger = logging.getLogger(__name__)
 DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY = "department_confirmation_epoch_hour"
 DEPARTMENT_CONFIRMATION_EPOCH_TTL = 5 * 60 * 60
+PHOTO_LIVE_UPDATE_CHUNK_SIZE = 200
+
+
+def _invalidate_photo_cache_and_broadcast_updates(
+    updated_records_by_date: dict[datetime.date, list[int]],
+    *,
+    log_prefix: str,
+) -> None:
+    if not updated_records_by_date:
+        return
+
+    for lesson_date in updated_records_by_date:
+        cache.delete(f"photos_for_{lesson_date}")
+
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
+
+    version_ts = timezone.now().isoformat()
+    for lesson_date, raw_ids in updated_records_by_date.items():
+        unique_ids = list(dict.fromkeys(raw_ids))
+        if not unique_ids:
+            continue
+
+        group_name = f"photos_{lesson_date.isoformat()}"
+        for chunk_start in range(0, len(unique_ids), PHOTO_LIVE_UPDATE_CHUNK_SIZE):
+            chunk = unique_ids[
+                chunk_start : chunk_start + PHOTO_LIVE_UPDATE_CHUNK_SIZE
+            ]
+            payload: dict[str, Any] = {
+                "type": "new_photo",
+                "attendance_ids": chunk,
+                "op": "updated",
+                "stateCode": "UPDATED_META",
+                "versionTs": version_ts,
+            }
+            if len(chunk) == 1:
+                payload["attendance_id"] = chunk[0]
+            try:
+                async_to_sync(channel_layer.group_send)(group_name, payload)
+            except Exception as exc:
+                logger.warning(
+                    "%s ws_broadcast_failed date=%s ids=%s error=%s",
+                    log_prefix,
+                    lesson_date.isoformat(),
+                    chunk[:10],
+                    exc,
+                )
 
 
 @shared_task
@@ -418,7 +469,7 @@ def scan_lesson_attendance_photos_hourly(
     qs = models.LessonAttendance.objects.filter(candidates_q)
     if target_date is not None:
         qs = qs.filter(date_at=target_date)
-    qs = qs.only("id", "staff_image_path").order_by("id")
+    qs = qs.only("id", "date_at", "staff_image_path").order_by("id")
     if max_records:
         records = list(qs[:max_records])
     else:
@@ -433,6 +484,7 @@ def scan_lesson_attendance_photos_hourly(
     }
     elapsed_sum_ms = 0.0
     total = len(records)
+    updated_records_by_date: dict[datetime.date, list[int]] = {}
 
     logger.info(
         "%s start total=%s batch_size=%s max_records=%s device=%s date=%s",
@@ -474,9 +526,11 @@ def scan_lesson_attendance_photos_hourly(
             elapsed_sum_ms += result.elapsed_ms
             stats["checked"] += 1
             stats[result.status] = stats.get(result.status, 0) + 1
-            models.LessonAttendance.objects.filter(pk=record.pk).update(
+            updated_rows = models.LessonAttendance.objects.filter(pk=record.pk).update(
                 **result.to_update_kwargs()
             )
+            if updated_rows:
+                updated_records_by_date.setdefault(record.date_at, []).append(record.id)
 
         if total > batch_size:
             logger.info(
@@ -491,6 +545,10 @@ def scan_lesson_attendance_photos_hourly(
             )
 
     avg_ms = (elapsed_sum_ms / stats["checked"]) if stats["checked"] else 0.0
+    _invalidate_photo_cache_and_broadcast_updates(
+        updated_records_by_date,
+        log_prefix=log_prefix,
+    )
     logger.info(
         "%s done checked=%s clean=%s review=%s suspicious=%s error=%s avg_ms=%.2f",
         log_prefix,
@@ -517,9 +575,6 @@ def rescan_lesson_attendance_photo_ids(
     Используется админ-экшеном, чтобы не блокировать HTTP-запрос и избежать 500/timeout
     при массовом перескане.
     """
-    from asgiref.sync import async_to_sync
-    from channels.layers import get_channel_layer
-    from django.core.cache import cache
     from monitoring_app.photo_pad import MANUAL_NONE, check_photo, normalize_device
 
     log_prefix = "[lesson_photo_pad_admin_ids]"
@@ -571,8 +626,7 @@ def rescan_lesson_attendance_photo_ids(
         "skipped_no_photo": 0,
         "device": resolved_device,
     }
-    updated_records_by_date: dict[str, list[int]] = {}
-    updated_dates: set[datetime.date] = set()
+    updated_records_by_date: dict[datetime.date, list[int]] = {}
 
     for start in range(0, len(records), batch_size):
         batch = records[start : start + batch_size]
@@ -619,40 +673,12 @@ def rescan_lesson_attendance_photo_ids(
                 continue
             stats["checked"] += 1
             stats[result.status] = int(stats.get(result.status, 0)) + 1
-            updated_dates.add(record.date_at)
-            date_key = record.date_at.isoformat()
-            updated_records_by_date.setdefault(date_key, []).append(record.id)
+            updated_records_by_date.setdefault(record.date_at, []).append(record.id)
 
-    for lesson_date in updated_dates:
-        cache.delete(f"photos_for_{lesson_date}")
-
-    channel_layer = get_channel_layer()
-    if channel_layer is not None:
-        version_ts = timezone.now().isoformat()
-        for iso_date, raw_ids in updated_records_by_date.items():
-            unique_ids = list(dict.fromkeys(raw_ids))
-            group_name = f"photos_{iso_date}"
-            for chunk_start in range(0, len(unique_ids), 200):
-                chunk = unique_ids[chunk_start : chunk_start + 200]
-                payload = {
-                    "type": "new_photo",
-                    "attendance_ids": chunk,
-                    "op": "updated",
-                    "stateCode": "UPDATED_META",
-                    "versionTs": version_ts,
-                }
-                if len(chunk) == 1:
-                    payload["attendance_id"] = chunk[0]
-                try:
-                    async_to_sync(channel_layer.group_send)(group_name, payload)
-                except Exception as exc:
-                    logger.warning(
-                        "%s ws_broadcast_failed date=%s ids=%s error=%s",
-                        log_prefix,
-                        iso_date,
-                        chunk[:10],
-                        exc,
-                    )
+    _invalidate_photo_cache_and_broadcast_updates(
+        updated_records_by_date,
+        log_prefix=log_prefix,
+    )
 
     logger.info(
         "%s done requested=%s checked=%s clean=%s review=%s suspicious=%s error=%s skipped_manual=%s skipped_no_photo=%s device=%s",
@@ -812,7 +838,7 @@ def warmup_class_location_buffers():
         SAME_POINT_THRESHOLD_M,
     )
 
-    cache = caches["default"]
+    default_cache = caches["default"]
     list_data = list(
         models.ClassLocation.objects.order_by("id").values(
             "id",
@@ -823,7 +849,7 @@ def warmup_class_location_buffers():
             "acceptance_radius_m",
         )
     )
-    cache.set(
+    default_cache.set(
         CLASS_LOCATION_LIST_CACHE_KEY,
         list_data,
         CLASS_LOCATION_LIST_CACHE_TTL,
@@ -845,7 +871,7 @@ def warmup_class_location_buffers():
         if locs_with_coords
         else {}
     )
-    cache.set(
+    default_cache.set(
         CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
         radii,
         CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
