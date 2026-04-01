@@ -11,6 +11,7 @@ import {
 import { useEffect } from "react";
 import { getCookie, scheduleNextRefreshBeforeExpiry } from "../../api";
 import { log } from "../../api";
+import { requestAppVersionCheck } from "../../utils/appVersionGuard";
 
 const AUTH_SYNC_KEY = "app:authSync" as const;
 
@@ -40,6 +41,7 @@ export const useAuth = () => {
     const onUserLoggedIn = () => {
       const newToken = getCookie("access_token");
       dispatch(setToken(newToken));
+      void requestAppVersionCheck("auth:userLoggedIn");
     };
 
     const onUserLoggedOut = () => {
@@ -55,6 +57,7 @@ export const useAuth = () => {
       }>;
       if (customEvent.detail) {
         dispatch(setTokens(customEvent.detail));
+        void requestAppVersionCheck("auth:tokensRefreshed");
       }
     };
 
@@ -73,6 +76,7 @@ export const useAuth = () => {
         })
       );
       scheduleNextRefreshBeforeExpiry();
+      void requestAppVersionCheck("auth:syncFromOtherTab");
     };
 
     const onStorage = (e: StorageEvent) => {
@@ -147,4 +151,3 @@ export const useAuth = () => {
     setLoading: (loading: boolean) => dispatch(setLoading(loading)),
   };
 };
-

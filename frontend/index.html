@@ -32,6 +32,21 @@
     <button type="button" onclick="location.reload()"
       style="padding:0.55rem 1rem;font-size:0.98rem;cursor:pointer;background:#2563eb;color:white;border:none;border-radius:8px;">Обновить</button>
   </div>
+  <div id="app-reloading"
+    style="display:none;position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center;padding:2rem;background:radial-gradient(circle at top, rgba(96,165,250,0.22), rgba(15,23,42,0.78));backdrop-filter:blur(18px);font-family:system-ui,sans-serif;">
+    <div
+      style="width:min(100%, 540px);border:1px solid rgba(191,219,254,0.38);background:rgba(255,255,255,0.14);box-shadow:0 32px 120px -32px rgba(15,23,42,0.85);border-radius:28px;padding:2rem 1.75rem;color:#eff6ff;text-align:center;">
+      <div
+        style="width:64px;height:64px;margin:0 auto 1rem auto;border-radius:20px;background:linear-gradient(135deg, rgba(59,130,246,0.92), rgba(14,165,233,0.9));display:flex;align-items:center;justify-content:center;box-shadow:0 18px 48px -18px rgba(59,130,246,0.85);">
+        <span
+          style="display:inline-block;width:20px;height:20px;border:2px solid rgba(255,255,255,0.45);border-top-color:white;border-radius:9999px;animation:boot-spin 0.8s linear infinite;"></span>
+      </div>
+      <h2 style="margin:0 0 0.65rem 0;font-size:1.55rem;font-weight:700;letter-spacing:-0.02em;">Обновляем приложение</h2>
+      <p id="app-reloading-text" style="margin:0;color:rgba(239,246,255,0.86);font-size:0.98rem;line-height:1.5;">
+        Загружаем свежий релиз. Это займёт пару секунд.
+      </p>
+    </div>
+  </div>
   <noscript>
     <p style="padding:2rem;text-align:center;font-family:system-ui">Для работы приложения необходим JavaScript. Включите его в настройках браузера.</p>
   </noscript>
@@ -50,6 +65,8 @@
       var root = document.getElementById("root");
       var loadingBox = document.getElementById("boot-loading");
       var errorBox = document.getElementById("load-error");
+      var reloadBox = document.getElementById("app-reloading");
+      var reloadTextEl = document.getElementById("app-reloading-text");
       var titleEl = document.getElementById("load-error-title");
       var textEl = document.getElementById("load-error-text");
       var detailsEl = document.getElementById("load-error-details");
@@ -96,6 +113,17 @@
         if (errorBox) errorBox.style.display = "block";
       }
 
+      function showReloading(message) {
+        if (unloading) return;
+        if (reloadTextEl) {
+          reloadTextEl.textContent =
+            message || "Загружаем свежий релиз. Это займёт пару секунд.";
+        }
+        if (loadingBox) loadingBox.style.display = "none";
+        if (errorBox) errorBox.style.display = "none";
+        if (reloadBox) reloadBox.style.display = "flex";
+      }
+
       function checkRequiredFeatures() {
         var missing = [];
         if (!window.Promise) missing.push("Promise");
@@ -121,9 +149,13 @@
           if (loadingBox) loadingBox.style.display = "none";
           if (root) root.style.display = "";
           if (errorBox) errorBox.style.display = "none";
+          if (reloadBox) reloadBox.style.display = "none";
         },
         showFallback: function (reason, details) {
           show(reason, details);
+        },
+        showReloading: function (message) {
+          showReloading(message);
         }
       };
 

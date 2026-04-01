@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
-    "build:legacy": "tsc && vite build --mode legacy",
+    "build": "node ./scripts/build-release.mjs",
+    "build:legacy": "node ./scripts/build-release.mjs --mode legacy",
     "lint": "eslint . --max-warnings 0",
     "preview": "vite preview"
   },

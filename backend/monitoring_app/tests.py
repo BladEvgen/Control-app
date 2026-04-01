@@ -1,14 +1,16 @@
 import asyncio
 import base64
+import json
 import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from asgiref.sync import async_to_sync
 from django.conf import settings
+from django.core.cache import cache
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
@@ -887,6 +889,50 @@ class FetcherViewTest(APITestCase):
         self.assertEqual(summary["ambiguous_resolved_as_transfer"], 1)
 
 
+class AppVersionEndpointTest(SimpleTestCase):
+    def test_app_version_returns_live_frontend_metadata_with_no_store_headers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            frontend_dir = Path(temp_dir) / "frontend"
+            dist_dir = frontend_dir / "dist"
+            dist_dir.mkdir(parents=True, exist_ok=True)
+            expected_payload = {
+                "buildId": "2026-04-01_12-30-45_123",
+                "builtAtIso": "2026-04-01T12:30:45.123Z",
+                "buildEpochMs": 1775046645123,
+            }
+            (dist_dir / "app-version.json").write_text(
+                json.dumps(expected_payload),
+                encoding="utf-8",
+            )
+
+            with override_settings(FRONTEND_DIR=frontend_dir):
+                response = self.client.get(reverse("app-version"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json(), expected_payload)
+        cache_control = response["Cache-Control"]
+        self.assertIn("no-store", cache_control)
+        self.assertIn("no-cache", cache_control)
+        self.assertIn("must-revalidate", cache_control)
+        self.assertIn("max-age=0", cache_control)
+        self.assertEqual(response["Pragma"], "no-cache")
+        self.assertEqual(response["Expires"], "0")
+
+    def test_app_version_returns_503_when_metadata_file_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            frontend_dir = Path(temp_dir) / "frontend"
+            (frontend_dir / "dist").mkdir(parents=True, exist_ok=True)
+
+            with override_settings(FRONTEND_DIR=frontend_dir):
+                response = self.client.get(reverse("app-version"))
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(
+            response.json(),
+            {"error": "Build version metadata is unavailable."},
+        )
+
+
 @override_settings(
     ATTENDANCE_EXIT_DEVICE_SNS=frozenset({"QJT3244400440", "CORL223060005"}),
     ATTENDANCE_AMBIGUOUS_EXIT_DEVICE_SNS=frozenset({"QJT3244400440"}),
@@ -1353,6 +1399,130 @@ class PhotoConsumerProtocolTest(SimpleTestCase):
         self.assertEqual(payload["type"], "photos_updated")
         self.assertEqual(len(payload["events"]), 1)
         self.assertEqual(payload["events"][0]["id"], 201)
+
+
+class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
+    def setUp(self):
+        self.staff = Staff.objects.create(
+            pin="S4400S",
+            name="Hourly",
+            surname="Pad",
+            department=None,
+        )
+        self.now = timezone.now()
+
+    def _create_lesson(
+        self,
+        *,
+        image_path: str,
+        auto_status: str = LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
+        manual_verdict: str = LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+    ) -> LessonAttendance:
+        return LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="PAD",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=self.now,
+            latitude=43.238949,
+            longitude=76.889709,
+            date_at=timezone.localdate(),
+            staff_image_path=image_path,
+            photo_spoof_status=auto_status,
+            photo_manual_verdict=manual_verdict,
+        )
+
+    @staticmethod
+    def _mock_pad_result(
+        *,
+        status_value: str,
+        trust_confirmed: bool | None,
+        risk_score: float,
+        tags: list[str],
+    ) -> Mock:
+        result = Mock()
+        result.status = status_value
+        result.elapsed_ms = 12.5
+        result.to_update_kwargs.return_value = {
+            "photo_trust_confirmed": trust_confirmed,
+            "photo_spoof_status": status_value,
+            "photo_spoof_score": risk_score,
+            "photo_spoof_tags": tags,
+            "photo_spoof_checked_at": timezone.now(),
+            "photo_spoof_model_version": "pad_v3",
+        }
+        return result
+
+    @patch("monitoring_app.tasks.get_channel_layer")
+    @patch("monitoring_app.photo_pad.check_photo")
+    def test_hourly_scan_invalidates_cache_and_broadcasts_clean_update(
+        self,
+        mock_check_photo,
+        mock_get_channel_layer,
+    ):
+        lesson = self._create_lesson(image_path="/tmp/hourly-pad-clean.jpg")
+        cache_key = f"photos_for_{lesson.date_at}"
+        cache.set(cache_key, {"cached": True}, timeout=60)
+
+        mock_check_photo.return_value = self._mock_pad_result(
+            status_value=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+            trust_confirmed=True,
+            risk_score=0.04,
+            tags=["face_ok"],
+        )
+        channel_layer = Mock()
+        channel_layer.group_send = AsyncMock()
+        mock_get_channel_layer.return_value = channel_layer
+
+        result = monitoring_tasks.scan_lesson_attendance_photos_hourly(
+            batch_size=10,
+            max_records=10,
+            only_today=True,
+        )
+
+        lesson.refresh_from_db()
+
+        self.assertEqual(
+            lesson.photo_spoof_status,
+            LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+        )
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["clean"], 1)
+        self.assertIsNone(cache.get(cache_key))
+        channel_layer.group_send.assert_awaited_once()
+
+        group_name, payload = channel_layer.group_send.await_args.args
+        self.assertEqual(group_name, f"photos_{lesson.date_at.isoformat()}")
+        self.assertEqual(payload["type"], "new_photo")
+        self.assertEqual(payload["op"], "updated")
+        self.assertEqual(payload["stateCode"], "UPDATED_META")
+        self.assertEqual(payload["attendance_ids"], [lesson.id])
+        self.assertEqual(payload["attendance_id"], lesson.id)
+
+    @patch("monitoring_app.tasks.get_channel_layer")
+    @patch("monitoring_app.photo_pad.check_photo")
+    def test_hourly_scan_skips_manual_verdict_without_live_updates(
+        self,
+        mock_check_photo,
+        mock_get_channel_layer,
+    ):
+        lesson = self._create_lesson(
+            image_path="/tmp/hourly-pad-manual.jpg",
+            manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS,
+        )
+        cache_key = f"photos_for_{lesson.date_at}"
+        cache.set(cache_key, "keep-me", timeout=60)
+
+        result = monitoring_tasks.scan_lesson_attendance_photos_hourly(
+            batch_size=10,
+            max_records=10,
+            only_today=True,
+        )
+
+        self.assertEqual(result["checked"], 0)
+        mock_check_photo.assert_not_called()
+        mock_get_channel_layer.assert_not_called()
+        self.assertEqual(cache.get(cache_key), "keep-me")
 
 
 class LessonAttendanceSignalStateTest(SimpleTestCase):

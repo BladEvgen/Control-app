@@ -1,10 +1,7 @@
+import { guardedAutoReload, forceHardReload } from "./appAutoReload";
+
 const CHUNK_RETRY_STATE_STORAGE_KEY = "__app_chunk_retry_state__";
-const CHUNK_LAST_HARD_RELOAD_AT_STORAGE_KEY = "__app_chunk_last_hard_reload_at__";
-const CHUNK_RETRY_WINDOW_MS = 45000;
-const CHUNK_RETRY_MAX_ATTEMPTS_PER_WINDOW = 2;
-const CHUNK_RETRY_MIN_ATTEMPTS_BEFORE_HARD_RELOAD = 1;
 const CHUNK_DUPLICATE_ERROR_WINDOW_MS = 2500;
-const CHUNK_HARD_RELOAD_COOLDOWN_MS = 45000;
 const CHUNK_MIN_UPTIME_BEFORE_HARD_RELOAD_MS = 1500;
 
 const CHUNK_ERROR_PATTERNS: RegExp[] = [
@@ -24,8 +21,6 @@ const ABORT_LIKE_ERROR_PATTERNS: RegExp[] = [
 ];
 
 type ChunkRetryState = {
-  windowStart: number;
-  attempts: number;
   lastFingerprint?: string;
   lastSeenAt?: number;
 };
@@ -61,19 +56,13 @@ const getErrorFingerprint = (error: unknown): string => {
   return toErrorText(error).trim().slice(0, 180);
 };
 
-const readRetryState = (now: number): ChunkRetryState => {
+const readRetryState = (): ChunkRetryState => {
   try {
     const raw = sessionStorage.getItem(CHUNK_RETRY_STATE_STORAGE_KEY);
     if (!raw) {
-      return { windowStart: now, attempts: 0 };
+      return {};
     }
     const parsed = JSON.parse(raw) as Partial<ChunkRetryState>;
-    const windowStart = Number.isFinite(parsed.windowStart)
-      ? Number(parsed.windowStart)
-      : now;
-    const attempts = Number.isFinite(parsed.attempts)
-      ? Number(parsed.attempts)
-      : 0;
     const lastFingerprint =
       typeof parsed.lastFingerprint === "string"
         ? parsed.lastFingerprint
@@ -81,9 +70,9 @@ const readRetryState = (now: number): ChunkRetryState => {
     const lastSeenAt = Number.isFinite(parsed.lastSeenAt)
       ? Number(parsed.lastSeenAt)
       : undefined;
-    return { windowStart, attempts, lastFingerprint, lastSeenAt };
+    return { lastFingerprint, lastSeenAt };
   } catch {
-    return { windowStart: now, attempts: 0 };
+    return {};
   }
 };
 
@@ -93,30 +82,6 @@ const writeRetryState = (state: ChunkRetryState): void => {
   } catch {
     // ignore storage errors
   }
-};
-
-const hasRecentHardReload = (now: number): boolean => {
-  try {
-    const raw = sessionStorage.getItem(CHUNK_LAST_HARD_RELOAD_AT_STORAGE_KEY);
-    const timestamp = raw ? Number(raw) : NaN;
-    return Number.isFinite(timestamp) && now - timestamp < CHUNK_HARD_RELOAD_COOLDOWN_MS;
-  } catch {
-    return false;
-  }
-};
-
-export const forceHardReload = (): void => {
-  try {
-    sessionStorage.setItem(
-      CHUNK_LAST_HARD_RELOAD_AT_STORAGE_KEY,
-      String(Date.now()),
-    );
-  } catch {
-    // ignore storage errors
-  }
-  const url = new URL(window.location.href);
-  url.searchParams.set("__hard_reload", String(Date.now()));
-  window.location.replace(url.toString());
 };
 
 export const tryRecoverChunkLoadError = (error: unknown): boolean => {
@@ -136,17 +101,8 @@ export const tryRecoverChunkLoadError = (error: unknown): boolean => {
   }
 
   const now = Date.now();
-  if (hasRecentHardReload(now)) {
-    return false;
-  }
-
   const fingerprint = getErrorFingerprint(error);
-  const retryState = readRetryState(now);
-
-  if (now - retryState.windowStart > CHUNK_RETRY_WINDOW_MS) {
-    retryState.windowStart = now;
-    retryState.attempts = 0;
-  }
+  const retryState = readRetryState();
 
   if (
     retryState.lastFingerprint === fingerprint &&
@@ -156,22 +112,13 @@ export const tryRecoverChunkLoadError = (error: unknown): boolean => {
     return false;
   }
 
-  if (retryState.attempts >= CHUNK_RETRY_MAX_ATTEMPTS_PER_WINDOW) {
-    retryState.lastFingerprint = fingerprint;
-    retryState.lastSeenAt = now;
-    writeRetryState(retryState);
-    return false;
-  }
-
-  retryState.attempts += 1;
   retryState.lastFingerprint = fingerprint;
   retryState.lastSeenAt = now;
   writeRetryState(retryState);
-
-  if (retryState.attempts < CHUNK_RETRY_MIN_ATTEMPTS_BEFORE_HARD_RELOAD) {
-    return false;
-  }
-
-  forceHardReload();
-  return true;
+  return guardedAutoReload({
+    targetBuildId: `chunk:${fingerprint}`,
+    reason: "chunk-load-error",
+  });
 };
+
+export { forceHardReload };

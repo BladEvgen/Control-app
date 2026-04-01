@@ -25,7 +25,7 @@ from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, connection, transaction
 from django.db.models import Count, Prefetch, Q
-from django.http import FileResponse, Http404, HttpResponse
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template import TemplateDoesNotExist
 from django.utils import timezone
@@ -656,6 +656,37 @@ def home(request):
         request,
         "index.html",
     )
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    return response
+
+
+def _get_frontend_app_version_path() -> Path:
+    frontend_dir = Path(getattr(settings, "FRONTEND_DIR"))
+    return frontend_dir / "dist" / "app-version.json"
+
+
+@permission_classes([AllowAny])
+@never_cache
+def app_version(request):
+    app_version_path = _get_frontend_app_version_path()
+    try:
+        payload = json.loads(app_version_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        response = JsonResponse(
+            {"error": "Build version metadata is unavailable."},
+            status=503,
+        )
+    except (OSError, json.JSONDecodeError):
+        logger.exception("Failed to read frontend app-version.json")
+        response = JsonResponse(
+            {"error": "Build version metadata is unavailable."},
+            status=503,
+        )
+    else:
+        response = JsonResponse(payload)
+
     response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response["Pragma"] = "no-cache"
     response["Expires"] = "0"

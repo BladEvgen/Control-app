@@ -1,14 +1,11 @@
 import { ComponentType, lazy, LazyExoticComponent } from "react";
 import {
   isAbortLikeLoadError,
-  isChunkLoadError,
   tryRecoverChunkLoadError,
 } from "./chunkRecovery";
 
 const ABORT_RETRY_LIMIT = 2;
 const ABORT_RETRY_DELAY_MS = 180;
-const CHUNK_RETRY_LIMIT = 2;
-const CHUNK_RETRY_DELAY_MS = 260;
 
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => {
@@ -34,11 +31,6 @@ export const lazyWithRetry = <TModule extends { default: unknown }>(
       } catch (error) {
         if (isAbortLikeLoadError(error) && attempt < ABORT_RETRY_LIMIT) {
           await sleep(ABORT_RETRY_DELAY_MS * (attempt + 1));
-          return importWithRetry(attempt + 1);
-        }
-
-        if (isChunkLoadError(error) && attempt < CHUNK_RETRY_LIMIT) {
-          await sleep(CHUNK_RETRY_DELAY_MS * (attempt + 1));
           return importWithRetry(attempt + 1);
         }
 

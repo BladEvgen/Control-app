@@ -10,6 +10,7 @@ urlpatterns = [
     path("logout/", views.logout_view, name="logout"),
     path("upload/", views.UploadFileView.as_view(), name="uploadFile"),
     path("fetcher/", views.fetch_data_view, name="fetcher"),
+    path("api/app-version/", views.app_version, name="app-version"),
     path(
         "api/attendance/stats/",
         views.StaffAttendanceStatsView.as_view(),

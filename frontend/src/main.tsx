@@ -6,6 +6,13 @@ import ErrorBoundary from "./components/ErrorBoundary.tsx";
 import "./index.css";
 import axios from "axios";
 import { store } from "./store";
+import { clearHardReloadParams } from "./utils/appAutoReload";
+import {
+  startAppVersionGuard,
+  handleBuildSkewDetected,
+  requestAppVersionCheck,
+} from "./utils/appVersionGuard";
+import { CURRENT_APP_BUILD_META } from "./utils/appBuild";
 import { tryRecoverChunkLoadError } from "./utils/chunkRecovery";
 
 declare global {
@@ -13,6 +20,11 @@ declare global {
     __APP_BOOT__?: {
       markMounted?: () => void;
       showFallback?: (reason?: string, details?: string) => void;
+      showReloading?: (message?: string) => void;
+    };
+    __APP_VERSION_GUARD__?: {
+      currentBuild: typeof CURRENT_APP_BUILD_META;
+      checkNow: (reason?: string) => Promise<void>;
     };
   }
 }
@@ -20,18 +32,9 @@ declare global {
 axios.defaults.xsrfCookieName = "csrftoken";
 axios.defaults.xsrfHeaderName = "X-CSRFToken";
 
-const clearHardReloadParam = () => {
-  try {
-    const url = new URL(window.location.href);
-    if (!url.searchParams.has("__hard_reload")) return;
-    url.searchParams.delete("__hard_reload");
-    const next =
-      `${url.pathname}${url.search ? url.search : ""}${url.hash ? url.hash : ""}` ||
-      "/";
-    window.history.replaceState(window.history.state, "", next);
-  } catch {
-    // ignore URL/history issues
-  }
+window.__APP_VERSION_GUARD__ = {
+  currentBuild: CURRENT_APP_BUILD_META,
+  checkNow: (reason = "manual-debug") => requestAppVersionCheck(reason),
 };
 
 let isPageUnloading = false;
@@ -40,6 +43,12 @@ window.addEventListener("beforeunload", () => {
 });
 window.addEventListener("pagehide", () => {
   isPageUnloading = true;
+});
+
+window.addEventListener("vite:preloadError", (event) => {
+  if (isPageUnloading) return;
+  event.preventDefault();
+  void handleBuildSkewDetected("vite:preloadError", event.payload);
 });
 
 window.addEventListener("unhandledrejection", (event) => {
@@ -61,7 +70,7 @@ const markMountedSafely = () => {
   const mark = () => {
     if (marked) return;
     marked = true;
-    clearHardReloadParam();
+    clearHardReloadParams();
     window.__APP_BOOT__?.markMounted?.();
   };
   // Mark early to avoid bootstrap fallback racing with lazy route chunks.
@@ -79,6 +88,7 @@ if (!rootEl) {
   window.__APP_BOOT__?.showFallback?.("no-root");
 } else {
   try {
+    startAppVersionGuard();
     ReactDOM.createRoot(rootEl).render(
       <React.StrictMode>
         <ErrorBoundary>
