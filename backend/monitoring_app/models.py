@@ -3,6 +3,7 @@ import shutil
 from contextlib import AbstractContextManager
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Optional, cast
 
 from django.conf import settings
@@ -811,12 +812,34 @@ class LessonAttendance(models.Model, GeoItem):
     @property
     def image_url(self):
         if self.staff_image_path:
-            path_value = str(self.staff_image_path)
-            if path_value.startswith(str(settings.ATTENDANCE_ROOT)):
-                relative_path = path_value.replace(str(settings.ATTENDANCE_ROOT), "")
-                return f"{settings.ATTENDANCE_URL}{relative_path}"
-            media_tail = path_value.rsplit("media/", maxsplit=1)[-1]
-            return f"{settings.MEDIA_URL}{media_tail}"
+            path_value = Path(str(self.staff_image_path)).expanduser()
+
+            try:
+                attendance_relative = (
+                    path_value.resolve(strict=False)
+                    .relative_to(Path(settings.ATTENDANCE_ROOT).resolve())
+                    .as_posix()
+                )
+            except (OSError, RuntimeError, ValueError):
+                attendance_relative = ""
+
+            if attendance_relative:
+                return (
+                    f"{settings.ATTENDANCE_URL.rstrip('/')}/{attendance_relative}"
+                )
+
+            try:
+                media_relative = (
+                    path_value.resolve(strict=False)
+                    .relative_to(Path(settings.MEDIA_ROOT).resolve())
+                    .as_posix()
+                )
+                return f"{settings.MEDIA_URL.rstrip('/')}/{media_relative}"
+            except (OSError, RuntimeError, ValueError):
+                media_tail = str(path_value).replace("\\", "/").rsplit(
+                    "media/", maxsplit=1
+                )[-1]
+                return f"{settings.MEDIA_URL.rstrip('/')}/{media_tail.lstrip('/')}"
         return "/static/media/images/no-avatar.png"
 
     def is_photo_expired(self):

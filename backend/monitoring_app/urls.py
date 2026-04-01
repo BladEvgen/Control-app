@@ -21,6 +21,11 @@ urlpatterns = [
         views.department_attendance_confirmation,
         name="department-attendance-confirmation",
     ),
+    path(
+        "api/attendance/suspicious-location-patterns/",
+        views.suspicious_location_patterns,
+        name="suspicious-location-patterns",
+    ),
     path("api/locations", views.map_location, name="locations"),
     path("api/lesson_locations/", views.lesson_locations, name="lesson_locations"),
     path(
@@ -126,6 +131,11 @@ urlpatterns = [
     path("recognize-faces/", views.recognize_faces, name="recognize-faces"),
     path(
         "download/examples/", views.download_examples_zip, name="download_examples_zip"
+    ),
+    path(
+        "attendance_media/<path:path>",
+        views.serve_attendance_media,
+        name="attendance-media",
     ),
     path("api/absent_staff/", views.AbsentReasonView.as_view(), name="absent_staff"),
     path("api/swagger-login/", swagger_session_login, name="swagger_session_login"),

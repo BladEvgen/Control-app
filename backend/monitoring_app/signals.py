@@ -9,7 +9,7 @@ from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django.utils import timezone
 
-from .cache_conf import invalidate_cache, invalidate_cache_pattern
+from .cache_conf import Cache, invalidate_cache, invalidate_cache_pattern
 from .lesson_locations_conf import (
     CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
     CLASS_LOCATION_LIST_CACHE_KEY,
@@ -28,6 +28,10 @@ STATE_CREATED_NO_PHOTO = "CREATED_NO_PHOTO"
 STATE_PHOTO_ATTACHED = "PHOTO_ATTACHED"
 STATE_UPDATED_META = "UPDATED_META"
 STATE_DELETED = "DELETED"
+SUSPICIOUS_LOCATION_PATTERNS_EPOCH_CACHE_KEY = (
+    "suspicious_location_patterns_epoch"
+)
+SUSPICIOUS_LOCATION_PATTERNS_EPOCH_TTL = 365 * 24 * 60 * 60
 
 
 def sanitize_group_name(name):
@@ -59,6 +63,16 @@ def _send_photo_event(instance, *, op, state_code):
     )
 
 
+def bump_suspicious_location_patterns_epoch() -> str:
+    epoch_value = timezone.now().isoformat()
+    Cache.set(
+        SUSPICIOUS_LOCATION_PATTERNS_EPOCH_CACHE_KEY,
+        epoch_value,
+        SUSPICIOUS_LOCATION_PATTERNS_EPOCH_TTL,
+    )
+    return epoch_value
+
+
 def _resolve_state_code(instance, *, created, update_fields):
     if created:
         return STATE_PHOTO_ATTACHED if instance.staff_image_path else STATE_CREATED_NO_PHOTO
@@ -74,6 +88,7 @@ def _invalidate_lesson_attendance_cache(instance):
     invalidate_cache_pattern(f"map_location_{instance.date_at}*")
     invalidate_cache_pattern(f"staff_attendance_stats_{instance.date_at}*")
     invalidate_cache_pattern("department_confirmation_pins_*")
+    bump_suspicious_location_patterns_epoch()
 
 
 def _invalidate_lesson_staff_cache(instance):
@@ -144,6 +159,7 @@ def invalidate_staff_cache_on_save(sender, instance, created, **kwargs):
         invalidate_cache_pattern(f"staff_detail_{instance.pin}*")
         if hasattr(instance, "department") and instance.department:
             invalidate_cache(f"child_department_detail_v2_{instance.department.id}")
+        bump_suspicious_location_patterns_epoch()
         logger.info(f"Invalidated staff cache for PIN: {instance.pin}")
 
 
@@ -155,6 +171,7 @@ def invalidate_staff_cache_on_delete(sender, instance, **kwargs):
         if hasattr(instance, "department") and instance.department:
             invalidate_cache(f"child_department_detail_v2_{instance.department.id}")
         invalidate_cache_pattern("staff_attendance_stats_*")
+        bump_suspicious_location_patterns_epoch()
         logger.info(f"Invalidated staff cache for PIN: {instance.pin}")
 
 
@@ -213,6 +230,7 @@ def invalidate_class_location_cache_impl():
         send_task("monitoring_app.tasks.warmup_class_location_buffers")
     except Exception as e:
         logger.warning("ClassLocation cache tasks send_task failed: %s", e)
+    bump_suspicious_location_patterns_epoch()
     logger.info("Invalidated ClassLocation cache and warmed list + buffers task")
 
 

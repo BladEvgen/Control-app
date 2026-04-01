@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import math
+import mimetypes
 import os
 import re
 import time
@@ -90,7 +91,11 @@ def _get_manual_parameters_for_inspector(view, method, overrides):
 
 
 class FormOnlySwaggerAutoSchema(SwaggerAutoSchema):
-    """Инспектор: при наличии form-параметров в manual_parameters не допускает body (исправляет 500 при генерации схемы)."""
+    """Инспектор для form-only ручных параметров.
+
+    Если в manual_parameters есть form-поля, body-параметр удаляется,
+    чтобы не падала генерация схемы.
+    """
 
     def add_manual_parameters(self, parameters):
         manual = _get_manual_parameters_for_inspector(
@@ -128,6 +133,27 @@ DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY = "department_confirmation_epoch_hour"
 DEPARTMENT_CONFIRMATION_EPOCH_TTL = DEPARTMENT_CONFIRMATION_CACHE_TTL + 60 * 60
 STAFF_PINS_HEADER_NAME = "X-Staff-Pins"
 LESSON_REPORT_CACHE_VERSION = models.LessonAttendance.REPORT_FILTER_CACHE_VERSION
+SUSPICIOUS_LOCATION_PATTERNS_EPOCH_CACHE_KEY = (
+    "suspicious_location_patterns_epoch"
+)
+SUSPICIOUS_LOCATION_PATTERNS_CACHE_VERSION = "v8"
+SUSPICIOUS_LOCATION_PATTERNS_CACHE_TTL = 60 * 60
+SUSPICIOUS_LOCATION_PERSON_DAY_RADIUS_M = 10
+SUSPICIOUS_LOCATION_PERSON_REPEAT_RADIUS_M = 5
+SUSPICIOUS_LOCATION_GROUP_CLUSTER_RADIUS_M = 10
+SUSPICIOUS_LOCATION_PERSON_REPEAT_MIN_ACTIVE_DAYS = 7
+SUSPICIOUS_LOCATION_PERSON_REPEAT_MIN_PCT = 0.70
+SUSPICIOUS_LOCATION_REASON_LEGEND = {
+    "shared_point": (
+        "В эту дату несколько людей переиспользовали одну и ту же "
+        "микроточку или микрозону."
+    ),
+    "person_repeat": (
+        "Один и тот же человек слишком стабильно повторяет одну и ту же "
+        "микрозону по дням."
+    ),
+    "multi_day_pattern": "Такой же паттерн повторялся в несколько разных дней.",
+}
 
 _STAFF_PIN_WRAPPED_RE = re.compile(r"^S\d+S$")
 _STAFF_PIN_NUMERIC_RE = re.compile(r"^\d+$")
@@ -159,6 +185,18 @@ def _parse_staff_pins_header(raw_header_value: Optional[str]) -> List[str]:
     return parsed
 
 
+def _parse_staff_pins_csv(raw_value: Optional[str]) -> List[str]:
+    if raw_value is None:
+        return []
+    return _parse_staff_pins_header(raw_value)
+
+
+def _parse_query_bool(raw_value: Optional[str]) -> bool:
+    if raw_value is None:
+        return False
+    return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _department_confirmation_hour_bucket(
     now_dt: Optional[datetime.datetime] = None,
 ) -> str:
@@ -173,6 +211,11 @@ def _department_confirmation_hour_bucket(
         DEPARTMENT_CONFIRMATION_EPOCH_TTL,
     )
     return fallback
+
+
+def _get_suspicious_location_patterns_epoch() -> str:
+    epoch = Cache.get(SUSPICIOUS_LOCATION_PATTERNS_EPOCH_CACHE_KEY)
+    return str(epoch) if epoch is not None else "0"
 
 
 def _build_department_confirmation_cache_key(
@@ -465,6 +508,332 @@ def fetch_attendance_by_event_dates(staff_ids, date_from, date_to):
             la_by_event_date[d].append(r)
 
     return dict(sa_by_event_date), dict(la_by_event_date)
+
+
+def _sort_datetime_value(value: Any) -> datetime.datetime:
+    if isinstance(value, datetime.datetime):
+        if timezone.is_naive(value):
+            return value.replace(tzinfo=datetime.timezone.utc)
+        return value
+    if isinstance(value, datetime.date):
+        return datetime.datetime.combine(
+            value,
+            datetime.time.min,
+            tzinfo=datetime.timezone.utc,
+        )
+    return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+
+def _cluster_geo_items(
+    items: list[dict[str, Any]],
+    radius_m: int,
+    *,
+    lat_key: str = "lat",
+    lon_key: str = "lon",
+    sort_time_key: str = "sort_time",
+    sort_id_key: str = "sort_id",
+) -> list[dict[str, Any]]:
+    if not items:
+        return []
+
+    parents = list(range(len(items)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    for left, left_item in enumerate(items):
+        for right, right_item in enumerate(items[left + 1 :], start=left + 1):
+            distance_m = utils.calculate_distance_haversine(
+                float(left_item[lat_key]),
+                float(left_item[lon_key]),
+                float(right_item[lat_key]),
+                float(right_item[lon_key]),
+            )
+            if distance_m <= radius_m:
+                union(left, right)
+
+    groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for index, item in enumerate(items):
+        groups[find(index)].append(item)
+
+    clusters: list[dict[str, Any]] = []
+    for group_items in groups.values():
+        group_items.sort(
+            key=lambda item: (
+                _sort_datetime_value(item.get(sort_time_key)),
+                item.get(sort_id_key, 0),
+            )
+        )
+        center_lat = sum(float(item[lat_key]) for item in group_items) / len(group_items)
+        center_lon = sum(float(item[lon_key]) for item in group_items) / len(group_items)
+        clusters.append(
+            {
+                "items": group_items,
+                "count": len(group_items),
+                "center_lat": center_lat,
+                "center_lon": center_lon,
+            }
+        )
+
+    clusters.sort(
+        key=lambda cluster: (
+            -cluster["count"],
+            _sort_datetime_value(cluster["items"][0].get(sort_time_key)),
+            cluster["items"][0].get(sort_id_key, 0),
+            round(cluster["center_lat"], 7),
+            round(cluster["center_lon"], 7),
+        )
+    )
+    return clusters
+
+
+def _get_nearest_class_location_context(
+    latitude: float,
+    longitude: float,
+    class_locations: list[models.ClassLocation],
+    location_radii: dict[Any, Any],
+) -> dict[str, Any]:
+    nearest_location = None
+    nearest_distance = float("inf")
+    for location in class_locations:
+        distance_m = utils.calculate_distance_haversine(
+            latitude,
+            longitude,
+            float(location.latitude),
+            float(location.longitude),
+        )
+        if distance_m < nearest_distance:
+            nearest_distance = distance_m
+            nearest_location = location
+
+    if nearest_location is None:
+        return {
+            "location_name": None,
+            "location_address": None,
+            "distance_m": None,
+            "inside_known_location": False,
+        }
+
+    location_radius = utils.get_location_radius(nearest_location, location_radii)
+    return {
+        "location_name": nearest_location.name,
+        "location_address": nearest_location.address,
+        "distance_m": round(nearest_distance, 2),
+        "inside_known_location": nearest_distance <= location_radius,
+    }
+
+
+def _build_day_anchor(records: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    if not records:
+        return None
+
+    cluster_items = [
+        {
+            "lat": float(record["latitude"]),
+            "lon": float(record["longitude"]),
+            "sort_time": record.get("first_in"),
+            "sort_id": int(record["id"]),
+            "record": record,
+            "signature": f"{float(record['latitude']):.7f}|{float(record['longitude']):.7f}",
+        }
+        for record in records
+        if record.get("latitude") is not None and record.get("longitude") is not None
+    ]
+    if not cluster_items:
+        return None
+
+    dominant_cluster = _cluster_geo_items(
+        cluster_items,
+        SUSPICIOUS_LOCATION_PERSON_DAY_RADIUS_M,
+    )[0]
+
+    signature_stats: dict[str, dict[str, Any]] = {}
+    for item in dominant_cluster["items"]:
+        signature = str(item["signature"])
+        stats = signature_stats.setdefault(
+            signature,
+            {
+                "count": 0,
+                "sort_time": item.get("sort_time"),
+                "sort_id": item.get("sort_id", 0),
+            },
+        )
+        stats["count"] += 1
+        if (
+            _sort_datetime_value(item.get("sort_time"))
+            < _sort_datetime_value(stats.get("sort_time"))
+        ):
+            stats["sort_time"] = item.get("sort_time")
+            stats["sort_id"] = item.get("sort_id", 0)
+        elif (
+            _sort_datetime_value(item.get("sort_time"))
+            == _sort_datetime_value(stats.get("sort_time"))
+            and item.get("sort_id", 0) < stats.get("sort_id", 0)
+        ):
+            stats["sort_id"] = item.get("sort_id", 0)
+
+    dominant_signature = sorted(
+        signature_stats.items(),
+        key=lambda item: (
+            -item[1]["count"],
+            _sort_datetime_value(item[1].get("sort_time")),
+            item[1].get("sort_id", 0),
+            item[0],
+        ),
+    )[0][0]
+    exact_latitude, exact_longitude = map(float, dominant_signature.split("|"))
+
+    attendance_ids = sorted(
+        {int(item["record"]["id"]) for item in dominant_cluster["items"]}
+    )
+    first_in = dominant_cluster["items"][0]["record"].get("first_in")
+    base_record = dominant_cluster["items"][0]["record"]
+    return {
+        "staff_id": int(base_record["staff_id"]),
+        "date": base_record["date_at"],
+        "exact_signature": dominant_signature,
+        "exact_lat": exact_latitude,
+        "exact_lon": exact_longitude,
+        "center_lat": dominant_cluster["center_lat"],
+        "center_lon": dominant_cluster["center_lon"],
+        "attendance_ids": attendance_ids,
+        "first_in": first_in,
+    }
+
+
+def _build_person_repeat_profile(
+    anchors: list[dict[str, Any]],
+    class_locations: list[models.ClassLocation],
+    location_radii: dict[Any, Any],
+) -> Optional[dict[str, Any]]:
+    if not anchors:
+        return None
+
+    repeat_items = [
+        {
+            "lat": float(anchor["center_lat"]),
+            "lon": float(anchor["center_lon"]),
+            "sort_time": anchor["date"],
+            "sort_id": int(anchor["attendance_ids"][0]) if anchor["attendance_ids"] else 0,
+            "anchor": anchor,
+        }
+        for anchor in anchors
+    ]
+    repeat_cluster = _cluster_geo_items(
+        repeat_items,
+        SUSPICIOUS_LOCATION_PERSON_REPEAT_RADIUS_M,
+    )[0]
+    repeat_dates = sorted(
+        {item["anchor"]["date"].isoformat() for item in repeat_cluster["items"]}
+    )
+    attendance_ids = sorted(
+        {
+            attendance_id
+            for item in repeat_cluster["items"]
+            for attendance_id in item["anchor"]["attendance_ids"]
+        }
+    )
+    location_context = _get_nearest_class_location_context(
+        repeat_cluster["center_lat"],
+        repeat_cluster["center_lon"],
+        class_locations,
+        location_radii,
+    )
+    active_days = len(anchors)
+    repeat_days = len(repeat_dates)
+    repeat_pct = (
+        round(100.0 * repeat_days / active_days, 1)
+        if active_days
+        else 0.0
+    )
+    return {
+        "active_days": active_days,
+        "repeat_days": repeat_days,
+        "repeat_pct": repeat_pct,
+        "center_lat": repeat_cluster["center_lat"],
+        "center_lon": repeat_cluster["center_lon"],
+        "dates": repeat_dates,
+        "attendance_ids": attendance_ids,
+        "location_name": location_context["location_name"],
+        "location_address": location_context["location_address"],
+        "distance_m": location_context["distance_m"],
+        "inside_known_location": location_context["inside_known_location"],
+        "is_actionable": (
+            active_days >= SUSPICIOUS_LOCATION_PERSON_REPEAT_MIN_ACTIVE_DAYS
+            and (repeat_days / active_days)
+            >= SUSPICIOUS_LOCATION_PERSON_REPEAT_MIN_PCT
+        ),
+    }
+
+
+def _build_suspicious_location_patterns_cache_key(
+    *,
+    date_from_str: str,
+    date_to_str: str,
+    child_department_id: Optional[str],
+    staff_pins: list[str],
+    include_medium: bool,
+) -> str:
+    epoch = _get_suspicious_location_patterns_epoch()
+    suffix = (
+        f"{SUSPICIOUS_LOCATION_PATTERNS_CACHE_VERSION}_"
+        f"{LESSON_REPORT_CACHE_VERSION}_{epoch}_{date_from_str}_{date_to_str}"
+    )
+    if staff_pins:
+        normalized_pins = sorted({pin for pin in staff_pins if pin})
+        pins_hash = hashlib.sha1(
+            ",".join(normalized_pins).encode("utf-8")
+        ).hexdigest()
+        return (
+            "suspicious_location_patterns_"
+            f"pins_{pins_hash}_{int(include_medium)}_{suffix}"
+        )
+    return (
+        "suspicious_location_patterns_"
+        f"dept_{child_department_id}_{int(include_medium)}_{suffix}"
+    )
+
+
+def _sort_reason_codes(reason_codes: set[str]) -> list[str]:
+    priority = {
+        "shared_point": 0,
+        "person_repeat": 1,
+        "multi_day_pattern": 2,
+    }
+    return sorted(reason_codes, key=lambda code: (priority.get(code, 99), code))
+
+
+def _suspicious_candidate_priority(
+    candidate: dict[str, Any],
+    repeat_pct: float,
+    repeat_days: int,
+) -> tuple[Any, ...]:
+    pattern_priority = {
+        "shared_point_exact": 0,
+        "shared_point_near": 1,
+        "person_repeat": 2,
+    }
+    return (
+        candidate["severity_rank"],
+        candidate["group_days"],
+        candidate.get("staff_count", 0),
+        repeat_pct,
+        repeat_days,
+        -pattern_priority.get(candidate["pattern_type"], 99),
+        len(candidate["dates"]),
+        len(candidate["reason"]),
+        round(float(candidate["lat"]), 7),
+        round(float(candidate["lon"]), 7),
+    )
 
 
 def _resolve_la_location(lat, lon, kd_tree, class_names):
@@ -1978,6 +2347,612 @@ def department_attendance_confirmation(request):
         "by_pin_short": day_payload["by_pin_short"],
     }
     Cache.set(cache_key, payload, DEPARTMENT_CONFIRMATION_CACHE_TTL)
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+@swagger_auto_schema(
+    method="GET",
+    operation_summary="Короткий список координатных обманщиков",
+    operation_description=(
+        "Возвращает короткий список сотрудников с punishable-паттернами по "
+        "LessonAttendance: shared micro-point паттернами по датам и устойчивой "
+        "персональной повторяемостью."
+    ),
+    tags=["Attendance & Statistics"],
+    manual_parameters=[
+        openapi.Parameter(
+            "child_department_id",
+            openapi.IN_QUERY,
+            description="ID подразделения. Нужен, если не передан staff_pins.",
+            type=openapi.TYPE_STRING,
+            required=False,
+        ),
+        openapi.Parameter(
+            "staff_pins",
+            openapi.IN_QUERY,
+            description=(
+                "CSV список PIN. Поддерживает short-формат (25812) и wrapped "
+                "формат (S25812S)."
+            ),
+            type=openapi.TYPE_STRING,
+            required=False,
+        ),
+        openapi.Parameter(
+            STAFF_PINS_HEADER_NAME,
+            openapi.IN_HEADER,
+            description="Fallback CSV список PIN, если query staff_pins не передан.",
+            type=openapi.TYPE_STRING,
+            required=False,
+        ),
+        openapi.Parameter(
+            "date_from",
+            openapi.IN_QUERY,
+            description="Начало диапазона YYYY-MM-DD.",
+            type=openapi.TYPE_STRING,
+            required=True,
+        ),
+        openapi.Parameter(
+            "date_to",
+            openapi.IN_QUERY,
+            description="Конец диапазона YYYY-MM-DD.",
+            type=openapi.TYPE_STRING,
+            required=True,
+        ),
+        openapi.Parameter(
+            "include_medium",
+            openapi.IN_QUERY,
+            description="Если 1/true, возвращает также medium-кейсы person_repeat.",
+            type=openapi.TYPE_BOOLEAN,
+            required=False,
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description="Короткий список подозрительных сотрудников по датам и PIN.",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "summary": openapi.Schema(type=openapi.TYPE_OBJECT),
+                    "reasonLegend": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        additional_properties=openapi.Schema(type=openapi.TYPE_STRING),
+                    ),
+                    "datesByDate": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        additional_properties=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                    "usersByPin": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        additional_properties=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(
+            description="Ошибка параметров: нет дат или нет источника выборки.",
+        ),
+        404: openapi.Response(description="Подразделение не найдено."),
+    },
+)
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def suspicious_location_patterns(request):
+    date_from_str = str(request.query_params.get("date_from") or "").strip()
+    date_to_str = str(request.query_params.get("date_to") or "").strip()
+    child_department_id = str(
+        request.query_params.get("child_department_id") or ""
+    ).strip()
+    query_staff_pins = _parse_staff_pins_csv(request.query_params.get("staff_pins"))
+    header_staff_pins = _parse_staff_pins_header(
+        request.headers.get(STAFF_PINS_HEADER_NAME)
+    )
+    staff_pins = query_staff_pins or header_staff_pins
+    include_medium = _parse_query_bool(request.query_params.get("include_medium"))
+
+    if not date_from_str or not date_to_str:
+        return Response(
+            {"error": "date_from and date_to are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        date_from = datetime.datetime.strptime(date_from_str, "%Y-%m-%d").date()
+        date_to = datetime.datetime.strptime(date_to_str, "%Y-%m-%d").date()
+    except ValueError:
+        return Response(
+            {"error": "Invalid date format, use YYYY-MM-DD"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if date_from > date_to:
+        return Response(
+            {"error": "date_from must be <= date_to"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not child_department_id and not staff_pins:
+        return Response(
+            {"error": "Either child_department_id or staff_pins is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if staff_pins:
+        staff_list = list(
+            models.Staff.objects.filter(pin__in=staff_pins)
+            .only("id", "pin", "name", "surname")
+            .order_by("pin")
+        )
+    else:
+        department = models.ChildDepartment.objects.filter(id=child_department_id).first()
+        if department is None:
+            return Response(
+                {"error": f"ChildDepartment {child_department_id} not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        staff_list = list(
+            models.Staff.objects.filter(department_id=child_department_id)
+            .only("id", "pin", "name", "surname")
+            .order_by("pin")
+        )
+
+    cache_key = _build_suspicious_location_patterns_cache_key(
+        date_from_str=date_from_str,
+        date_to_str=date_to_str,
+        child_department_id=child_department_id or None,
+        staff_pins=staff_pins,
+        include_medium=include_medium,
+    )
+    cached_payload = Cache.get(cache_key)
+    if cached_payload is not None:
+        return Response(cached_payload, status=status.HTTP_200_OK)
+
+    if not staff_list:
+        payload = {
+            "summary": {
+                "staffAnalyzed": 0,
+                "staffFlagged": 0,
+                "datesFlagged": 0,
+            },
+            "reasonLegend": dict(SUSPICIOUS_LOCATION_REASON_LEGEND),
+            "datesByDate": {},
+            "usersByPin": {},
+        }
+        Cache.set(cache_key, payload, SUSPICIOUS_LOCATION_PATTERNS_CACHE_TTL)
+        return Response(payload, status=status.HTTP_200_OK)
+
+    staff_by_id = {staff.id: staff for staff in staff_list}
+    staff_ids = list(staff_by_id.keys())
+    class_locations = list(
+        models.ClassLocation.objects.filter(
+            latitude__isnull=False,
+            longitude__isnull=False,
+        ).only("id", "name", "address", "latitude", "longitude", "acceptance_radius_m")
+    )
+    location_radii = get_class_location_cache().get("location_acceptance_radius_m", {})
+
+    lesson_rows = list(
+        models.LessonAttendance.exclude_report_invalid_days(
+            models.LessonAttendance.objects.filter(
+                staff_id__in=staff_ids,
+                date_at__gte=date_from,
+                date_at__lte=date_to,
+                latitude__isnull=False,
+                longitude__isnull=False,
+            )
+        )
+        .values(
+            "id",
+            "staff_id",
+            "date_at",
+            "first_in",
+            "latitude",
+            "longitude",
+        )
+        .order_by("date_at", "staff_id", "first_in", "id")
+    )
+
+    lesson_rows_by_staff_day: dict[tuple[int, datetime.date], list[dict[str, Any]]] = (
+        defaultdict(list)
+    )
+    for row in lesson_rows:
+        lesson_rows_by_staff_day[(int(row["staff_id"]), row["date_at"])].append(row)
+
+    anchors_by_staff: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    anchors_by_date: dict[datetime.date, list[dict[str, Any]]] = defaultdict(list)
+    for (_staff_id, _date), rows_for_day in lesson_rows_by_staff_day.items():
+        anchor = _build_day_anchor(rows_for_day)
+        if anchor is None:
+            continue
+        anchors_by_staff[int(anchor["staff_id"])].append(anchor)
+        anchors_by_date[anchor["date"]].append(anchor)
+
+    person_profiles: dict[int, dict[str, Any]] = {}
+    for staff_id, anchors in anchors_by_staff.items():
+        anchors.sort(
+            key=lambda anchor: (
+                anchor["date"],
+                _sort_datetime_value(anchor.get("first_in")),
+                anchor["attendance_ids"][0] if anchor["attendance_ids"] else 0,
+            )
+        )
+        profile = _build_person_repeat_profile(
+            anchors,
+            class_locations,
+            location_radii,
+        )
+        if profile is not None:
+            person_profiles[staff_id] = profile
+
+    daily_exact_signals: list[dict[str, Any]] = []
+    daily_near_signals: list[dict[str, Any]] = []
+    for day, day_anchors in anchors_by_date.items():
+        total_with_attendance = len({anchor["staff_id"] for anchor in day_anchors})
+        if total_with_attendance == 0:
+            continue
+        min_group_count = max(2, get_confirmable_threshold(total_with_attendance))
+        min_group_share = get_min_leader_share(total_with_attendance)
+
+        exact_buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for anchor in day_anchors:
+            exact_buckets[str(anchor["exact_signature"])].append(anchor)
+        for signature, bucket in exact_buckets.items():
+            distinct_staff_count = len({anchor["staff_id"] for anchor in bucket})
+            share = distinct_staff_count / total_with_attendance
+            if (
+                distinct_staff_count < min_group_count
+                or share < min_group_share
+            ):
+                continue
+
+            exact_latitude, exact_longitude = map(float, signature.split("|"))
+            location_context = _get_nearest_class_location_context(
+                exact_latitude,
+                exact_longitude,
+                class_locations,
+                location_radii,
+            )
+            attendance_ids_by_staff: dict[int, set[int]] = defaultdict(set)
+            staff_dates: dict[int, set[str]] = defaultdict(set)
+            for anchor in bucket:
+                staff_id = int(anchor["staff_id"])
+                attendance_ids_by_staff[staff_id].update(anchor["attendance_ids"])
+                staff_dates[staff_id].add(day.isoformat())
+
+            daily_exact_signals.append(
+                {
+                    "signal_type": "exact",
+                    "exact_signature": signature,
+                    "center_lat": exact_latitude,
+                    "center_lon": exact_longitude,
+                    "date_obj": day,
+                    "date": day.isoformat(),
+                    "staff_count": distinct_staff_count,
+                    "staff_ids": sorted(attendance_ids_by_staff.keys()),
+                    "attendance_ids_by_staff": attendance_ids_by_staff,
+                    "staff_dates": staff_dates,
+                    "location_context": location_context,
+                }
+            )
+
+        near_items = [
+            {
+                "lat": float(anchor["center_lat"]),
+                "lon": float(anchor["center_lon"]),
+                "sort_time": day,
+                "sort_id": anchor["attendance_ids"][0] if anchor["attendance_ids"] else 0,
+                "anchor": anchor,
+            }
+            for anchor in day_anchors
+        ]
+        for near_cluster in _cluster_geo_items(
+            near_items,
+            SUSPICIOUS_LOCATION_GROUP_CLUSTER_RADIUS_M,
+        ):
+            cluster_anchors = [item["anchor"] for item in near_cluster["items"]]
+            distinct_staff_count = len({anchor["staff_id"] for anchor in cluster_anchors})
+            share = distinct_staff_count / total_with_attendance
+            if (
+                distinct_staff_count < min_group_count
+                or share < min_group_share
+            ):
+                continue
+
+            location_context = _get_nearest_class_location_context(
+                near_cluster["center_lat"],
+                near_cluster["center_lon"],
+                class_locations,
+                location_radii,
+            )
+
+            attendance_ids_by_staff = defaultdict(set)
+            staff_dates = defaultdict(set)
+            for anchor in cluster_anchors:
+                staff_id = int(anchor["staff_id"])
+                attendance_ids_by_staff[staff_id].update(anchor["attendance_ids"])
+                staff_dates[staff_id].add(day.isoformat())
+
+            daily_near_signals.append(
+                {
+                    "signal_type": "near",
+                    "center_lat": near_cluster["center_lat"],
+                    "center_lon": near_cluster["center_lon"],
+                    "date_obj": day,
+                    "date": day.isoformat(),
+                    "staff_count": distinct_staff_count,
+                    "staff_ids": sorted(attendance_ids_by_staff.keys()),
+                    "attendance_ids_by_staff": attendance_ids_by_staff,
+                    "staff_dates": staff_dates,
+                    "location_context": location_context,
+                }
+            )
+
+    exact_signals_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for signal in daily_exact_signals:
+        exact_signals_map[str(signal["exact_signature"])].append(signal)
+    aggregated_exact_patterns: list[dict[str, Any]] = []
+    for signature, signals_by_signature in exact_signals_map.items():
+        exact_latitude, exact_longitude = map(float, signature.split("|"))
+        attendance_ids_by_staff: dict[int, set[int]] = defaultdict(set)
+        staff_dates: dict[int, set[str]] = defaultdict(set)
+        for signal in signals_by_signature:
+            for staff_id, attendance_ids in signal["attendance_ids_by_staff"].items():
+                attendance_ids_by_staff[int(staff_id)].update(attendance_ids)
+            for staff_id, dates_for_staff in signal["staff_dates"].items():
+                staff_dates[int(staff_id)].update(dates_for_staff)
+        aggregated_exact_patterns.append(
+            {
+                "pattern_type": "group_exact",
+                "center_lat": exact_latitude,
+                "center_lon": exact_longitude,
+                "location_context": signals_by_signature[0]["location_context"],
+                "attendance_ids_by_staff": attendance_ids_by_staff,
+                "staff_dates": staff_dates,
+                "signals": sorted(
+                    signals_by_signature,
+                    key=lambda signal: (
+                        signal["date"],
+                        -signal["staff_count"],
+                        round(float(signal["center_lat"]), 7),
+                        round(float(signal["center_lon"]), 7),
+                    ),
+                ),
+                "dates": sorted(
+                    {
+                        date_value
+                        for signal in signals_by_signature
+                        for date_value in [signal["date"]]
+                    }
+                ),
+            }
+        )
+
+    near_signal_items = [
+        {
+            "lat": float(signal["center_lat"]),
+            "lon": float(signal["center_lon"]),
+            "sort_time": signal["date_obj"],
+            "sort_id": index,
+            "signal": signal,
+        }
+        for index, signal in enumerate(daily_near_signals)
+    ]
+    aggregated_near_patterns: list[dict[str, Any]] = []
+    for near_pattern_cluster in _cluster_geo_items(
+        near_signal_items,
+        SUSPICIOUS_LOCATION_GROUP_CLUSTER_RADIUS_M,
+    ):
+        signals = [item["signal"] for item in near_pattern_cluster["items"]]
+        attendance_ids_by_staff: dict[int, set[int]] = defaultdict(set)
+        staff_dates: dict[int, set[str]] = defaultdict(set)
+        for signal in signals:
+            for staff_id, attendance_ids in signal["attendance_ids_by_staff"].items():
+                attendance_ids_by_staff[int(staff_id)].update(attendance_ids)
+            for staff_id, dates_for_staff in signal["staff_dates"].items():
+                staff_dates[int(staff_id)].update(dates_for_staff)
+        aggregated_near_patterns.append(
+            {
+                "pattern_type": "shared_point_near",
+                "center_lat": near_pattern_cluster["center_lat"],
+                "center_lon": near_pattern_cluster["center_lon"],
+                "location_context": _get_nearest_class_location_context(
+                    near_pattern_cluster["center_lat"],
+                    near_pattern_cluster["center_lon"],
+                    class_locations,
+                    location_radii,
+                ),
+                "attendance_ids_by_staff": attendance_ids_by_staff,
+                "staff_dates": staff_dates,
+                "signals": sorted(
+                    signals,
+                    key=lambda signal: (
+                        signal["date"],
+                        -signal["staff_count"],
+                        round(float(signal["center_lat"]), 7),
+                        round(float(signal["center_lon"]), 7),
+                    ),
+                ),
+                "dates": sorted({signal["date"] for signal in signals}),
+            }
+        )
+
+    severity_rank = {"medium": 1, "high": 2, "critical": 3}
+    candidates_by_staff: dict[int, list[dict[str, Any]]] = defaultdict(list)
+
+    for pattern in aggregated_exact_patterns:
+        for signal in pattern["signals"]:
+            date_value = str(signal["date"])
+            for staff_id in signal["staff_ids"]:
+                dates_for_staff = sorted(pattern["staff_dates"].get(int(staff_id), set()))
+                group_days = len(dates_for_staff)
+                severity = "critical" if group_days >= 2 else "high"
+                reason_codes = {"shared_point"}
+                if group_days >= 2:
+                    reason_codes.add("multi_day_pattern")
+                candidates_by_staff[int(staff_id)].append(
+                    {
+                        "pattern_type": "shared_point_exact",
+                        "severity": severity,
+                        "severity_rank": severity_rank[severity],
+                        "group_days": group_days,
+                        "staff_count": int(signal["staff_count"]),
+                        "dates": [date_value],
+                        "lat": round(float(signal["center_lat"]), 7),
+                        "lon": round(float(signal["center_lon"]), 7),
+                        "location_name": signal["location_context"].get("location_name"),
+                        "reason": _sort_reason_codes(reason_codes),
+                    }
+                )
+
+    for pattern in aggregated_near_patterns:
+        for signal in pattern["signals"]:
+            date_value = str(signal["date"])
+            for staff_id in signal["staff_ids"]:
+                dates_for_staff = sorted(pattern["staff_dates"].get(int(staff_id), set()))
+                group_days = len(dates_for_staff)
+                severity = "critical" if group_days >= 2 else "high"
+                reason_codes = {"shared_point"}
+                if group_days >= 2:
+                    reason_codes.add("multi_day_pattern")
+                candidates_by_staff[int(staff_id)].append(
+                    {
+                        "pattern_type": "shared_point_near",
+                        "severity": severity,
+                        "severity_rank": severity_rank[severity],
+                        "group_days": group_days,
+                        "staff_count": int(signal["staff_count"]),
+                        "dates": [date_value],
+                        "lat": round(float(signal["center_lat"]), 7),
+                        "lon": round(float(signal["center_lon"]), 7),
+                        "location_name": signal["location_context"].get("location_name"),
+                        "reason": _sort_reason_codes(reason_codes),
+                    }
+                )
+
+    if include_medium:
+        for staff_id, profile in person_profiles.items():
+            if not profile["is_actionable"]:
+                continue
+            reason_codes = {"person_repeat"}
+            if len(profile["dates"]) >= 2:
+                reason_codes.add("multi_day_pattern")
+            candidates_by_staff[staff_id].append(
+                {
+                    "pattern_type": "person_repeat",
+                    "severity": "medium",
+                    "severity_rank": severity_rank["medium"],
+                    "group_days": 0,
+                    "staff_count": 1,
+                    "dates": list(profile["dates"]),
+                    "lat": round(float(profile["center_lat"]), 7),
+                    "lon": round(float(profile["center_lon"]), 7),
+                    "location_name": profile["location_name"],
+                    "reason": _sort_reason_codes(reason_codes),
+                }
+            )
+
+    best_candidates_by_staff_date: dict[tuple[int, str], dict[str, Any]] = {}
+    for staff_id, candidates in candidates_by_staff.items():
+        if not candidates:
+            continue
+        repeat_pct = person_profiles.get(staff_id, {}).get("repeat_pct", 0.0)
+        repeat_days = person_profiles.get(staff_id, {}).get("repeat_days", 0)
+        for candidate in candidates:
+            candidate_priority = _suspicious_candidate_priority(
+                candidate,
+                repeat_pct,
+                repeat_days,
+            )
+            for date_value in candidate["dates"]:
+                key = (staff_id, str(date_value))
+                existing = best_candidates_by_staff_date.get(key)
+                if (
+                    existing is None
+                    or candidate_priority > existing["priority"]
+                ):
+                    best_candidates_by_staff_date[key] = {
+                        "candidate": candidate,
+                        "priority": candidate_priority,
+                    }
+
+    date_groups: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    user_groups: dict[str, dict[str, Any]] = {}
+    highest_severity_by_pin: dict[str, int] = {}
+
+    for (staff_id, date_value), selected in sorted(best_candidates_by_staff_date.items()):
+        candidate = selected["candidate"]
+        staff = staff_by_id[staff_id]
+        pin_short = utils.pin_to_external_format(staff.pin)
+        person_profile = person_profiles.get(staff_id)
+        fio = f"{staff.surname} {staff.name}".strip()
+        date_user_entry = {
+            "fio": fio,
+            "severity": candidate["severity"],
+            "activeDays": person_profile["active_days"] if person_profile else 0,
+            "repeatDays": person_profile["repeat_days"] if person_profile else 0,
+            "repeatPct": person_profile["repeat_pct"] if person_profile else 0.0,
+            "groupDays": candidate["group_days"],
+            "lat": candidate["lat"],
+            "lon": candidate["lon"],
+            "locationName": candidate["location_name"],
+            "reason": list(candidate["reason"]),
+        }
+        user_date_entry = {
+            "severity": candidate["severity"],
+            "groupDays": candidate["group_days"],
+            "lat": candidate["lat"],
+            "lon": candidate["lon"],
+            "locationName": candidate["location_name"],
+            "reason": list(candidate["reason"]),
+        }
+        date_groups[date_value][pin_short] = date_user_entry
+        user_payload = user_groups.setdefault(
+            pin_short,
+            {
+                "fio": fio,
+                "activeDays": person_profile["active_days"] if person_profile else 0,
+                "repeatDays": person_profile["repeat_days"] if person_profile else 0,
+                "repeatPct": person_profile["repeat_pct"] if person_profile else 0.0,
+                "highestSeverity": candidate["severity"],
+                "datesByDate": {},
+            },
+        )
+        user_payload["datesByDate"][date_value] = user_date_entry
+        if severity_rank[candidate["severity"]] >= highest_severity_by_pin.get(pin_short, 0):
+            highest_severity_by_pin[pin_short] = severity_rank[candidate["severity"]]
+            user_payload["highestSeverity"] = candidate["severity"]
+
+    dates_payload = {
+        date_value: {
+            "usersByPin": {
+                pin_short: date_groups[date_value][pin_short]
+                for pin_short in sorted(date_groups[date_value])
+            }
+        }
+        for date_value in sorted(date_groups)
+    }
+    users_payload = {
+        pin_short: {
+            "fio": user_groups[pin_short]["fio"],
+            "activeDays": user_groups[pin_short]["activeDays"],
+            "repeatDays": user_groups[pin_short]["repeatDays"],
+            "repeatPct": user_groups[pin_short]["repeatPct"],
+            "highestSeverity": user_groups[pin_short]["highestSeverity"],
+            "datesByDate": {
+                date_value: user_groups[pin_short]["datesByDate"][date_value]
+                for date_value in sorted(user_groups[pin_short]["datesByDate"])
+            },
+        }
+        for pin_short in sorted(user_groups)
+    }
+
+    payload = {
+        "summary": {
+            "staffAnalyzed": len(staff_list),
+            "staffFlagged": len(users_payload),
+            "datesFlagged": len(dates_payload),
+        },
+        "reasonLegend": dict(SUSPICIOUS_LOCATION_REASON_LEGEND),
+        "datesByDate": dates_payload,
+        "usersByPin": users_payload,
+    }
+    Cache.set(cache_key, payload, SUSPICIOUS_LOCATION_PATTERNS_CACHE_TTL)
     return Response(payload, status=status.HTTP_200_OK)
 
 
@@ -7792,6 +8767,27 @@ def download_examples_zip(request):
     except Exception as e:
         logger.error(f"Error serving file {file_path}: {e}")
         raise Http404("An error occurred while serving the file.")
+
+
+def serve_attendance_media(request, path):
+    attendance_root = Path(settings.ATTENDANCE_ROOT).resolve()
+    requested_path = (attendance_root / path).resolve(strict=False)
+
+    try:
+        requested_path.relative_to(attendance_root)
+    except ValueError as exc:
+        raise Http404("File not found") from exc
+
+    if not requested_path.is_file():
+        raise Http404("File not found")
+
+    content_type, _ = mimetypes.guess_type(requested_path.name)
+    response = FileResponse(
+        requested_path.open("rb"),
+        content_type=content_type or "application/octet-stream",
+    )
+    response["Cache-Control"] = "private, max-age=300"
+    return response
 
 
 @swagger_auto_schema(

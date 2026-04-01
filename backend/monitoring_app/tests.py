@@ -3,7 +3,7 @@ import base64
 import json
 import tempfile
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, Mock, patch
@@ -649,7 +649,7 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
             "id",
         )
         counts_by_id = {
-            item.id: item._attendance_hits_period
+            item.id: getattr(item, "_attendance_hits_period")
             for item in queryset
             if item.id in {busy_location.id, quiet_location.id}
         }
@@ -686,7 +686,7 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
             queryset = self.location_admin.get_queryset(request)
             location = queryset.get(pk=self.location.pk)
 
-        self.assertEqual(location._attendance_hits_period, 1)
+        self.assertEqual(getattr(location, "_attendance_hits_period"), 1)
 
     def test_changelist_assigns_overlapping_visit_to_nearest_location(self):
         near_location = ClassLocation.objects.create(
@@ -715,7 +715,7 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
 
         queryset = self.location_admin.get_queryset(request)
         counts_by_id = {
-            item.id: item._attendance_hits_period
+            item.id: getattr(item, "_attendance_hits_period")
             for item in queryset
             if item.id in {self.location.id, near_location.id}
         }
@@ -930,6 +930,521 @@ class AppVersionEndpointTest(SimpleTestCase):
         self.assertEqual(
             response.json(),
             {"error": "Build version metadata is unavailable."},
+        )
+
+
+class SuspiciousLocationPatternsApiTest(APITestCase):
+    def setUp(self):
+        super().setUp()
+        Cache.clear()
+        self.user = User.objects.create_user(
+            username="suspicious-location-user",
+            password="12345",
+        )
+        self.api_key = APIKey.objects.create(
+            key_name="Suspicious Location API Key",
+            created_by=self.user,
+        )
+        self.client.credentials(HTTP_X_API_KEY=self.api_key.key)
+        self.url = reverse("suspicious-location-patterns")
+
+    def _create_department(self, dept_id: str, name: str = "Test Group") -> ChildDepartment:
+        return ChildDepartment.objects.create(id=dept_id, name=name)
+
+    def _create_staff(self, pin_short: str, department: ChildDepartment) -> Staff:
+        return Staff.objects.create(
+            pin=f"S{pin_short}S",
+            name=f"Name{pin_short}",
+            surname=f"Surname{pin_short}",
+            department=department,
+        )
+
+    def _create_lesson(
+        self,
+        staff: Staff,
+        date_value: date,
+        *,
+        latitude: float,
+        longitude: float,
+        hour: int,
+        minute: int = 0,
+    ) -> LessonAttendance:
+        first_in = timezone.make_aware(
+            datetime(
+                date_value.year,
+                date_value.month,
+                date_value.day,
+                hour,
+                minute,
+            )
+        )
+        return LessonAttendance.objects.create(
+            staff=staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=first_in,
+            last_out=first_in + timedelta(hours=1),
+            latitude=latitude,
+            longitude=longitude,
+            date_at=date_value,
+        )
+
+    def _users_index(self, response) -> dict[str, dict[str, Any]]:
+        return response.data["usersByPin"]
+
+    def _dates_index(self, response) -> dict[str, dict[str, dict[str, Any]]]:
+        return {
+            date_value: item["usersByPin"]
+            for date_value, item in response.data["datesByDate"].items()
+        }
+
+    def test_scattered_day_below_share_threshold_does_not_flag_by_default(self):
+        department = self._create_department("9054", "GM22 403 Б а б")
+        ClassLocation.objects.create(
+            name="Known Campus",
+            address="Known Address",
+            latitude=43.23235,
+            longitude=76.9130,
+            acceptance_radius_m=200,
+        )
+        coordinates = [
+            (43.2322502, 76.9129868),
+            (43.2322513, 76.9129868),
+            (43.2322540, 76.9129868),
+            (43.2322502, 76.9129868),
+            (43.2324219, 76.9130936),
+            (43.2324219, 76.9130936),
+            (43.2323952, 76.9129944),
+            (43.2327140, 76.8561556),
+            (43.2327385, 76.8561020),
+        ]
+        target_date = datetime(2026, 3, 27).date()
+        for index, (lat, lon) in enumerate(coordinates, start=1):
+            staff = self._create_staff(str(25800 + index), department)
+            self._create_lesson(
+                staff,
+                target_date,
+                latitude=lat,
+                longitude=lon,
+                hour=9,
+            )
+            self._create_lesson(
+                staff,
+                target_date,
+                latitude=lat,
+                longitude=lon,
+                hour=11,
+            )
+
+        response = self.client.get(
+            self.url,
+            {
+                "child_department_id": department.id,
+                "date_from": "2026-03-27",
+                "date_to": "2026-03-27",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["summary"]["staffAnalyzed"], 9)
+        self.assertEqual(response.data["summary"]["staffFlagged"], 0)
+        self.assertEqual(response.data["summary"]["datesFlagged"], 0)
+        self.assertEqual(response.data["datesByDate"], {})
+        self.assertEqual(response.data["usersByPin"], {})
+
+    def test_shared_point_known_location_flags_by_default(self):
+        department = self._create_department("9054", "GM22 403 Б а б")
+        ClassLocation.objects.create(
+            name="Known Campus",
+            address="Known Address",
+            latitude=43.23235,
+            longitude=76.9130,
+            acceptance_radius_m=200,
+        )
+        coordinates_by_day = {
+            datetime(2026, 3, 26).date(): [
+                (43.2322502, 76.9129868),
+                (43.2322513, 76.9129868),
+                (43.2322540, 76.9129868),
+                (43.2322502, 76.9129868),
+                (43.2322520, 76.9129868),
+                (43.2322559, 76.9129868),
+                (43.2324219, 76.9130936),
+                (43.2324219, 76.9130936),
+                (43.2323952, 76.9129944),
+                (43.2325058, 76.9131012),
+            ],
+            datetime(2026, 3, 27).date(): [
+                (43.2322502, 76.9129868),
+                (43.2322388, 76.9129868),
+                (43.2322292, 76.9129829),
+                (43.2323200, 76.9127800),
+                (43.2324219, 76.9130936),
+                (43.2324219, 76.9130936),
+                (43.2324200, 76.9130900),
+                (43.2324240, 76.9130920),
+                (43.2324250, 76.9130450),
+                (43.2324280, 76.9129510),
+            ],
+        }
+        staff_members = [
+            self._create_staff(str(25900 + index), department)
+            for index in range(10)
+        ]
+        for target_date, coords in coordinates_by_day.items():
+            for staff, (lat, lon) in zip(staff_members, coords):
+                self._create_lesson(
+                    staff,
+                    target_date,
+                    latitude=lat,
+                    longitude=lon,
+                    hour=9,
+                )
+
+        response = self.client.get(
+            self.url,
+            {
+                "child_department_id": department.id,
+                "date_from": "2026-03-26",
+                "date_to": "2026-03-27",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["summary"]["staffAnalyzed"], 10)
+        self.assertEqual(response.data["summary"]["staffFlagged"], 10)
+        self.assertEqual(response.data["summary"]["datesFlagged"], 2)
+        self.assertIn("shared_point", response.data["reasonLegend"])
+        self.assertNotIn("group_exact", response.data["reasonLegend"])
+        self.assertNotIn("group_near", response.data["reasonLegend"])
+        self.assertEqual(
+            response.data["reasonLegend"]["multi_day_pattern"],
+            "Такой же паттерн повторялся в несколько разных дней.",
+        )
+        dates_index = self._dates_index(response)
+        self.assertEqual(sorted(dates_index.keys()), ["2026-03-26", "2026-03-27"])
+        self.assertEqual(len(dates_index["2026-03-26"]), 6)
+        self.assertEqual(len(dates_index["2026-03-27"]), 6)
+        users_index = self._users_index(response)
+        self.assertEqual(len(users_index), 10)
+        for item in users_index.values():
+            self.assertIn(item["highestSeverity"], {"high", "critical"})
+            self.assertGreaterEqual(len(item["datesByDate"]), 1)
+            for day_item in item["datesByDate"].values():
+                self.assertIn(day_item["severity"], {"high", "critical"})
+                self.assertEqual(day_item["reason"][0], "shared_point")
+
+    def test_group_exact_outside_known_location_returns_high_results(self):
+        department = self._create_department("D-GROUP-EXACT")
+        ClassLocation.objects.create(
+            name="Far Campus",
+            address="Far Address",
+            latitude=43.2000,
+            longitude=76.8000,
+            acceptance_radius_m=120,
+        )
+        target_date = datetime(2026, 3, 27).date()
+        selected_staff = [
+            self._create_staff("1001", department),
+            self._create_staff("1002", department),
+            self._create_staff("1003", department),
+        ]
+        for staff in selected_staff:
+            self._create_lesson(
+                staff,
+                target_date,
+                latitude=43.2500001,
+                longitude=76.9300001,
+                hour=10,
+            )
+
+        response = self.client.get(
+            self.url,
+            {
+                "staff_pins": "1001,S1002S,1003",
+                "date_from": "2026-03-27",
+                "date_to": "2026-03-27",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["summary"]["staffAnalyzed"], 3)
+        self.assertEqual(response.data["summary"]["staffFlagged"], 3)
+        self.assertEqual(response.data["summary"]["datesFlagged"], 1)
+        returned_pins = list(response.data["usersByPin"].keys())
+        self.assertEqual(returned_pins, ["1001", "1002", "1003"])
+        for item in response.data["usersByPin"].values():
+            self.assertEqual(item["highestSeverity"], "high")
+            self.assertEqual(
+                item["datesByDate"],
+                {
+                    "2026-03-27": {
+                        "severity": "high",
+                        "groupDays": 1,
+                        "lat": 43.2500001,
+                        "lon": 76.9300001,
+                        "locationName": "Far Campus",
+                        "reason": ["shared_point"],
+                    }
+                },
+            )
+
+    def test_group_exact_multi_day_outside_known_location_returns_critical(self):
+        department = self._create_department("D-GROUP-CRITICAL")
+        ClassLocation.objects.create(
+            name="Far Campus",
+            address="Far Address",
+            latitude=43.2000,
+            longitude=76.8000,
+            acceptance_radius_m=120,
+        )
+        staff_members = [
+            self._create_staff("2001", department),
+            self._create_staff("2002", department),
+            self._create_staff("2003", department),
+        ]
+        for target_date in (
+            datetime(2026, 3, 26).date(),
+            datetime(2026, 3, 27).date(),
+        ):
+            for staff in staff_members:
+                self._create_lesson(
+                    staff,
+                    target_date,
+                    latitude=43.2600001,
+                    longitude=76.9400001,
+                    hour=9,
+                )
+
+        response = self.client.get(
+            self.url,
+            {
+                "child_department_id": department.id,
+                "date_from": "2026-03-26",
+                "date_to": "2026-03-27",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["summary"]["staffFlagged"], 3)
+        for item in response.data["usersByPin"].values():
+            self.assertEqual(item["highestSeverity"], "critical")
+            self.assertEqual(
+                list(item["datesByDate"].keys()),
+                ["2026-03-26", "2026-03-27"],
+            )
+            for day_item in item["datesByDate"].values():
+                self.assertEqual(day_item["severity"], "critical")
+                self.assertEqual(day_item["groupDays"], 2)
+                self.assertEqual(
+                    day_item["reason"],
+                    ["shared_point", "multi_day_pattern"],
+                )
+
+    def test_person_repeat_requires_include_medium(self):
+        department = self._create_department("D-PERSON-REPEAT")
+        ClassLocation.objects.create(
+            name="Far Campus",
+            address="Far Address",
+            latitude=43.2000,
+            longitude=76.8000,
+            acceptance_radius_m=120,
+        )
+        staff = self._create_staff("3001", department)
+        for index in range(7):
+            target_date = datetime(2026, 3, 20 + index).date()
+            self._create_lesson(
+                staff,
+                target_date,
+                latitude=43.2700000 + index * 0.0000010,
+                longitude=76.9500000 + index * 0.0000010,
+                hour=8,
+            )
+
+        response_default = self.client.get(
+            self.url,
+            {
+                "child_department_id": department.id,
+                "date_from": "2026-03-20",
+                "date_to": "2026-03-26",
+            },
+        )
+        self.assertEqual(response_default.status_code, status.HTTP_200_OK)
+        self.assertEqual(response_default.data["summary"]["staffFlagged"], 0)
+        self.assertEqual(response_default.data["usersByPin"], {})
+
+        response_medium = self.client.get(
+            self.url,
+            {
+                "child_department_id": department.id,
+                "date_from": "2026-03-20",
+                "date_to": "2026-03-26",
+                "include_medium": "1",
+            },
+        )
+        self.assertEqual(response_medium.status_code, status.HTTP_200_OK)
+        self.assertEqual(response_medium.data["summary"]["staffFlagged"], 1)
+        result = response_medium.data["usersByPin"]["3001"]
+        self.assertEqual(result["highestSeverity"], "medium")
+        self.assertEqual(result["activeDays"], 7)
+        self.assertEqual(result["repeatDays"], 7)
+        self.assertEqual(result["repeatPct"], 100.0)
+        self.assertEqual(
+            result["datesByDate"],
+            {
+                "2026-03-20": {
+                    "severity": "medium",
+                    "groupDays": 0,
+                    "lat": 43.270003,
+                    "lon": 76.950003,
+                    "locationName": "Far Campus",
+                    "reason": ["person_repeat", "multi_day_pattern"],
+                },
+                "2026-03-21": {
+                    "severity": "medium",
+                    "groupDays": 0,
+                    "lat": 43.270003,
+                    "lon": 76.950003,
+                    "locationName": "Far Campus",
+                    "reason": ["person_repeat", "multi_day_pattern"],
+                },
+                "2026-03-22": {
+                    "severity": "medium",
+                    "groupDays": 0,
+                    "lat": 43.270003,
+                    "lon": 76.950003,
+                    "locationName": "Far Campus",
+                    "reason": ["person_repeat", "multi_day_pattern"],
+                },
+                "2026-03-23": {
+                    "severity": "medium",
+                    "groupDays": 0,
+                    "lat": 43.270003,
+                    "lon": 76.950003,
+                    "locationName": "Far Campus",
+                    "reason": ["person_repeat", "multi_day_pattern"],
+                },
+                "2026-03-24": {
+                    "severity": "medium",
+                    "groupDays": 0,
+                    "lat": 43.270003,
+                    "lon": 76.950003,
+                    "locationName": "Far Campus",
+                    "reason": ["person_repeat", "multi_day_pattern"],
+                },
+                "2026-03-25": {
+                    "severity": "medium",
+                    "groupDays": 0,
+                    "lat": 43.270003,
+                    "lon": 76.950003,
+                    "locationName": "Far Campus",
+                    "reason": ["person_repeat", "multi_day_pattern"],
+                },
+                "2026-03-26": {
+                    "severity": "medium",
+                    "groupDays": 0,
+                    "lat": 43.270003,
+                    "lon": 76.950003,
+                    "locationName": "Far Campus",
+                    "reason": ["person_repeat", "multi_day_pattern"],
+                },
+            },
+        )
+
+    def test_lesson_attendance_save_busts_epoch_cached_response(self):
+        department = self._create_department("D-EPOCH-LESSON")
+        ClassLocation.objects.create(
+            name="Far Campus",
+            address="Far Address",
+            latitude=43.2000,
+            longitude=76.8000,
+            acceptance_radius_m=120,
+        )
+        staff = self._create_staff("4001", department)
+        for index in range(6):
+            target_date = datetime(2026, 3, 20 + index).date()
+            self._create_lesson(
+                staff,
+                target_date,
+                latitude=43.2800000 + index * 0.0000010,
+                longitude=76.9600000 + index * 0.0000010,
+                hour=8,
+            )
+
+        params = {
+            "child_department_id": department.id,
+            "date_from": "2026-03-20",
+            "date_to": "2026-03-26",
+            "include_medium": "1",
+        }
+        initial_response = self.client.get(self.url, params)
+        self.assertEqual(initial_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(initial_response.data["usersByPin"], {})
+
+        self._create_lesson(
+            staff,
+            datetime(2026, 3, 26).date(),
+            latitude=43.2800060,
+            longitude=76.9600060,
+            hour=10,
+        )
+
+        refreshed_response = self.client.get(self.url, params)
+        self.assertEqual(refreshed_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(refreshed_response.data["summary"]["staffFlagged"], 1)
+
+    def test_class_location_change_busts_epoch_cached_response(self):
+        department = self._create_department("D-EPOCH-LOCATION")
+        ClassLocation.objects.create(
+            name="Far Campus",
+            address="Far Address",
+            latitude=43.2000,
+            longitude=76.8000,
+            acceptance_radius_m=120,
+        )
+        staff = self._create_staff("5001", department)
+        suspicious_lat = 43.2900000
+        suspicious_lon = 76.9700000
+        for index in range(7):
+            target_date = datetime(2026, 3, 20 + index).date()
+            self._create_lesson(
+                staff,
+                target_date,
+                latitude=suspicious_lat + index * 0.0000010,
+                longitude=suspicious_lon + index * 0.0000010,
+                hour=8,
+            )
+
+        params = {
+            "child_department_id": department.id,
+            "date_from": "2026-03-20",
+            "date_to": "2026-03-26",
+            "include_medium": "1",
+        }
+        initial_response = self.client.get(self.url, params)
+        self.assertEqual(initial_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(initial_response.data["summary"]["staffFlagged"], 1)
+
+        ClassLocation.objects.create(
+            name="Now Known",
+            address="Now Known Address",
+            latitude=suspicious_lat,
+            longitude=suspicious_lon,
+            acceptance_radius_m=200,
+        )
+
+        refreshed_response = self.client.get(self.url, params)
+        self.assertEqual(refreshed_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(refreshed_response.data["summary"]["staffFlagged"], 1)
+        refreshed_result = refreshed_response.data["usersByPin"]["5001"]
+        self.assertEqual(
+            refreshed_result["datesByDate"]["2026-03-20"]["locationName"],
+            "Now Known",
+        )
+        self.assertEqual(
+            refreshed_result["datesByDate"]["2026-03-20"]["reason"],
+            ["person_repeat", "multi_day_pattern"],
         )
 
 
@@ -1672,3 +2187,71 @@ class DepartmentConfirmationCacheRotationTaskTest(SimpleTestCase):
             monitoring_tasks.DEPARTMENT_CONFIRMATION_EPOCH_TTL,
         )
         mock_invalidate_pattern.assert_called_once_with("department_confirmation_*")
+
+
+class LessonAttendanceMediaAccessTest(SimpleTestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.attendance_root = Path(self.temp_dir.name)
+        self.override = override_settings(
+            ATTENDANCE_ROOT=self.attendance_root,
+            ATTENDANCE_URL="/attendance_media/",
+            MEDIA_ROOT=self.attendance_root / "media",
+            MEDIA_URL="/media/",
+        )
+        self.override.enable()
+        self.addCleanup(self.override.disable)
+        self.staff = Staff(pin="T3587T", name="John", surname="Doe")
+
+    def _build_record(self, image_path: str | None) -> LessonAttendance:
+        now_dt = timezone.now()
+        return LessonAttendance(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=now_dt,
+            last_out=now_dt + timedelta(hours=1),
+            latitude=43.2389,
+            longitude=76.8897,
+            date_at=now_dt.date(),
+            staff_image_path=image_path,
+        )
+
+    def test_image_url_uses_attendance_media_path_for_attendance_root_files(self):
+        file_path = self.attendance_root / "t3587t/2026-04-01/sample.jpg"
+        record = self._build_record(str(file_path))
+
+        self.assertEqual(
+            record.image_url,
+            "/attendance_media/t3587t/2026-04-01/sample.jpg",
+        )
+
+    def test_attendance_media_endpoint_serves_existing_photo(self):
+        file_path = self.attendance_root / "t3587t/2026-04-01/sample.jpg"
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        expected_content = b"\xff\xd8\xff\xd9"
+        file_path.write_bytes(expected_content)
+
+        response = self.client.get(
+            reverse(
+                "attendance-media",
+                kwargs={"path": "t3587t/2026-04-01/sample.jpg"},
+            )
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+        self.assertEqual(response["Cache-Control"], "private, max-age=300")
+        self.assertEqual(b"".join(response.streaming_content), expected_content)
+
+    def test_attendance_media_endpoint_returns_404_for_missing_photo(self):
+        response = self.client.get(
+            reverse(
+                "attendance-media",
+                kwargs={"path": "t3587t/2026-04-01/missing.jpg"},
+            )
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
