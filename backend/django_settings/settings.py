@@ -63,7 +63,16 @@ ATTENDANCE_REENTRY_DEVICE_SNS = _csv_env_frozenset(
 ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES = int(
     os.getenv("ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES", "45")
 )
-FACE_RECOGNITION_THRESHOLD = 0.76
+FACE_RECOGNITION_THRESHOLD = float(os.getenv("FACE_RECOGNITION_THRESHOLD", "0.76"))
+FACE_RECOGNITION_THRESHOLD_RELAXED = float(
+    os.getenv("FACE_RECOGNITION_THRESHOLD_RELAXED", "0.70")
+)
+FACE_RECOGNITION_MIN_NEIGHBOR_GAP = float(
+    os.getenv("FACE_RECOGNITION_MIN_NEIGHBOR_GAP", "0.085")
+)
+FACE_VERIFY_FALLBACK_THRESHOLD = float(
+    os.getenv("FACE_VERIFY_FALLBACK_THRESHOLD", "0.74")
+)
 RATE_PERIOD = 600
 RATE_LIMIT = 40
 NO_ALBUMENTATIONS_UPDATE: int = int(os.getenv("NO_ALBUMENTATIONS_UPDATE", "1"))
@@ -93,6 +102,10 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 SECRET_API = os.getenv("SECRET_API")
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
+# Face Lab: Edge neural TTS (Microsoft, via edge-tts; no API key). Optional voice overrides.
+FACE_LAB_EDGE_TTS_VOICE_RU = os.getenv("FACE_LAB_EDGE_TTS_VOICE_RU", "ru-RU-SvetlanaNeural").strip()
+FACE_LAB_EDGE_TTS_VOICE_KK = os.getenv("FACE_LAB_EDGE_TTS_VOICE_KK", "kk-KZ-AigulNeural").strip()
+FACE_LAB_EDGE_TTS_VOICE_EN = os.getenv("FACE_LAB_EDGE_TTS_VOICE_EN", "en-US-JennyNeural").strip()
 MAIN_IP = os.getenv("MAIN_IP")
 DB_TYPE = os.getenv("DB_TYPE", "sqlite3").lower()
 
@@ -413,19 +426,26 @@ BACKUP_DB_DIR = BASE_DIR.parent / "DB"
 ATTENDANCE_URL = "/attendance_media/"
 _attendance_root_env = os.getenv("ATTENDANCE_ROOT")
 ATTENDANCE_ROOT = (
-    Path(_attendance_root_env).resolve()
+    Path(_attendance_root_env).expanduser().resolve()
     if _attendance_root_env
-    else (MEDIA_ROOT / "control_image" if DEBUG else Path("/mnt/disk/control_image/"))
+    else (MEDIA_ROOT / "control_image")
 )
 
 AUGMENT_URL = "/augment_media/"
-AUGMENT_ROOT = (
+_augment_root_env = os.getenv("AUGMENT_ROOT")
+_default_augment_template = (
     MEDIA_ROOT / "user_images" / "{staff_pin}" / "augmented_images"
-    if DEBUG
-    else "/mnt/disk/augment_images/augmented_images/{staff_pin}"
+)
+AUGMENT_ROOT = (
+    _augment_root_env if _augment_root_env else str(_default_augment_template)
 )
 
-GENERAL_MODELS_ROOT = BASE_DIR / "models" if DEBUG else "/mnt/disk/model_ml"
+_general_models_env = os.getenv("GENERAL_MODELS_ROOT")
+GENERAL_MODELS_ROOT = (
+    Path(_general_models_env).expanduser().resolve()
+    if _general_models_env
+    else (BASE_DIR / "models")
+)
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

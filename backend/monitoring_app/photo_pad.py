@@ -64,6 +64,7 @@ _CV2_ARC_LENGTH = _cv2_get_callable("arcLength")
 _CV2_APPROX_POLY_DP = _cv2_get_callable("approxPolyDP")
 _CV2_BOUNDING_RECT = _cv2_get_callable("boundingRect")
 _CV2_LAPLACIAN = _cv2_get_callable("Laplacian")
+_CV2_RESIZE = _cv2_get_callable("resize")
 
 _CV2_COLOR_BGR2RGB = int(_cv2_get_attr("COLOR_BGR2RGB"))
 _CV2_COLOR_BGR2GRAY = int(_cv2_get_attr("COLOR_BGR2GRAY"))
@@ -71,6 +72,7 @@ _CV2_MORPH_RECT = int(_cv2_get_attr("MORPH_RECT"))
 _CV2_RETR_EXTERNAL = int(_cv2_get_attr("RETR_EXTERNAL"))
 _CV2_CHAIN_APPROX_SIMPLE = int(_cv2_get_attr("CHAIN_APPROX_SIMPLE"))
 _CV2_CV_64F = int(_cv2_get_attr("CV_64F"))
+_CV2_INTER_AREA = int(_cv2_get_attr("INTER_AREA"))
 
 _CV2_CREATE_CLAHE: Optional[Callable[..., Any]] = None
 try:
@@ -131,6 +133,7 @@ _PAD_DEFAULT_NUMBERS: dict[str, float | int] = {
     "decision_weak_device_min": 0.12,
     "decision_weak_frame_min": 0.18,
     "decision_weak_combined_sum_min": 0.22,
+    "pad_max_long_side": 960,
 }
 
 
@@ -222,6 +225,18 @@ def _resolve_torch_device(preferred_device: str) -> tuple[Optional[Any], str]:
     if torch.cuda.is_available():
         return torch.device("cuda"), DEVICE_CUDA
     return torch.device("cpu"), DEVICE_CPU
+
+
+def _downscale_bgr_for_pad(img_bgr: np.ndarray) -> np.ndarray:
+    max_side = _pad_int("pad_max_long_side")
+    h, w = img_bgr.shape[:2]
+    m = max(h, w)
+    if m <= max_side:
+        return img_bgr
+    scale = max_side / float(m)
+    nw = max(1, int(round(w * scale)))
+    nh = max(1, int(round(h * scale)))
+    return _CV2_RESIZE(img_bgr, (nw, nh), interpolation=_CV2_INTER_AREA)
 
 
 def _get_fasnet():
@@ -583,8 +598,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         trust = False
     elif (
         deepfake
-        and inputs.deepface_score
-        >= _pad_float("decision_deepfake_mid_suspicious_min")
+        and inputs.deepface_score >= _pad_float("decision_deepfake_mid_suspicious_min")
         and (
             (mid_device and mid_frame)
             or inputs.device_score >= _pad_float("decision_strong_device_min")
@@ -593,11 +607,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
     ):
         status = STATUS_SUSPICIOUS
         trust = False
-    elif (
-        deepfake
-        and (mid_device or mid_frame)
-        and not quality_poor
-    ):
+    elif deepfake and (mid_device or mid_frame) and not quality_poor:
         status = STATUS_SUSPICIOUS
         trust = False
     elif (
@@ -652,24 +662,12 @@ def _decide(inputs: DecisionInputs) -> PadResult:
     )
 
 
-def check_photo(image_path: str | Path, device: Optional[str] = None) -> PadResult:
+def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadResult:
+    """
+    Same PAD pipeline as check_photo, for an in-memory BGR image (OpenCV layout).
+    """
     started = time.monotonic()
-    img_bgr = _CV2_IMREAD(str(image_path))
-    if img_bgr is None:
-        result = _decide(
-            DecisionInputs(
-                decode_error=True,
-                has_face=False,
-                deepface_score=0.0,
-                device_score=0.0,
-                frame_score=0.0,
-                quality_penalty=0.0,
-                tags=["decode_error"],
-            )
-        )
-        result.elapsed_ms = (time.monotonic() - started) * 1000.0
-        return result
-
+    img_bgr = _downscale_bgr_for_pad(img_bgr)
     requested_device = normalize_device(device)
     face_bbox = _get_primary_face_bbox(img_bgr)
     deepface_score, deepface_tags = _signal_deepface(img_bgr, face_bbox)
@@ -690,3 +688,24 @@ def check_photo(image_path: str | Path, device: Optional[str] = None) -> PadResu
     )
     result.elapsed_ms = (time.monotonic() - started) * 1000.0
     return result
+
+
+def check_photo(image_path: str | Path, device: Optional[str] = None) -> PadResult:
+    started = time.monotonic()
+    img_bgr = _CV2_IMREAD(str(image_path))
+    if img_bgr is None:
+        result = _decide(
+            DecisionInputs(
+                decode_error=True,
+                has_face=False,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=["decode_error"],
+            )
+        )
+        result.elapsed_ms = (time.monotonic() - started) * 1000.0
+        return result
+
+    return check_photo_bgr(img_bgr, device=device)

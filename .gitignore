@@ -315,3 +315,4 @@ backend/static/media/examples.zip
 backend/media/examples.zip
 backend/media/
 DB/
+.cursor/rules/

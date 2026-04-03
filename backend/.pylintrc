@@ -56,7 +56,7 @@ disable =
     useless-return
 
 [TYPECHECK]
-generated-members = objects,_default_manager,DoesNotExist,MultipleObjectsReturned,_meta,save,delete
+generated-members = objects,_default_manager,DoesNotExist,MultipleObjectsReturned,_meta,save,delete,cv2.*
 ignored-modules = django,rest_framework,channels
 
 [FORMAT]

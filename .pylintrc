@@ -1,2 +1,7 @@
 [MASTER]
+ignore = migrations
 ignore-paths = .*[\\/]migrations[\\/].*,.*[\\/]venv[\\/].*,.*[\\/]\.venv[\\/].*,.*[\\/]node_modules[\\/].*
+ignore-patterns = (^|.*/)(migrations|venv|\.venv|node_modules|build|dist)(/|$)
+
+[TYPECHECK]
+generated-members = cv2.*
