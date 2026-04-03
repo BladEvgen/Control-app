@@ -61,7 +61,11 @@ from monitoring_app.services import building_attendance_report
 from monitoring_app.signals import invalidate_class_location_cache_impl
 from openpyxl import load_workbook
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+)
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
@@ -73,6 +77,22 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 def _db_atomic() -> AbstractContextManager[None]:
     """Типизированная обёртка над transaction.atomic() для статического анализа."""
     return cast(AbstractContextManager[None], transaction.atomic())
+
+
+def _drf_validation_error_text(exc: ValidationError) -> str:
+    """Текст для JSON без str(exc) → «[ErrorDetail(string='…')]»."""
+    detail = exc.detail
+    if isinstance(detail, (list, tuple)):
+        return " ".join(str(x) for x in detail).strip()
+    if isinstance(detail, dict):
+        parts: list[str] = []
+        for key, val in detail.items():
+            if isinstance(val, (list, tuple)):
+                parts.append(f"{key}: {', '.join(str(x) for x in val)}")
+            else:
+                parts.append(f"{key}: {val}")
+        return "; ".join(parts).strip()
+    return str(detail).strip()
 
 
 def _get_manual_parameters_for_inspector(view, method, overrides):
@@ -8813,6 +8833,109 @@ def serve_attendance_media(request, path):
     return response
 
 
+@api_view(["GET"])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def face_lab_departments(request):
+    """
+    Child departments that have at least one staff member (Face Lab UI selects).
+    """
+    dept_ids = (
+        models.Staff.objects.filter(department_id__isnull=False)
+        .values_list("department_id", flat=True)
+        .distinct()
+    )
+    rows = list(
+        models.ChildDepartment.objects.filter(id__in=dept_ids)
+        .order_by("name")
+        .values("id", "name", "parent_id")
+    )
+    return Response(rows, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def face_lab_staff_options(request):
+    """
+    Flat list of all staff with department (Face Lab «С эталоном»).
+    One DB round-trip + cache instead of N requests per department.
+    """
+    cache_key = "face_lab_staff_options_v1"
+
+    def fetch_rows():
+        rows = []
+        qs = (
+            models.Staff.objects.filter(department_id__isnull=False)
+            .select_related("department")
+            .order_by("surname", "name", "pin")
+        )
+        for s in qs.iterator(chunk_size=800):
+            dept = s.department
+            dept_name = dept.name if dept else ""
+            dept_id = s.department_id
+            if s.surname == "Нет фамилии":
+                fio = s.name
+            else:
+                fio = f"{s.surname} {s.name}"
+            rows.append(
+                {
+                    "pin": s.pin,
+                    "fio": fio,
+                    "dept_id": dept_id,
+                    "dept_name": dept_name,
+                }
+            )
+        return rows
+
+    data = get_cache(cache_key, query=fetch_rows, timeout=10 * 60)
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def face_lab_pad_test(request):
+    """Run presentation-attack detection on an uploaded frame (authenticated testers)."""
+    from monitoring_app.photo_pad import check_photo_bgr
+
+    uploaded = request.FILES.get("image")
+    if not uploaded:
+        return Response(
+            {"error": "image file is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if uploaded.size == 0:
+        return Response(
+            {"error": "Uploaded image is empty."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        img_bgr = ml.load_image_from_memory(uploaded)
+    except ValidationError as ve:
+        return Response(
+            {"error": _drf_validation_error_text(ve)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    result = check_photo_bgr(img_bgr)
+    return Response(
+        {
+            "status": result.status,
+            "trust_confirmed": result.trust_confirmed,
+            "risk_score": result.risk_score,
+            "tags": result.tags,
+            "model_version": result.model_version,
+            "elapsed_ms": result.elapsed_ms,
+            "deepface_score": result.deepface_score,
+            "device_score": result.device_score,
+            "frame_score": result.frame_score,
+            "quality_penalty": result.quality_penalty,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 @swagger_auto_schema(
     method="post",
     auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
@@ -8855,7 +8978,27 @@ def serve_attendance_media(request, path):
                     ),
                     "score": openapi.Schema(
                         type=openapi.TYPE_NUMBER,
-                        description="Оценка схожести (0-1).",
+                        description="Оценка схожести (0–1), смесь max и среднего по лучшим прототипам.",
+                    ),
+                    "max_cosine": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        description="Максимальный косинус по прототипам галереи.",
+                    ),
+                    "trained_model_present": openapi.Schema(
+                        type=openapi.TYPE_BOOLEAN,
+                        description="Есть ли сохранённый per-staff .pt после обучения.",
+                    ),
+                    "gallery_templates": openapi.Schema(
+                        type=openapi.TYPE_INTEGER,
+                        description="Число прототипов (маска + аватар + embeddings.npy).",
+                    ),
+                    "threshold_used": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        description="Порог: строже при наличии .pt, мягче в fallback.",
+                    ),
+                    "verification_mode": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="embedding_gallery_strict | embedding_gallery_fallback",
                     ),
                 },
             ),
@@ -8868,7 +9011,6 @@ def serve_attendance_media(request, path):
 @permission_classes([AllowAny])
 def verify_face(request):
     import numpy as np
-    from sklearn.metrics.pairwise import cosine_similarity
 
     face_logger = logging.getLogger("django")
     face_logger.info("Received request to verify face.")
@@ -8896,23 +9038,6 @@ def verify_face(request):
         return Response({"error": "Staff not found."}, status=status.HTTP_404_NOT_FOUND)
 
     try:
-        face_mask = staff.face_mask
-        face_logger.info(f"Face mask for staff with PIN {staff_pin} found.")
-    except models.StaffFaceMask.DoesNotExist:
-        face_logger.error(f"Face mask for staff with PIN {staff_pin} does not exist.")
-        return Response(
-            {"error": "Face mask for this staff member are not found."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not face_mask.mask_encoding:
-        face_logger.error(f"Face embeddings for staff with PIN {staff_pin} are empty.")
-        return Response(
-            {"error": "Face embeddings for this staff member are empty."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    try:
         new_image = ml.load_image_from_memory(staff_image)
         new_embedding = ml.create_face_encoding(new_image)
         if new_embedding is None:
@@ -8922,27 +9047,50 @@ def verify_face(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        face_logger.info("Face detected, calculating similarity.")
-        new_embedding = np.array(new_embedding).reshape(1, -1)
-        stored_embeddings = np.array(face_mask.mask_encoding)
-
-        if stored_embeddings.ndim == 1:
-            stored_embeddings = stored_embeddings.reshape(1, -1)
-
-        similarities = cosine_similarity(new_embedding, stored_embeddings)[0]
-        max_similarity = np.max(similarities)
-
-        threshold = settings.FACE_RECOGNITION_THRESHOLD
-        verified = max_similarity >= threshold
+        face_logger.info("Face detected, calculating gallery similarity.")
+        probe = np.asarray(new_embedding, dtype=np.float64)
+        try:
+            verified, score, meta = ml.verify_staff_face_embedding_score(staff, probe)
+        except ValueError as ve:
+            face_logger.warning("verify_face: no gallery for PIN %s: %s", staff_pin, ve)
+            return Response(
+                {
+                    "error": (
+                        "Нет эталона лица: нужен файл аватара и/или запись маски "
+                        "с эмбеддингом."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         face_logger.info(
-            f"Verification completed for PIN {staff_pin}. Score: {max_similarity}, Verified: {verified}"
+            "Verification PIN %s: score=%s verified=%s mode=%s templates=%s",
+            staff_pin,
+            score,
+            verified,
+            meta.get("verification_mode"),
+            meta.get("gallery_templates"),
         )
         return Response(
-            {"verified": verified, "score": float(max_similarity)},
+            {
+                "verified": verified,
+                "score": score,
+                "max_cosine": meta["max_cosine"],
+                "trained_model_present": meta["trained_model_present"],
+                "gallery_templates": meta["gallery_templates"],
+                "threshold_used": meta["threshold_used"],
+                "verification_mode": meta["verification_mode"],
+                "relaxed_match": bool(meta.get("relaxed_match")),
+            },
             status=status.HTTP_200_OK,
         )
 
+    except ValidationError as ve:
+        face_logger.warning("verify_face validation: %s", _drf_validation_error_text(ve))
+        return Response(
+            {"error": _drf_validation_error_text(ve)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     except Exception as e:
         face_logger.error(
             f"Error during face verification for PIN {staff_pin}: {str(e)}"
@@ -9043,8 +9191,9 @@ def recognize_faces(request):
         )
 
     except ValidationError as ve:
-        recognize_logger.warning(f"Validation error during face recognition: {str(ve)}")
-        return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
+        msg = _drf_validation_error_text(ve)
+        recognize_logger.warning("Validation error during face recognition: %s", msg)
+        return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         recognize_logger.error(f"Unexpected error during face recognition: {str(e)}")
         return Response(

@@ -52,6 +52,7 @@ djangorestframework-simplejwt==5.4.0
 dnspython==2.7.0
 drf-yasg==1.21.10
 easydict==1.13
+edge-tts==7.2.8
 et-xmlfile==1.1.0
 eval_type_backport==0.2.0
 eventlet==0.37.0

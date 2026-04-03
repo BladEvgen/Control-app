@@ -1,6 +1,6 @@
 from django.urls import path, re_path
 from django.views.generic import RedirectView
-from monitoring_app import custom_jwt, views
+from monitoring_app import custom_jwt, face_lab_tts, views
 from monitoring_app.swagger import urlpatterns as doc_urls
 from monitoring_app.swagger_views import swagger_session_login, swagger_session_logout
 
@@ -126,6 +126,26 @@ urlpatterns = [
         "password-reset/<str:token>/",
         views.password_reset_confirm_view,
         name="password_reset_confirm",
+    ),
+    path(
+        "api/face-lab/departments/",
+        views.face_lab_departments,
+        name="face-lab-departments",
+    ),
+    path(
+        "api/face-lab/staff-options/",
+        views.face_lab_staff_options,
+        name="face-lab-staff-options",
+    ),
+    path(
+        "api/face-lab/pad-test/",
+        views.face_lab_pad_test,
+        name="face-lab-pad-test",
+    ),
+    path(
+        "api/face-lab/tts/",
+        face_lab_tts.face_lab_tts_view,
+        name="face-lab-tts",
     ),
     path("verify-face/", views.verify_face, name="verify-face"),
     path("recognize-faces/", views.recognize_faces, name="recognize-faces"),
