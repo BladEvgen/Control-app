@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from asgiref.sync import async_to_sync
 from django.conf import settings
-from django.core.cache import cache
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -211,6 +211,33 @@ class StaffDetailTest(TestCase):
         )
 
         self.assertIn("16-01-2023", detail["attendance"])
+
+    def test_get_staff_detail_percent_for_period_uses_effective_work_seconds(self):
+        """Регрессия: при наличии effective_work_seconds день должен входить в средний % периода.
+
+        Раньше накопление шло только в ветке first_in/last_out, из‑за чего общий % был 0.
+        """
+        work_day = timezone.make_aware(datetime(2023, 1, 17, 9, 0))
+        eight_hours = 8 * 3600
+        StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=work_day.date() + timedelta(days=1),
+            first_in=None,
+            last_out=None,
+            effective_work_seconds=eight_hours,
+            area_name_in=None,
+            area_name_out=None,
+        )
+        detail = get_staff_detail(
+            self.staff,
+            datetime(2023, 1, 1).date(),
+            datetime(2023, 1, 31).date(),
+        )
+        self.assertGreater(
+            detail["percent_for_period"],
+            0,
+            "percent_for_period must reflect days with effective_work_seconds only",
+        )
 
 
 class LessonAttendanceDayLevelApiFiltersTest(APITestCase):
@@ -910,13 +937,13 @@ class AppVersionEndpointTest(SimpleTestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.json(), expected_payload)
-        cache_control = response["Cache-Control"]
+        cache_control = response.get("Cache-Control", "")
         self.assertIn("no-store", cache_control)
         self.assertIn("no-cache", cache_control)
         self.assertIn("must-revalidate", cache_control)
         self.assertIn("max-age=0", cache_control)
-        self.assertEqual(response["Pragma"], "no-cache")
-        self.assertEqual(response["Expires"], "0")
+        self.assertEqual(response.get("Pragma"), "no-cache")
+        self.assertEqual(response.get("Expires"), "0")
 
     def test_app_version_returns_503_when_metadata_file_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -948,7 +975,9 @@ class SuspiciousLocationPatternsApiTest(APITestCase):
         self.client.credentials(HTTP_X_API_KEY=self.api_key.key)
         self.url = reverse("suspicious-location-patterns")
 
-    def _create_department(self, dept_id: str, name: str = "Test Group") -> ChildDepartment:
+    def _create_department(
+        self, dept_id: str, name: str = "Test Group"
+    ) -> ChildDepartment:
         return ChildDepartment.objects.create(id=dept_id, name=name)
 
     def _create_staff(self, pin_short: str, department: ChildDepartment) -> Staff:
@@ -1089,8 +1118,7 @@ class SuspiciousLocationPatternsApiTest(APITestCase):
             ],
         }
         staff_members = [
-            self._create_staff(str(25900 + index), department)
-            for index in range(10)
+            self._create_staff(str(25900 + index), department) for index in range(10)
         ]
         for target_date, coords in coordinates_by_day.items():
             for staff, (lat, lon) in zip(staff_members, coords):
@@ -2242,8 +2270,8 @@ class LessonAttendanceMediaAccessTest(SimpleTestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response["Content-Type"], "image/jpeg")
-        self.assertEqual(response["Cache-Control"], "private, max-age=300")
+        self.assertEqual(response.get("Content-Type"), "image/jpeg")
+        self.assertEqual(response.get("Cache-Control"), "private, max-age=300")
         self.assertEqual(b"".join(response.streaming_content), expected_content)
 
     def test_attendance_media_endpoint_returns_404_for_missing_photo(self):

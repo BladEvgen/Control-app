@@ -77,7 +77,7 @@ def merge_work_intervals_to_total_seconds(
     return sum(int((e - s).total_seconds()) for s, e in merged)
 
 
-arcface_model = None
+ARCFACE_MODEL = None
 
 CANONICAL_ADDRESSES: dict[str, str] = {
     "abilai": "Проспект Абылай хана, 51/53",
@@ -254,23 +254,69 @@ def format_duration(duration_seconds):
 
 
 class HierarchicalDepartmentFilter(SimpleListFilter):
+    """Иерархия от головного отдела к листьям; dept_name_q сужает список (GET-параметр)."""
+
     title = _("Department")
     parameter_name = "staff_department"
-    _lookups_cache_key = "hierarchical_dept_filter_lookups"
     _lookups_cache_ttl = 600
+
+    def _lookups_cache_key(self, request) -> str:
+        from hashlib import md5
+
+        q = (request.GET.get("dept_name_q") or "").strip()
+        if not q:
+            return "hierarchical_dept_filter_tree_v2"
+        h = md5(q.encode("utf-8")).hexdigest()[:16]
+        return f"hierarchical_dept_filter_tree_v2_q_{h}"
 
     def lookups(self, request, model_admin):
         from django.core.cache import cache
 
-        lookup_list = cache.get(self._lookups_cache_key)
+        cache_key = self._lookups_cache_key(request)
+        lookup_list = cache.get(cache_key)
         if lookup_list is not None:
             return lookup_list
-        departments = list(
-            models.ChildDepartment.objects.only("id", "name").order_by("name")
-        )
-        lookup_list = [(dept.id, dept.name) for dept in departments]
-        cache.set(self._lookups_cache_key, lookup_list, self._lookups_cache_ttl)
+
+        base = models.ChildDepartment.objects.only("id", "name", "parent_id")
+        dept_q = (request.GET.get("dept_name_q") or "").strip()
+        if dept_q:
+            match_ids = set(
+                base.filter(name__icontains=dept_q).values_list("id", flat=True)
+            )
+            if not match_ids:
+                lookup_list = []
+                cache.set(cache_key, lookup_list, self._lookups_cache_ttl)
+                return lookup_list
+            parent_by_id = dict(
+                models.ChildDepartment.objects.values_list("id", "parent_id")
+            )
+            needed = set(match_ids)
+            for mid in list(match_ids):
+                pid = parent_by_id.get(mid)
+                while pid:
+                    needed.add(pid)
+                    pid = parent_by_id.get(pid)
+            qs = base.filter(id__in=needed)
+        else:
+            qs = base
+
+        by_parent = defaultdict(list)
+        for d in qs:
+            by_parent[d.parent_id].append(d)
+        for children in by_parent.values():
+            children.sort(key=lambda x: (x.name or "").lower())
+
+        lookup_list = self._walk_tree(by_parent, None, 0)
+        cache.set(cache_key, lookup_list, self._lookups_cache_ttl)
         return lookup_list
+
+    def _walk_tree(self, by_parent, parent_id, level: int):
+        choices = []
+        for dept in by_parent.get(parent_id, []):
+            indent = "—" * level
+            choices.append((dept.id, f"{indent} {dept.name}"))
+            choices.extend(self._walk_tree(by_parent, dept.id, level + 1))
+        return choices
 
     def queryset(self, request, queryset):
         if self.value():
@@ -956,7 +1002,7 @@ def calculate_distance_haversine(lat1, lon1, lat2, lon2):
     Returns:
         float: расстояние в метрах.
     """
-    R = R_EARTH_M
+    earth_radius_m = R_EARTH_M
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
     delta_phi = math.radians(lat2 - lat1)
@@ -966,7 +1012,7 @@ def calculate_distance_haversine(lat1, lon1, lat2, lon2):
         + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
     )
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    distance = R * c
+    distance = earth_radius_m * c
     return distance
 
 
@@ -1018,12 +1064,12 @@ def compute_class_location_acceptance_radii(
             if d < min_d:
                 min_d = d
         if min_d < same_point_threshold:
-            R = r_same_point
+            radius_m = r_same_point
         elif min_d < cluster_threshold:
-            R = r_cluster
+            radius_m = r_cluster
         else:
-            R = r_standalone
-        out[loc.id] = R
+            radius_m = r_standalone
+        out[loc.id] = radius_m
     return out
 
 
@@ -1064,14 +1110,14 @@ def compute_neighbor_color_index(locations, neighbor_threshold_m=30):
             if d < thr:
                 neighbors[a.id].append(b.id)
                 neighbors[b.id].append(a.id)
-    PALETTE_SIZE = 5
+    palette_size = 5
     out = {}
     for loc in locs:
         used = {out[n] for n in neighbors[loc.id] if n in out}
         c = 0
         while c in used:
             c += 1
-        out[loc.id] = c % PALETTE_SIZE
+        out[loc.id] = c % palette_size
     return out
 
 
@@ -1106,17 +1152,14 @@ def extract_coordinates(geo_data):
     if not geo_data or not isinstance(geo_data, str):
         return (None, None)
     geo_data = geo_data.strip()
-    # Формат lat,lon (широта,долгота)
     match = re.search(r"(-?\d+\.?\d*)\s*[,;]\s*(-?\d+\.?\d*)", geo_data)
     if match:
         a, b = float(match.group(1)), float(match.group(2))
-        # Широта -90..90, долгота -180..180
         if -90 <= a <= 90 and -180 <= b <= 180:
             return (a, b)
         if -90 <= b <= 90 and -180 <= a <= 180:
             return (b, a)
         return (a, b)
-    # Формат lon%2Clat
     match = re.search(r"(-?\d+\.?\d*)%2C(-?\d+\.?\d*)", geo_data)
     if match:
         lon, lat = float(match.group(1)), float(match.group(2))

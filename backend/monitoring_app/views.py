@@ -133,13 +133,14 @@ DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY = "department_confirmation_epoch_hour"
 DEPARTMENT_CONFIRMATION_EPOCH_TTL = DEPARTMENT_CONFIRMATION_CACHE_TTL + 60 * 60
 STAFF_PINS_HEADER_NAME = "X-Staff-Pins"
 LESSON_REPORT_CACHE_VERSION = models.LessonAttendance.REPORT_FILTER_CACHE_VERSION
-SUSPICIOUS_LOCATION_PATTERNS_EPOCH_CACHE_KEY = (
-    "suspicious_location_patterns_epoch"
-)
-SUSPICIOUS_LOCATION_PATTERNS_CACHE_VERSION = "v8"
+SUSPICIOUS_LOCATION_PATTERNS_EPOCH_CACHE_KEY = "suspicious_location_patterns_epoch"
+SUSPICIOUS_LOCATION_PATTERNS_CACHE_VERSION = "v9"
 SUSPICIOUS_LOCATION_PATTERNS_CACHE_TTL = 60 * 60
+# Кластер GPS-записей за день у одного человека в один дневной якорь.
 SUSPICIOUS_LOCATION_PERSON_DAY_RADIUS_M = 10
-SUSPICIOUS_LOCATION_PERSON_REPEAT_RADIUS_M = 5
+# Склейка дневных якорей для «person_repeat» .
+SUSPICIOUS_LOCATION_PERSON_REPEAT_RADIUS_M = 2
+# Кластеризация near-сигналов shared_point внутри одного дня.
 SUSPICIOUS_LOCATION_GROUP_CLUSTER_RADIUS_M = 10
 SUSPICIOUS_LOCATION_PERSON_REPEAT_MIN_ACTIVE_DAYS = 7
 SUSPICIOUS_LOCATION_PERSON_REPEAT_MIN_PCT = 0.70
@@ -449,8 +450,10 @@ def _to_date(dt):
 def fetch_attendance_by_event_dates(staff_ids, date_from, date_to):
     """Загружает StaffAttendance и LessonAttendance по датам событий одним проходом.
 
-    StaffAttendance.date_at — день выгрузки (следующий за рабочим днём).
-    LessonAttendance.date_at — календарный день занятия. Результаты используются
+    StaffAttendance.date_at — день выгрузки (обычно календарный день после
+    рабочего дня смены). В админке по event_date «2 апреля» ищите строку с
+    date_at «3 апреля». LessonAttendance.date_at — календарный день занятия.
+    Результаты используются
     в api/staff/{pin}/ и api/attendance/department-confirmation/.
 
     Args:
@@ -573,8 +576,12 @@ def _cluster_geo_items(
                 item.get(sort_id_key, 0),
             )
         )
-        center_lat = sum(float(item[lat_key]) for item in group_items) / len(group_items)
-        center_lon = sum(float(item[lon_key]) for item in group_items) / len(group_items)
+        center_lat = sum(float(item[lat_key]) for item in group_items) / len(
+            group_items
+        )
+        center_lon = sum(float(item[lon_key]) for item in group_items) / len(
+            group_items
+        )
         clusters.append(
             {
                 "items": group_items,
@@ -605,11 +612,13 @@ def _get_nearest_class_location_context(
     nearest_location = None
     nearest_distance = float("inf")
     for location in class_locations:
+        loc_lat = cast(float, location.latitude)
+        loc_lon = cast(float, location.longitude)
         distance_m = utils.calculate_distance_haversine(
             latitude,
             longitude,
-            float(location.latitude),
-            float(location.longitude),
+            loc_lat,
+            loc_lon,
         )
         if distance_m < nearest_distance:
             nearest_distance = distance_m
@@ -668,17 +677,14 @@ def _build_day_anchor(records: list[dict[str, Any]]) -> Optional[dict[str, Any]]
             },
         )
         stats["count"] += 1
-        if (
-            _sort_datetime_value(item.get("sort_time"))
-            < _sort_datetime_value(stats.get("sort_time"))
+        if _sort_datetime_value(item.get("sort_time")) < _sort_datetime_value(
+            stats.get("sort_time")
         ):
             stats["sort_time"] = item.get("sort_time")
             stats["sort_id"] = item.get("sort_id", 0)
-        elif (
-            _sort_datetime_value(item.get("sort_time"))
-            == _sort_datetime_value(stats.get("sort_time"))
-            and item.get("sort_id", 0) < stats.get("sort_id", 0)
-        ):
+        elif _sort_datetime_value(item.get("sort_time")) == _sort_datetime_value(
+            stats.get("sort_time")
+        ) and item.get("sort_id", 0) < stats.get("sort_id", 0):
             stats["sort_id"] = item.get("sort_id", 0)
 
     dominant_signature = sorted(
@@ -723,7 +729,9 @@ def _build_person_repeat_profile(
             "lat": float(anchor["center_lat"]),
             "lon": float(anchor["center_lon"]),
             "sort_time": anchor["date"],
-            "sort_id": int(anchor["attendance_ids"][0]) if anchor["attendance_ids"] else 0,
+            "sort_id": (
+                int(anchor["attendance_ids"][0]) if anchor["attendance_ids"] else 0
+            ),
             "anchor": anchor,
         }
         for anchor in anchors
@@ -750,11 +758,7 @@ def _build_person_repeat_profile(
     )
     active_days = len(anchors)
     repeat_days = len(repeat_dates)
-    repeat_pct = (
-        round(100.0 * repeat_days / active_days, 1)
-        if active_days
-        else 0.0
-    )
+    repeat_pct = round(100.0 * repeat_days / active_days, 1) if active_days else 0.0
     return {
         "active_days": active_days,
         "repeat_days": repeat_days,
@@ -769,8 +773,7 @@ def _build_person_repeat_profile(
         "inside_known_location": location_context["inside_known_location"],
         "is_actionable": (
             active_days >= SUSPICIOUS_LOCATION_PERSON_REPEAT_MIN_ACTIVE_DAYS
-            and (repeat_days / active_days)
-            >= SUSPICIOUS_LOCATION_PERSON_REPEAT_MIN_PCT
+            and (repeat_days / active_days) >= SUSPICIOUS_LOCATION_PERSON_REPEAT_MIN_PCT
         ),
     }
 
@@ -790,9 +793,7 @@ def _build_suspicious_location_patterns_cache_key(
     )
     if staff_pins:
         normalized_pins = sorted({pin for pin in staff_pins if pin})
-        pins_hash = hashlib.sha1(
-            ",".join(normalized_pins).encode("utf-8")
-        ).hexdigest()
+        pins_hash = hashlib.sha1(",".join(normalized_pins).encode("utf-8")).hexdigest()
         return (
             "suspicious_location_patterns_"
             f"pins_{pins_hash}_{int(include_medium)}_{suffix}"
@@ -2480,7 +2481,9 @@ def suspicious_location_patterns(request):
             .order_by("pin")
         )
     else:
-        department = models.ChildDepartment.objects.filter(id=child_department_id).first()
+        department = models.ChildDepartment.objects.filter(
+            id=child_department_id
+        ).first()
         if department is None:
             return Response(
                 {"error": f"ChildDepartment {child_department_id} not found"},
@@ -2595,10 +2598,7 @@ def suspicious_location_patterns(request):
         for signature, bucket in exact_buckets.items():
             distinct_staff_count = len({anchor["staff_id"] for anchor in bucket})
             share = distinct_staff_count / total_with_attendance
-            if (
-                distinct_staff_count < min_group_count
-                or share < min_group_share
-            ):
+            if distinct_staff_count < min_group_count or share < min_group_share:
                 continue
 
             exact_latitude, exact_longitude = map(float, signature.split("|"))
@@ -2608,12 +2608,12 @@ def suspicious_location_patterns(request):
                 class_locations,
                 location_radii,
             )
-            attendance_ids_by_staff: dict[int, set[int]] = defaultdict(set)
-            staff_dates: dict[int, set[str]] = defaultdict(set)
+            exact_bucket_attendance_ids: dict[int, set[int]] = defaultdict(set)
+            exact_bucket_staff_dates: dict[int, set[str]] = defaultdict(set)
             for anchor in bucket:
                 staff_id = int(anchor["staff_id"])
-                attendance_ids_by_staff[staff_id].update(anchor["attendance_ids"])
-                staff_dates[staff_id].add(day.isoformat())
+                exact_bucket_attendance_ids[staff_id].update(anchor["attendance_ids"])
+                exact_bucket_staff_dates[staff_id].add(day.isoformat())
 
             daily_exact_signals.append(
                 {
@@ -2624,9 +2624,9 @@ def suspicious_location_patterns(request):
                     "date_obj": day,
                     "date": day.isoformat(),
                     "staff_count": distinct_staff_count,
-                    "staff_ids": sorted(attendance_ids_by_staff.keys()),
-                    "attendance_ids_by_staff": attendance_ids_by_staff,
-                    "staff_dates": staff_dates,
+                    "staff_ids": sorted(exact_bucket_attendance_ids.keys()),
+                    "attendance_ids_by_staff": exact_bucket_attendance_ids,
+                    "staff_dates": exact_bucket_staff_dates,
                     "location_context": location_context,
                 }
             )
@@ -2636,7 +2636,9 @@ def suspicious_location_patterns(request):
                 "lat": float(anchor["center_lat"]),
                 "lon": float(anchor["center_lon"]),
                 "sort_time": day,
-                "sort_id": anchor["attendance_ids"][0] if anchor["attendance_ids"] else 0,
+                "sort_id": (
+                    anchor["attendance_ids"][0] if anchor["attendance_ids"] else 0
+                ),
                 "anchor": anchor,
             }
             for anchor in day_anchors
@@ -2646,12 +2648,11 @@ def suspicious_location_patterns(request):
             SUSPICIOUS_LOCATION_GROUP_CLUSTER_RADIUS_M,
         ):
             cluster_anchors = [item["anchor"] for item in near_cluster["items"]]
-            distinct_staff_count = len({anchor["staff_id"] for anchor in cluster_anchors})
+            distinct_staff_count = len(
+                {anchor["staff_id"] for anchor in cluster_anchors}
+            )
             share = distinct_staff_count / total_with_attendance
-            if (
-                distinct_staff_count < min_group_count
-                or share < min_group_share
-            ):
+            if distinct_staff_count < min_group_count or share < min_group_share:
                 continue
 
             location_context = _get_nearest_class_location_context(
@@ -2661,12 +2662,12 @@ def suspicious_location_patterns(request):
                 location_radii,
             )
 
-            attendance_ids_by_staff = defaultdict(set)
-            staff_dates = defaultdict(set)
+            near_bucket_attendance_ids = defaultdict(set)
+            near_bucket_staff_dates = defaultdict(set)
             for anchor in cluster_anchors:
                 staff_id = int(anchor["staff_id"])
-                attendance_ids_by_staff[staff_id].update(anchor["attendance_ids"])
-                staff_dates[staff_id].add(day.isoformat())
+                near_bucket_attendance_ids[staff_id].update(anchor["attendance_ids"])
+                near_bucket_staff_dates[staff_id].add(day.isoformat())
 
             daily_near_signals.append(
                 {
@@ -2676,9 +2677,9 @@ def suspicious_location_patterns(request):
                     "date_obj": day,
                     "date": day.isoformat(),
                     "staff_count": distinct_staff_count,
-                    "staff_ids": sorted(attendance_ids_by_staff.keys()),
-                    "attendance_ids_by_staff": attendance_ids_by_staff,
-                    "staff_dates": staff_dates,
+                    "staff_ids": sorted(near_bucket_attendance_ids.keys()),
+                    "attendance_ids_by_staff": near_bucket_attendance_ids,
+                    "staff_dates": near_bucket_staff_dates,
                     "location_context": location_context,
                 }
             )
@@ -2689,21 +2690,21 @@ def suspicious_location_patterns(request):
     aggregated_exact_patterns: list[dict[str, Any]] = []
     for signature, signals_by_signature in exact_signals_map.items():
         exact_latitude, exact_longitude = map(float, signature.split("|"))
-        attendance_ids_by_staff: dict[int, set[int]] = defaultdict(set)
-        staff_dates: dict[int, set[str]] = defaultdict(set)
+        aggregated_exact_ids: dict[int, set[int]] = defaultdict(set)
+        aggregated_exact_dates: dict[int, set[str]] = defaultdict(set)
         for signal in signals_by_signature:
             for staff_id, attendance_ids in signal["attendance_ids_by_staff"].items():
-                attendance_ids_by_staff[int(staff_id)].update(attendance_ids)
+                aggregated_exact_ids[int(staff_id)].update(attendance_ids)
             for staff_id, dates_for_staff in signal["staff_dates"].items():
-                staff_dates[int(staff_id)].update(dates_for_staff)
+                aggregated_exact_dates[int(staff_id)].update(dates_for_staff)
         aggregated_exact_patterns.append(
             {
                 "pattern_type": "group_exact",
                 "center_lat": exact_latitude,
                 "center_lon": exact_longitude,
                 "location_context": signals_by_signature[0]["location_context"],
-                "attendance_ids_by_staff": attendance_ids_by_staff,
-                "staff_dates": staff_dates,
+                "attendance_ids_by_staff": aggregated_exact_ids,
+                "staff_dates": aggregated_exact_dates,
                 "signals": sorted(
                     signals_by_signature,
                     key=lambda signal: (
@@ -2739,13 +2740,13 @@ def suspicious_location_patterns(request):
         SUSPICIOUS_LOCATION_GROUP_CLUSTER_RADIUS_M,
     ):
         signals = [item["signal"] for item in near_pattern_cluster["items"]]
-        attendance_ids_by_staff: dict[int, set[int]] = defaultdict(set)
-        staff_dates: dict[int, set[str]] = defaultdict(set)
+        aggregated_near_ids: dict[int, set[int]] = defaultdict(set)
+        aggregated_near_dates: dict[int, set[str]] = defaultdict(set)
         for signal in signals:
             for staff_id, attendance_ids in signal["attendance_ids_by_staff"].items():
-                attendance_ids_by_staff[int(staff_id)].update(attendance_ids)
+                aggregated_near_ids[int(staff_id)].update(attendance_ids)
             for staff_id, dates_for_staff in signal["staff_dates"].items():
-                staff_dates[int(staff_id)].update(dates_for_staff)
+                aggregated_near_dates[int(staff_id)].update(dates_for_staff)
         aggregated_near_patterns.append(
             {
                 "pattern_type": "shared_point_near",
@@ -2757,8 +2758,8 @@ def suspicious_location_patterns(request):
                     class_locations,
                     location_radii,
                 ),
-                "attendance_ids_by_staff": attendance_ids_by_staff,
-                "staff_dates": staff_dates,
+                "attendance_ids_by_staff": aggregated_near_ids,
+                "staff_dates": aggregated_near_dates,
                 "signals": sorted(
                     signals,
                     key=lambda signal: (
@@ -2779,7 +2780,9 @@ def suspicious_location_patterns(request):
         for signal in pattern["signals"]:
             date_value = str(signal["date"])
             for staff_id in signal["staff_ids"]:
-                dates_for_staff = sorted(pattern["staff_dates"].get(int(staff_id), set()))
+                dates_for_staff = sorted(
+                    pattern["staff_dates"].get(int(staff_id), set())
+                )
                 group_days = len(dates_for_staff)
                 severity = "critical" if group_days >= 2 else "high"
                 reason_codes = {"shared_point"}
@@ -2795,7 +2798,9 @@ def suspicious_location_patterns(request):
                         "dates": [date_value],
                         "lat": round(float(signal["center_lat"]), 7),
                         "lon": round(float(signal["center_lon"]), 7),
-                        "location_name": signal["location_context"].get("location_name"),
+                        "location_name": signal["location_context"].get(
+                            "location_name"
+                        ),
                         "reason": _sort_reason_codes(reason_codes),
                     }
                 )
@@ -2804,7 +2809,9 @@ def suspicious_location_patterns(request):
         for signal in pattern["signals"]:
             date_value = str(signal["date"])
             for staff_id in signal["staff_ids"]:
-                dates_for_staff = sorted(pattern["staff_dates"].get(int(staff_id), set()))
+                dates_for_staff = sorted(
+                    pattern["staff_dates"].get(int(staff_id), set())
+                )
                 group_days = len(dates_for_staff)
                 severity = "critical" if group_days >= 2 else "high"
                 reason_codes = {"shared_point"}
@@ -2820,7 +2827,9 @@ def suspicious_location_patterns(request):
                         "dates": [date_value],
                         "lat": round(float(signal["center_lat"]), 7),
                         "lon": round(float(signal["center_lon"]), 7),
-                        "location_name": signal["location_context"].get("location_name"),
+                        "location_name": signal["location_context"].get(
+                            "location_name"
+                        ),
                         "reason": _sort_reason_codes(reason_codes),
                     }
                 )
@@ -2862,10 +2871,7 @@ def suspicious_location_patterns(request):
             for date_value in candidate["dates"]:
                 key = (staff_id, str(date_value))
                 existing = best_candidates_by_staff_date.get(key)
-                if (
-                    existing is None
-                    or candidate_priority > existing["priority"]
-                ):
+                if existing is None or candidate_priority > existing["priority"]:
                     best_candidates_by_staff_date[key] = {
                         "candidate": candidate,
                         "priority": candidate_priority,
@@ -2875,7 +2881,9 @@ def suspicious_location_patterns(request):
     user_groups: dict[str, dict[str, Any]] = {}
     highest_severity_by_pin: dict[str, int] = {}
 
-    for (staff_id, date_value), selected in sorted(best_candidates_by_staff_date.items()):
+    for (staff_id, date_value), selected in sorted(
+        best_candidates_by_staff_date.items()
+    ):
         candidate = selected["candidate"]
         staff = staff_by_id[staff_id]
         pin_short = utils.pin_to_external_format(staff.pin)
@@ -2914,7 +2922,9 @@ def suspicious_location_patterns(request):
             },
         )
         user_payload["datesByDate"][date_value] = user_date_entry
-        if severity_rank[candidate["severity"]] >= highest_severity_by_pin.get(pin_short, 0):
+        if severity_rank[candidate["severity"]] >= highest_severity_by_pin.get(
+            pin_short, 0
+        ):
             highest_severity_by_pin[pin_short] = severity_rank[candidate["severity"]]
             user_payload["highestSeverity"] = candidate["severity"]
 
@@ -3198,17 +3208,17 @@ def lesson_locations(request):
                 d = utils.calculate_distance_haversine(
                     latitude, longitude, loc.latitude, loc.longitude
                 )
-                R = radii.get(loc.id, DEFAULT_ACCEPTANCE_RADIUS_M)
+                acceptance_radius_m = radii.get(loc.id, DEFAULT_ACCEPTANCE_RADIUS_M)
                 if d < min_overall:
                     min_overall = d
                     nearest_loc = loc
-                if d <= R:
-                    within.append((d, loc, R))
+                if d <= acceptance_radius_m:
+                    within.append((d, loc, acceptance_radius_m))
 
             within.sort(key=lambda x: x[0])
 
             if not within:
-                R_n = (
+                nearest_acceptance_radius_m = (
                     radii.get(nearest_loc.id, DEFAULT_ACCEPTANCE_RADIUS_M)
                     if nearest_loc is not None
                     else DEFAULT_ACCEPTANCE_RADIUS_M
@@ -3223,7 +3233,7 @@ def lesson_locations(request):
                     longitude,
                     loc_id,
                     min_overall,
-                    R_n,
+                    nearest_acceptance_radius_m,
                 )
                 log_ll_nf.warning(
                     "Haversine: d(user,loc)<=R => in_radius | "
@@ -3236,10 +3246,10 @@ def lesson_locations(request):
                     loc_lat,
                     loc_lon,
                     min_overall,
-                    R_n,
+                    nearest_acceptance_radius_m,
                 )
                 return _not_found(
-                    f"Ближайшая локация {min_overall:.1f} м, превышен лимит {R_n} м"
+                    f"Ближайшая локация {min_overall:.1f} м, превышен лимит {nearest_acceptance_radius_m} м"
                 )
 
             log_ll.info(
@@ -3257,7 +3267,7 @@ def lesson_locations(request):
                     "longitude": loc.longitude,
                     "distance": round(d, 2),
                 }
-                for d, loc, R in within
+                for d, loc, _ in within
             ]
 
             return Response(
@@ -4826,7 +4836,7 @@ def get_staff_detail(staff, start_date, end_date):
     average_attendance = get_average_attendance_for_period(staff, start_date, end_date)
     logger.debug(f"Средняя посещаемость за период: {average_attendance}%")
 
-    K_adj = 1.25
+    k_adj = 1.25
 
     if average_attendance <= 0:
         logger.error(
@@ -4835,9 +4845,9 @@ def get_staff_detail(staff, start_date, end_date):
         )
         average_attendance = 85.0
 
-    penalty_rate = (100 / average_attendance) * K_adj
+    penalty_rate = (100 / average_attendance) * k_adj
     logger.debug(
-        f"Расчет штрафного коэффициента: penalty_rate = (100 / {average_attendance}) * {K_adj} = {penalty_rate:.4f}"
+        f"Расчет штрафного коэффициента: penalty_rate = (100 / {average_attendance}) * {k_adj} = {penalty_rate:.4f}"
     )
 
     salary_qs = models.Salary.objects.filter(staff=staff).first()
@@ -4940,7 +4950,9 @@ def get_average_attendance_for_period(staff, start_date, end_date):
     logger.debug(f"Previous period range: {previous_start_date} to {previous_end_date}")
 
     previous_attendance_qs = models.StaffAttendance.objects.filter(
-        staff=staff, date_at__range=[previous_start_date, previous_end_date]
+        staff=staff,
+        date_at__gte=previous_start_date + datetime.timedelta(days=1),
+        date_at__lte=previous_end_date + datetime.timedelta(days=1),
     ).only("id", "date_at", "first_in", "last_out", "effective_work_seconds")
     logger.debug(
         f"Retrieved {previous_attendance_qs.count()} attendance records for previous period"
@@ -5056,7 +5068,7 @@ def process_attendance(
     """
     logger.info(f"Обработка посещаемости за дату {event_date}")
 
-    if not (start_date <= event_date <= end_date):
+    if not start_date <= event_date <= end_date:
         logger.warning(
             f"Дата события {event_date} вне указанного диапазона {start_date} до {end_date}"
         )
@@ -5073,6 +5085,8 @@ def process_attendance(
     last_out = attendance.get("last_out") if attendance else None
     area_name_in = attendance.get("area_name_in") if attendance else None
     area_name_out = attendance.get("area_name_out") if attendance else None
+    first_in_source = attendance.get("first_in_source") if attendance else None
+    last_out_source = attendance.get("last_out_source") if attendance else None
     effective_work_seconds = (
         attendance.get("effective_work_seconds") if attendance else None
     )
@@ -5110,6 +5124,8 @@ def process_attendance(
             ),
             "area_name_in": area_name_in,
             "area_name_out": area_name_out,
+            "first_in_source": first_in_source,
+            "last_out_source": last_out_source,
             "percent_day": round(percent_day, 2),
             "total_minutes": round(total_minutes_worked, 2),
             "effective_work_seconds": effective_work_seconds,
@@ -5185,6 +5201,8 @@ def process_attendance(
                 ),
                 "area_name_in": area_name_in,
                 "area_name_out": area_name_out,
+                "first_in_source": first_in_source,
+                "last_out_source": last_out_source,
                 "percent_day": 0,
                 "total_minutes": 0,
                 "effective_work_seconds": effective_work_seconds,
@@ -5218,6 +5236,11 @@ def process_attendance(
                 first_in, last_out
             )
             percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
+        else:
+            percent_day = 0
+            total_minutes_worked = 0
+
+        if effective_work_seconds is not None or (first_in and last_out):
             total_minutes_for_period += total_minutes_worked
             total_days_with_data += 1
             percent_for_period += percent_day
@@ -5225,8 +5248,6 @@ def process_attendance(
                 f"Отработано минут: {total_minutes_worked}, Процент дня: {percent_day}"
             )
         else:
-            percent_day = 0
-            total_minutes_worked = 0
             total_days_with_data += 1
             penalty = penalty_rate * cost_per_day
             percent_for_period -= penalty
@@ -5243,6 +5264,8 @@ def process_attendance(
         ),
         "area_name_in": area_name_in,
         "area_name_out": area_name_out,
+        "first_in_source": first_in_source,
+        "last_out_source": last_out_source,
         "percent_day": round(percent_day, 2),
         "total_minutes": round(total_minutes_worked, 2),
         "effective_work_seconds": effective_work_seconds,
@@ -6923,7 +6946,7 @@ def staff_detail_by_department_id(request, department_id):
             for n in range(int((end_date - start_date).days) + 1):
                 yield start_date + datetime.timedelta(n)
 
-        REASON_DISPLAY = dict(models.AbsentReason.ABSENT_REASON_CHOICES)
+        reason_display = dict(models.AbsentReason.ABSENT_REASON_CHOICES)
 
         def query():
             logger.info("Querying staff attendance data")
@@ -7003,7 +7026,7 @@ def staff_detail_by_department_id(request, department_id):
                 ar_end = min(ar["end_date"], end_date)
                 for single_date in daterange(ar_start, ar_end):
                     date_key = single_date.strftime("%Y-%m-%d")
-                    display_reason = REASON_DISPLAY.get(ar["reason"], ar["reason"])
+                    display_reason = reason_display.get(ar["reason"], ar["reason"])
                     absence_map[ar["staff_id"]][date_key].append(display_reason)
 
             remote_work_map = defaultdict(lambda: defaultdict(bool))
@@ -8035,7 +8058,7 @@ class UploadFileView(View):
 
             error_count = 0
             error_details = []
-            MAX_ERROR_DETAILS = 10
+            max_error_details = 10
 
             for index, row in enumerate(rows):
                 try:
@@ -8103,7 +8126,7 @@ class UploadFileView(View):
                 except Exception as e:
                     logger.error(f"Error processing row {index} for ClassLocation: {e}")
                     error_count += 1
-                    if len(error_details) < MAX_ERROR_DETAILS:
+                    if len(error_details) < max_error_details:
                         error_details.append(f"Строка {index + 2}: {e}")
                     continue
 
@@ -8146,9 +8169,9 @@ class UploadFileView(View):
                     "Некоторые записи были пропущены из-за ошибок:\n"
                     + "\n".join(error_details)
                 )
-                if error_count > MAX_ERROR_DETAILS:
+                if error_count > max_error_details:
                     error_message += (
-                        f"\n...и ещё {error_count - MAX_ERROR_DETAILS} ошибок."
+                        f"\n...и ещё {error_count - max_error_details} ошибок."
                     )
                 messages.warning(request, error_message)
 
@@ -8420,9 +8443,9 @@ class UploadFileView(View):
         created_holidays = 0
         updated_holidays = 0
         errors = []
-        MAX_ERROR_DETAILS = 10
+        max_error_details = 10
 
-        WORKING_DAY_MAPPING = {
+        working_day_mapping = {
             "да": True,
             "нет": False,
             "yes": True,
@@ -8472,7 +8495,7 @@ class UploadFileView(View):
                         is_working_day = is_working_day_cell
                     else:
                         is_working_day_str = str(is_working_day_cell).strip().lower()
-                        is_working_day = WORKING_DAY_MAPPING.get(is_working_day_str)
+                        is_working_day = working_day_mapping.get(is_working_day_str)
                         if is_working_day is None:
                             raise ValueError(
                                 "Неверное значение в поле 'Рабочий день'. Ожидается 'Да' или 'Нет'."
@@ -8496,7 +8519,7 @@ class UploadFileView(View):
                         f"Error processing row {index + 2} for PublicHoliday: {e}"
                     )
                     errors.append(f"Строка {index + 2}: {e}")
-                    if len(errors) >= MAX_ERROR_DETAILS:
+                    if len(errors) >= max_error_details:
                         break
                     continue
 
@@ -8508,8 +8531,8 @@ class UploadFileView(View):
                 "Некоторые записи не были обработаны из-за ошибок:\n"
                 + "\n".join(errors)
             )
-            if len(errors) > MAX_ERROR_DETAILS:
-                error_message += f"\n...и ещё {len(errors) - MAX_ERROR_DETAILS} ошибок."
+            if len(errors) > max_error_details:
+                error_message += f"\n...и ещё {len(errors) - max_error_details} ошибок."
             messages.warning(request, error_message)
 
     def handle_zip(self, request, file_path):
