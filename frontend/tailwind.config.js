@@ -3,14 +3,6 @@ module.exports = {
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
   theme: {
     extend: {
-      screens: {
-        "ar-4-3": { raw: "(min-aspect-ratio: 4/3) and (max-aspect-ratio: 16/10)" },
-        "ar-16-10": { raw: "(min-aspect-ratio: 16/10) and (max-aspect-ratio: 17/10)" },
-        "ar-16-9": { raw: "(min-aspect-ratio: 16/9) and (max-aspect-ratio: 19/10)" },
-        "ar-20-9": { raw: "(min-aspect-ratio: 20/9) and (max-aspect-ratio: 23/9)" },
-        "ar-21-9": { raw: "(min-aspect-ratio: 21/9)" },
-        "ar-phone-tall": { raw: "(max-aspect-ratio: 9/16)" },
-      },
       fontFamily: {
         sans: ["Inter", "system-ui", "sans-serif"],
         heading: ["Poppins", "Inter", "sans-serif"],

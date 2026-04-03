@@ -1,0 +1,2 @@
+# Copied from node_modules/@mediapipe/tasks-vision/wasm by scripts/sync-mediapipe-assets.mjs
+public/mediapipe/

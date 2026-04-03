@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   copyFile,
+  cp,
   mkdir,
   readdir,
   readFile,
@@ -95,6 +96,24 @@ const listFilesRecursive = async (rootDir) => {
   return files;
 };
 
+const copyVitePublicDirs = async (viteOutDir, distRoot, dirNames) => {
+  for (const name of dirNames) {
+    const src = path.join(viteOutDir, name);
+    let st;
+    try {
+      st = await stat(src);
+    } catch {
+      continue;
+    }
+    if (!st.isDirectory()) {
+      continue;
+    }
+    const dest = path.join(distRoot, name);
+    await rm(dest, { recursive: true, force: true });
+    await cp(src, dest, { recursive: true });
+  }
+};
+
 const copyDirContents = async (sourceDir, targetDir) => {
   const sourceFiles = await listFilesRecursive(sourceDir);
   for (const sourceFile of sourceFiles) {
@@ -175,6 +194,15 @@ const cleanupOldAssets = async (manifest) => {
 };
 
 const main = async () => {
+  const syncMediapipe = path.join(__dirname, "sync-mediapipe-assets.mjs");
+  const syncRes = spawnSync(process.execPath, [syncMediapipe], {
+    stdio: "inherit",
+    cwd: FRONTEND_DIR,
+  });
+  if (syncRes.status !== 0) {
+    throw new Error("[build-release] sync-mediapipe-assets failed");
+  }
+
   const mode = getArgValue("mode") ?? "production";
   const now = new Date();
   const buildMeta = {
@@ -220,6 +248,10 @@ const main = async () => {
     const assetPaths = await copyDirContents(tempAssetsDir, DIST_ASSETS_DIR);
     await atomicReplaceFile(tempIndexPath, path.join(DIST_DIR, "index.html"));
     await atomicReplaceFile(tempAppVersionPath, path.join(DIST_DIR, "app-version.json"));
+    await copyVitePublicDirs(tempOutDir, DIST_DIR, [
+      "mediapipe",
+      "mediapipe-models",
+    ]);
 
     const existingManifest = await readJsonIfExists(manifestPath, { releases: [] });
     const releases = Array.isArray(existingManifest.releases)

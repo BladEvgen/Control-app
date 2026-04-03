@@ -4,7 +4,14 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import reactRefresh from 'eslint-plugin-react-refresh';
 
 export default tseslint.config(
-  { ignores: ['dist', 'node_modules', '**/*.cjs'] },
+  {
+    ignores: [
+      'dist',
+      'node_modules',
+      '**/*.cjs',
+      'public/mediapipe/**',
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
