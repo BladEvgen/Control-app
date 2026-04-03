@@ -38,6 +38,14 @@ const getButtonStyles = (variant: string, disabled: boolean = false) => {
       text-white
       focus:ring-danger-500
     `,
+    outline: `
+      ${disabled ? "opacity-60" : ""}
+      !shadow-none border-2 border-slate-500 bg-slate-800/90
+      hover:bg-slate-700 hover:border-slate-400
+      active:bg-slate-800
+      text-slate-100
+      focus:ring-slate-400
+    `,
   };
 
   return `${baseStyles} ${
@@ -46,7 +54,7 @@ const getButtonStyles = (variant: string, disabled: boolean = false) => {
 };
 
 export interface ModernButtonProps {
-  variant: "home" | "back" | "download" | "danger";
+  variant: "home" | "back" | "download" | "danger" | "outline";
   children: React.ReactNode;
   icon?: React.ReactNode;
   onClick?: () => void;
@@ -73,7 +81,7 @@ const ModernButton: React.FC<ModernButtonProps> = ({
       disabled={disabled || loading}
       className={`${getButtonStyles(
         variant,
-        disabled || loading
+        disabled || loading,
       )} ${className}`}
       whileHover={disabled || loading ? {} : { scale: 1.03 }}
       whileTap={disabled || loading ? {} : { scale: 0.97 }}

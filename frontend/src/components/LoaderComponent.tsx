@@ -5,6 +5,7 @@ type LoaderComponentProps = {
   inline?: boolean;
   variant?: "spinner" | "bars";
   className?: string;
+  showGlow?: boolean;
 };
 
 const BAR_HEIGHTS_NORMAL = [14, 22, 28, 22, 14, 20];
@@ -17,6 +18,7 @@ const LoaderComponent = ({
   inline = false,
   variant = "spinner",
   className = "",
+  showGlow = true,
 }: LoaderComponentProps) => {
   const wrapperClassName = fullscreen ? "min-h-screen" : "min-h-0";
   const layoutClassName = inline
@@ -53,10 +55,11 @@ const LoaderComponent = ({
               width: compact ? "4px" : "5px",
               height: `${h}px`,
               animationDelay: `${i * 105}ms`,
-              boxShadow:
-                i % 2 === 0
+              boxShadow: showGlow
+                ? i % 2 === 0
                   ? "0 0 8px rgba(59,130,246,0.55)"
-                  : "0 0 8px rgba(139,92,246,0.55)",
+                  : "0 0 8px rgba(139,92,246,0.55)"
+                : "none",
             }}
           />
         ))}
@@ -67,18 +70,20 @@ const LoaderComponent = ({
         style={{ width: compact ? 48 : 64, height: compact ? 48 : 64 }}
         aria-hidden
       >
-        <div
-          className="loader-glow absolute inset-0 -m-4"
-          style={{
-            width: compact ? 72 : 96,
-            height: compact ? 72 : 96,
-            margin: "auto",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-          }}
-        />
+        {showGlow ? (
+          <div
+            className="loader-glow absolute inset-0 -m-4"
+            style={{
+              width: compact ? 72 : 96,
+              height: compact ? 72 : 96,
+              margin: "auto",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+            }}
+          />
+        ) : null}
         <div className={compact ? "loader scale-75" : "loader"} />
       </div>
     );

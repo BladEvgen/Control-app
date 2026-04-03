@@ -19,6 +19,7 @@ const StaffDetail = lazyWithRetry(
 const Dashboard = lazyWithRetry(() => import("./pages/Dashboard"));
 const MapPage = lazyWithRetry(() => import("./pages/MapDashboard"));
 const PhotoDashboard = lazyWithRetry(() => import("./pages/PhotoDashboard"));
+const FaceLabPage = lazyWithRetry(() => import("./pages/FaceLabPage"));
 
 const router = createBrowserRouter([
   {
@@ -50,6 +51,7 @@ const router = createBrowserRouter([
           { path: addPrefix("/dashboard"), element: <Dashboard /> },
           { path: addPrefix("/map"), element: <MapPage /> },
           { path: addPrefix("/photo"), element: <PhotoDashboard /> },
+          { path: addPrefix("/face-lab"), element: <FaceLabPage /> },
         ],
       },
     ],
