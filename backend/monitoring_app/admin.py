@@ -1,7 +1,7 @@
 import logging
 import math
 import os
-from calendar import month_abbr
+from calendar import month_abbr, monthrange
 from collections import defaultdict
 from contextlib import AbstractContextManager
 from datetime import date, datetime, time, timedelta
@@ -105,6 +105,20 @@ def _admin_badge(label: str, *, background: str, color: str = "#fff"):
     return format_html(
         '<span style="display:inline-flex; align-items:center; gap:4px; padding:3px 8px; '
         'border-radius:999px; font-size:11px; font-weight:600; background:{}; color:{};">{}</span>',
+        background,
+        color,
+        label,
+    )
+
+
+def _staff_attendance_history_legend_badge(
+    label: str, *, background: str, color: str = "#fff"
+):
+    """Бейдж в блоке легенды истории посещаемости (отступы задаются в CSS)."""
+    return format_html(
+        '<span class="staff-attendance-history__badge" style="display:inline-flex; align-items:center; '
+        "gap:4px; padding:5px 11px; border-radius:999px; font-size:11px; font-weight:600; "
+        'background:{}; color:{};">{}</span>',
         background,
         color,
         label,
@@ -275,7 +289,9 @@ class MonitoringAdminSite(admin.AdminSite):
 
         context["staff_count"] = Staff.objects.count()
         context["today_attendance"] = StaffAttendance.objects.filter(
-            date_at=timezone.now().date()
+            date_at=_staff_attendance_db_date_for_calendar_work_day(
+                timezone.now().date()
+            )
         ).count()
 
         context["recent_logs"] = LogEntry.objects.select_related(
@@ -296,7 +312,9 @@ class MonitoringAdminSite(admin.AdminSite):
         start_date = timezone.now().date() - timedelta(days=days)
 
         attendance_data = (
-            StaffAttendance.objects.filter(date_at__gte=start_date)
+            StaffAttendance.objects.filter(
+                date_at__gte=_staff_attendance_db_date_for_calendar_work_day(start_date)
+            )
             .values("date_at")
             .annotate(count=Count("id"))
             .order_by("date_at")
@@ -304,7 +322,9 @@ class MonitoringAdminSite(admin.AdminSite):
 
         return JsonResponse(
             {
-                "labels": [str(item["date_at"]) for item in attendance_data],
+                "labels": [
+                    str(item["date_at"] - timedelta(days=1)) for item in attendance_data
+                ],
                 "data": [item["count"] for item in attendance_data],
             }
         )
@@ -324,6 +344,30 @@ class MonitoringAdminSite(admin.AdminSite):
 
 
 admin_site = MonitoringAdminSite(name="monitoring_admin")
+
+
+def _staff_attendance_db_date_for_calendar_work_day(work_day: date) -> date:
+    """Дата поля date_at строки СКУД: на сутки позже календарного дня смены (день выгрузки)."""
+    return work_day + timedelta(days=1)
+
+
+def _format_staffattendance_effective_duration(record) -> str | None:
+    """Длительность «в здании» как в StaffAttendance: сначала effective_work_seconds, иначе last_out − first_in."""
+    total_seconds = None
+    if getattr(record, "effective_work_seconds", None) is not None:
+        total_seconds = int(record.effective_work_seconds)
+    elif getattr(record, "first_in", None) and getattr(record, "last_out", None):
+        total_seconds = int((record.last_out - record.first_in).total_seconds())
+    if total_seconds is None:
+        return None
+    if total_seconds < 0:
+        return "ошибка времени"
+    if total_seconds > 86400:
+        total_seconds = 86400
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes = remainder // 60
+    return f"{hours:d}ч {minutes:02d}м"
+
 
 # ===== Common Filter Classes =====
 
@@ -420,6 +464,8 @@ class DateRangeFilter(admin.SimpleListFilter):
 
     def lookups(self, request, model_admin):
         return (
+            ("last_14", "Последние 14 календарных дней"),
+            ("last_30", "Последние 30 календарных дней"),
             ("today", "Сегодня"),
             ("yesterday", "Вчера"),
             ("this_week", "Эта неделя"),
@@ -428,38 +474,191 @@ class DateRangeFilter(admin.SimpleListFilter):
             ("last_month", "Прошлый месяц"),
             ("this_quarter", "Этот квартал"),
             ("this_year", "Этот год"),
+            ("all", "Все даты (медленно на больших таблицах)"),
         )
 
     def queryset(self, request, queryset):
         today = timezone.now().date()
+        one = timedelta(days=1)
+        is_skud = queryset.model == StaffAttendance
 
+        if self.value() == "all":
+            return queryset
+        if self.value() == "last_14":
+            end_wd = today
+            start_wd = today - timedelta(days=13)
+            if is_skud:
+                return queryset.filter(
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
+                        start_wd
+                    ),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
+                        end_wd
+                    ),
+                )
+            return queryset.filter(date_at__gte=start_wd, date_at__lte=end_wd)
+        if self.value() == "last_30":
+            end_wd = today
+            start_wd = today - timedelta(days=29)
+            if is_skud:
+                return queryset.filter(
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
+                        start_wd
+                    ),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
+                        end_wd
+                    ),
+                )
+            return queryset.filter(date_at__gte=start_wd, date_at__lte=end_wd)
         if self.value() == "today":
-            return queryset.filter(date_at=today)
+            row_day = (
+                _staff_attendance_db_date_for_calendar_work_day(today)
+                if is_skud
+                else today
+            )
+            return queryset.filter(date_at=row_day)
         elif self.value() == "yesterday":
-            return queryset.filter(date_at=today - timedelta(days=1))
+            row_day = today if is_skud else today - one
+            return queryset.filter(date_at=row_day)
         elif self.value() == "this_week":
             week_start = today - timedelta(days=today.weekday())
-            return queryset.filter(date_at__gte=week_start)
+            week_end = week_start + timedelta(days=6)
+            if is_skud:
+                return queryset.filter(
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
+                        week_start
+                    ),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
+                        week_end
+                    ),
+                )
+            return queryset.filter(date_at__gte=week_start, date_at__lte=week_end)
         elif self.value() == "last_week":
             week_start = today - timedelta(days=today.weekday() + 7)
             week_end = week_start + timedelta(days=6)
+            if is_skud:
+                return queryset.filter(
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
+                        week_start
+                    ),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
+                        week_end
+                    ),
+                )
             return queryset.filter(date_at__gte=week_start, date_at__lte=week_end)
         elif self.value() == "this_month":
+            first = today.replace(day=1)
+            last_dom = monthrange(today.year, today.month)[1]
+            last = today.replace(day=last_dom)
+            if is_skud:
+                return queryset.filter(
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(first),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(last),
+                )
             return queryset.filter(date_at__year=today.year, date_at__month=today.month)
         elif self.value() == "last_month":
+            first_this = today.replace(day=1)
+            last_prev = first_this - one
+            first_prev = last_prev.replace(day=1)
+            last_prev_dom = monthrange(first_prev.year, first_prev.month)[1]
+            last_prev = first_prev.replace(day=last_prev_dom)
+            if is_skud:
+                return queryset.filter(
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
+                        first_prev
+                    ),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
+                        last_prev
+                    ),
+                )
             last_month = today.month - 1 if today.month > 1 else 12
             year = today.year if today.month > 1 else today.year - 1
             return queryset.filter(date_at__year=year, date_at__month=last_month)
         elif self.value() == "this_quarter":
             quarter = (today.month - 1) // 3 + 1
             first_month = 3 * quarter - 2
+            first_day = date(today.year, first_month, 1)
+            last_month_of_q = first_month + 2
+            last_dom = monthrange(today.year, last_month_of_q)[1]
+            last_day = date(today.year, last_month_of_q, last_dom)
+            if is_skud:
+                return queryset.filter(
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
+                        first_day
+                    ),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
+                        last_day
+                    ),
+                )
             return queryset.filter(
                 date_at__year=today.year,
                 date_at__month__gte=first_month,
                 date_at__month__lte=first_month + 2,
             )
         elif self.value() == "this_year":
+            if is_skud:
+                return queryset.filter(
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
+                        date(today.year, 1, 1)
+                    ),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
+                        date(today.year, 12, 31)
+                    ),
+                )
             return queryset.filter(date_at__year=today.year)
+        return queryset
+
+
+class StaffAttendanceRowZoneFilter(admin.SimpleListFilter):
+    """Скрытие строк без зон — раньше задавалось GET exclude_unknown=yes."""
+
+    title = "Строки без зоны (вход/выход)"
+    parameter_name = "staff_row_zone"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("hide", "Скрывать пустые и Unknown (быстрее)"),
+            ("show", "Показать все строки"),
+        )
+
+    def queryset(self, request, queryset):
+        if queryset.model != StaffAttendance:
+            return queryset
+        if request.GET.get("exclude_unknown") == "no":
+            return queryset
+        if self.value() == "show":
+            return queryset
+        q_conditions = [
+            Q(area_name_in__isnull=True),
+            Q(area_name_out__isnull=True),
+            Q(area_name_in="Unknown"),
+            Q(area_name_out="Unknown"),
+        ]
+        return queryset.exclude(reduce(or_, q_conditions))
+
+
+class StaffAttendanceSkudDataFilter(admin.SimpleListFilter):
+    title = "Данные СКУД (время / секунды)"
+    parameter_name = "staff_skud_data"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("has", "Есть first_in или effective_work_seconds"),
+            ("empty", "Нет ни времени, ни секунд"),
+        )
+
+    def queryset(self, request, queryset):
+        if queryset.model != StaffAttendance:
+            return queryset
+        if self.value() == "has":
+            return queryset.filter(
+                Q(first_in__isnull=False) | Q(effective_work_seconds__isnull=False)
+            )
+        if self.value() == "empty":
+            return queryset.filter(
+                first_in__isnull=True,
+                effective_work_seconds__isnull=True,
+            )
         return queryset
 
 
@@ -479,6 +678,7 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
 
     def queryset(self, request, queryset):
         today = timezone.now().date()
+        skud_row_date = _staff_attendance_db_date_for_calendar_work_day(today)
 
         late_threshold_minutes = 15
         early_leave_threshold_minutes = 15
@@ -495,7 +695,7 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
 
         if self.value() == "present":
             return queryset.filter(
-                Q(attendance__date_at=today),
+                Q(attendance__date_at=skud_row_date),
                 Q(attendance__first_in__isnull=False),
                 Q(attendance__absence_reason__isnull=True),
                 Q(attendance__last_out__isnull=True)
@@ -504,22 +704,27 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
 
         elif self.value() == "absent":
             staff_with_attendance = queryset.filter(
-                attendance__date_at=today, attendance__first_in__isnull=False
+                attendance__date_at=skud_row_date,
+                attendance__first_in__isnull=False,
             ).distinct()
 
             return queryset.filter(
                 Q(id__in=queryset.exclude(id__in=staff_with_attendance))
-                | Q(attendance__date_at=today, attendance__absence_reason__isnull=False)
+                | Q(
+                    attendance__date_at=skud_row_date,
+                    attendance__absence_reason__isnull=False,
+                )
             ).distinct()
 
         elif self.value() == "late":
             return queryset.filter(
-                attendance__date_at=today, attendance__first_in__gt=late_threshold
+                attendance__date_at=skud_row_date,
+                attendance__first_in__gt=late_threshold,
             ).distinct()
 
         elif self.value() == "left_early":
             return queryset.filter(
-                attendance__date_at=today,
+                attendance__date_at=skud_row_date,
                 attendance__last_out__isnull=False,
                 attendance__last_out__lt=early_leave_threshold,
             ).distinct()
@@ -535,7 +740,7 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
         elif self.value() == "partial":
             return (
                 queryset.filter(
-                    attendance__date_at=today,
+                    attendance__date_at=skud_row_date,
                     attendance__first_in__isnull=False,
                     attendance__last_out__isnull=False,
                 )
@@ -963,7 +1168,7 @@ class RemoteWorkInline(admin.TabularInline):
 class StaffAdmin(admin.ModelAdmin):
     ATTENDANCE_HISTORY_DAYS = 7
     ATTENDANCE_HISTORY_CACHE_TTL = 3600
-    ATTENDANCE_HISTORY_CACHE_VERSION = "event_day_v2"
+    ATTENDANCE_HISTORY_CACHE_VERSION = "event_day_v3-1"
     change_list_template = "admin/change_list_filter_sidebar.html"
     list_display = (
         "pin",
@@ -972,6 +1177,7 @@ class StaffAdmin(admin.ModelAdmin):
         "display_positions",
         "needs_training_status",
     )
+    list_display_links = ("pin", "full_name")
     list_per_page = 50
     list_filter = (
         DepartmentHierarchyFilter,
@@ -1017,15 +1223,16 @@ class StaffAdmin(admin.ModelAdmin):
             "История посещаемости",
             {
                 "fields": ("attendance_history",),
-                "classes": ("grp-collapse grp-closed",),
+                "description": "Семь завершённых дней до вчера (без сегодня). Праздники — из справочника "
+                "(рабочий/выходной). Эффективное время — как в списке посещаемости.",
+                "classes": ("wide",),
             },
         ),
     )
 
+    @admin.display(description="ФИО", ordering=("surname", "name"))
     def full_name(self, obj):
         return f"{obj.surname} {obj.name}"
-
-    full_name.short_description = "Полное имя"
 
     def avatar_thumbnail(self, obj):
         cache_key = f"avatar_thumbnail_{obj.pin}"
@@ -1067,12 +1274,24 @@ class StaffAdmin(admin.ModelAdmin):
 
     needs_training_status.short_description = "Статус обучения модели"
 
+    @admin.display(description="Отдел", ordering="department__name")
+    def department(self, obj):
+        if not obj.department_id:
+            return "—"
+        url = reverse(
+            f"admin:{ChildDepartment._meta.app_label}_"
+            f"{ChildDepartment._meta.model_name}_change",
+            args=[obj.department_id],
+        )
+        return format_html('<a href="{}">{}</a>', url, obj.department.name)
+
     def display_positions(self, obj):
         positions = obj.positions.all()
         return ", ".join(position.name for position in positions[:5])
 
     def attendance_today(self, obj):
         today = timezone.now().date()
+        skud_row_date = _staff_attendance_db_date_for_calendar_work_day(today)
         cache_key = f"attendance_today_{obj.pin}_{today}"
         cached_result = cache.get(cache_key)
         if cached_result is not None:
@@ -1083,7 +1302,7 @@ class StaffAdmin(admin.ModelAdmin):
             attendance = obj.attendance_today_list[0]
         else:
             attendance = (
-                StaffAttendance.objects.filter(staff=obj, date_at=today)
+                StaffAttendance.objects.filter(staff=obj, date_at=skud_row_date)
                 .only("id", "first_in", "last_out")
                 .first()
             )
@@ -1153,7 +1372,7 @@ class StaffAdmin(admin.ModelAdmin):
         cache.set(cache_key, result, 300)
         return format_html(result)
 
-    attendance_today.short_description = "Присутсвие сегодня/вчера"
+    attendance_today.short_description = "Присутствие сегодня"
 
     def _attendance_history_cache_key(self, staff):
         return (
@@ -1203,13 +1422,17 @@ class StaffAdmin(admin.ModelAdmin):
         holiday,
     ):
         is_weekend = current_date.weekday() >= 5
+        holiday_non_working = bool(holiday) and not holiday.is_working_day
+        holiday_working = bool(holiday) and holiday.is_working_day
         badges = []
         if record:
             badges.append(_admin_badge("СКУД", background="#0f766e"))
         if lessons:
             badges.append(_admin_badge(f"Занятий {len(lessons)}", background="#7c3aed"))
-        if holiday:
-            badges.append(_admin_badge("Праздник", background="#9333ea"))
+        if holiday_working:
+            badges.append(_admin_badge("Праздник, рабочий", background="#ca8a04"))
+        elif holiday_non_working:
+            badges.append(_admin_badge("Праздник, выходной", background="#9333ea"))
         elif is_weekend:
             badges.append(_admin_badge("Выходной", background="#64748b"))
         elif is_remote and not record:
@@ -1219,10 +1442,25 @@ class StaffAdmin(admin.ModelAdmin):
         if holiday:
             lines.append(
                 format_html(
-                    '<div style="font-size:13px; font-weight:600; color:#7e22ce;">{}</div>',
+                    '<div style="font-size:13px; font-weight:600; color:{};">{}</div>',
+                    "#a16207" if holiday_working else "#7e22ce",
                     holiday.name,
                 )
             )
+            if holiday_working:
+                lines.append(
+                    format_html(
+                        '<div style="font-size:11px; color:#a16207; margin-top:2px;">'
+                        "По календарю — рабочий день (учитывайте СКУД/занятия).</div>"
+                    )
+                )
+            else:
+                lines.append(
+                    format_html(
+                        '<div style="font-size:11px; color:#7e22ce; margin-top:2px;">'
+                        "Нерабочий праздничный день.</div>"
+                    )
+                )
         elif is_remote and not record and not lessons:
             lines.append(
                 format_html(
@@ -1255,6 +1493,16 @@ class StaffAdmin(admin.ModelAdmin):
                         "Причина",
                         record.absence_reason.get_reason_display(),
                         color="#b45309",
+                    )
+                )
+            eff_dur = _format_staffattendance_effective_duration(record)
+            if eff_dur:
+                lines.append(
+                    self._render_attendance_history_line(
+                        "Эффективно в здании",
+                        eff_dur,
+                        color="#0f766e",
+                        emphasized=True,
                     )
                 )
             if record.date_at != current_date:
@@ -1295,7 +1543,9 @@ class StaffAdmin(admin.ModelAdmin):
             )
 
         card_background = "#ffffff"
-        if holiday or is_weekend:
+        if holiday_working:
+            card_background = "#fffbeb"
+        elif holiday_non_working or (is_weekend and not holiday_working):
             card_background = "#f8fafc"
         elif record:
             card_background = "#f0fdf4"
@@ -1322,14 +1572,16 @@ class StaffAdmin(admin.ModelAdmin):
         if is_remote:
             source_flags.append("remote")
         if holiday:
-            source_flags.append("holiday")
+            source_flags.append(
+                "holiday_working" if holiday_working else "holiday_nonworking"
+            )
         elif is_weekend:
             source_flags.append("weekend")
 
         return format_html(
             '<div data-attendance-day="{}" data-attendance-source="{}" '
-            'style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; background:{}; '
-            'box-shadow:0 1px 2px rgba(15, 23, 42, 0.06); min-height:180px;">'
+            'style="border:1px solid #e2e8f0; border-radius:10px; padding:12px; background:{}; '
+            'box-shadow:0 1px 2px rgba(15, 23, 42, 0.06); min-height:140px;">'
             '<div style="display:flex; justify-content:space-between; gap:8px; align-items:flex-start;">'
             "<div>"
             '<div style="font-weight:700; color:#0f172a;">{}</div>'
@@ -1354,13 +1606,19 @@ class StaffAdmin(admin.ModelAdmin):
         if cached_html:
             return format_html(cached_html)
 
-        end_date = timezone.localdate()
+        # Без «сегодня»: строка СКУД за текущую смену обычно попадает в БД после ночной выгрузки
+        # (date_at на следующий календарный день), карточка «сегодня» выглядела бы пустой/вводящей в заблуждение.
+        today = timezone.localdate()
+        end_date = today - timedelta(days=1)
         start_date = end_date - timedelta(days=self.ATTENDANCE_HISTORY_DAYS - 1)
 
         attendance_records = (
             StaffAttendance.objects.filter(
                 staff=obj,
-                date_at__range=(start_date, end_date + timedelta(days=1)),
+                date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
+                    start_date
+                ),
+                date_at__lte=_staff_attendance_db_date_for_calendar_work_day(end_date),
             )
             .select_related("absence_reason")
             .only(
@@ -1368,6 +1626,7 @@ class StaffAdmin(admin.ModelAdmin):
                 "date_at",
                 "first_in",
                 "last_out",
+                "effective_work_seconds",
                 "absence_reason_id",
                 "absence_reason__reason",
             )
@@ -1376,7 +1635,7 @@ class StaffAdmin(admin.ModelAdmin):
         records_dict = {}
         for record in attendance_records:
             event_date = self._staff_attendance_event_date(record)
-            if not (start_date <= event_date <= end_date):
+            if not start_date <= event_date <= end_date:
                 continue
             existing_record = records_dict.get(event_date)
             if existing_record is None or (
@@ -1414,6 +1673,7 @@ class StaffAdmin(admin.ModelAdmin):
         ).only(
             "date",
             "name",
+            "is_working_day",
         )
         holidays_dict = {hol.date: hol for hol in holidays}
 
@@ -1435,33 +1695,84 @@ class StaffAdmin(admin.ModelAdmin):
             )
             current_date += timedelta(days=1)
 
-        legend_html = format_html_join(
+        legend_badges = format_html_join(
             "",
             "{}",
             (
-                (_admin_badge("СКУД", background="#0f766e"),),
-                (_admin_badge("Занятия", background="#7c3aed"),),
-                (_admin_badge("Удаленно", background="#2563eb"),),
-                (_admin_badge("Выходной / праздник", background="#64748b"),),
+                (_staff_attendance_history_legend_badge("СКУД", background="#0f766e"),),
+                (
+                    _staff_attendance_history_legend_badge(
+                        "Удалённое занятие", background="#7c3aed"
+                    ),
+                ),
+                (
+                    _staff_attendance_history_legend_badge(
+                        "Удалённо", background="#2563eb"
+                    ),
+                ),
+                (
+                    _staff_attendance_history_legend_badge(
+                        "Праздник, выходной", background="#9333ea"
+                    ),
+                ),
+                (
+                    _staff_attendance_history_legend_badge(
+                        "Праздник, рабочий", background="#ca8a04"
+                    ),
+                ),
+                (
+                    _staff_attendance_history_legend_badge(
+                        "Выходной (сб/вс)", background="#64748b"
+                    ),
+                ),
             ),
+        )
+        legend_block = format_html(
+            '<div class="staff-attendance-history__legend">'
+            '<div class="staff-attendance-history__legend-title">Условные обозначения</div>'
+            '<div class="staff-attendance-history__legend-badges">{}</div>'
+            "</div>",
+            legend_badges,
+        )
+        help_block = format_html(
+            '<div class="staff-attendance-history__help help">'
+            '<p class="staff-attendance-history__help-p">'
+            "<strong>Период.</strong> Показаны <strong>{}</strong> полных календарных дней "
+            "<strong>до вчера включительно</strong>. Сегодняшний день не включён: строка СКУД за текущую смену "
+            "обычно появляется после ночной выгрузки."
+            "</p>"
+            '<p class="staff-attendance-history__help-p">'
+            "<strong>Карточки</strong> привязаны к <strong>дню смены</strong>. В БД у СКУД поле "
+            "<code>date_at</code> обычно на сутки позже календарного дня смены."
+            "</p>"
+            '<p class="staff-attendance-history__help-p">'
+            "<strong>Эффективно в здании</strong> — сумма интервалов по турникетам; если данных нет — "
+            "оценка по времени первого входа и последнего выхода."
+            "</p>"
+            '<p class="staff-attendance-history__help-p">'
+            "<strong>Праздники</strong> берутся из справочника «Праздничные дни» "
+            "(признак «рабочий день»)."
+            "</p>"
+            "</div>",
+            self.ATTENDANCE_HISTORY_DAYS,
         )
         cards_html = format_html_join("", "{}", ((card,) for card in cards))
         html = format_html(
-            '<div style="display:flex; flex-direction:column; gap:12px;">'
-            '<div style="display:flex; flex-wrap:wrap; gap:8px;">{}</div>'
-            '<div style="font-size:12px; color:#64748b;">'
-            "Для СКУД день определяется по фактическому времени входа/выхода. "
-            "Если запись пришла на следующий день, дата выгрузки показывается отдельно."
-            "</div>"
-            '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px;">{}</div>'
+            '<div class="staff-attendance-history">'
+            "{}"
+            "{}"
+            '<div class="staff-attendance-history__grid">{}</div>'
             "</div>",
-            legend_html,
+            legend_block,
+            help_block,
             cards_html,
         )
         cache.set(cache_key, str(html), self.ATTENDANCE_HISTORY_CACHE_TTL)
         return html
 
-    attendance_history.short_description = "История посещаемости за 7 дней"
+    attendance_history.short_description = (
+        f"История: {ATTENDANCE_HISTORY_DAYS} дней до вчера (СКУД, праздники)"
+    )
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -1741,33 +2052,43 @@ class CachedCountQuerySet:
 
 @admin.register(StaffAttendance, site=admin_site)
 class StaffAttendanceAdmin(admin.ModelAdmin):
-    change_list_template = "admin/change_list_filter_sidebar.html"
+    change_list_template = "admin/monitoring_app/staffattendance/change_list.html"
+    date_hierarchy = "date_at"
     list_display = (
-        "staff",
+        "staff_display",
         "staff_department",
+        "event_calendar_day",
         "date_at",
         "formatted_first_in",
         "formatted_last_out",
         "duration",
         "area_name_in",
         "area_name_out",
-        "absence_reason",
+        "absence_reason_display",
     )
     list_filter = (
+        StaffAttendanceRowZoneFilter,
+        StaffAttendanceSkudDataFilter,
         DateRangeFilter,
         monitoring_utils.HierarchicalDepartmentFilter,
         "absence_reason",
     )
     search_fields = (
-        "staff__surname",
-        "staff__name",
         "staff__pin",
-        "area_name_in",
-        "area_name_out",
+        "staff__name",
+        "staff__surname",
+        "staff__department__name",
     )
-    ordering = ("-date_at", "staff")
-    list_per_page = 25
+    ordering = ("-date_at", "staff__department_id", "staff_id")
+    list_per_page = 50
     show_full_result_count = False
+    sortable_by = (
+        "event_calendar_day",
+        "date_at",
+        "staff_department",
+        "staff_display",
+        "duration",
+    )
 
     def get_paginator(
         self, request, queryset, per_page, orphans=0, allow_empty_first_page=True
@@ -1779,10 +2100,11 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
             allow_empty_first_page=allow_empty_first_page,
         )
 
-    list_select_related = ("staff", "staff__department", "absence_reason")
     autocomplete_fields = ("absence_reason",)
     actions = ["export_attendance_data", "mark_as_absent"]
-    list_max_show_all = 50
+    actions_on_top = False
+    actions_on_bottom = True
+    list_max_show_all = 400
 
     readonly_fields = (
         "staff",
@@ -1840,6 +2162,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         return "-"
 
     formatted_first_in.short_description = "Вход"
+    formatted_first_in.admin_order_field = "first_in"
 
     def formatted_last_out(self, obj):
         if obj.last_out:
@@ -1848,6 +2171,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         return "-"
 
     formatted_last_out.short_description = "Выход"
+    formatted_last_out.admin_order_field = "last_out"
 
     def duration(self, obj):
         total_seconds = None
@@ -1871,6 +2195,29 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         return "-"
 
     duration.short_description = "Продолжительность (эффективная)"
+    duration.admin_order_field = "effective_work_seconds"
+
+    @admin.display(description="Сотрудник", ordering="staff_id")
+    def staff_display(self, obj):
+        url = reverse(
+            f"admin:{Staff._meta.app_label}_{Staff._meta.model_name}_change",
+            args=[obj.staff_id],
+        )
+        return format_html('<a href="{}">{}</a>', url, obj.staff)
+
+    @admin.display(
+        description="Уважит. причина",
+        ordering="absence_reason__reason",
+    )
+    def absence_reason_display(self, obj):
+        if not obj.absence_reason_id:
+            return "—"
+        url = reverse(
+            f"admin:{AbsentReason._meta.app_label}_"
+            f"{AbsentReason._meta.model_name}_change",
+            args=[obj.absence_reason_id],
+        )
+        return format_html('<a href="{}">{}</a>', url, obj.absence_reason)
 
     def formatted_effective_work_seconds(self, obj):
         """Отображает effective_work_seconds в виде «N сек (X ч Y мин)»."""
@@ -2090,22 +2437,71 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         return obj.staff.department.name if obj.staff.department else "N/A"
 
     staff_department.short_description = "Отдел"
-    staff_department.admin_order_field = "staff__department__name"
+    staff_department.admin_order_field = "staff__department_id"
+
+    def event_calendar_day(self, obj):
+        if obj.date_at:
+            return (obj.date_at - timedelta(days=1)).strftime("%d.%m.%Y")
+        return "—"
+
+    event_calendar_day.short_description = "День смены"
+    event_calendar_day.admin_order_field = "date_at"
+
+    def get_form(self, request, obj=None, change=False, **kwargs):
+        form = super().get_form(request, obj, change=change, **kwargs)
+        date_field = form.base_fields.get("date_at")
+        if date_field is not None:
+            date_field.help_text = (
+                "Дата строки выгрузки в БД (как правило на календарный день позже дня смены). "
+                "Календарный день явки — колонка «День смены» или дата локального first_in."
+            )
+        return form
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = qs.select_related("staff", "staff__department", "absence_reason")
+        qs = qs.select_related(
+            "staff",
+            "staff__department",
+            "absence_reason",
+            "absence_reason__staff",
+        )
         qs = qs.defer("staff__avatar")
-
-        excluded = request.GET.get("exclude_unknown", "yes")
-        if excluded == "yes":
-            q_conditions = [
-                Q(area_name_in__isnull=True),
-                Q(area_name_out__isnull=True),
-                Q(area_name_in="Unknown"),
-                Q(area_name_out="Unknown"),
-            ]
-            qs = qs.exclude(reduce(or_, q_conditions))
+        if getattr(request, "_staffattendance_changelist", False):
+            if "date_range" not in request.GET:
+                today = timezone.now().date()
+                start_wd = today - timedelta(days=13)
+                qs = qs.filter(
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
+                        start_wd
+                    ),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(today),
+                )
+            qs = qs.only(
+                "id",
+                "staff_id",
+                "date_at",
+                "first_in",
+                "last_out",
+                "effective_work_seconds",
+                "area_name_in",
+                "area_name_out",
+                "absence_reason_id",
+                "staff__id",
+                "staff__pin",
+                "staff__name",
+                "staff__surname",
+                "staff__department_id",
+                "staff__department__id",
+                "staff__department__name",
+                "absence_reason__id",
+                "absence_reason__reason",
+                "absence_reason__start_date",
+                "absence_reason__end_date",
+                "absence_reason__staff_id",
+                "absence_reason__staff__id",
+                "absence_reason__staff__name",
+                "absence_reason__staff__surname",
+            )
 
         return qs
 
@@ -2122,10 +2518,11 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         return value
 
     def changelist_view(self, request, extra_context=None):
-        response = super().changelist_view(request, extra_context=extra_context)
-        if self.model == StaffAttendance:
-            response["Cache-Control"] = "max-age=60, public"
-        return response
+        request._staffattendance_changelist = True
+        try:
+            return super().changelist_view(request, extra_context=extra_context)
+        finally:
+            request._staffattendance_changelist = False
 
     def export_attendance_data(self, request, queryset):
         count = queryset.count()
@@ -2979,9 +3376,13 @@ class ClassLocationAdmin(ModelAdmin):
             if value == "zero":
                 return queryset.filter(_attendance_hits_period=0)
             if value == "low":
-                return queryset.filter(_attendance_hits_period__gte=1, _attendance_hits_period__lte=9)
+                return queryset.filter(
+                    _attendance_hits_period__gte=1, _attendance_hits_period__lte=9
+                )
             if value == "medium":
-                return queryset.filter(_attendance_hits_period__gte=10, _attendance_hits_period__lte=49)
+                return queryset.filter(
+                    _attendance_hits_period__gte=10, _attendance_hits_period__lte=49
+                )
             if value == "high":
                 return queryset.filter(_attendance_hits_period__gte=50)
             return queryset
@@ -3092,7 +3493,9 @@ class ClassLocationAdmin(ModelAdmin):
             lesson.longitude,
         )
 
-    def _get_location_attendance_period_counts(self, locations, *, period_start, now, period_label: str):
+    def _get_location_attendance_period_counts(
+        self, locations, *, period_start, now, period_label: str
+    ):
         locations = [
             location
             for location in locations
@@ -3136,10 +3539,14 @@ class ClassLocationAdmin(ModelAdmin):
             LessonAttendance.objects.filter(
                 first_in__gte=period_start,
                 first_in__lte=now,
-                latitude__gte=min(item["latitude"] for item in location_meta) - max_lat_margin,
-                latitude__lte=max(item["latitude"] for item in location_meta) + max_lat_margin,
-                longitude__gte=min(item["longitude"] for item in location_meta) - max_lon_margin,
-                longitude__lte=max(item["longitude"] for item in location_meta) + max_lon_margin,
+                latitude__gte=min(item["latitude"] for item in location_meta)
+                - max_lat_margin,
+                latitude__lte=max(item["latitude"] for item in location_meta)
+                + max_lat_margin,
+                longitude__gte=min(item["longitude"] for item in location_meta)
+                - max_lon_margin,
+                longitude__lte=max(item["longitude"] for item in location_meta)
+                + max_lon_margin,
             )
         ).only("id", "latitude", "longitude")
 
@@ -3165,7 +3572,9 @@ class ClassLocationAdmin(ModelAdmin):
         return counts
 
     def _should_attach_attendance_counts(self, request) -> bool:
-        resolver_name = getattr(getattr(request, "resolver_match", None), "url_name", "")
+        resolver_name = getattr(
+            getattr(request, "resolver_match", None), "url_name", ""
+        )
         if resolver_name:
             return resolver_name.endswith("_changelist")
         return True
@@ -3834,8 +4243,19 @@ class AbsentReasonAdmin(admin.ModelAdmin):
         "approved",
         "has_document",
     )
-    list_filter = ("reason", "approved", "start_date")
-    search_fields = ("staff__surname", "staff__name", "reason")
+    list_filter = (
+        monitoring_utils.HierarchicalDepartmentFilter,
+        "reason",
+        "approved",
+        "start_date",
+    )
+    search_fields = (
+        "staff__pin",
+        "staff__surname",
+        "staff__name",
+        "staff__department__name",
+        "reason",
+    )
     readonly_fields = ("duration_days",)
     actions = ["approve_selected", "reject_selected"]
 

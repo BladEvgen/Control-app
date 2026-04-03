@@ -1,0 +1,33 @@
+{% load i18n static staffattendance_admin %}
+{% if result_hidden_fields %}
+<div class="hiddenfields">
+{% for item in result_hidden_fields %}{{ item }}{% endfor %}
+</div>
+{% endif %}
+{% if results %}
+<div class="grp-module grp-changelist-results">
+<table id="result_list" cellspacing="0" class="grp-table grp-sortable">
+<thead>
+<tr>
+{% for header in result_headers %}
+<th scope="col"{{ header.class_attrib }}>
+{% if header.sortable %}
+{% if header.sort_priority > 0 %}
+<div class="grp-sortoptions">
+<a href="{{ header.url_toggle }}" class="grp-toggle {% if header.ascending %}grp-ascending{% else %}grp-descending{% endif %}" title="{% trans "Toggle sorting" %}"></a>
+{% if num_sorted_fields > 1 %}<span class="grp-sortpriority" title="{% blocktranslate with priority_number=header.sort_priority %}Sorting priority: {{ priority_number }}{% endblocktranslate %}">{{ header.sort_priority }}</span>{% endif %}
+<a class="grp-sortremove" href="{{ header.url_remove }}" title="{% trans "Remove from sorting" %}"></a>
+</div>
+{% endif %}
+{% endif %}
+<div class="grp-text">{% if header.sortable %}<a href="{{ header.url_primary }}">{{ header.text|capfirst }}</a>{% else %}<span>{{ header.text|capfirst }}</span>{% endif %}</div>
+</th>
+{% endfor %}
+</tr>
+</thead>
+<tbody>
+{% staffattendance_grouped_tbody cl %}
+</tbody>
+</table>
+</div>
+{% endif %}
