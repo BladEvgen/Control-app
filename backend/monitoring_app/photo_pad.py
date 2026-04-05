@@ -69,6 +69,7 @@ _CV2_RESIZE = _cv2_get_callable("resize")
 _CV2_COLOR_BGR2RGB = int(_cv2_get_attr("COLOR_BGR2RGB"))
 _CV2_COLOR_BGR2GRAY = int(_cv2_get_attr("COLOR_BGR2GRAY"))
 _CV2_MORPH_RECT = int(_cv2_get_attr("MORPH_RECT"))
+_CV2_MORPH_ELLIPSE = int(_cv2_get_attr("MORPH_ELLIPSE"))
 _CV2_RETR_EXTERNAL = int(_cv2_get_attr("RETR_EXTERNAL"))
 _CV2_CHAIN_APPROX_SIMPLE = int(_cv2_get_attr("CHAIN_APPROX_SIMPLE"))
 _CV2_CV_64F = int(_cv2_get_attr("CV_64F"))
@@ -134,6 +135,10 @@ _PAD_DEFAULT_NUMBERS: dict[str, float | int] = {
     "decision_weak_frame_min": 0.18,
     "decision_weak_combined_sum_min": 0.22,
     "pad_max_long_side": 960,
+    "glasses_mask_min_pixels": 24,
+    "glasses_mask_dilate": 11,
+    "glasses_device_overlap_skip": 0.42,
+    "glasses_device_overlap_soft": 0.14,
 }
 
 
@@ -252,6 +257,54 @@ def _get_fasnet():
     return _runtime_cache["fasnet"]
 
 
+def _try_glasses_reflection_mask(img_bgr: np.ndarray) -> Optional[np.ndarray]:
+    """
+    Расширенная маска линз (face parsing, класс eye_g).
+    Нужна, чтобы отражение экрана/вспышки в очках не давало ложных «телефон/рамка».
+    """
+    if not bool(getattr(settings, "PHOTO_PAD_GLASSES_REFLECTION_ENABLE", True)):
+        return None
+    min_px = _pad_int("glasses_mask_min_pixels")
+    dil = max(3, _pad_int("glasses_mask_dilate"))
+    if dil % 2 == 0:
+        dil += 1
+    try:
+        from monitoring_app import face_parsing
+
+        eng = face_parsing.get_engine()
+        if eng is None:
+            return None
+        rgb = _CV2_CVT_COLOR(img_bgr, _CV2_COLOR_BGR2RGB)
+        labels = eng.predict_mask_rgb(rgb)
+        g = ((labels == face_parsing.EYEGLASSES_CLASS_ID).astype(np.uint8)) * 255
+        if int(np.count_nonzero(g)) < min_px:
+            return None
+        kernel = _CV2_GET_STRUCTURING_ELEMENT(_CV2_MORPH_ELLIPSE, (dil, dil))
+        g = _CV2_DILATE(g, kernel, iterations=1)
+        return g
+    except Exception as exc:
+        logger.debug("PAD glasses reflection mask skipped: %s", exc)
+        return None
+
+
+def _device_box_overlap_glasses_mask(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    mask: np.ndarray,
+) -> float:
+    """Доля площади бокса детектора, попадающая в маску очков (0–1)."""
+    h, w = mask.shape[:2]
+    xi1 = max(0, min(w - 1, int(x1)))
+    yi1 = max(0, min(h - 1, int(y1)))
+    xi2 = max(xi1 + 1, min(w, int(round(x2))))
+    yi2 = max(yi1 + 1, min(h, int(round(y2))))
+    roi = mask[yi1:yi2, xi1:xi2]
+    box_area = float(max(1, (xi2 - xi1) * (yi2 - yi1)))
+    return float(np.count_nonzero(roi > 127)) / box_area
+
+
 def _get_primary_face_bbox(img_bgr: np.ndarray) -> Optional[tuple[int, int, int, int]]:
     try:
         ml.load_arcface_model()
@@ -331,7 +384,9 @@ def _get_device_detector(
 
 
 def _signal_device(
-    img_bgr: np.ndarray, preferred_device: str
+    img_bgr: np.ndarray,
+    preferred_device: str,
+    glasses_mask: Optional[np.ndarray] = None,
 ) -> tuple[float, list[str]]:
     model, torch_module, _resolved_device = _get_device_detector(preferred_device)
     if model is None or torch_module is None:
@@ -357,12 +412,23 @@ def _signal_device(
         tags: list[str] = []
         best_score = 0.0
 
+        skip_ov = _pad_float("glasses_device_overlap_skip")
+        soft_ov = _pad_float("glasses_device_overlap_soft")
+
         for label, confidence, box in zip(labels, scores, boxes):
             if label not in _COCO_DEVICE_CLASSES:
                 continue
             if confidence < _pad_float("device_min_conf"):
                 continue
             x1, y1, x2, y2 = box
+            glasses_ov = 0.0
+            if glasses_mask is not None:
+                glasses_ov = _device_box_overlap_glasses_mask(
+                    x1, y1, x2, y2, glasses_mask
+                )
+                if glasses_ov >= skip_ov:
+                    tags.append("device_ignored_glasses_reflection")
+                    continue
             area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
             ratio = area / frame_area
             if ratio < _pad_float("device_min_area_ratio"):
@@ -376,6 +442,9 @@ def _signal_device(
                 _pad_float("device_score_conf_weight") * confidence_factor
                 + _pad_float("device_score_ratio_weight") * ratio_factor,
             )
+            if glasses_mask is not None and glasses_ov >= soft_ov and skip_ov > soft_ov:
+                damp = 1.0 - (glasses_ov - soft_ov) / (skip_ov - soft_ov)
+                candidate *= max(0.12, min(1.0, damp))
             best_score = max(best_score, candidate)
 
         return best_score, sorted(set(tags))
@@ -441,7 +510,9 @@ def _frame_score_from_edges(
 
 
 def _signal_screen_frame(
-    img_bgr: np.ndarray, face_bbox: Optional[tuple[int, int, int, int]]
+    img_bgr: np.ndarray,
+    face_bbox: Optional[tuple[int, int, int, int]],
+    glasses_mask: Optional[np.ndarray] = None,
 ) -> tuple[float, list[str]]:
     h, w = img_bgr.shape[:2]
     frame_area = float(max(1, h * w))
@@ -458,6 +529,9 @@ def _signal_screen_frame(
     canny_low = _pad_int("frame_canny_low")
     canny_high = _pad_int("frame_canny_high")
     edges = _CV2_CANNY(blurred, canny_low, canny_high)
+    if glasses_mask is not None and glasses_mask.shape[:2] == (h, w):
+        edges = np.asarray(edges).copy()
+        edges[glasses_mask > 127] = 0
     best_score = _frame_score_from_edges(edges, frame_area, w, h, face_center)
 
     brightness = float(gray.mean())
@@ -469,6 +543,9 @@ def _signal_screen_frame(
                 gray_enhanced, (gaussian_kernel, gaussian_kernel), 0
             )
             edges_enh = _CV2_CANNY(blurred_enh, max(20, canny_low - 25), canny_high)
+            if glasses_mask is not None and glasses_mask.shape[:2] == (h, w):
+                edges_enh = np.asarray(edges_enh).copy()
+                edges_enh[glasses_mask > 127] = 0
             score_enh = _frame_score_from_edges(
                 edges_enh, frame_area, w, h, face_center
             )
@@ -477,7 +554,10 @@ def _signal_screen_frame(
             logger.debug("PAD CLAHE frame fallback failed: %s", exc)
 
     if best_score >= _pad_float("frame_tag_threshold"):
-        return best_score, ["screen_frame"]
+        tags_out = ["screen_frame"]
+        if glasses_mask is not None:
+            tags_out.append("frame_edges_masked_glasses")
+        return best_score, tags_out
     return best_score, []
 
 
@@ -670,10 +750,19 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
     img_bgr = _downscale_bgr_for_pad(img_bgr)
     requested_device = normalize_device(device)
     face_bbox = _get_primary_face_bbox(img_bgr)
+    glasses_mask = _try_glasses_reflection_mask(img_bgr)
     deepface_score, deepface_tags = _signal_deepface(img_bgr, face_bbox)
-    device_score, device_tags = _signal_device(img_bgr, requested_device)
-    frame_score, frame_tags = _signal_screen_frame(img_bgr, face_bbox)
+    device_score, device_tags = _signal_device(
+        img_bgr, requested_device, glasses_mask=glasses_mask
+    )
+    frame_score, frame_tags = _signal_screen_frame(
+        img_bgr, face_bbox, glasses_mask=glasses_mask
+    )
     quality_penalty, quality_tags = _signal_quality(img_bgr, face_bbox)
+
+    guard_tags: list[str] = []
+    if glasses_mask is not None:
+        guard_tags.append("glasses_reflection_guard")
 
     result = _decide(
         DecisionInputs(
@@ -683,7 +772,7 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
             device_score=device_score,
             frame_score=frame_score,
             quality_penalty=quality_penalty,
-            tags=deepface_tags + device_tags + frame_tags + quality_tags,
+            tags=deepface_tags + device_tags + frame_tags + quality_tags + guard_tags,
         )
     )
     result.elapsed_ms = (time.monotonic() - started) * 1000.0
