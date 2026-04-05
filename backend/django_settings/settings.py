@@ -65,14 +65,87 @@ ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES = int(
 )
 FACE_RECOGNITION_THRESHOLD = float(os.getenv("FACE_RECOGNITION_THRESHOLD", "0.76"))
 FACE_RECOGNITION_THRESHOLD_RELAXED = float(
-    os.getenv("FACE_RECOGNITION_THRESHOLD_RELAXED", "0.70")
+    os.getenv("FACE_RECOGNITION_THRESHOLD_RELAXED", "0.67")
 )
 FACE_RECOGNITION_MIN_NEIGHBOR_GAP = float(
-    os.getenv("FACE_RECOGNITION_MIN_NEIGHBOR_GAP", "0.085")
+    os.getenv("FACE_RECOGNITION_MIN_NEIGHBOR_GAP", "0.055")
 )
 FACE_VERIFY_FALLBACK_THRESHOLD = float(
     os.getenv("FACE_VERIFY_FALLBACK_THRESHOLD", "0.74")
 )
+FACE_VERIFY_ACCESSORY_ENABLE = os.getenv(
+    "FACE_VERIFY_ACCESSORY_ENABLE", "1"
+).strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+FACE_VERIFY_ACCESSORY_MAX_MIN = float(
+    os.getenv("FACE_VERIFY_ACCESSORY_MAX_MIN", "0.71")
+)
+FACE_VERIFY_ACCESSORY_SCORE_GAP_MIN = float(
+    os.getenv("FACE_VERIFY_ACCESSORY_SCORE_GAP_MIN", "0.035")
+)
+FACE_VERIFY_ACCESSORY_SECOND_MARGIN = float(
+    os.getenv("FACE_VERIFY_ACCESSORY_SECOND_MARGIN", "0.044")
+)
+FACE_VERIFY_ACCESSORY_SINGLE_MAX_MIN = float(
+    os.getenv("FACE_VERIFY_ACCESSORY_SINGLE_MAX_MIN", "0.685")
+)
+FACE_VERIFY_ACCESSORY_SINGLE_SCORE_MIN = float(
+    os.getenv("FACE_VERIFY_ACCESSORY_SINGLE_SCORE_MIN", "0.655")
+)
+FACE_VERIFY_RELAXED_SCORE_SLACK = float(
+    os.getenv("FACE_VERIFY_RELAXED_SCORE_SLACK", "0.045")
+)
+FACE_VERIFY_RELAXED_MAX_SLACK = float(
+    os.getenv("FACE_VERIFY_RELAXED_MAX_SLACK", "0.028")
+)
+FACE_VERIFY_RELAXED_MARGIN_MIN = float(
+    os.getenv("FACE_VERIFY_RELAXED_MARGIN_MIN", "0.042")
+)
+FACE_TRAINING_INCLUDE_LESSON_ATTENDANCE = os.getenv(
+    "FACE_TRAINING_INCLUDE_LESSON_ATTENDANCE", "1"
+).strip().lower() in ("1", "true", "yes", "on")
+FACE_TRAINING_LESSON_ATTENDANCE_MAX = int(
+    os.getenv("FACE_TRAINING_LESSON_ATTENDANCE_MAX", "80")
+)
+
+AUGMENT_SYNTH_GLASSES_RANDOM_P = float(
+    os.getenv("AUGMENT_SYNTH_GLASSES_RANDOM_P", "0.22")
+)
+AUGMENT_GLASSES_HEURISTIC_HORIZ_DOM = float(
+    os.getenv("AUGMENT_GLASSES_HEURISTIC_HORIZ_DOM", "1.12")
+)
+AUGMENT_GLASSES_HEURISTIC_BRIDGE_DARK = float(
+    os.getenv("AUGMENT_GLASSES_HEURISTIC_BRIDGE_DARK", "0.055")
+)
+AUGMENT_GLASSES_INPAINT_ENABLE = os.getenv(
+    "AUGMENT_GLASSES_INPAINT_ENABLE", "1"
+).strip().lower() in ("1", "true", "yes")
+FACE_PARSING_ENABLE = os.getenv("FACE_PARSING_ENABLE", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+FACE_PARSING_AUTO_DOWNLOAD = os.getenv(
+    "FACE_PARSING_AUTO_DOWNLOAD", "0"
+).strip().lower() in ("1", "true", "yes")
+_face_parsing_path = os.getenv("FACE_PARSING_MODEL_PATH", "").strip()
+FACE_PARSING_MODEL_PATH = (
+    str(Path(_face_parsing_path).expanduser().resolve()) if _face_parsing_path else None
+)
+FACE_PARSING_DOWNLOAD_URL = os.getenv(
+    "FACE_PARSING_DOWNLOAD_URL",
+    "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.onnx",
+)
+FACE_PARSING_GLASSES_FRAC_MIN = _float_env("FACE_PARSING_GLASSES_FRAC_MIN", 0.00035)
+FACE_PARSING_USE_FOR_AUGMENT = os.getenv(
+    "FACE_PARSING_USE_FOR_AUGMENT", "1"
+).strip().lower() in ("1", "true", "yes")
+FACE_PARSING_USE_FOR_API = os.getenv(
+    "FACE_PARSING_USE_FOR_API", "1"
+).strip().lower() in ("1", "true", "yes")
 RATE_PERIOD = 600
 RATE_LIMIT = 40
 NO_ALBUMENTATIONS_UPDATE: int = int(os.getenv("NO_ALBUMENTATIONS_UPDATE", "1"))
@@ -103,9 +176,15 @@ SECRET_API = os.getenv("SECRET_API")
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
 # Face Lab: Edge neural TTS (Microsoft, via edge-tts; no API key). Optional voice overrides.
-FACE_LAB_EDGE_TTS_VOICE_RU = os.getenv("FACE_LAB_EDGE_TTS_VOICE_RU", "ru-RU-SvetlanaNeural").strip()
-FACE_LAB_EDGE_TTS_VOICE_KK = os.getenv("FACE_LAB_EDGE_TTS_VOICE_KK", "kk-KZ-AigulNeural").strip()
-FACE_LAB_EDGE_TTS_VOICE_EN = os.getenv("FACE_LAB_EDGE_TTS_VOICE_EN", "en-US-JennyNeural").strip()
+FACE_LAB_EDGE_TTS_VOICE_RU = os.getenv(
+    "FACE_LAB_EDGE_TTS_VOICE_RU", "ru-RU-SvetlanaNeural"
+).strip()
+FACE_LAB_EDGE_TTS_VOICE_KK = os.getenv(
+    "FACE_LAB_EDGE_TTS_VOICE_KK", "kk-KZ-AigulNeural"
+).strip()
+FACE_LAB_EDGE_TTS_VOICE_EN = os.getenv(
+    "FACE_LAB_EDGE_TTS_VOICE_EN", "en-US-JennyNeural"
+).strip()
 MAIN_IP = os.getenv("MAIN_IP")
 DB_TYPE = os.getenv("DB_TYPE", "sqlite3").lower()
 
@@ -538,6 +617,9 @@ CELERY_TASK_SERIALIZER = "json"
 # Photo PAD (anti-spoof) config
 # ----------------------------
 PHOTO_PAD_DEVICE = os.getenv("PHOTO_PAD_DEVICE", "auto")
+PHOTO_PAD_GLASSES_REFLECTION_ENABLE = os.getenv(
+    "PHOTO_PAD_GLASSES_REFLECTION_ENABLE", "1"
+).strip().lower() in ("1", "true", "yes")
 
 PHOTO_PAD_HOURLY_BATCH_SIZE = max(1, _int_env("PHOTO_PAD_HOURLY_BATCH_SIZE", 100))
 PHOTO_PAD_HOURLY_MAX_RECORDS = max(1, _int_env("PHOTO_PAD_HOURLY_MAX_RECORDS", 200))
@@ -658,6 +740,14 @@ PHOTO_PAD_NUMBERS = {
     "decision_weak_frame_min": _float_env("PHOTO_PAD_DECISION_WEAK_FRAME_MIN", 0.18),
     "decision_weak_combined_sum_min": _float_env(
         "PHOTO_PAD_DECISION_WEAK_COMBINED_SUM_MIN", 0.22
+    ),
+    "glasses_mask_min_pixels": _int_env("PHOTO_PAD_GLASSES_MASK_MIN_PIXELS", 24),
+    "glasses_mask_dilate": _int_env("PHOTO_PAD_GLASSES_MASK_DILATE", 11),
+    "glasses_device_overlap_skip": _float_env(
+        "PHOTO_PAD_GLASSES_DEVICE_OVERLAP_SKIP", 0.42
+    ),
+    "glasses_device_overlap_soft": _float_env(
+        "PHOTO_PAD_GLASSES_DEVICE_OVERLAP_SOFT", 0.14
     ),
 }
 
