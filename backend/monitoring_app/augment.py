@@ -9,6 +9,7 @@ embedding (outlier filter).
 We avoid ImageNet-style AutoAug / aggressive color jitter and **horizontal flip**
 on ArcFace-aligned crops (canonical pose; flip hurts consistency with inference).
 """
+
 import logging
 import os
 from typing import Callable, Dict, Optional, Tuple
@@ -17,7 +18,7 @@ import cv2
 import numpy as np
 from django.conf import settings
 from django.db.models import QuerySet
-from monitoring_app import ml, models
+from monitoring_app import face_parsing, ml, models
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ FACE_CROP_OUT_SIZE = 256
 FACE_SQUARE_PAD_RATIO = 1.08
 RANDOM_AUGMENTS_TARGET = 20
 RANDOM_AUGMENT_MAX_ATTEMPTS = 72
+_CV_DRAW_MASK_ON: Tuple[float, ...] = (255.0,)
 
 FaceIdPresetFn = Callable[[np.ndarray], np.ndarray]
 
@@ -127,7 +129,6 @@ def insightface_aligned_face_rgb(image_rgb: np.ndarray) -> Optional[np.ndarray]:
     except Exception as e:
         logger.debug("InsightFace alignment skipped: %s", e)
         return None
-
 
 
 def _preset_dim_light(rgb: np.ndarray) -> np.ndarray:
@@ -252,6 +253,203 @@ def _preset_motion_blur_short(rgb: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
+def _preset_glasses_glare_band(rgb: np.ndarray) -> np.ndarray:
+    h, _w = rgb.shape[:2]
+    out = rgb.astype(np.float32)
+    cy = float(h) * 0.36
+    yy = np.arange(h, dtype=np.float32)[:, None]
+    band = np.exp(-((yy - cy) ** 2) / (2.0 * (max(h * 0.11, 8.0)) ** 2))
+    out = out + band * 11.0
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def _preset_upper_screen_fill(rgb: np.ndarray) -> np.ndarray:
+    h, _w = rgb.shape[:2]
+    out = rgb.astype(np.float32)
+    yy = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None]
+    gain = 1.0 + 0.11 * (1.0 - yy)
+    out *= gain
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def _preset_chin_shadow_mild(rgb: np.ndarray) -> np.ndarray:
+    h, _w = rgb.shape[:2]
+    out = rgb.astype(np.float32)
+    yy = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None]
+    shade = 1.0 - 0.09 * yy * yy
+    out *= shade
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def _heuristic_glasses_likely(rgb: np.ndarray) -> bool:
+    """
+    Cheap periocular cue: strong horizontal structure + dark bridge strip.
+
+    Tuned for **high precision** (avoid inpainting bare eyes). Thresholds from
+    django.conf.settings (AUGMENT_GLASSES_HEURISTIC_*).
+    """
+    if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.shape[0] < 48 or rgb.shape[1] < 48:
+        return False
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    h, w = gray.shape[:2]
+    y0 = int(h * 0.30)
+    y1 = int(h * 0.52)
+    if y1 <= y0 + 4:
+        return False
+    x0 = int(w * 0.12)
+    x1 = int(w * 0.88)
+    band = gray[y0:y1, x0:x1]
+    if band.size < 400:
+        return False
+    sob_x = cv2.Sobel(band, cv2.CV_32F, 1, 0, ksize=3)
+    sob_y = cv2.Sobel(band, cv2.CV_32F, 0, 1, ksize=3)
+    ax = float(np.mean(np.abs(sob_x)))
+    ay = float(np.mean(np.abs(sob_y))) + 1e-6
+    horiz_dom = ax / ay
+    mid_x0 = int(w * 0.44)
+    mid_x1 = int(w * 0.56)
+    bridge = gray[y0:y1, mid_x0:mid_x1]
+    dark_frac = float(np.mean(bridge < 55)) if bridge.size else 0.0
+    thr_dom = float(getattr(settings, "AUGMENT_GLASSES_HEURISTIC_HORIZ_DOM", 1.12))
+    thr_br = float(getattr(settings, "AUGMENT_GLASSES_HEURISTIC_BRIDGE_DARK", 0.055))
+    return bool(horiz_dom >= thr_dom and dark_frac >= thr_br)
+
+
+def _glasses_likely_rgb(rgb: np.ndarray) -> bool:
+    """
+    Очки: сегментация BiSeNet (класс eye_g), иначе эвристика по градиентам.
+    """
+    if bool(getattr(settings, "FACE_PARSING_USE_FOR_AUGMENT", True)):
+        eng = face_parsing.get_engine()
+        if eng is not None:
+            try:
+                m = eng.predict_mask_rgb(rgb)
+                frac = eng.eyeglasses_area_frac(m)
+                return bool(frac >= face_parsing.glasses_frac_threshold())
+            except Exception as exc:
+                logger.debug("face_parsing glasses_likely: %s", exc)
+    return _heuristic_glasses_likely(rgb)
+
+
+def _glasses_eye_mask(
+    h: int,
+    w: int,
+    eye_y_ratio: float,
+    sep_ratio: float,
+    rx_ratio: float,
+    ry_ratio: float,
+) -> np.ndarray:
+    """Binary mask (uint8 0/255) over both lenses + bridge for inpaint."""
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cx, cy = w // 2, int(h * eye_y_ratio)
+    sep = max(int(w * sep_ratio), 12)
+    rx = max(int(w * rx_ratio), 10)
+    ry = max(int(h * ry_ratio), 8)
+    for ex in (cx - sep // 2, cx + sep // 2):
+        cv2.ellipse(mask, (ex, cy), (rx, ry), 0, 0, 360, _CV_DRAW_MASK_ON, -1)
+    x_left = cx - sep // 2 + rx - 3
+    x_right = cx + sep // 2 - rx + 3
+    if x_right > x_left:
+        cv2.rectangle(mask, (x_left, cy - 4), (x_right, cy + 5), _CV_DRAW_MASK_ON, -1)
+    return mask
+
+
+def _apply_glasses_region_inpaint(
+    rgb: np.ndarray,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """
+    Approximate “remove glasses” for gallery diversity: inpaint lens+bridge ROI.
+
+    Uses OpenCV inpainting (TELEA/NS); identity is preserved better when the
+    mask matches real frames (face parsing) rather than только эллипсы.
+    """
+    out = np.ascontiguousarray(rgb)
+    h, w = out.shape[:2]
+    mask: Optional[np.ndarray] = None
+    if bool(getattr(settings, "FACE_PARSING_USE_FOR_AUGMENT", True)):
+        eng = face_parsing.get_engine()
+        if eng is not None:
+            try:
+                dil = int(rng.integers(5, 11))
+                mask = eng.eyeglasses_inpaint_mask_u8(rgb, dilate=dil)
+            except Exception as exc:
+                logger.debug("face_parsing inpaint mask: %s", exc)
+    if mask is None:
+        mask = _glasses_eye_mask(
+            h,
+            w,
+            eye_y_ratio=float(rng.uniform(0.398, 0.418)),
+            sep_ratio=float(rng.uniform(0.305, 0.348)),
+            rx_ratio=float(rng.uniform(0.148, 0.175)),
+            ry_ratio=float(rng.uniform(0.10, 0.125)),
+        )
+        k = int(rng.integers(3, 8))
+        if k % 2 == 0:
+            k += 1
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    if int(np.count_nonzero(mask)) < 80:
+        return out
+    bgr = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
+    rad = int(rng.integers(2, 5))
+    method = cv2.INPAINT_TELEA if rng.random() > 0.35 else cv2.INPAINT_NS
+    inp = cv2.inpaint(bgr, mask, rad, method)
+    return cv2.cvtColor(inp, cv2.COLOR_BGR2RGB)
+
+
+def _apply_synthetic_eyeglasses(
+    rgb: np.ndarray,
+    rim_thickness: int,
+    lens_dim_alpha: float,
+    eye_y_ratio: float = 0.405,
+    sep_ratio: float = 0.33,
+    rx_ratio: float = 0.142,
+    ry_ratio: float = 0.096,
+) -> np.ndarray:
+    out = np.ascontiguousarray(rgb)
+    h, w = out.shape[:2]
+    cx, cy = w // 2, int(h * eye_y_ratio)
+    sep = max(int(w * sep_ratio), 12)
+    rx = max(int(w * rx_ratio), 8)
+    ry = max(int(h * ry_ratio), 6)
+    rt = max(int(rim_thickness), 1)
+    bgr = cv2.cvtColor(out, cv2.COLOR_RGB2BGR).astype(np.float32)
+    m = np.zeros((h, w), dtype=np.uint8)
+    for ex in (cx - sep // 2, cx + sep // 2):
+        cv2.ellipse(m, (ex, cy), (rx, ry), 0, 0, 360, _CV_DRAW_MASK_ON, -1)
+    mf = m.astype(np.float32) * (1.0 / 255.0)
+    tint = np.array([222.0, 226.0, 232.0], dtype=np.float32)
+    a = float(np.clip(lens_dim_alpha, 0.05, 0.45))
+    for i in range(3):
+        bgr[:, :, i] = bgr[:, :, i] * (1.0 - a * mf) + tint[i] * (a * mf)
+    ib = np.clip(bgr, 0, 255).astype(np.uint8)
+    frame_col: Tuple[float, float, float] = (34.0, 34.0, 40.0)
+    for ex in (cx - sep // 2, cx + sep // 2):
+        cv2.ellipse(ib, (ex, cy), (rx, ry), 0, 0, 360, frame_col, rt)
+    x1 = cx - sep // 2 + rx - rt
+    x2 = cx + sep // 2 - rx + rt
+    if x2 > x1:
+        cv2.line(ib, (x1, cy), (x2, cy), frame_col, max(rt, 1))
+    return cv2.cvtColor(ib, cv2.COLOR_BGR2RGB)
+
+
+def _preset_synth_glasses_wire(rgb: np.ndarray) -> np.ndarray:
+    return _apply_synthetic_eyeglasses(
+        rgb, rim_thickness=1, lens_dim_alpha=0.12, rx_ratio=0.138, ry_ratio=0.09
+    )
+
+
+def _preset_synth_glasses_plastic(rgb: np.ndarray) -> np.ndarray:
+    return _apply_synthetic_eyeglasses(
+        rgb, rim_thickness=3, lens_dim_alpha=0.28, rx_ratio=0.148, ry_ratio=0.1
+    )
+
+
+def _preset_glasses_inpaint_mild(rgb: np.ndarray) -> np.ndarray:
+    """Deterministic mild inpaint for preset pass (per-crop stable)."""
+    return _apply_glasses_region_inpaint(rgb, np.random.default_rng(9001))
+
+
 FACE_ID_PRESET_AUGMENTS: Dict[str, FaceIdPresetFn] = {
     "dim_light": _preset_dim_light,
     "bright_room": _preset_bright_room,
@@ -269,7 +467,16 @@ FACE_ID_PRESET_AUGMENTS: Dict[str, FaceIdPresetFn] = {
     "clahe_mild": _preset_clahe_face_friendly,
     "iso_noise": _preset_iso_noise,
     "motion_blur_short": _preset_motion_blur_short,
+    "glasses_glare_band": _preset_glasses_glare_band,
+    "upper_screen_fill": _preset_upper_screen_fill,
+    "chin_shadow_mild": _preset_chin_shadow_mild,
+    "synth_glasses_wire": _preset_synth_glasses_wire,
+    "synth_glasses_plastic": _preset_synth_glasses_plastic,
+    "glasses_inpaint_mild": _preset_glasses_inpaint_mild,
 }
+
+_GLASSES_SYNTH_PRESET_NAMES = frozenset({"synth_glasses_wire", "synth_glasses_plastic"})
+_GLASSES_INPAINT_PRESET_NAMES = frozenset({"glasses_inpaint_mild"})
 
 
 def _random_augment_face_rgb(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
@@ -282,11 +489,11 @@ def _random_augment_face_rgb(rgb: np.ndarray, rng: np.random.Generator) -> np.nd
 
     h, w = out.shape[:2]
     center = (w * 0.5, h * 0.5)
-    angle = float(rng.uniform(-5.5, 5.5))
-    scale = float(rng.uniform(0.985, 1.015))
+    angle = float(rng.uniform(-8.25, 8.25))
+    scale = float(rng.uniform(0.978, 1.022))
     m = cv2.getRotationMatrix2D(center, angle, scale)
-    tx = float(rng.uniform(-2.2, 2.2))
-    ty = float(rng.uniform(-2.2, 2.2))
+    tx = float(rng.uniform(-3.2, 3.2))
+    ty = float(rng.uniform(-3.2, 3.2))
     m[0, 2] += tx
     m[1, 2] += ty
     out_u8 = np.clip(out, 0, 255).astype(np.uint8)
@@ -358,6 +565,21 @@ def _random_augment_face_rgb(rgb: np.ndarray, rng: np.random.Generator) -> np.nd
         bgr = cv2.cvtColor(out_u8, cv2.COLOR_RGB2BGR)
         bgr = cv2.filter2D(bgr, -1, kernel)
         out_u8 = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+    p_glasses = float(getattr(settings, "AUGMENT_SYNTH_GLASSES_RANDOM_P", 0.22))
+    if rng.random() < p_glasses:
+        likely = _glasses_likely_rgb(out_u8)
+        inpaint_ok = bool(getattr(settings, "AUGMENT_GLASSES_INPAINT_ENABLE", True))
+        if likely and inpaint_ok:
+            out_u8 = _apply_glasses_region_inpaint(out_u8, rng)
+        elif not likely:
+            out_u8 = _apply_synthetic_eyeglasses(
+                out_u8,
+                rim_thickness=int(rng.integers(1, 4)),
+                lens_dim_alpha=float(rng.uniform(0.1, 0.27)),
+                eye_y_ratio=float(rng.uniform(0.398, 0.418)),
+                sep_ratio=float(rng.uniform(0.305, 0.348)),
+            )
 
     return out_u8
 
@@ -487,7 +709,28 @@ def run_staff_avatar_augmentation(
             file_index = 0
             rng = np.random.default_rng(seed=hash(staff_member.pin) % (2**32))
 
+            likely_glasses = _glasses_likely_rgb(face_square)
+            inpaint_enabled = bool(
+                getattr(settings, "AUGMENT_GLASSES_INPAINT_ENABLE", True)
+            )
+
             for _name, preset_fn in FACE_ID_PRESET_AUGMENTS.items():
+                if _name in _GLASSES_SYNTH_PRESET_NAMES and likely_glasses:
+                    logger.debug(
+                        "Skip preset %s (heuristic: glasses on source) for %s",
+                        _name,
+                        pin,
+                    )
+                    continue
+                if _name in _GLASSES_INPAINT_PRESET_NAMES and (
+                    not likely_glasses or not inpaint_enabled
+                ):
+                    logger.debug(
+                        "Skip preset %s (no glasses cue or inpaint off) for %s",
+                        _name,
+                        pin,
+                    )
+                    continue
                 aug_rgb = preset_fn(np.copy(face_square))
                 ok, file_index = _save_augment_if_valid(
                     augment_root,
