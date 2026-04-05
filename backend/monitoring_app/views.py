@@ -38,6 +38,7 @@ from drf_yasg.utils import merge_params, no_body, swagger_auto_schema
 from monitoring_app import (
     async_logic,
     attendance_fetcher,
+    face_parsing,
     ml,
     models,
     permissions,
@@ -9000,6 +9001,30 @@ def face_lab_pad_test(request):
                         type=openapi.TYPE_STRING,
                         description="embedding_gallery_strict | embedding_gallery_fallback",
                     ),
+                    "relaxed_match": openapi.Schema(
+                        type=openapi.TYPE_BOOLEAN,
+                        description="Сработал запасной порог по галерее (multi-prototype).",
+                    ),
+                    "accessory_relaxed": openapi.Schema(
+                        type=openapi.TYPE_BOOLEAN,
+                        description="Сработал путь верификации при аксессуарах (очки и т.п.).",
+                    ),
+                    "face_parsing_active": openapi.Schema(
+                        type=openapi.TYPE_BOOLEAN,
+                        description="BiSeNet face parsing доступен и отработал на кадре.",
+                    ),
+                    "probe_eyeglasses_likely": openapi.Schema(
+                        type=openapi.TYPE_BOOLEAN,
+                        description="По сегментации eye_g на фото вероятны очки (или null если парсинг выкл.).",
+                    ),
+                    "probe_eyeglasses_area_frac": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        description="Доля пикселей класса очков (0–1).",
+                    ),
+                    "face_parsing_error": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Ошибка парсинга при наличии.",
+                    ),
                 },
             ),
         ),
@@ -9071,22 +9096,29 @@ def verify_face(request):
             meta.get("verification_mode"),
             meta.get("gallery_templates"),
         )
-        return Response(
-            {
-                "verified": verified,
-                "score": score,
-                "max_cosine": meta["max_cosine"],
-                "trained_model_present": meta["trained_model_present"],
-                "gallery_templates": meta["gallery_templates"],
-                "threshold_used": meta["threshold_used"],
-                "verification_mode": meta["verification_mode"],
-                "relaxed_match": bool(meta.get("relaxed_match")),
-            },
-            status=status.HTTP_200_OK,
-        )
+        parsing_meta = face_parsing.probe_bgr(new_image)
+        body: dict = {
+            "verified": verified,
+            "score": score,
+            "max_cosine": meta["max_cosine"],
+            "trained_model_present": meta["trained_model_present"],
+            "gallery_templates": meta["gallery_templates"],
+            "threshold_used": meta["threshold_used"],
+            "verification_mode": meta["verification_mode"],
+            "relaxed_match": bool(meta.get("relaxed_match")),
+            "accessory_relaxed": bool(meta.get("accessory_relaxed")),
+            "face_parsing_active": parsing_meta.get("face_parsing_active", False),
+            "probe_eyeglasses_likely": parsing_meta.get("eyeglasses_likely"),
+            "probe_eyeglasses_area_frac": parsing_meta.get("eyeglasses_area_frac"),
+        }
+        if parsing_meta.get("face_parsing_error"):
+            body["face_parsing_error"] = parsing_meta["face_parsing_error"]
+        return Response(body, status=status.HTTP_200_OK)
 
     except ValidationError as ve:
-        face_logger.warning("verify_face validation: %s", _drf_validation_error_text(ve))
+        face_logger.warning(
+            "verify_face validation: %s", _drf_validation_error_text(ve)
+        )
         return Response(
             {"error": _drf_validation_error_text(ve)},
             status=status.HTTP_400_BAD_REQUEST,
