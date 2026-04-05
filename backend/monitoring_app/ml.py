@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import Q
 from monitoring_app import models
 from rest_framework.exceptions import ValidationError
 from sklearn.metrics import f1_score, precision_score, recall_score
@@ -266,15 +267,138 @@ def _largest_insight_face(faces: list) -> Optional[Any]:
 # -----------------------------------
 
 
-def create_embeddings_for_staff(staff):
-    """
-    Creates embeddings for all images (original and augmented) of the staff member.
+def _lesson_attendance_stored_path_allowed(abs_path: str) -> bool:
+    """Return True if ``abs_path`` is under attendance or control_image media roots.
+
+    Mirrors the path allowlist used in admin when handling lesson photo files.
 
     Args:
-        staff (Staff): Staff object.
+        abs_path: Normalized absolute filesystem path string.
+
+    Returns:
+        Whether the path is confined to ``ATTENDANCE_ROOT`` or
+        ``MEDIA_ROOT/control_image``.
+    """
+    if not abs_path:
+        return False
+    try:
+        normalized = os.path.abspath(str(abs_path))
+    except OSError:
+        return False
+    attendance_root = os.path.abspath(str(settings.ATTENDANCE_ROOT))
+    media_control_root = os.path.abspath(
+        os.path.join(str(settings.MEDIA_ROOT), "control_image")
+    )
+    for root in (attendance_root, media_control_root):
+        if normalized == root or normalized.startswith(f"{root}{os.sep}"):
+            return True
+    return False
+
+
+def _collect_readable_lesson_attendance_paths_for_staff(
+    staff: "models.Staff",
+) -> list[str]:
+    """Collect absolute paths to lesson attendance photos usable for embeddings.
+
+    Selects ``LessonAttendance`` rows with a trusted verdict (manual clean, or
+    auto clean with no manual override) and excludes manual suspicious. Paths
+    must exist, stay under allowed roots, and decode as images via ``imread_bgr``.
+    A manual "clean" verdict does not imply the file is intact; broken files are
+    skipped so they never enter training.
+
+    Files are **not** copied into ``AUGMENT_ROOT``; only paths are returned and
+    read during ``create_embeddings_from_images`` (vectors live in memory until
+    ``embeddings.npy`` is written).
+
+    Args:
+        staff: ``Staff`` instance.
+
+    Returns:
+        Up to ``FACE_TRAINING_LESSON_ATTENDANCE_MAX`` distinct readable paths.
+    """
+    if not getattr(settings, "FACE_TRAINING_INCLUDE_LESSON_ATTENDANCE", True):
+        return []
+    la = models.LessonAttendance
+    qs = (
+        la.objects.filter(staff=staff, staff_image_path__isnull=False)
+        .exclude(staff_image_path="")
+        .filter(
+            Q(photo_manual_verdict=la.PHOTO_MANUAL_VERDICT_CLEAN)
+            | (
+                Q(photo_manual_verdict=la.PHOTO_MANUAL_VERDICT_NONE)
+                & Q(photo_spoof_status=la.PHOTO_SPOOF_STATUS_CLEAN)
+            )
+        )
+        .exclude(photo_manual_verdict=la.PHOTO_MANUAL_VERDICT_SUSPICIOUS)
+        .order_by("-date_at", "-first_in", "-id")
+    )
+    cap = max(0, int(getattr(settings, "FACE_TRAINING_LESSON_ATTENDANCE_MAX", 80)))
+    if cap == 0:
+        return []
+
+    seen: set[str] = set()
+    out: list[str] = []
+    skipped_bad_path = 0
+    skipped_missing = 0
+    skipped_unreadable = 0
+
+    for row in qs[: cap * 3].iterator(chunk_size=100):
+        raw = (row.staff_image_path or "").strip()
+        if not raw:
+            continue
+        if not _lesson_attendance_stored_path_allowed(raw):
+            skipped_bad_path += 1
+            continue
+        abs_path = os.path.abspath(str(raw))
+        if abs_path in seen:
+            continue
+        if not os.path.isfile(abs_path):
+            skipped_missing += 1
+            logger.info(
+                "LessonAttendance id=%s: файл фото отсутствует на диске, пропуск для обучения: %s",
+                row.pk,
+                abs_path,
+            )
+            continue
+        if imread_bgr(abs_path) is None:
+            skipped_unreadable += 1
+            logger.warning(
+                "LessonAttendance id=%s: фото не читается (битый/пустой файл), пропуск: %s",
+                row.pk,
+                abs_path,
+            )
+            continue
+        seen.add(abs_path)
+        out.append(abs_path)
+        if len(out) >= cap:
+            break
+
+    logger.info(
+        "lesson_attendance paths for %s: added %s (cap=%s, skipped path_outside=%s missing=%s unreadable=%s)",
+        staff.pin,
+        len(out),
+        cap,
+        skipped_bad_path,
+        skipped_missing,
+        skipped_unreadable,
+    )
+    return out
+
+
+def create_embeddings_for_staff(staff):
+    """Compute and save ``{pin}_embeddings.npy`` next to the staff avatar.
+
+    Concatenates paths from: avatar file, images under ``AUGMENT_ROOT``, and
+    optionally lesson attendance photos (see
+    ``FACE_TRAINING_INCLUDE_LESSON_ATTENDANCE``). Attendance images are read from
+    their original paths only; they are **not** copied into the augment folder.
+    Embeddings are built in memory then persisted as a single ``.npy`` file.
+
+    Args:
+        staff: ``Staff`` with a valid ``avatar`` on disk.
 
     Raises:
-        ValueError: If avatar is missing or embeddings cannot be created.
+        ValueError: If the avatar is missing or no embeddings could be produced.
     """
     try:
         if not staff.avatar or not os.path.exists(staff.avatar.path):
@@ -296,7 +420,8 @@ def create_embeddings_for_staff(staff):
                 if img.endswith((".png", ".jpg", ".jpeg"))
             ]
 
-        all_image_paths = [avatar_image_path] + augmented_images
+        lesson_paths = _collect_readable_lesson_attendance_paths_for_staff(staff)
+        all_image_paths = [avatar_image_path] + augmented_images + lesson_paths
 
         embeddings = create_embeddings_from_images(all_image_paths)
 
@@ -320,19 +445,22 @@ def create_embeddings_for_staff(staff):
 
 
 def create_embeddings_from_images(image_paths):
-    """
-    Creates embeddings for a list of image paths (avatar + augmented face crops).
+    """Create ArcFace embeddings for each readable image path.
+
+    Paths may include the avatar, files under ``AUGMENT_ROOT``, and any other
+    absolute image paths (e.g. lesson attendance photos); images are loaded
+    from disk per call—nothing is copied into the augment directory here.
 
     Drops outliers whose cosine similarity to the L2-normalized geometric median
-    direction is below ``FACE_EMBEDDING_OUTLIER_COS_MIN`` (default 0.35), to keep
-    the gallery tight when augmentation adds noisy crops. If filtering would
-    remove everything, returns all successfully computed embeddings.
+    direction is below ``FACE_EMBEDDING_OUTLIER_COS_MIN`` (default ``0.35``). If
+    filtering would remove all rows, returns every successfully computed
+    embedding.
 
     Args:
-        image_paths (list): List of image file paths.
+        image_paths: Iterable of absolute paths to image files.
 
     Returns:
-        list: List of embeddings (list[float]).
+        List of embedding vectors (each a ``list`` of ``float``).
     """
     min_cos = float(getattr(settings, "FACE_EMBEDDING_OUTLIER_COS_MIN", 0.35))
     raw_paths: list[str] = []
@@ -621,14 +749,42 @@ def verify_staff_face_embedding_score(
         sims_sorted = np.sort(sims)
         second_best = float(sims_sorted[-2])
         margin = max_sim - second_best
-        thr_lo = thr - 0.035
-        if score >= thr_lo and max_sim >= thr - 0.02 and margin >= 0.05:
+        score_slack = float(getattr(settings, "FACE_VERIFY_RELAXED_SCORE_SLACK", 0.045))
+        max_slack = float(getattr(settings, "FACE_VERIFY_RELAXED_MAX_SLACK", 0.028))
+        margin_min = float(getattr(settings, "FACE_VERIFY_RELAXED_MARGIN_MIN", 0.042))
+        thr_lo = thr - score_slack
+        if score >= thr_lo and max_sim >= thr - max_slack and margin >= margin_min:
             verified = True
             relaxed = True
-    if not verified:
-        acc_delta = float(getattr(settings, "FACE_VERIFY_ACCESSORY_DELTA", 0.045))
-        acc_min = float(getattr(settings, "FACE_VERIFY_ACCESSORY_MIN_SIM", 0.68))
-        if max_sim >= acc_min and max_sim >= thr - acc_delta:
+    if not verified and bool(getattr(settings, "FACE_VERIFY_ACCESSORY_ENABLE", True)):
+        acc_max_min = float(getattr(settings, "FACE_VERIFY_ACCESSORY_MAX_MIN", 0.71))
+        gap_need = float(
+            getattr(settings, "FACE_VERIFY_ACCESSORY_SCORE_GAP_MIN", 0.035)
+        )
+        acc_margin = float(
+            getattr(settings, "FACE_VERIFY_ACCESSORY_SECOND_MARGIN", 0.044)
+        )
+        single_max_min = float(
+            getattr(settings, "FACE_VERIFY_ACCESSORY_SINGLE_MAX_MIN", 0.685)
+        )
+        single_score_min = float(
+            getattr(settings, "FACE_VERIFY_ACCESSORY_SINGLE_SCORE_MIN", 0.655)
+        )
+        if n >= 2 and max_sim >= acc_max_min and score < thr:
+            sims_sorted = np.sort(sims)
+            second_best = float(sims_sorted[-2])
+            margin2 = max_sim - second_best
+            gap_ms = max_sim - score
+            if gap_ms >= gap_need and margin2 >= acc_margin:
+                verified = True
+                relaxed = True
+                accessory_relaxed = True
+        elif (
+            n == 1
+            and max_sim >= single_max_min
+            and max_sim < thr
+            and score >= single_score_min
+        ):
             verified = True
             relaxed = True
             accessory_relaxed = True
