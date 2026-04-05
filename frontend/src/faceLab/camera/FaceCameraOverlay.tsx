@@ -9,7 +9,11 @@ import {
 import { createPortal, flushSync } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import type { Aspect, Facing, FaceCameraOverlayRef } from "./types";
-import { vibrate, playShutterSound } from "./camera-utils";
+import {
+  vibrate,
+  playShutterSound,
+  defaultAspectForViewport,
+} from "./camera-utils";
 import {
   listVideoDevices,
   pickPrimaryCamera,
@@ -42,7 +46,10 @@ import {
 } from "./CameraUIComponents";
 import { TopControls, BottomControls } from "./CameraControls";
 import { camLog } from "./cameraLog";
-import { useFaceLiveness, type LivenessPhase } from "../liveness/useFaceLiveness";
+import {
+  useFaceLiveness,
+  type LivenessPhase,
+} from "../liveness/useFaceLiveness";
 
 type Props = {
   onShot: (blob: Blob) => void;
@@ -60,7 +67,18 @@ function FaceCameraOverlayInner(
   const [facing, setFacing] = useState<Facing>("user");
   const [error, setError] = useState<string | null>(null);
   const [gridOn, setGridOn] = useState(true);
-  const [aspect, setAspect] = useState<Aspect>("1:1");
+  const [aspect, setAspect] = useState<Aspect>("4:3");
+  const aspectUserChosenRef = useRef(false);
+
+  useEffect(() => {
+    if (aspectUserChosenRef.current) return;
+    setAspect(defaultAspectForViewport());
+  }, []);
+
+  const handleAspectChange = useCallback((next: Aspect) => {
+    aspectUserChosenRef.current = true;
+    setAspect(next);
+  }, []);
   const [flash, setFlash] = useState(false);
   const [lastShotUrl, setLastShotUrl] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -147,7 +165,8 @@ function FaceCameraOverlayInner(
     if (voiceLang === "off" || !requireLiveness || livenessSkipped) return;
     const phaseAtSchedule = liveness.phase;
     if (phaseAtSchedule === "idle") return;
-    if (phaseAtSchedule === "passed" && requireLiveness && !livenessSkipped) return;
+    if (phaseAtSchedule === "passed" && requireLiveness && !livenessSkipped)
+      return;
 
     cancelFaceLabSpeech();
     const delay = phaseAtSchedule === "loading" ? 400 : 60;
@@ -254,7 +273,10 @@ function FaceCameraOverlayInner(
           const after = await applyMaxVideoResolution(trackRef.current);
           if (cancelled) return;
           if (after?.width && after?.height && !conservative) {
-            camLog.info("Applied max resolution", `${after.width}x${after.height}`);
+            camLog.info(
+              "Applied max resolution",
+              `${after.width}x${after.height}`,
+            );
           }
           bumpReady();
         })();
@@ -303,14 +325,17 @@ function FaceCameraOverlayInner(
         }
       }, failMs);
 
-      const readyBumpTimer = window.setTimeout(() => {
-        if (video.videoWidth && video.videoHeight) {
-          window.clearTimeout(timer);
-          void applyMaxVideoResolution(trackRef.current).then(() => {
-            if (!cancelled) bumpReady();
-          });
-        }
-      }, conservative ? 2400 : 1600);
+      const readyBumpTimer = window.setTimeout(
+        () => {
+          if (video.videoWidth && video.videoHeight) {
+            window.clearTimeout(timer);
+            void applyMaxVideoResolution(trackRef.current).then(() => {
+              if (!cancelled) bumpReady();
+            });
+          }
+        },
+        conservative ? 2400 : 1600,
+      );
 
       attachStreamCleanupRef.current = () => {
         cancelled = true;
@@ -448,9 +473,13 @@ function FaceCameraOverlayInner(
           "Доступ к камере запрещён. Разрешите камеру для этого сайта в настройках браузера и откройте съёмку снова.",
         );
       } else if (last === "notfound") {
-        setError("Камера не найдена или недоступна. Проверьте подключение устройства.");
+        setError(
+          "Камера не найдена или недоступна. Проверьте подключение устройства.",
+        );
       } else {
-        setError("Не удалось открыть камеру (устройство занято или не поддерживается).");
+        setError(
+          "Не удалось открыть камеру (устройство занято или не поддерживается).",
+        );
       }
     },
     [stopStream, tryOpenCamera],
@@ -551,12 +580,7 @@ function FaceCameraOverlayInner(
             await waitForVideoPipelineFrames(v, 5);
             playShutterSound();
             if (!fromAuto) {
-              const previewUrl = createPreviewUrl(
-                v,
-                frame,
-                c,
-                shouldMirror,
-              );
+              const previewUrl = createPreviewUrl(v, frame, c, shouldMirror);
               if (previewUrl) {
                 setLastShotUrl(previewUrl);
               }
@@ -662,7 +686,10 @@ function FaceCameraOverlayInner(
         const capabilities = track.getCapabilities?.() as {
           focusMode?: string[];
         };
-        if (!capabilities?.focusMode || !Array.isArray(capabilities.focusMode)) {
+        if (
+          !capabilities?.focusMode ||
+          !Array.isArray(capabilities.focusMode)
+        ) {
           return;
         }
 
@@ -672,7 +699,9 @@ function FaceCameraOverlayInner(
 
         await track.applyConstraints({
           advanced: [
-            { pointsOfInterest: [{ x, y }] } as unknown as MediaTrackConstraintSet,
+            {
+              pointsOfInterest: [{ x, y }],
+            } as unknown as MediaTrackConstraintSet,
           ],
         });
 
@@ -796,7 +825,7 @@ function FaceCameraOverlayInner(
                 gridOn={gridOn}
                 onToggleGrid={() => setGridOn((prev) => !prev)}
                 aspect={aspect}
-                onAspectChange={setAspect}
+                onAspectChange={handleAspectChange}
               />
 
               <BottomControls
@@ -812,7 +841,8 @@ function FaceCameraOverlayInner(
                   manualShutterLocked
                     ? liveness.phase === "passed"
                       ? "Снимок…"
-                      : displayLivenessHint || "Снимок сделается сам после проверки"
+                      : displayLivenessHint ||
+                        "Снимок сделается сам после проверки"
                     : null
                 }
               />

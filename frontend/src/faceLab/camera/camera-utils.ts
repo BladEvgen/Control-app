@@ -12,7 +12,10 @@ export function vibrate(pattern: number | number[]): void {
 
 export function playShutterSound(): void {
   try {
-    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
     if (!AudioCtx) return;
 
     const ctx = new AudioCtx();
@@ -40,6 +43,15 @@ export function playShutterSound(): void {
   } catch {
     /* ignore */
   }
+}
+
+export function defaultAspectForViewport(): Aspect {
+  if (typeof window === "undefined") {
+    return "4:3";
+  }
+  const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+  const narrow = window.matchMedia("(max-width: 900px)").matches;
+  return coarsePointer || narrow ? "3:4" : "4:3";
 }
 
 export function getAspectRatio(aspect: Aspect): number {
