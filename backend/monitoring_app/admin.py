@@ -1,5 +1,6 @@
 import logging
 import math
+import mimetypes
 import os
 from calendar import month_abbr, monthrange
 from collections import defaultdict
@@ -8,6 +9,7 @@ from datetime import date, datetime, time, timedelta
 from functools import reduce
 from operator import or_
 from typing import Any, cast
+from urllib.parse import quote
 
 from django.conf import settings
 from django.contrib import admin, messages
@@ -21,14 +23,15 @@ from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Avg, Case, Count, F, IntegerField, Q, Value, When
 from django.db.utils import DatabaseError, OperationalError
-from django.http import HttpResponse, JsonResponse
-from django.shortcuts import redirect
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse
+from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.formats import date_format
-from django.utils.html import format_html, format_html_join
+from django.utils.html import escape, format_html, format_html_join
+from django.utils.safestring import mark_safe
 from django_admin_geomap import ModelAdmin
 from monitoring_app import utils as monitoring_utils
 from monitoring_app.lesson_locations_conf import (
@@ -59,6 +62,20 @@ from monitoring_app.models import (
     StaffAttendance,
     StaffFaceMask,
     UserProfile,
+)
+from monitoring_app.staff_face_ml import (
+    allowed_augment_basename,
+    allowed_ml_basenames,
+    augment_dir_for_pin,
+    count_augment_images,
+    face_ml_list_badge,
+    list_augment_basenames,
+    render_staff_face_ml_table,
+    staff_workspace_dir,
+)
+from monitoring_app.staff_ml_preview_viz import (
+    build_npy_embeddings_preview_body,
+    build_pt_checkpoint_preview_body,
 )
 
 logger = logging.getLogger("monitoring_app.admin")
@@ -1176,6 +1193,7 @@ class StaffAdmin(admin.ModelAdmin):
         "department",
         "display_positions",
         "needs_training_status",
+        "face_recognition_ml_badge",
     )
     list_display_links = ("pin", "full_name")
     list_per_page = 50
@@ -1195,7 +1213,12 @@ class StaffAdmin(admin.ModelAdmin):
     ]
     ordering = ("-pin", "-department", "surname", "name")
     inlines = [SalaryInline, AbsentReasonInline, RemoteWorkInline]
-    readonly_fields = ("pin", "avatar_thumbnail", "attendance_history")
+    readonly_fields = (
+        "pin",
+        "avatar_thumbnail",
+        "face_recognition_ml_panel",
+        "attendance_history",
+    )
 
     fieldsets = (
         (
@@ -1213,10 +1236,12 @@ class StaffAdmin(admin.ModelAdmin):
             },
         ),
         (
-            "Машинное обучение",
+            "Машинное обучение (лица)",
             {
-                "fields": ("needs_training",),
-                "classes": ("grp-collapse grp-closed",),
+                "fields": ("needs_training", "face_recognition_ml_panel"),
+                "description": "Файлы рядом с аватаром: embeddings.npy, model.pt, best_model.pt; "
+                "аугментации — в каталоге AUGMENT_ROOT (см. строку «Аугментации» в таблице).",
+                "classes": ("wide", "grp-collapse grp-open"),
             },
         ),
         (
@@ -1273,6 +1298,263 @@ class StaffAdmin(admin.ModelAdmin):
         return format_html('<span style="color: green;">Модель обучена</span>')
 
     needs_training_status.short_description = "Статус обучения модели"
+
+    @admin.display(description="ML-файлы")
+    def face_recognition_ml_badge(self, obj):
+        """Changelist badge for embeddings, checkpoints, and augment count.
+
+        Args:
+            obj: ``Staff`` row.
+
+        Returns:
+            ``SafeString`` compact HTML badge.
+        """
+        return face_ml_list_badge(obj)
+
+    @admin.display(description="Эмбеддинги / .pt / аугментации")
+    def face_recognition_ml_panel(self, obj):
+        """Read-only ML artifact table with download, preview, and augment gallery links.
+
+        Args:
+            obj: ``Staff`` instance (unsaved records show a short help message).
+
+        Returns:
+            ``SafeString`` HTML from ``render_staff_face_ml_table``.
+        """
+        if not obj.pk:
+            return mark_safe(
+                '<p class="help" style="margin:0;">Сохраните запись — появится таблица файлов и ссылки.</p>'
+            )
+        dl = reverse(
+            "admin:monitoring_app_staff_ml_file",
+            kwargs={"object_id": obj.pk},
+        )
+        pv = reverse(
+            "admin:monitoring_app_staff_ml_preview",
+            kwargs={"object_id": obj.pk},
+        )
+        gal = reverse(
+            "admin:monitoring_app_staff_ml_augment_gallery",
+            kwargs={"object_id": obj.pk},
+        )
+        return render_staff_face_ml_table(
+            obj,
+            file_download_url=dl,
+            file_preview_url=pv,
+            augment_gallery_url=gal,
+        )
+
+    def get_urls(self):
+        """Register staff-scoped ML file, preview, and augment gallery routes.
+
+        Returns:
+            URL patterns with custom paths prepended before default ``ModelAdmin`` URLs.
+        """
+        urls = super().get_urls()
+        info = self.model._meta.app_label, self.model._meta.model_name
+        custom = [
+            path(
+                "<int:object_id>/ml-file/",
+                self.admin_site.admin_view(self.staff_ml_file_download),
+                name=f"{info[0]}_{info[1]}_ml_file",
+            ),
+            path(
+                "<int:object_id>/ml-preview/",
+                self.admin_site.admin_view(self.staff_ml_preview),
+                name=f"{info[0]}_{info[1]}_ml_preview",
+            ),
+            path(
+                "<int:object_id>/ml-augment/",
+                self.admin_site.admin_view(self.staff_ml_augment_serve),
+                name=f"{info[0]}_{info[1]}_ml_augment",
+            ),
+            path(
+                "<int:object_id>/ml-augment-gallery/",
+                self.admin_site.admin_view(self.staff_ml_augment_gallery),
+                name=f"{info[0]}_{info[1]}_ml_augment_gallery",
+            ),
+        ]
+        return custom + urls
+
+    def staff_ml_file_download(self, request, object_id):
+        """Stream a whitelisted ML file from the staff workspace as a download.
+
+        Args:
+            request: HTTP request; query ``f`` is the basename.
+            object_id: ``Staff`` primary key.
+
+        Returns:
+            ``FileResponse`` with ``Content-Disposition: attachment``, or 400/404.
+        """
+        fname = (request.GET.get("f") or "").strip()
+        staff = get_object_or_404(Staff, pk=object_id)
+        if fname not in allowed_ml_basenames(staff.pin):
+            return HttpResponse(
+                "Недопустимое имя файла".encode("utf-8"),
+                status=400,
+                content_type="text/plain; charset=utf-8",
+            )
+        ws = staff_workspace_dir(staff)
+        if ws is None:
+            raise Http404("Нет каталога сотрудника")
+        fp = (ws / fname).resolve()
+        try:
+            fp.relative_to(ws.resolve())
+        except ValueError:
+            raise Http404()
+        if not fp.is_file():
+            raise Http404()
+        return FileResponse(open(fp, "rb"), as_attachment=True, filename=fname)
+
+    def staff_ml_preview(self, request, object_id):
+        """Return an HTML page with a human-friendly overview of ``.npy`` or ``.pt`` files.
+
+        Args:
+            request: HTTP request; query ``f`` is the whitelisted basename.
+            object_id: ``Staff`` primary key.
+
+        Returns:
+            ``HttpResponse`` ``text/html`` or 400/404.
+        """
+        fname = (request.GET.get("f") or "").strip()
+        staff = get_object_or_404(Staff, pk=object_id)
+        if fname not in allowed_ml_basenames(staff.pin):
+            return HttpResponse(
+                "Недопустимое имя файла".encode("utf-8"),
+                status=400,
+                content_type="text/plain; charset=utf-8",
+            )
+        ws = staff_workspace_dir(staff)
+        if ws is None:
+            raise Http404("Нет каталога сотрудника")
+        fp = (ws / fname).resolve()
+        try:
+            fp.relative_to(ws.resolve())
+        except ValueError:
+            raise Http404()
+        if not fp.is_file():
+            raise Http404()
+
+        pin_s = escape(staff.pin)
+        file_s = escape(fname)
+        back = reverse("admin:monitoring_app_staff_change", args=[staff.pk])
+        dl_href = (
+            reverse(
+                "admin:monitoring_app_staff_ml_file",
+                kwargs={"object_id": staff.pk},
+            )
+            + "?f="
+            + quote(fname, safe="")
+        )
+
+        if fname.endswith(".npy"):
+            try:
+                body = build_npy_embeddings_preview_body(fp, fname)
+            except Exception as exc:
+                body = (
+                    f"<p>Не удалось прочитать .npy: <code>{escape(str(exc))}</code></p>"
+                )
+        else:
+            body = build_pt_checkpoint_preview_body(fp, fname, dl_href)
+
+        html = (
+            '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>'
+            f"Обзор файла {file_s}</title>"
+            "<style>body{font-family:system-ui,sans-serif;margin:20px;max-width:960px;line-height:1.45;}"
+            "a{color:#2563eb;}</style></head><body>"
+            f'<p><a href="{escape(back)}">← к карточке сотрудника ({pin_s})</a></p>'
+            '<h1 style="font-size:20px;font-weight:600;color:#0f172a;">Обзор ML-файла</h1>'
+            f'<p style="color:#64748b;font-size:13px;margin:-6px 0 18px 0;">{file_s}</p>{body}</body></html>'
+        )
+        return HttpResponse(
+            html.encode("utf-8"),
+            content_type="text/html; charset=utf-8",
+        )
+
+    def staff_ml_augment_serve(self, request, object_id):
+        """Serve one augment image inline from ``AUGMENT_ROOT`` (basename allowlist).
+
+        Args:
+            request: HTTP request; query ``f`` is the image basename.
+            object_id: ``Staff`` primary key.
+
+        Returns:
+            ``FileResponse`` with ``Content-Disposition: inline``, or 400/404.
+        """
+        fname = (request.GET.get("f") or "").strip()
+        staff = get_object_or_404(Staff, pk=object_id)
+        if not allowed_augment_basename(staff.pin, fname):
+            return HttpResponse(
+                "Недопустимое имя файла".encode("utf-8"),
+                status=400,
+                content_type="text/plain; charset=utf-8",
+            )
+        aug_dir = augment_dir_for_pin(staff.pin)
+        fp = (aug_dir / fname).resolve()
+        try:
+            fp.relative_to(aug_dir.resolve())
+        except ValueError:
+            raise Http404()
+        if not fp.is_file():
+            raise Http404()
+        guessed, _ = mimetypes.guess_type(fname)
+        content_type = guessed or "application/octet-stream"
+        resp = FileResponse(open(fp, "rb"), as_attachment=False, filename=fname)
+        resp["Content-Type"] = content_type
+        resp["Content-Disposition"] = f'inline; filename="{fname}"'
+        return resp
+
+    def staff_ml_augment_gallery(self, request, object_id):
+        """Render a standalone HTML page listing augment thumbnails for one staff.
+
+        Args:
+            request: HTTP request (unused; kept for admin_view signature).
+            object_id: ``Staff`` primary key.
+
+        Returns:
+            ``HttpResponse`` ``text/html`` with embedded image URLs to
+            ``staff_ml_augment_serve``.
+        """
+        staff = get_object_or_404(Staff, pk=object_id)
+        pin = staff.pin
+        names = list_augment_basenames(pin)
+        base = reverse(
+            "admin:monitoring_app_staff_ml_augment",
+            kwargs={"object_id": staff.pk},
+        )
+        back = reverse("admin:monitoring_app_staff_change", args=[staff.pk])
+        tiles: list[str] = []
+        for name in names:
+            q = quote(name, safe="")
+            src = f"{base}?f={q}"
+            tiles.append(
+                '<div style="display:inline-block;margin:8px;text-align:center;'
+                'vertical-align:top;">'
+                f'<a href="{escape(src)}" target="_blank" rel="noopener">'
+                f'<img src="{escape(src)}" alt="" loading="lazy" '
+                'style="width:140px;height:140px;object-fit:cover;'
+                'border:1px solid #e2e8f0;border-radius:6px;background:#fff;"/></a>'
+                f'<div style="font-size:10px;max-width:140px;word-break:break-all;'
+                f'margin-top:6px;color:#64748b;">{escape(name)}</div></div>'
+            )
+        body = (
+            f'<p style="color:#64748b;">Файлов в каталоге аугментаций: <strong>{len(names)}</strong></p>'
+            + "".join(tiles)
+        )
+        if not names:
+            body = '<p style="color:#b91c1c;">Нет подходящих изображений в каталоге аугментаций.</p>'
+        html = (
+            '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>'
+            f"Аугментации {escape(pin)}</title>"
+            "<style>body{font-family:system-ui,sans-serif;margin:20px;background:#f8fafc;}"
+            "a{color:#2563eb;}</style></head><body>"
+            f'<p><a href="{escape(back)}">← к карточке сотрудника ({escape(pin)})</a></p>'
+            f'<h1 style="font-size:18px;">Галерея аугментаций ({escape(pin)})</h1>{body}</body></html>'
+        )
+        return HttpResponse(
+            html.encode("utf-8"),
+            content_type="text/html; charset=utf-8",
+        )
 
     @admin.display(description="Отдел", ordering="department__name")
     def department(self, obj):
@@ -1829,6 +2111,7 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
         "mask_encoding",
         "staff",
         "staff_avatar",
+        "staff_face_ml_bridge",
         "augmented_images",
     )
     list_filter = (
@@ -1853,77 +2136,110 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
     staff_avatar.short_description = "Аватар сотрудника"
 
     def augmentation_status(self, obj):
-        augmented_dir = str(settings.AUGMENT_ROOT).format(staff_pin=obj.staff.pin)
-        if not os.path.exists(augmented_dir):
-            return format_html('<span style="color: red;">❌ Нет аугментаций</span>')
-
-        pattern = f"{obj.staff.pin}_augmented_"
-        count = 0
-        with os.scandir(augmented_dir) as it:
-            for entry in it:
-                if (
-                    entry.is_file()
-                    and entry.name.startswith(pattern)
-                    and entry.name.endswith(".jpg")
-                ):
-                    count += 1
-
+        count, exists = count_augment_images(obj.staff.pin)
+        if not exists:
+            return format_html(
+                '<span style="color: red;">❌ Нет каталога аугментаций</span>'
+            )
         if count == 0:
-            return format_html('<span style="color: red;">Нет аугментаций</span>')
-        elif count < 10:
             return format_html(
-                '<span style="color: orange;">Недостаточно аугментаций ({}/10)</span>',
+                '<span style="color: red;">Нет файлов <code>{}_aug_*</code></span>',
+                obj.staff.pin,
+            )
+        if count < 10:
+            return format_html(
+                '<span style="color: orange;">Мало аугментаций ({}/10 рекомендуется)</span>',
                 count,
             )
-        else:
-            return format_html(
-                '<span style="color: green;">Аугментировано ({} изображений)</span>',
-                count,
-            )
+        return format_html(
+            '<span style="color: green;">{} аугментированных кадров</span>',
+            count,
+        )
 
     augmentation_status.short_description = "Статус аугментации"
 
     def augmented_images(self, obj):
-        cache_key = f"augmented_images_{obj.staff.pin}"
+        pin = obj.staff.pin
+        cache_key = f"augmented_images_v2_{pin}"
         images_html = cache.get(cache_key)
 
         if images_html is None:
-            augmented_dir = str(settings.AUGMENT_ROOT).format(staff_pin=obj.staff.pin)
-            if not os.path.exists(augmented_dir):
-                return "No Augmented Images"
+            aug_dir = augment_dir_for_pin(pin)
+            if not aug_dir.is_dir():
+                return "Нет каталога аугментаций"
 
-            pattern = f"{obj.staff.pin}_augmented_"
+            names: list[str] = []
+            for name in os.listdir(aug_dir):
+                low = name.lower()
+                if not low.endswith((".jpg", ".jpeg", ".png", ".webp")):
+                    continue
+                if name.startswith(f"{pin}_aug_") or name.startswith(
+                    f"{pin}_augmented_"
+                ):
+                    names.append(name)
+            names.sort()
+
             snippet_parts: list[str] = []
-            with os.scandir(augmented_dir) as it:
-                for entry in it:
-                    if (
-                        entry.is_file()
-                        and entry.name.startswith(pattern)
-                        and entry.name.endswith(".jpg")
-                    ):
-                        snippet = format_html(
-                            '<div style="border: 1px solid #ddd; padding: 3px; border-radius: 3px;">'
-                            '<img src="{}" width="80" height="80" style="object-fit: cover;" />'
-                            "</div>",
-                            os.path.join(
-                                settings.AUGMENT_URL, obj.staff.pin, entry.name
-                            ),
-                        )
-                        snippet_parts.append(str(snippet))
+            base_url = f"{str(settings.AUGMENT_URL).rstrip('/')}/{pin}/"
+            for name in names[:48]:
+                snippet = format_html(
+                    '<div style="border: 1px solid #ddd; padding: 3px; border-radius: 3px;">'
+                    '<img src="{}" width="80" height="80" style="object-fit: cover;" alt="" />'
+                    "</div>",
+                    f"{base_url}{name}",
+                )
+                snippet_parts.append(str(snippet))
 
             if not snippet_parts:
-                return "No Augmented Images"
+                return "Нет аугментированных изображений"
+
+            more = ""
+            if len(names) > 48:
+                more = f'<p style="margin:8px 0 0 0;font-size:12px;color:#64748b;">Ещё {len(names) - 48} файлов…</p>'
 
             images_html = (
                 '<div style="display: flex; flex-wrap: wrap; gap: 5px;">'
                 + "".join(snippet_parts)
                 + "</div>"
+                + more
             )
             cache.set(cache_key, images_html, timeout=3600)
 
         return format_html(images_html)
 
     augmented_images.short_description = "Аугментированные фото"
+
+    @admin.display(description="Эмбеддинги / .pt / аугментации (сотрудник)")
+    def staff_face_ml_bridge(self, obj):
+        """Reuse ``StaffAdmin`` ML table links on the ``StaffFaceMask`` change form.
+
+        Args:
+            obj: ``StaffFaceMask`` instance.
+
+        Returns:
+            ``SafeString`` HTML from ``render_staff_face_ml_table`` or a dash help line.
+        """
+        s = obj.staff
+        if not s.pk:
+            return mark_safe('<p class="help">—</p>')
+        dl = reverse(
+            "admin:monitoring_app_staff_ml_file",
+            kwargs={"object_id": s.pk},
+        )
+        pv = reverse(
+            "admin:monitoring_app_staff_ml_preview",
+            kwargs={"object_id": s.pk},
+        )
+        gal = reverse(
+            "admin:monitoring_app_staff_ml_augment_gallery",
+            kwargs={"object_id": s.pk},
+        )
+        return render_staff_face_ml_table(
+            s,
+            file_download_url=dl,
+            file_preview_url=pv,
+            augment_gallery_url=gal,
+        )
 
     def staff_department(self, obj):
         return obj.staff.department
@@ -1948,6 +2264,14 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
                     "staff_avatar",
                 ),
                 "classes": ("wide",),
+            },
+        ),
+        (
+            "Face-ML артефакты на диске",
+            {
+                "fields": ("staff_face_ml_bridge",),
+                "description": "Те же файлы, что в карточке сотрудника: .npy, .pt, счёт аугментаций.",
+                "classes": ("wide", "grp-collapse grp-open"),
             },
         ),
         (
