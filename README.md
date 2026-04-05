@@ -152,6 +152,43 @@ python manage.py migrate
 python manage.py runserver
 ```
 
+### Face recognition models (ArcFace + optional face parsing)
+
+Everything runs on **ordinary RGB photos**; no depth/IR sensors are required.
+
+| Component | Role | Install |
+|-----------|------|---------|
+| **InsightFace `buffalo_l`** | Face detection, 5-point landmarks, ArcFace embeddings | Pulled automatically on first use into `~/.insightface/models/buffalo_l/` (via `pip install insightface`). |
+| **BiSeNet face parsing (ONNX)** | Segments facial parts including **eyeglasses** (`eye_g`) — better gallery aug (add/remove glasses) and extra fields on `verify_face` | Place **`face_parsing_resnet18.onnx`** (~53 MB) under `GENERAL_MODELS_ROOT` (default: `backend/models/`). |
+
+**Download parsing ONNX manually:**
+
+```bash
+cd backend
+bash scripts/download_face_parsing_onnx.sh
+```
+
+Or:
+
+```bash
+mkdir -p backend/models
+curl -fL -o backend/models/face_parsing_resnet18.onnx \
+  https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.onnx
+```
+
+**Auto-download on first use:** set `FACE_PARSING_AUTO_DOWNLOAD=1` in `backend/.env` (writes the same path as above).
+
+**Useful `.env` flags:**
+
+- `FACE_PARSING_ENABLE` — `1`/`0` (default `1`; if the ONNX file is missing, parsing is skipped and ArcFace still works).
+- `FACE_PARSING_MODEL_PATH` — absolute path to the `.onnx` if not using `GENERAL_MODELS_ROOT/face_parsing_resnet18.onnx`.
+- `FACE_PARSING_GLASSES_FRAC_MIN` — minimum fraction of “glasses” class pixels to treat as wearing glasses (default `0.00035`).
+- `FACE_PARSING_USE_FOR_AUGMENT` / `FACE_PARSING_USE_FOR_API` — turn parsing off for augmentation only or for the verify API only.
+
+After changing augmentation, rebuild staff gallery embeddings as you usually do in this project.
+
+Parsing weights: [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) (MIT), ResNet18 ONNX.
+
 # Frontend Setup
 
 1. Navigate to the frontend directory:
