@@ -1996,7 +1996,7 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
         }
         return result
 
-    @patch("monitoring_app.tasks.get_channel_layer")
+    @patch("monitoring_app.photo_ws_broadcast.get_channel_layer")
     @patch("monitoring_app.photo_pad.check_photo")
     def test_hourly_scan_invalidates_cache_and_broadcasts_clean_update(
         self,
@@ -2042,7 +2042,7 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
         self.assertEqual(payload["attendance_ids"], [lesson.id])
         self.assertEqual(payload["attendance_id"], lesson.id)
 
-    @patch("monitoring_app.tasks.get_channel_layer")
+    @patch("monitoring_app.photo_ws_broadcast.get_channel_layer")
     @patch("monitoring_app.photo_pad.check_photo")
     def test_hourly_scan_skips_manual_verdict_without_live_updates(
         self,

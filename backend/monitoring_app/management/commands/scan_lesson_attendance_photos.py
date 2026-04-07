@@ -197,6 +197,7 @@ class Command(BaseCommand):
 
         qs = qs.order_by("pk").only(
             "pk",
+            "date_at",
             "staff_image_path",
             "photo_manual_verdict",
         )
@@ -230,6 +231,7 @@ class Command(BaseCommand):
             "manual_reset": 0,
         }
         elapsed_list: list[float] = []
+        updated_ws_by_date: dict[datetime.date, list[int]] = {}
 
         for start in range(0, total, batch_size):
             batch = records[start : start + batch_size]
@@ -286,8 +288,16 @@ class Command(BaseCommand):
                             }
                         )
                         stats["manual_reset"] += 1
-                    LessonAttendance.objects.filter(pk=record.pk).update(**update_kwargs)
-                elif reset_manual_verdicts and record.photo_manual_verdict != MANUAL_NONE:
+                    rows = LessonAttendance.objects.filter(pk=record.pk).update(
+                        **update_kwargs
+                    )
+                    if rows:
+                        updated_ws_by_date.setdefault(record.date_at, []).append(
+                            record.pk
+                        )
+                elif (
+                    reset_manual_verdicts and record.photo_manual_verdict != MANUAL_NONE
+                ):
                     stats["manual_reset"] += 1
 
                 if result.status == "suspicious":
@@ -323,3 +333,12 @@ class Command(BaseCommand):
         )
         if dry_run:
             self.stdout.write(self.style.WARNING("dry-run: изменения НЕ сохранены"))
+        elif updated_ws_by_date:
+            from monitoring_app.photo_ws_broadcast import (
+                broadcast_lesson_attendance_photo_meta_updates,
+            )
+
+            broadcast_lesson_attendance_photo_meta_updates(
+                updated_ws_by_date,
+                log_prefix="scan_lesson_attendance_photos_cmd",
+            )

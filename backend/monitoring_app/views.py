@@ -17,9 +17,7 @@ from pathlib import Path
 from typing import Any, Generator, List, Optional, Tuple, cast
 
 import monitoring_app.tasks as tasks
-from asgiref.sync import async_to_sync
 from celery.result import AsyncResult
-from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import authenticate, get_user_model, login, logout
@@ -63,6 +61,9 @@ from monitoring_app.lesson_locations_conf import (
     CLUSTER_THRESHOLD_M,
     DEFAULT_ACCEPTANCE_RADIUS_M,
     SAME_POINT_THRESHOLD_M,
+)
+from monitoring_app.photo_ws_broadcast import (
+    broadcast_lesson_attendance_photo_meta_updates,
 )
 from monitoring_app.services import building_attendance_report
 from monitoring_app.signals import invalidate_class_location_cache_impl
@@ -1693,8 +1694,7 @@ def map_location(request):
         logger.info(f"Using date: {date_at}")
 
         cache_key = (
-            f"map_location_{LESSON_REPORT_CACHE_VERSION}_{date_at}_"
-            f"{employees_required}"
+            f"map_location_{LESSON_REPORT_CACHE_VERSION}_{date_at}_{employees_required}"
         )
 
         def generate_map_data():
@@ -6446,10 +6446,6 @@ def _effective_status_filter(status_value: str) -> Q:
     )
 
 
-def _sanitize_photo_group_name(name: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_\\-\\.]", "_", name)[:100]
-
-
 def _invalidate_photo_cache_for_records(records: List[models.LessonAttendance]) -> None:
     if not records:
         return
@@ -6461,37 +6457,13 @@ def _invalidate_photo_cache_for_records(records: List[models.LessonAttendance]) 
 def _broadcast_photo_updates(records: List[models.LessonAttendance]) -> None:
     if not records:
         return
-    channel_layer = get_channel_layer()
-    if channel_layer is None:
-        return
-    version_ts = timezone.now().isoformat()
-    grouped_ids: dict[str, list[int]] = {}
+    grouped: dict[datetime.date, list[int]] = {}
     for record in records:
-        key = record.date_at.isoformat()
-        grouped_ids.setdefault(key, []).append(record.id)
-
-    for iso_date, raw_ids in grouped_ids.items():
-        group_name = _sanitize_photo_group_name(f"photos_{iso_date}")
-        unique_ids = list(dict.fromkeys(raw_ids))
-        try:
-            for start in range(0, len(unique_ids), 200):
-                chunk = unique_ids[start : start + 200]
-                payload = {
-                    "type": "new_photo",
-                    "attendance_ids": chunk,
-                    "op": "updated",
-                    "stateCode": "UPDATED_META",
-                    "versionTs": version_ts,
-                }
-                if len(chunk) == 1:
-                    payload["attendance_id"] = chunk[0]
-                async_to_sync(channel_layer.group_send)(group_name, payload)
-        except Exception:
-            logger.exception(
-                "Failed to broadcast lesson attendance photo bulk update ids=%s date=%s",
-                unique_ids[:10],
-                iso_date,
-            )
+        grouped.setdefault(record.date_at, []).append(record.id)
+    broadcast_lesson_attendance_photo_meta_updates(
+        grouped,
+        log_prefix="lesson_attendance_photo_verdicts",
+    )
 
 
 @api_view(["GET", "POST", "PUT", "PATCH"])

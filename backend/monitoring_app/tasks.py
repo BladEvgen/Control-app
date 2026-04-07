@@ -4,66 +4,18 @@ import os
 from pathlib import Path
 from typing import Any, Union, cast
 
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
 from celery import shared_task
 from django.conf import settings
-from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 from monitoring_app import models, utils
+from monitoring_app.photo_ws_broadcast import (
+    broadcast_lesson_attendance_photo_meta_updates,
+)
 
 logger = logging.getLogger(__name__)
 DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY = "department_confirmation_epoch_hour"
 DEPARTMENT_CONFIRMATION_EPOCH_TTL = 5 * 60 * 60
-PHOTO_LIVE_UPDATE_CHUNK_SIZE = 200
-
-
-def _invalidate_photo_cache_and_broadcast_updates(
-    updated_records_by_date: dict[datetime.date, list[int]],
-    *,
-    log_prefix: str,
-) -> None:
-    if not updated_records_by_date:
-        return
-
-    for lesson_date in updated_records_by_date:
-        cache.delete(f"photos_for_{lesson_date}")
-
-    channel_layer = get_channel_layer()
-    if channel_layer is None:
-        return
-
-    version_ts = timezone.now().isoformat()
-    for lesson_date, raw_ids in updated_records_by_date.items():
-        unique_ids = list(dict.fromkeys(raw_ids))
-        if not unique_ids:
-            continue
-
-        group_name = f"photos_{lesson_date.isoformat()}"
-        for chunk_start in range(0, len(unique_ids), PHOTO_LIVE_UPDATE_CHUNK_SIZE):
-            chunk = unique_ids[
-                chunk_start : chunk_start + PHOTO_LIVE_UPDATE_CHUNK_SIZE
-            ]
-            payload: dict[str, Any] = {
-                "type": "new_photo",
-                "attendance_ids": chunk,
-                "op": "updated",
-                "stateCode": "UPDATED_META",
-                "versionTs": version_ts,
-            }
-            if len(chunk) == 1:
-                payload["attendance_id"] = chunk[0]
-            try:
-                async_to_sync(channel_layer.group_send)(group_name, payload)
-            except Exception as exc:
-                logger.warning(
-                    "%s ws_broadcast_failed date=%s ids=%s error=%s",
-                    log_prefix,
-                    lesson_date.isoformat(),
-                    chunk[:10],
-                    exc,
-                )
 
 
 @shared_task
@@ -545,7 +497,7 @@ def scan_lesson_attendance_photos_hourly(
             )
 
     avg_ms = (elapsed_sum_ms / stats["checked"]) if stats["checked"] else 0.0
-    _invalidate_photo_cache_and_broadcast_updates(
+    broadcast_lesson_attendance_photo_meta_updates(
         updated_records_by_date,
         log_prefix=log_prefix,
     )
@@ -675,7 +627,7 @@ def rescan_lesson_attendance_photo_ids(
             stats[result.status] = int(stats.get(result.status, 0)) + 1
             updated_records_by_date.setdefault(record.date_at, []).append(record.id)
 
-    _invalidate_photo_cache_and_broadcast_updates(
+    broadcast_lesson_attendance_photo_meta_updates(
         updated_records_by_date,
         log_prefix=log_prefix,
     )
