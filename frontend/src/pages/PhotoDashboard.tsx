@@ -5,7 +5,6 @@ import React, {
   useRef,
   useCallback,
   useMemo,
-  startTransition,
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
@@ -17,6 +16,8 @@ import {
   FaBuilding,
   FaRegCalendarAlt,
   FaShieldAlt,
+  FaInfoCircle,
+  FaCheckCircle,
 } from "react-icons/fa";
 import {
   PhotoData,
@@ -25,7 +26,6 @@ import {
   PhotoWsMessage,
 } from "../schemas/IData";
 import { apiUrl } from "../../apiConfig";
-import { flushSync } from "react-dom";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import apiClient, { log } from "../api";
 import useWebSocket from "../hooks/useWebSocket";
@@ -50,11 +50,14 @@ const STORAGE_KEY_LAST_NON_RISK_MODE = "photoDashboard_lastNonRiskMode";
 const WS_MERGE_BUFFER_MS = 180;
 const WS_BATCH_FAILSAFE_MS = 300;
 const CREATED_NO_PHOTO_MIN_VISIBLE_MS = 2500;
-const MARQUEE_VIRTUALIZE_MIN_ITEMS = 120;
+const MARQUEE_VIRTUALIZE_MIN_ITEMS = 56;
 const MARQUEE_VIRTUAL_OVERSCAN_ITEMS = 8;
-const FILTER_SWITCH_FEEDBACK_MS = 260;
+const FILTER_SWITCH_FEEDBACK_MS = 420;
+const VERDICT_AUTO_CLOSE_DELAY_MS = 1000;
+const VERDICT_AUTO_CLOSE_DELAY_REDUCED_MS = 200;
+const VERDICT_SKIP_MODAL_CLOSE_MS = 2000;
+const VERDICT_SKIP_MODAL_CLOSE_REDUCED_MS = 800;
 const PHOTO_CARD_GRID_STAGGER_STEP = 0.03;
-const PHOTO_CARD_MARQUEE_STAGGER_STEP = 0.018;
 
 type PhotoUiStatus =
   | "clean"
@@ -224,10 +227,7 @@ const resolvePhotoUiStatus = (photo: Partial<PhotoData>): PhotoUiStatus => {
   if (manualVerdict === "suspicious") return "suspicious_manual";
   if (effectiveStatus === "suspicious") return "suspicious_auto";
   if (effectiveStatus === "error") return "check_error";
-  if (
-    effectiveStatus === "review" ||
-    effectiveStatus === "pending"
-  ) {
+  if (effectiveStatus === "review" || effectiveStatus === "pending") {
     return "check";
   }
   return "clean";
@@ -262,12 +262,44 @@ const isRiskPhotoCandidate = (photo: Partial<PhotoData>): boolean => {
   );
 };
 
+const buildVerdictSkipFallbackPatch = (
+  photo: PhotoData,
+  reasonFromServer: string,
+): PhotoData => {
+  const next: PhotoData = {
+    ...photo,
+    photoCanSetManualVerdict: false,
+  };
+  if (reasonFromServer === "status_not_reviewable") {
+    const st = photo.photoSpoofStatus ?? "pending";
+    if (st === "pending" || st === "review" || st === "error") {
+      next.photoSpoofStatus = "clean";
+    }
+  }
+  return next;
+};
+
 const stableHash = (value: string): number => {
   let hash = 5381;
   for (let i = 0; i < value.length; i += 1) {
     hash = (hash * 33) ^ value.charCodeAt(i);
   }
   return Math.abs(hash >>> 0);
+};
+
+const marqueeItemsStructureSignature = (
+  items: (PhotoData | null)[],
+): string => {
+  const n = items.length;
+  if (n === 0) return "0";
+  let h = 2166136261;
+  for (let i = 0; i < n; i += 1) {
+    const p = items[i];
+    const id = p?.id ?? -1 - i;
+    h ^= id + i * 374761393;
+    h = Math.imul(h, 16777619);
+  }
+  return `${n}:${(h >>> 0).toString(16)}`;
 };
 
 const getPhotoIdentity = (
@@ -286,10 +318,6 @@ const getPhotoIdentity = (
   ]
     .filter(Boolean)
     .join("|");
-};
-
-const getStableRowKey = (photo: PhotoData, fallbackIndex: number): string => {
-  return getPhotoIdentity(photo, fallbackIndex);
 };
 
 const formatTime = (iso: string): string => {
@@ -443,7 +471,6 @@ const MarqueeTrack: React.FC<{
   isPaused: boolean;
   cardWidthPx: number;
   forceLoop?: boolean;
-  prefersReducedMotion: boolean;
   renderItem: (
     photo: PhotoData | null,
     displayIndex: number,
@@ -458,7 +485,6 @@ const MarqueeTrack: React.FC<{
   isPaused,
   cardWidthPx,
   forceLoop = false,
-  prefersReducedMotion,
   renderItem,
 }) => {
   type VisibleSlice = {
@@ -495,19 +521,12 @@ const MarqueeTrack: React.FC<{
   const virtualSignatureRef = useRef("");
   const updateDimensionsFnRef = useRef<() => void>(() => {});
   const cardWidthPxRef = useRef(cardWidthPx);
-  const syncVisibleWindowRef = useRef<
-    (force?: boolean, opts?: { flush?: boolean }) => void
-  >(() => {});
+  const syncVisibleWindowRef = useRef<(force?: boolean) => void>(() => {});
 
   const shouldVirtualize =
     shouldAnimate && items.length >= MARQUEE_VIRTUALIZE_MIN_ITEMS;
-  const itemSignature = useMemo(
-    () =>
-      items
-        .map((photo, index) =>
-          photo ? getStableRowKey(photo, index) : `empty:${index}`,
-        )
-        .join("|"),
+  const itemsStructureSignature = useMemo(
+    () => marqueeItemsStructureSignature(items),
     [items],
   );
 
@@ -609,7 +628,7 @@ const MarqueeTrack: React.FC<{
   );
 
   const syncVisibleWindow = useCallback(
-    (force = false, opts?: { flush?: boolean }) => {
+    (force = false) => {
       const safeSeqWidth =
         Number.isFinite(seqWidthRef.current) && seqWidthRef.current > 0
           ? seqWidthRef.current
@@ -621,16 +640,9 @@ const MarqueeTrack: React.FC<{
         return;
       }
       virtualSignatureRef.current = nextWindow.signature;
-      const apply = () => {
-        setVirtualWindow((prev) =>
-          prev.signature === nextWindow.signature ? prev : nextWindow,
-        );
-      };
-      if (opts?.flush) {
-        flushSync(apply);
-      } else {
-        apply();
-      }
+      setVirtualWindow((prev) =>
+        prev.signature === nextWindow.signature ? prev : nextWindow,
+      );
     },
     [computeVisibleWindow],
   );
@@ -673,8 +685,17 @@ const MarqueeTrack: React.FC<{
       Math.ceil(containerWidth / roundedSequenceWidth) + TRACK_COPY_HEADROOM;
     const nextCopyCount = Math.max(MIN_TRACK_COPIES, copiesNeeded);
     setCopyCount((prev) => (prev === nextCopyCount ? prev : nextCopyCount));
-    syncVisibleWindow(true, { flush: true });
+    syncVisibleWindow(true);
   }, [syncVisibleWindow, forceLoop, items.length, cardWidthPx]);
+
+  const dimensionRafRef = useRef<number | null>(null);
+  const scheduleDimensionsUpdate = useCallback(() => {
+    if (dimensionRafRef.current !== null) return;
+    dimensionRafRef.current = requestAnimationFrame(() => {
+      dimensionRafRef.current = null;
+      updateDimensions();
+    });
+  }, [updateDimensions]);
 
   useLayoutEffect(() => {
     updateDimensionsFnRef.current = updateDimensions;
@@ -693,7 +714,7 @@ const MarqueeTrack: React.FC<{
 
   useLayoutEffect(() => {
     updateDimensionsFnRef.current();
-  }, [itemSignature]);
+  }, [itemsStructureSignature]);
 
   useLayoutEffect(() => {
     syncVisibleWindowRef.current = syncVisibleWindow;
@@ -705,15 +726,27 @@ const MarqueeTrack: React.FC<{
 
   useEffect(() => {
     if (!window.ResizeObserver) {
-      window.addEventListener("resize", updateDimensions);
-      return () => window.removeEventListener("resize", updateDimensions);
+      window.addEventListener("resize", scheduleDimensionsUpdate);
+      return () => {
+        window.removeEventListener("resize", scheduleDimensionsUpdate);
+        if (dimensionRafRef.current !== null) {
+          cancelAnimationFrame(dimensionRafRef.current);
+          dimensionRafRef.current = null;
+        }
+      };
     }
 
-    const ro = new ResizeObserver(updateDimensions);
+    const ro = new ResizeObserver(() => scheduleDimensionsUpdate());
     if (containerRef.current) ro.observe(containerRef.current);
 
-    return () => ro.disconnect();
-  }, [updateDimensions]);
+    return () => {
+      ro.disconnect();
+      if (dimensionRafRef.current !== null) {
+        cancelAnimationFrame(dimensionRafRef.current);
+        dimensionRafRef.current = null;
+      }
+    };
+  }, [scheduleDimensionsUpdate]);
 
   useEffect(() => {
     const onVisibility = () => {
@@ -757,7 +790,10 @@ const MarqueeTrack: React.FC<{
         lastTimestampRef.current = timestamp;
       }
 
-      const dt = Math.min(0.1, Math.max(0, timestamp - lastTimestampRef.current) / 1000);
+      const dt = Math.min(
+        0.1,
+        Math.max(0, timestamp - lastTimestampRef.current) / 1000,
+      );
       lastTimestampRef.current = timestamp;
 
       const targetVelocity = isPaused ? hoverSpeed : speedPxSec;
@@ -775,7 +811,7 @@ const MarqueeTrack: React.FC<{
       offsetRef.current = nextOffset;
 
       track.style.transform = `translate3d(-${nextOffset}px, 0, 0)`;
-      syncVisibleWindowRef.current(didWrap, didWrap ? { flush: true } : undefined);
+      syncVisibleWindowRef.current(didWrap);
       rafRef.current = requestAnimationFrame(animate);
     };
 
@@ -787,13 +823,7 @@ const MarqueeTrack: React.FC<{
       }
       lastTimestampRef.current = null;
     };
-  }, [
-    seqWidthReady,
-    speedPxSec,
-    hoverSpeed,
-    isPaused,
-    shouldAnimate,
-  ]);
+  }, [seqWidthReady, speedPxSec, hoverSpeed, isPaused, shouldAnimate]);
 
   const safeItemPitch = cardWidthPx + CARD_ITEM_GAP_PX;
   const maxCopyIndex = Math.max(0, copyCount - 1);
@@ -808,7 +838,7 @@ const MarqueeTrack: React.FC<{
   return (
     <div
       ref={containerRef}
-      className="relative overflow-x-hidden overflow-y-visible"
+      className="relative overflow-x-hidden overflow-y-hidden"
     >
       <div
         ref={trackRef}
@@ -825,8 +855,9 @@ const MarqueeTrack: React.FC<{
           const endIndex = hasVisibleSlice
             ? visibleSlice.end
             : items.length - 1;
-          const seamHeadEnd =
-            hasVisibleSlice ? visibleSlice.seamHeadEnd : undefined;
+          const seamHeadEnd = hasVisibleSlice
+            ? visibleSlice.seamHeadEnd
+            : undefined;
 
           const leftSpacerWidth =
             hasVisibleSlice && seamHeadEnd == null
@@ -850,48 +881,15 @@ const MarqueeTrack: React.FC<{
               photo != null
                 ? `row-${rowIndex}-${copyIndex}-${photo.id ?? `${photo.staffPin}-${photo.attendanceTime}`}`
                 : `row-${rowIndex}-${copyIndex}-empty-${itemIndex}`;
-            const style =
-              photo == null ? { width: cardWidthPx } : undefined;
+            const style = photo == null ? { width: cardWidthPx } : undefined;
             return (
-              <motion.li
+              <li
                 key={key}
                 className="mr-4 my-1 flex-shrink-0 list-none"
                 style={style}
-                initial={
-                  prefersReducedMotion
-                    ? { opacity: 0 }
-                    : { opacity: 0, y: 10, scale: 0.975 }
-                }
-                animate={{
-                  opacity: 1,
-                  y: 0,
-                  scale: 1,
-                  transition: prefersReducedMotion
-                    ? { duration: 0.12 }
-                    : {
-                        duration: 0.22,
-                        delay:
-                          copyIndex > 0
-                            ? 0
-                            : Math.min(itemIndex, 4) *
-                              PHOTO_CARD_MARQUEE_STAGGER_STEP,
-                      },
-                }}
-                exit={
-                  prefersReducedMotion
-                    ? { opacity: 0, transition: { duration: 0.1 } }
-                    : {
-                        opacity: 0,
-                        y: -8,
-                        scale: 0.96,
-                        transition: {
-                          duration: 0.16,
-                        },
-                      }
-                }
               >
                 {renderItem(photo, displayIndex, copyIndex, itemIndex)}
-              </motion.li>
+              </li>
             );
           };
 
@@ -902,12 +900,10 @@ const MarqueeTrack: React.FC<{
               className="flex items-center"
               aria-hidden={copyIndex > 0}
             >
-              <AnimatePresence initial={false} mode="sync">
-                {seamHeadEnd != null &&
-                  items
-                    .slice(0, seamHeadEnd + 1)
-                    .map((photo, i) => renderItem_(photo, i))}
-              </AnimatePresence>
+              {seamHeadEnd != null &&
+                items
+                  .slice(0, seamHeadEnd + 1)
+                  .map((photo, i) => renderItem_(photo, i))}
 
               {seamHeadEnd != null && gapSpacerWidth > 0 && (
                 <li
@@ -917,22 +913,22 @@ const MarqueeTrack: React.FC<{
                   aria-hidden
                 />
               )}
-              {hasVisibleSlice && seamHeadEnd == null && leftSpacerWidth > 0 && (
-                <li
-                  key={`row-${rowIndex}-copy-${copyIndex}-left-spacer`}
-                  className="my-1 flex-shrink-0 list-none"
-                  style={{ width: leftSpacerWidth }}
-                  aria-hidden
-                />
-              )}
+              {hasVisibleSlice &&
+                seamHeadEnd == null &&
+                leftSpacerWidth > 0 && (
+                  <li
+                    key={`row-${rowIndex}-copy-${copyIndex}-left-spacer`}
+                    className="my-1 flex-shrink-0 list-none"
+                    style={{ width: leftSpacerWidth }}
+                    aria-hidden
+                  />
+                )}
 
-              <AnimatePresence initial={false} mode="sync">
-                {items
-                  .slice(startIndex, endIndex + 1)
-                  .map((photo, localItemIndex) =>
-                    renderItem_(photo, startIndex + localItemIndex),
-                  )}
-              </AnimatePresence>
+              {items
+                .slice(startIndex, endIndex + 1)
+                .map((photo, localItemIndex) =>
+                  renderItem_(photo, startIndex + localItemIndex),
+                )}
 
               {hasVisibleSlice && rightSpacerWidth > 0 && (
                 <li
@@ -1027,7 +1023,10 @@ const PhotoImageAsset: React.FC<{
     decoding,
     loading,
   }) => {
-    const src = useMemo(() => resolvePhotoSrc(photo.photoUrl), [photo.photoUrl]);
+    const src = useMemo(
+      () => resolvePhotoSrc(photo.photoUrl),
+      [photo.photoUrl],
+    );
     const [isImageUnavailable, setIsImageUnavailable] = useState(false);
 
     useEffect(() => {
@@ -1099,6 +1098,10 @@ const PhotoDashboard: React.FC = () => {
   const selectedPhotoRef = useRef<PhotoData | null>(null);
   const [isVerdictSubmitting, setIsVerdictSubmitting] = useState(false);
   const [verdictError, setVerdictError] = useState("");
+  const [verdictSkipNotice, setVerdictSkipNotice] = useState("");
+  const [verdictAutoClosePending, setVerdictAutoClosePending] = useState(false);
+  const verdictCloseTimerRef = useRef<number | null>(null);
+  const photoTapeRowByIdRef = useRef<Map<number, number>>(new Map());
   const keepKioskOnFullscreenExitRef = useRef(false);
   const fullscreenToggleLockRef = useRef(false);
 
@@ -1117,9 +1120,19 @@ const PhotoDashboard: React.FC = () => {
     selectedPhotoRef.current = selectedPhoto;
   }, [selectedPhoto]);
 
+  const clearScheduledVerdictModalClose = useCallback(() => {
+    if (verdictCloseTimerRef.current != null) {
+      window.clearTimeout(verdictCloseTimerRef.current);
+      verdictCloseTimerRef.current = null;
+    }
+    setVerdictAutoClosePending(false);
+    setVerdictSkipNotice("");
+  }, []);
+
   useEffect(() => {
     setVerdictError("");
-  }, [selectedPhoto?.id]);
+    clearScheduledVerdictModalClose();
+  }, [selectedPhoto?.id, clearScheduledVerdictModalClose]);
 
   useEffect(() => {
     photosRef.current = photos;
@@ -1244,7 +1257,9 @@ const PhotoDashboard: React.FC = () => {
     useState<boolean>(false);
   const filterSwitchTimerRef = useRef<number | null>(null);
   const [isPageVisible, setIsPageVisible] = useState<boolean>(() =>
-    typeof document === "undefined" ? true : document.visibilityState === "visible",
+    typeof document === "undefined"
+      ? true
+      : document.visibilityState === "visible",
   );
   const [hoveredPhotoKey, setHoveredPhotoKey] = useState<string | null>(null);
   const showRiskOnly = viewMode === "risk";
@@ -1256,10 +1271,7 @@ const PhotoDashboard: React.FC = () => {
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_VIEW_MODE, viewMode);
-      localStorage.setItem(
-        STORAGE_KEY_LAST_NON_RISK_MODE,
-        lastNonRiskViewMode,
-      );
+      localStorage.setItem(STORAGE_KEY_LAST_NON_RISK_MODE, lastNonRiskViewMode);
       localStorage.removeItem(STORAGE_KEY_SHOW_ALL_PHOTOS);
       localStorage.removeItem(STORAGE_KEY_SHOW_RISK_ONLY);
     } catch {
@@ -1306,8 +1318,8 @@ const PhotoDashboard: React.FC = () => {
       if (nextViewMode === viewMode) {
         return;
       }
-      setViewMode(nextViewMode);
       queueAppliedFilterUpdate();
+      setViewMode(nextViewMode);
     },
     [lastNonRiskViewMode, queueAppliedFilterUpdate, viewMode],
   );
@@ -1319,16 +1331,16 @@ const PhotoDashboard: React.FC = () => {
         if (lastNonRiskViewMode === nextBaseMode) {
           return;
         }
-        setLastNonRiskViewMode(nextBaseMode);
         queueAppliedFilterUpdate();
+        setLastNonRiskViewMode(nextBaseMode);
         return;
       }
       if (viewMode === nextBaseMode && lastNonRiskViewMode === nextBaseMode) {
         return;
       }
+      queueAppliedFilterUpdate();
       setViewMode(nextBaseMode);
       setLastNonRiskViewMode(nextBaseMode);
-      queueAppliedFilterUpdate();
     },
     [lastNonRiskViewMode, queueAppliedFilterUpdate, showRiskOnly, viewMode],
   );
@@ -1401,6 +1413,7 @@ const PhotoDashboard: React.FC = () => {
   useEffect(() => {
     initialLoadDoneRef.current = false;
     setLoading(true);
+    photoTapeRowByIdRef.current.clear();
   }, [date]);
 
   const getMaxPhotos = useCallback(() => {
@@ -1449,20 +1462,30 @@ const PhotoDashboard: React.FC = () => {
       };
 
       assignPhotoFieldIfDefined(normalizedEvent, "id", eventData.id);
-      assignPhotoFieldIfDefined(normalizedEvent, "hasPhoto", eventData.hasPhoto);
+      assignPhotoFieldIfDefined(
+        normalizedEvent,
+        "hasPhoto",
+        eventData.hasPhoto,
+      );
 
       if (isHydratedWsInsertEvent(normalizedEvent)) {
         normalizedEvent.staffPin = eventData.staffPin ?? "";
         normalizedEvent.staffFullName = eventData.staffFullName ?? "";
         normalizedEvent.department = eventData.department ?? "";
         normalizedEvent.photoUrl = eventData.photoUrl ?? "";
-        normalizedEvent.attendanceTime = eventData.attendanceTime ?? timezoneIsoNow();
+        normalizedEvent.attendanceTime =
+          eventData.attendanceTime ?? timezoneIsoNow();
         normalizedEvent.tutorInfo = eventData.tutorInfo ?? "";
-        normalizedEvent.photoSpoofStatus = eventData.photoSpoofStatus ?? "pending";
+        normalizedEvent.photoSpoofStatus =
+          eventData.photoSpoofStatus ?? "pending";
         normalizedEvent.photoManualVerdict =
           eventData.photoManualVerdict ?? "none";
       } else {
-        assignPhotoFieldIfDefined(normalizedEvent, "staffPin", eventData.staffPin);
+        assignPhotoFieldIfDefined(
+          normalizedEvent,
+          "staffPin",
+          eventData.staffPin,
+        );
         assignPhotoFieldIfDefined(
           normalizedEvent,
           "staffFullName",
@@ -1473,13 +1496,21 @@ const PhotoDashboard: React.FC = () => {
           "department",
           eventData.department,
         );
-        assignPhotoFieldIfDefined(normalizedEvent, "photoUrl", eventData.photoUrl);
+        assignPhotoFieldIfDefined(
+          normalizedEvent,
+          "photoUrl",
+          eventData.photoUrl,
+        );
         assignPhotoFieldIfDefined(
           normalizedEvent,
           "attendanceTime",
           eventData.attendanceTime,
         );
-        assignPhotoFieldIfDefined(normalizedEvent, "tutorInfo", eventData.tutorInfo);
+        assignPhotoFieldIfDefined(
+          normalizedEvent,
+          "tutorInfo",
+          eventData.tutorInfo,
+        );
         assignPhotoFieldIfDefined(
           normalizedEvent,
           "photoSpoofStatus",
@@ -1564,12 +1595,10 @@ const PhotoDashboard: React.FC = () => {
       const sorted = sortPhotosDeterministically(nextPhotos);
       photosRef.current = sorted;
       syncSelectedPhotoWithList(sorted);
-      startTransition(() => {
-        setPhotos(sorted);
-        if (options.finishLoading) {
-          setLoading(false);
-        }
-      });
+      setPhotos(sorted);
+      if (options.finishLoading) {
+        setLoading(false);
+      }
     },
     [syncSelectedPhotoWithList],
   );
@@ -1589,6 +1618,7 @@ const PhotoDashboard: React.FC = () => {
         noPhotoFirstSeenRef.current.clear();
         clearDelayedPhotoAttachTimers();
         lastVersionByIdRef.current.clear();
+        photoTapeRowByIdRef.current.clear();
       }
 
       const next = isReplace ? [] : [...photosRef.current];
@@ -1596,7 +1626,11 @@ const PhotoDashboard: React.FC = () => {
         const eventId = eventData.id;
         if (eventId != null && eventData.versionTs) {
           const lastVersion = lastVersionByIdRef.current.get(eventId);
-          if (!isReplace && lastVersion && eventData.versionTs < lastVersion) {
+          const incomingMs = Date.parse(eventData.versionTs);
+          const lastMs = lastVersion ? Date.parse(lastVersion) : NaN;
+          const bothFinite =
+            Number.isFinite(incomingMs) && Number.isFinite(lastMs);
+          if (!isReplace && bothFinite && incomingMs < lastMs) {
             continue;
           }
           lastVersionByIdRef.current.set(eventId, eventData.versionTs);
@@ -1608,7 +1642,8 @@ const PhotoDashboard: React.FC = () => {
             if (existingIdx >= 0) {
               next.splice(existingIdx, 1);
             }
-            const pendingTimer = delayedPhotoAttachTimersRef.current.get(eventId);
+            const pendingTimer =
+              delayedPhotoAttachTimersRef.current.get(eventId);
             if (pendingTimer != null) {
               window.clearTimeout(pendingTimer);
               delayedPhotoAttachTimersRef.current.delete(eventId);
@@ -1630,16 +1665,17 @@ const PhotoDashboard: React.FC = () => {
           if (seenAt != null) {
             const elapsed = Date.now() - seenAt;
             if (elapsed < CREATED_NO_PHOTO_MIN_VISIBLE_MS) {
-              const pendingTimer = delayedPhotoAttachTimersRef.current.get(
-                eventId,
-              );
+              const pendingTimer =
+                delayedPhotoAttachTimersRef.current.get(eventId);
               if (pendingTimer != null) {
                 window.clearTimeout(pendingTimer);
               }
               const waitMs = CREATED_NO_PHOTO_MIN_VISIBLE_MS - elapsed;
               const timerId = window.setTimeout(() => {
                 delayedPhotoAttachTimersRef.current.delete(eventId);
-                enqueueWsEventsRef.current([materializeCanonicalPhoto(eventData)]);
+                enqueueWsEventsRef.current([
+                  materializeCanonicalPhoto(eventData),
+                ]);
               }, waitMs);
               delayedPhotoAttachTimersRef.current.set(eventId, timerId);
               continue;
@@ -1685,11 +1721,18 @@ const PhotoDashboard: React.FC = () => {
         window.clearTimeout(bucket.timeoutId);
       });
       wsBatchBucketsRef.current.clear();
-      mergeCanonicalPhotoEvents(events, {
-        replace: true,
-        finishLoading: true,
-      });
-      initialLoadDoneRef.current = true;
+      const apply = () => {
+        mergeCanonicalPhotoEvents(events, {
+          replace: true,
+          finishLoading: true,
+        });
+        initialLoadDoneRef.current = true;
+      };
+      if (events.length > 400) {
+        queueMicrotask(apply);
+      } else {
+        apply();
+      }
     },
     [mergeCanonicalPhotoEvents],
   );
@@ -1712,7 +1755,14 @@ const PhotoDashboard: React.FC = () => {
       }
       dedupById.set(evt.id, evt);
     });
-    mergeCanonicalPhotoEvents([...withoutId, ...Array.from(dedupById.values())]);
+    const batch = [...withoutId, ...Array.from(dedupById.values())];
+    if (batch.length > 400) {
+      queueMicrotask(() => {
+        mergeCanonicalPhotoEvents(batch);
+      });
+    } else {
+      mergeCanonicalPhotoEvents(batch);
+    }
   }, [mergeCanonicalPhotoEvents]);
 
   const enqueueWsEvents = useCallback(
@@ -1903,8 +1953,6 @@ const PhotoDashboard: React.FC = () => {
   const hasAnyPhotos = photos.length > 0;
   const hasDisplayPhotos = displayPhotos.length > 0;
   const shouldShowPendingFilterUi = isDisplayFilterPending && hasAnyPhotos;
-  const shouldDimDisplayContent =
-    shouldShowPendingFilterUi && hasDisplayPhotos;
 
   const toggleLabel = useMemo(() => {
     if (showRiskOnly) {
@@ -1938,18 +1986,6 @@ const PhotoDashboard: React.FC = () => {
         : "Все статусы фото",
     [showRiskOnly],
   );
-  const displayContentStyle = useMemo<React.CSSProperties>(
-    () => ({
-      transform: shouldDimDisplayContent ? "scale(0.995)" : "scale(1)",
-      filter: shouldDimDisplayContent
-        ? "saturate(0.75) blur(0.5px)"
-        : "saturate(1) blur(0px)",
-      transition: "transform 0.24s ease-out, filter 0.24s ease-out",
-      willChange: shouldDimDisplayContent ? "transform, filter" : "auto",
-    }),
-    [shouldDimDisplayContent],
-  );
-
   useEffect(() => {
     const getViewportSize = (): { w: number; h: number } => {
       const vv = window.visualViewport;
@@ -2008,32 +2044,52 @@ const PhotoDashboard: React.FC = () => {
       setCardWidthPx(cardW);
       setKioskNarrowViewport(isKioskMode && (narrowViewport || heightCapped));
     };
+    let layoutRafId: number | null = null;
+    const scheduleLayoutUpdate = () => {
+      if (layoutRafId !== null) return;
+      layoutRafId = requestAnimationFrame(() => {
+        layoutRafId = null;
+        updateLayout();
+      });
+    };
     updateLayout();
     const el = containerRef.current;
     const hasResizeObserver = typeof window.ResizeObserver !== "undefined";
     let ro: ResizeObserver | null = null;
     if (hasResizeObserver) {
-      ro = new ResizeObserver(updateLayout);
+      ro = new ResizeObserver(scheduleLayoutUpdate);
       if (el) ro.observe(el);
     }
-    window.addEventListener("resize", updateLayout);
+    window.addEventListener("resize", scheduleLayoutUpdate);
     if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", updateLayout);
-      window.visualViewport.addEventListener("scroll", updateLayout);
+      window.visualViewport.addEventListener("resize", scheduleLayoutUpdate);
+      window.visualViewport.addEventListener("scroll", scheduleLayoutUpdate);
     }
-    document.addEventListener("fullscreenchange", updateLayout);
-    document.addEventListener("webkitfullscreenchange", updateLayout);
+    document.addEventListener("fullscreenchange", scheduleLayoutUpdate);
+    document.addEventListener("webkitfullscreenchange", scheduleLayoutUpdate);
     return () => {
+      if (layoutRafId !== null) {
+        cancelAnimationFrame(layoutRafId);
+      }
       if (ro) {
         ro.disconnect();
       }
-      window.removeEventListener("resize", updateLayout);
+      window.removeEventListener("resize", scheduleLayoutUpdate);
       if (window.visualViewport) {
-        window.visualViewport.removeEventListener("resize", updateLayout);
-        window.visualViewport.removeEventListener("scroll", updateLayout);
+        window.visualViewport.removeEventListener(
+          "resize",
+          scheduleLayoutUpdate,
+        );
+        window.visualViewport.removeEventListener(
+          "scroll",
+          scheduleLayoutUpdate,
+        );
       }
-      document.removeEventListener("fullscreenchange", updateLayout);
-      document.removeEventListener("webkitfullscreenchange", updateLayout);
+      document.removeEventListener("fullscreenchange", scheduleLayoutUpdate);
+      document.removeEventListener(
+        "webkitfullscreenchange",
+        scheduleLayoutUpdate,
+      );
     };
   }, [isKiosk, isFullscreen]);
 
@@ -2159,8 +2215,11 @@ const PhotoDashboard: React.FC = () => {
       if (!currentPhoto?.id) {
         return;
       }
+      clearScheduledVerdictModalClose();
       setVerdictError("");
       setIsVerdictSubmitting(true);
+      let verdictSucceeded = false;
+      let scheduleSkipAutoClose = false;
       try {
         const response = await apiClient.post(
           `/lesson_attendance/${currentPhoto.id}/photo_verdict/`,
@@ -2178,6 +2237,8 @@ const PhotoDashboard: React.FC = () => {
           : undefined;
         if (updatedRecord) {
           applySinglePhotoUpdate(updatedRecord);
+          setSelectedPhoto(updatedRecord);
+          verdictSucceeded = true;
         } else if (updatedCount === 0 && skippedIds.includes(currentPhoto.id)) {
           const reasonEntry = skippedReasons.find(
             (r) => r.id === currentPhoto.id,
@@ -2194,14 +2255,42 @@ const PhotoDashboard: React.FC = () => {
             no_photo: "Нет фото для проверки.",
             verdict_already_set: "Ручной вердикт уже выставлен.",
             status_not_reviewable:
-              "Запись уже проверена автоматически; ручной вердикт недоступен.",
+              "Уже не требуется: запись обработана автоматически, ручной вердикт не нужен.",
             rescan_skipped_has_verdict:
               "Повторная проверка пропущена: уже есть ручной вердикт.",
           };
-          setVerdictError(
+          const noticeText =
             reasonMessage[reasonFromServer] ??
-              "Для этой записи ручной вердикт сейчас недоступен.",
-          );
+            "Для этой записи ручной вердикт сейчас недоступен.";
+          setVerdictSkipNotice(noticeText);
+          scheduleSkipAutoClose = true;
+
+          let refreshedRow: PhotoData | null = null;
+          try {
+            const refreshResp = await apiClient.get<{
+              results?: PhotoData[];
+            }>("/lesson_attendance/photo_verdicts/", {
+              params: { id: currentPhoto.id },
+            });
+            const row = refreshResp.data?.results?.[0];
+            if (row != null && row.id === currentPhoto.id) {
+              refreshedRow = row;
+            }
+          } catch (refreshErr) {
+            log.warn(
+              "[PhotoVerdict] skip: не удалось подтянуть актуальную запись",
+              refreshErr,
+            );
+          }
+          if (refreshedRow) {
+            applySinglePhotoUpdate(refreshedRow);
+          } else {
+            applySinglePhotoUpdate(
+              buildVerdictSkipFallbackPatch(currentPhoto, reasonFromServer),
+            );
+          }
+        } else if (updatedCount > 0) {
+          verdictSucceeded = true;
         }
       } catch (error) {
         log.error("Failed to update manual photo verdict", error);
@@ -2235,9 +2324,36 @@ const PhotoDashboard: React.FC = () => {
         }
       } finally {
         setIsVerdictSubmitting(false);
+        if (verdictSucceeded) {
+          setVerdictAutoClosePending(true);
+          const delayMs = prefersReducedMotion
+            ? VERDICT_AUTO_CLOSE_DELAY_REDUCED_MS
+            : VERDICT_AUTO_CLOSE_DELAY_MS;
+          verdictCloseTimerRef.current = window.setTimeout(() => {
+            verdictCloseTimerRef.current = null;
+            setVerdictAutoClosePending(false);
+            setVerdictSkipNotice("");
+            setSelectedPhoto(null);
+          }, delayMs);
+        } else if (scheduleSkipAutoClose) {
+          setVerdictAutoClosePending(true);
+          const delayMs = prefersReducedMotion
+            ? VERDICT_SKIP_MODAL_CLOSE_REDUCED_MS
+            : VERDICT_SKIP_MODAL_CLOSE_MS;
+          verdictCloseTimerRef.current = window.setTimeout(() => {
+            verdictCloseTimerRef.current = null;
+            setVerdictAutoClosePending(false);
+            setVerdictSkipNotice("");
+            setSelectedPhoto(null);
+          }, delayMs);
+        }
       }
     },
-    [applySinglePhotoUpdate],
+    [
+      applySinglePhotoUpdate,
+      clearScheduledVerdictModalClose,
+      prefersReducedMotion,
+    ],
   );
 
   const renderLoading = () => (
@@ -2268,11 +2384,7 @@ const PhotoDashboard: React.FC = () => {
         />
         {/* Frosted glass card */}
         <div className="relative rounded-[28px] border border-white/30 dark:border-white/10 bg-white/82 dark:bg-slate-900/82 backdrop-blur-2xl shadow-2xl shadow-primary-900/15 px-14 py-11 flex flex-col items-center gap-4">
-          <LoaderComponent
-            fullscreen={false}
-            className="min-h-0"
-            message=""
-          />
+          <LoaderComponent fullscreen={false} className="min-h-0" message="" />
           <p className="text-sm text-gray-500 dark:text-gray-400 tracking-wide">
             Загрузка посещаемости…
           </p>
@@ -2401,14 +2513,42 @@ const PhotoDashboard: React.FC = () => {
       return [];
     }
 
-    const rows: (PhotoData | null)[][] = Array.from(
-      { length: numRows },
-      () => [],
-    );
-    for (let index = 0; index < displayPhotos.length; index += 1) {
-      const photo = displayPhotos[index];
-      const stableKey = getStableRowKey(photo, index);
-      const rowIndex = stableHash(stableKey) % numRows;
+    const rows: PhotoData[][] = Array.from({ length: numRows }, () => []);
+    const sticky = photoTapeRowByIdRef.current;
+    const presentIds = new Set<number>();
+    for (const p of displayPhotos) {
+      if (p.id != null) presentIds.add(p.id);
+    }
+    for (const id of sticky.keys()) {
+      if (!presentIds.has(id)) sticky.delete(id);
+    }
+    const rowLoad = Array(numRows).fill(0);
+    const pickLeastLoadedRow = (): number => {
+      let best = 0;
+      let min = rowLoad[0];
+      for (let i = 1; i < numRows; i += 1) {
+        if (rowLoad[i] < min) {
+          min = rowLoad[i];
+          best = i;
+        }
+      }
+      return best;
+    };
+    for (const photo of displayPhotos) {
+      const id = photo.id;
+      let rowIndex: number;
+      if (id != null) {
+        const prev = sticky.get(id);
+        if (prev !== undefined && prev < numRows) {
+          rowIndex = prev;
+        } else {
+          rowIndex = pickLeastLoadedRow();
+          sticky.set(id, rowIndex);
+        }
+        rowLoad[rowIndex] += 1;
+      } else {
+        rowIndex = stableHash(getPhotoIdentity(photo, 0)) % numRows;
+      }
       rows[rowIndex].push(photo);
     }
 
@@ -2531,7 +2671,8 @@ const PhotoDashboard: React.FC = () => {
     if (activePhotoKey) {
       for (let rowIndex = 0; rowIndex < photoRows.length; rowIndex += 1) {
         const colIndex = photoRows[rowIndex].findIndex(
-          (photo) => photo != null && getPhotoIdentity(photo) === activePhotoKey,
+          (photo) =>
+            photo != null && getPhotoIdentity(photo) === activePhotoKey,
         );
         if (colIndex >= 0) {
           setActiveCardCoords((prev) => {
@@ -2638,25 +2779,22 @@ const PhotoDashboard: React.FC = () => {
       const photoKey =
         photo.id != null ? photoIdentity : getPhotoIdentity(photo, keyIndex);
       const isActionableCard = isInteractive;
-      const canTrackActiveCard = isActionableCard && enableArrowNavigation && !isClone;
+      const canTrackActiveCard =
+        isActionableCard && enableArrowNavigation && !isClone;
       const uiStatus = resolvePhotoUiStatus(photo);
       const statusMeta = PHOTO_STATUS_STYLE[uiStatus];
       const getPresenceMotionProps = (
         surface: PhotoAnimationSurface,
         index: number,
-        {
-          useLayout = false,
-          clone = false,
-        }: { useLayout?: boolean; clone?: boolean } = {},
+        { useLayout = false }: { useLayout?: boolean } = {},
       ) => {
+        if (surface === "marquee") {
+          return { initial: false as const };
+        }
+
         const enterDelay = prefersReducedMotion
           ? 0
-          : Math.min(index, surface === "grid" ? 6 : 4) *
-            (surface === "grid"
-              ? PHOTO_CARD_GRID_STAGGER_STEP
-              : clone
-                ? 0
-                : PHOTO_CARD_MARQUEE_STAGGER_STEP);
+          : Math.min(index, 6) * PHOTO_CARD_GRID_STAGGER_STEP;
 
         return {
           layout: useLayout ? ("position" as const) : undefined,
@@ -2664,8 +2802,8 @@ const PhotoDashboard: React.FC = () => {
             ? { opacity: 0 }
             : {
                 opacity: 0,
-                y: surface === "grid" ? 20 : 12,
-                scale: surface === "grid" ? 0.95 : 0.975,
+                y: 20,
+                scale: 0.95,
               },
           animate: {
             opacity: 1,
@@ -2674,7 +2812,7 @@ const PhotoDashboard: React.FC = () => {
             transition: prefersReducedMotion
               ? { duration: 0.12 }
               : {
-                  duration: surface === "grid" ? 0.34 : 0.24,
+                  duration: 0.34,
                   delay: enterDelay,
                 },
           },
@@ -2685,10 +2823,10 @@ const PhotoDashboard: React.FC = () => {
               }
             : {
                 opacity: 0,
-                y: surface === "grid" ? -14 : -8,
-                scale: surface === "grid" ? 0.92 : 0.96,
+                y: -14,
+                scale: 0.92,
                 transition: {
-                  duration: surface === "grid" ? 0.2 : 0.16,
+                  duration: 0.2,
                 },
               },
         };
@@ -2697,9 +2835,7 @@ const PhotoDashboard: React.FC = () => {
         presenceMode === "card"
           ? getPresenceMotionProps(animationSurface, cardIndex, {
               useLayout:
-                animationSurface === "grid" &&
-                !isClone &&
-                isActionableCard,
+                animationSurface === "grid" && !isClone && isActionableCard,
             })
           : { initial: false as const };
       const cardBody = (
@@ -2758,9 +2894,7 @@ const PhotoDashboard: React.FC = () => {
             }
           }}
           onBlur={() =>
-            setHoveredPhotoKey((prev) =>
-              prev === photoIdentity ? null : prev,
-            )
+            setHoveredPhotoKey((prev) => (prev === photoIdentity ? null : prev))
           }
           onMouseMove={() => {
             if (canTrackActiveCard) {
@@ -2805,9 +2939,20 @@ const PhotoDashboard: React.FC = () => {
               cardRefs.current.delete(key);
             }
           }}
-          whileHover={{ y: -5 }}
-          whileTap={{ scale: 0.975 }}
-          transition={{ type: "spring", damping: 22, stiffness: 340, mass: 0.75 }}
+          {...(animationSurface === "marquee" || prefersReducedMotion
+            ? {
+                transition: { duration: 0.18 },
+              }
+            : {
+                whileHover: { y: -5 },
+                whileTap: { scale: 0.975 },
+                transition: {
+                  type: "spring" as const,
+                  damping: 22,
+                  stiffness: 340,
+                  mass: 0.75,
+                },
+              })}
         >
           {cardBody}
         </motion.article>
@@ -2849,8 +2994,7 @@ const PhotoDashboard: React.FC = () => {
         }`}
       >
         {isFullscreen || isKiosk ? (
-          /* ── Compact header: kiosk / fullscreen ─────────────────────── */
-          <div className="flex items-center justify-between gap-2 lg:gap-4">
+          <div className="flex flex-col gap-3 min-w-0 lg:flex-row lg:items-center lg:justify-between lg:gap-4">
             <div className="min-w-0 flex-1">
               <h1 className="font-semibold text-gray-800 dark:text-white truncate text-sm sm:text-base lg:text-xl xl:text-2xl">
                 {pageTitle}
@@ -2859,7 +3003,7 @@ const PhotoDashboard: React.FC = () => {
                 {pageSubtitle}
               </p>
             </div>
-            <div className="flex items-center gap-1.5 sm:gap-2 lg:gap-4 shrink-0">
+            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-2 lg:gap-4 lg:shrink-0">
               {(photos.length > 0 || showRiskOnly) && (
                 <Toggle
                   checked={showRiskOnly}
@@ -2872,7 +3016,8 @@ const PhotoDashboard: React.FC = () => {
                       : "Показывать требующие проверки"
                   }
                   variant="rose"
-                  className="text-[10px] sm:text-xs lg:text-sm"
+                  className="!flex w-full min-w-0 justify-between gap-2 text-[10px] sm:!inline-flex sm:w-auto sm:justify-start sm:text-xs sm:gap-3 lg:text-sm"
+                  labelClassName="min-w-0 flex-1 text-left leading-snug sm:flex-none"
                 />
               )}
               {photos.length > 0 && (
@@ -2887,13 +3032,14 @@ const PhotoDashboard: React.FC = () => {
                       ? "Показать только последние фото"
                       : "Показать все фото за день"
                   }
-                  className="text-[10px] sm:text-xs lg:text-sm"
+                  className="!flex w-full min-w-0 justify-between gap-2 text-[10px] sm:!inline-flex sm:w-auto sm:justify-start sm:text-xs sm:gap-3 lg:text-sm"
+                  labelClassName="min-w-0 flex-1 text-left leading-snug sm:flex-none"
                 />
               )}
               <motion.button
                 onClick={handleFullscreenToggle}
                 disabled={isFullscreenBusy}
-                className={`flex items-center gap-1 rounded-lg font-semibold text-white transition-colors px-2 py-1 text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-sm ${
+                className={`flex w-full shrink-0 items-center justify-center gap-1 rounded-lg font-semibold text-white transition-colors px-2 py-1 text-xs sm:w-auto sm:justify-start lg:gap-2 lg:px-4 lg:py-2 lg:text-sm ${
                   isFullscreenBusy
                     ? "bg-primary-400 cursor-not-allowed"
                     : "bg-primary-600 hover:bg-primary-700"
@@ -2930,22 +3076,14 @@ const PhotoDashboard: React.FC = () => {
                 startIcon={
                   <FaRegCalendarAlt className="opacity-80 w-3 h-3 lg:w-4 lg:h-4 shrink-0" />
                 }
-                containerClassName="shrink-0"
-                displayClassName="inline-flex items-center gap-1 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2 py-1 text-[10px] sm:text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-base hover:bg-white/75 dark:hover:bg-slate-800/70 transition-colors capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                containerClassName="w-full shrink-0 sm:w-auto"
+                displayClassName="inline-flex w-full items-center justify-center gap-1 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2 py-1 text-[10px] sm:w-auto sm:justify-start sm:text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-base hover:bg-white/75 dark:hover:bg-slate-800/70 transition-colors capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               />
             </div>
           </div>
         ) : (
-          /* ── Two-row header: normal mode ─────────────────────────────
-           *  Row 1: page identity (title + subtitle) on the left,
-           *         date badge anchored on the right — these never shift.
-           *  Row 2: filter controls on the left, fullscreen on the right —
-           *         completely separated from Row 1 so dynamic label text
-           *         (e.g. "Все фото (риск: 12)") never pushes the title.
-           * ─────────────────────────────────────────────────────────── */
           <div className="flex flex-col gap-2 sm:gap-3">
-            {/* Row 1 — identity + date */}
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex flex-col gap-2 min-w-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
               <div className="min-w-0 flex-1">
                 <h1 className="text-lg sm:text-xl md:text-2xl font-semibold text-gray-800 dark:text-white truncate">
                   {pageTitle}
@@ -2963,52 +3101,55 @@ const PhotoDashboard: React.FC = () => {
                 startIcon={
                   <FaRegCalendarAlt className="w-3.5 h-3.5 md:w-4 md:h-4 opacity-80 shrink-0" />
                 }
-                containerClassName="shrink-0"
-                displayClassName="inline-flex items-center gap-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2.5 py-1.5 text-xs sm:gap-2 sm:px-3 sm:text-sm md:px-4 md:py-2 md:text-base hover:bg-white/75 dark:hover:bg-slate-800/70 transition-colors capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                containerClassName="w-full shrink-0 sm:w-auto"
+                displayClassName="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2.5 py-1.5 text-xs sm:w-auto sm:justify-start sm:gap-2 sm:px-3 sm:text-sm md:px-4 md:py-2 md:text-base hover:bg-white/75 dark:hover:bg-slate-800/70 transition-colors capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               />
             </div>
-            {/* Row 2 — filter toggles (left) + fullscreen button (right) */}
-            <div className="flex items-center gap-2 sm:gap-3 md:gap-4">
-              {(photos.length > 0 || showRiskOnly) && (
-                <Toggle
-                  checked={showRiskOnly}
-                  onChange={handleRiskOnlyToggleChange}
-                  labelPosition="left"
-                  label={riskToggleLabel}
-                  ariaLabel={
-                    showRiskOnly
-                      ? "Показывать все статусы фото"
-                      : "Показывать требующие проверки"
-                  }
-                  variant="rose"
-                  className="text-xs sm:text-sm"
-                />
-              )}
-              {photos.length > 0 && (photos.length > 0 || showRiskOnly) && (
-                <div
-                  className="w-px h-4 shrink-0 bg-gray-200 dark:bg-gray-700"
-                  aria-hidden
-                />
-              )}
-              {photos.length > 0 && (
-                <Toggle
-                  checked={showAllPhotos}
-                  onChange={handleShowAllPhotosToggleChange}
-                  disabled={showRiskOnly}
-                  labelPosition="left"
-                  label={toggleLabel}
-                  ariaLabel={
-                    showAllPhotos
-                      ? "Показать только последние фото"
-                      : "Показать все фото за день"
-                  }
-                  className="text-xs sm:text-sm"
-                />
-              )}
+            <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3 md:gap-4">
+              <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3 sm:gap-y-2 md:gap-4">
+                {(photos.length > 0 || showRiskOnly) && (
+                  <Toggle
+                    checked={showRiskOnly}
+                    onChange={handleRiskOnlyToggleChange}
+                    labelPosition="left"
+                    label={riskToggleLabel}
+                    ariaLabel={
+                      showRiskOnly
+                        ? "Показывать все статусы фото"
+                        : "Показывать требующие проверки"
+                    }
+                    variant="rose"
+                    className="!flex w-full min-w-0 justify-between gap-2 text-xs sm:!inline-flex sm:w-auto sm:justify-start sm:gap-3 sm:text-sm"
+                    labelClassName="min-w-0 flex-1 text-left leading-snug sm:flex-none"
+                  />
+                )}
+                {photos.length > 0 && (photos.length > 0 || showRiskOnly) && (
+                  <div
+                    className="hidden h-4 w-px shrink-0 bg-gray-200 dark:bg-gray-700 sm:block"
+                    aria-hidden
+                  />
+                )}
+                {photos.length > 0 && (
+                  <Toggle
+                    checked={showAllPhotos}
+                    onChange={handleShowAllPhotosToggleChange}
+                    disabled={showRiskOnly}
+                    labelPosition="left"
+                    label={toggleLabel}
+                    ariaLabel={
+                      showAllPhotos
+                        ? "Показать только последние фото"
+                        : "Показать все фото за день"
+                    }
+                    className="!flex w-full min-w-0 justify-between gap-2 text-xs sm:!inline-flex sm:w-auto sm:justify-start sm:gap-3 sm:text-sm"
+                    labelClassName="min-w-0 flex-1 text-left leading-snug sm:flex-none"
+                  />
+                )}
+              </div>
               <motion.button
                 onClick={handleFullscreenToggle}
                 disabled={isFullscreenBusy}
-                className={`ml-auto shrink-0 flex items-center gap-2 rounded-lg font-semibold text-white transition-colors px-3.5 py-1.5 text-xs md:px-4 md:py-2 md:text-sm ${
+                className={`flex w-full shrink-0 items-center justify-center gap-2 rounded-lg font-semibold text-white transition-colors px-3.5 py-1.5 text-xs sm:ml-auto sm:w-auto sm:px-3.5 md:px-4 md:py-2 md:text-sm ${
                   isFullscreenBusy
                     ? "bg-primary-400 cursor-not-allowed"
                     : "bg-primary-600 hover:bg-primary-700"
@@ -3023,25 +3164,28 @@ const PhotoDashboard: React.FC = () => {
             </div>
           </div>
         )}
-        {/* Pending filter banner — absolutely positioned so it overlays
-            the first photo row instead of pushing the rows down. */}
         <AnimatePresence initial={false}>
           {shouldShowPendingFilterUi && (
             <motion.div
-              initial={{ opacity: 0, y: -6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ type: "spring", damping: 28, stiffness: 340, mass: 0.7 }}
-              className="absolute left-0 right-0 top-full mt-2 z-30 flex justify-center pointer-events-none"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="z-30 mt-2 flex w-full justify-start sm:justify-center pointer-events-none"
+              role="status"
+              aria-live="polite"
+              aria-label={pendingFilterLabel}
             >
-              <div className="pointer-events-auto w-full max-w-lg rounded-[22px] border border-white/20 dark:border-primary-400/20 bg-slate-900/45 dark:bg-slate-900/60 px-5 py-3.5 shadow-[0_20px_60px_-28px_rgba(37,99,235,0.7)] backdrop-blur-2xl">
+              <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-slate-200/90 bg-white px-3.5 py-2.5 shadow-md ring-1 ring-slate-200/80 dark:border-slate-600 dark:bg-slate-800 dark:ring-slate-600/80 sm:mx-auto">
                 <LoaderComponent
                   fullscreen={false}
                   compact
                   inline
                   variant="bars"
-                  className="min-h-0 w-full justify-center text-slate-100 dark:text-primary-100"
+                  showGlow={false}
+                  className="min-h-0 justify-start gap-3"
                   message={pendingFilterLabel}
+                  messageClassName="min-w-0 flex-1 text-left font-medium text-slate-900 dark:text-slate-50"
                 />
               </div>
             </motion.div>
@@ -3049,15 +3193,7 @@ const PhotoDashboard: React.FC = () => {
         </AnimatePresence>
       </div>
 
-      <div style={displayContentStyle}>
-        <AnimatePresence initial={false}>
-        <motion.div
-          key={viewMode}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.22, ease: "easeOut" }}
-        >
+      <div className="relative min-h-0">
         {!hasDisplayPhotos ? (
           loading ? null : (
             <div className="mx-auto w-full max-w-[1700px] flex-1 min-h-0 px-4 sm:px-6 md:px-8 lg:px-10 pb-4 sm:pb-5 md:pb-6">
@@ -3086,21 +3222,21 @@ const PhotoDashboard: React.FC = () => {
                 onMouseLeave={() => setHoveredPhotoKey(null)}
               >
                 <AnimatePresence initial={false} mode="popLayout">
-                {displayPhotos.map((photo, index) =>
-                  renderPhotoCard(
-                    photo,
-                    index,
-                    0,
-                    index,
-                    true,
-                    kioskNarrowViewport ? cardWidthPx : undefined,
-                    false,
-                    false,
-                    "grid",
-                    "card",
-                  ),
-                )}
-              </AnimatePresence>
+                  {displayPhotos.map((photo, index) =>
+                    renderPhotoCard(
+                      photo,
+                      index,
+                      0,
+                      index,
+                      true,
+                      kioskNarrowViewport ? cardWidthPx : undefined,
+                      false,
+                      false,
+                      "grid",
+                      "card",
+                    ),
+                  )}
+                </AnimatePresence>
               </div>
             </div>
           </div>
@@ -3115,7 +3251,7 @@ const PhotoDashboard: React.FC = () => {
               className={`[scrollbar-width:none] [-ms-overflow-style:none] ${
                 isKiosk
                   ? "photo-kiosk-marquee-mask flex-1 min-h-0 flex flex-col overflow-x-hidden overflow-y-hidden px-4 sm:px-6 md:px-8 lg:px-10 py-2 sm:py-3 md:py-4 pb-4 sm:pb-5 md:pb-6"
-                  : "overflow-x-hidden overflow-y-visible py-4 pb-8 px-4 md:px-6"
+                  : "overflow-x-hidden overflow-y-hidden py-4 pb-8 px-4 md:px-6"
               }`}
               style={
                 isKiosk
@@ -3134,8 +3270,8 @@ const PhotoDashboard: React.FC = () => {
                     key={rowIndex}
                     className={
                       isKiosk
-                        ? "overflow-x-hidden overflow-y-visible py-2 sm:py-3 md:py-4 lg:py-5"
-                        : "overflow-x-hidden overflow-y-visible py-4 md:py-5"
+                        ? "overflow-x-hidden overflow-y-hidden py-2 sm:py-3 md:py-4 lg:py-5"
+                        : "overflow-x-hidden overflow-y-hidden py-4 md:py-5"
                     }
                     style={{ minHeight: 1 }}
                     onMouseLeave={() => setHoveredPhotoKey(null)}
@@ -3148,7 +3284,6 @@ const PhotoDashboard: React.FC = () => {
                       hoverSpeed={MARQUEE_HOVER_SPEED}
                       cardWidthPx={cardWidthPx}
                       forceLoop={!isFreshMode}
-                      prefersReducedMotion={prefersReducedMotion}
                       renderItem={(
                         photo,
                         displayIndex,
@@ -3192,150 +3327,207 @@ const PhotoDashboard: React.FC = () => {
             </div>
           </div>
         )}
-        </motion.div>
-        </AnimatePresence>
       </div>
     </div>
   );
 
   const renderSelectedPhoto = () => {
-    if (!selectedPhoto) return null;
-    const uiStatus = resolvePhotoUiStatus(selectedPhoto);
-    const statusMeta = PHOTO_STATUS_STYLE[uiStatus];
-    const isSuspicious =
-      uiStatus === "suspicious_auto" || uiStatus === "suspicious_manual";
-    const showCheckBadge = uiStatus === "check" || uiStatus === "check_error";
-    const manualVerdict: PhotoManualVerdict =
-      selectedPhoto.photoManualVerdict ?? "none";
-    const canSetManualVerdict = isManualReviewRequiredByBackend(selectedPhoto);
+    const lightboxBackdropTransition = prefersReducedMotion
+      ? { duration: 0.12 }
+      : { duration: 0.32, ease: [0.4, 0, 0.2, 1] as const };
+    const lightboxModalTransition = prefersReducedMotion
+      ? { duration: 0.18 }
+      : { type: "spring" as const, damping: 30, stiffness: 320, mass: 0.85 };
+    const lightboxModalExit = prefersReducedMotion
+      ? { opacity: 0 }
+      : { scale: 0.9, opacity: 0, y: 18 };
+
     return (
-      <AnimatePresence>
-        <motion.div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 sm:p-5 md:p-6"
-          onClick={() => setSelectedPhoto(null)}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
-        >
+      <AnimatePresence initial={false}>
+        {selectedPhoto && (
           <motion.div
-            className="relative w-full max-w-md sm:max-w-lg md:max-w-xl lg:max-w-2xl rounded-2xl md:rounded-3xl overflow-hidden bg-white dark:bg-gray-800 shadow-2xl flex flex-col max-h-[90vh] md:max-h-[85vh] [@media(orientation:landscape)]:max-w-4xl [@media(orientation:landscape)]:max-h-[90vh]"
-            onClick={(e) => e.stopPropagation()}
-            initial={{ scale: 0.92, opacity: 0, y: 20 }}
-            animate={{ scale: 1, opacity: 1, y: 0 }}
-            exit={{ scale: 0.92, opacity: 0, y: 20 }}
-            transition={{ type: "spring", damping: 28, stiffness: 300 }}
+            key={selectedPhoto.id}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 sm:p-5 md:p-6"
+            onClick={() => setSelectedPhoto(null)}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={lightboxBackdropTransition}
           >
-            <button
-              className="absolute top-3 right-3 z-10 w-9 h-9 md:w-10 md:h-10 rounded-full bg-white/90 dark:bg-gray-700/90 hover:bg-gray-100 dark:hover:bg-gray-600 shadow-md text-gray-700 dark:text-gray-200 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-primary-500 touch-manipulation transition-colors"
-              onClick={() => setSelectedPhoto(null)}
-              aria-label="Закрыть"
+            <motion.div
+              className="relative w-full max-w-md sm:max-w-lg md:max-w-xl lg:max-w-2xl rounded-2xl md:rounded-3xl overflow-hidden bg-white dark:bg-gray-800 shadow-2xl flex flex-col max-h-[90vh] md:max-h-[85vh] [@media(orientation:landscape)]:max-w-4xl [@media(orientation:landscape)]:max-h-[90vh]"
+              onClick={(e) => e.stopPropagation()}
+              initial={{ scale: 0.92, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={lightboxModalExit}
+              transition={lightboxModalTransition}
             >
-              <FaTimes className="w-4 h-4 md:w-5 md:h-5" />
-            </button>
+              <button
+                type="button"
+                className="absolute top-3 right-3 z-10 w-9 h-9 md:w-10 md:h-10 rounded-full bg-white/90 dark:bg-gray-700/90 hover:bg-gray-100 dark:hover:bg-gray-600 shadow-md text-gray-700 dark:text-gray-200 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-primary-500 touch-manipulation transition-colors"
+                onClick={() => setSelectedPhoto(null)}
+                aria-label="Закрыть"
+              >
+                <FaTimes className="w-4 h-4 md:w-5 md:h-5" />
+              </button>
 
-            <div className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain [@media(orientation:landscape)]:flex-row [@media(orientation:landscape)]:overflow-hidden">
-              <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex-shrink-0 max-h-[50vh] [@media(orientation:landscape)]:max-h-none [@media(orientation:landscape)]:w-[min(42%,85vh)] [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:aspect-square [@media(orientation:landscape)]:shrink-0">
-                <PhotoImageAsset
-                  photo={selectedPhoto}
-                  imageClassName="w-full h-full object-contain"
-                  placeholderContainerClassName="w-full h-full flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900"
-                  placeholderIconWrapperClassName="flex h-20 w-20 items-center justify-center rounded-3xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200"
-                  placeholderIconClassName="h-10 w-10"
-                  placeholderLabelClassName="inline-flex items-center rounded-full bg-black/60 px-3 py-1.5 text-xs font-medium text-white shadow-md backdrop-blur-sm"
-                />
-              </div>
+              {(() => {
+                const p = selectedPhoto;
+                const uiStatus = resolvePhotoUiStatus(p);
+                const statusMeta = PHOTO_STATUS_STYLE[uiStatus];
+                const isSuspicious =
+                  uiStatus === "suspicious_auto" ||
+                  uiStatus === "suspicious_manual";
+                const showCheckBadge =
+                  uiStatus === "check" || uiStatus === "check_error";
+                const manualVerdict: PhotoManualVerdict =
+                  p.photoManualVerdict ?? "none";
+                const canSetManualVerdict = isManualReviewRequiredByBackend(p);
+                const verdictButtonsLocked =
+                  isVerdictSubmitting || verdictAutoClosePending;
 
-              <div className="p-5 sm:p-6 md:p-7 flex flex-col gap-3 flex-shrink-0 [@media(orientation:landscape)]:flex-1 [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:overflow-y-auto [@media(orientation:landscape)]:justify-center">
-                <h2 className="text-xl md:text-2xl font-semibold text-gray-800 dark:text-white pr-10 md:pr-12">
-                  {selectedPhoto.staffFullName}
-                </h2>
-                <div className="flex flex-col gap-1.5 text-sm">
-                  <p className="text-gray-600 dark:text-gray-300 flex items-center gap-2">
-                    <FaBuilding className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                    <span>
-                      <span className="font-medium text-gray-700 dark:text-gray-200">
-                        {getLabelForDepartment(selectedPhoto)}:
-                      </span>{" "}
-                      {selectedPhoto.department}
-                    </span>
-                  </p>
-                  <p className="text-gray-600 dark:text-gray-300 flex items-center gap-2">
-                    <FaClock className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                    <span>
-                      <span className="font-medium text-gray-700 dark:text-gray-200">
-                        Время:
-                      </span>{" "}
-                      {formatTime(selectedPhoto.attendanceTime)}
-                    </span>
-                  </p>
-                  {(isSuspicious || showCheckBadge) && (
-                    <div className="mt-2 flex items-center gap-2">
-                      <span
-                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${statusMeta.badgeClass}`}
-                      >
-                        <FaShieldAlt className="h-3.5 w-3.5" />
-                        {statusMeta.label}
-                      </span>
+                return (
+                  <div className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain [@media(orientation:landscape)]:flex-row [@media(orientation:landscape)]:overflow-hidden">
+                    <div className="relative w-full aspect-square flex items-center justify-center overflow-hidden bg-gradient-to-br from-gray-100 via-white to-gray-200 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex-shrink-0 max-h-[50vh] [@media(orientation:landscape)]:max-h-none [@media(orientation:landscape)]:w-[min(42%,85vh)] [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:aspect-square [@media(orientation:landscape)]:shrink-0">
+                      <PhotoImageAsset
+                        photo={p}
+                        imageClassName="w-full h-full object-contain"
+                        placeholderContainerClassName="w-full h-full flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-slate-100/95 via-white to-slate-200/95 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900"
+                        placeholderIconWrapperClassName="flex h-20 w-20 items-center justify-center rounded-3xl bg-slate-900/10 text-slate-600 dark:bg-slate-100/10 dark:text-slate-200"
+                        placeholderIconClassName="h-10 w-10"
+                        placeholderLabelClassName="inline-flex items-center rounded-full bg-black/60 px-3 py-1.5 text-xs font-medium text-white shadow-md backdrop-blur-sm"
+                      />
                     </div>
-                  )}
-                  {selectedPhoto.tutorInfo && (
-                    <p className="text-gray-500 dark:text-gray-400 text-xs mt-1 leading-relaxed">
-                      {selectedPhoto.tutorInfo}
-                    </p>
-                  )}
-                  {canSetManualVerdict && (
-                    <>
-                      <div className="mt-4 flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          disabled={
-                            isVerdictSubmitting ||
-                            manualVerdict === "suspicious"
-                          }
-                          onClick={() =>
-                            void submitManualVerdict("manual_suspicious")
-                          }
-                          className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-rose-50 transition-colors hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          Подозрительная
-                        </button>
-                        <button
-                          type="button"
-                          disabled={
-                            isVerdictSubmitting || manualVerdict === "clean"
-                          }
-                          onClick={() =>
-                            void submitManualVerdict("manual_clean")
-                          }
-                          className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-50 transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          Подтвердить
-                        </button>
-                      </div>
-                      {verdictError && (
-                        <p className="text-xs text-rose-600 dark:text-rose-300">
-                          {verdictError}
+
+                    <div className="p-5 sm:p-6 md:p-7 flex flex-col gap-3 flex-shrink-0 [@media(orientation:landscape)]:flex-1 [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:overflow-y-auto [@media(orientation:landscape)]:justify-center">
+                      <h2 className="text-xl md:text-2xl font-semibold text-gray-800 dark:text-white pr-10 md:pr-12">
+                        {p.staffFullName}
+                      </h2>
+                      <div className="flex flex-col gap-1.5 text-sm">
+                        <p className="text-gray-600 dark:text-gray-300 flex items-center gap-2">
+                          <FaBuilding className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                          <span>
+                            <span className="font-medium text-gray-700 dark:text-gray-200">
+                              {getLabelForDepartment(p)}:
+                            </span>{" "}
+                            {p.department}
+                          </span>
                         </p>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
+                        <p className="text-gray-600 dark:text-gray-300 flex items-center gap-2">
+                          <FaClock className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                          <span>
+                            <span className="font-medium text-gray-700 dark:text-gray-200">
+                              Время:
+                            </span>{" "}
+                            {formatTime(p.attendanceTime)}
+                          </span>
+                        </p>
+                        {(isSuspicious || showCheckBadge) && (
+                          <div className="mt-2 flex items-center gap-2">
+                            <span
+                              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${statusMeta.badgeClass}`}
+                            >
+                              <FaShieldAlt className="h-3.5 w-3.5" />
+                              {statusMeta.label}
+                            </span>
+                          </div>
+                        )}
+                        {p.tutorInfo && (
+                          <p className="text-gray-500 dark:text-gray-400 text-xs mt-1 leading-relaxed">
+                            {p.tutorInfo}
+                          </p>
+                        )}
+                        {canSetManualVerdict && (
+                          <>
+                            <div className="mt-4 flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={
+                                  verdictButtonsLocked ||
+                                  manualVerdict === "suspicious"
+                                }
+                                onClick={() =>
+                                  void submitManualVerdict("manual_suspicious")
+                                }
+                                className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-rose-50 transition-colors hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                Подозрительная
+                              </button>
+                              <button
+                                type="button"
+                                disabled={
+                                  verdictButtonsLocked ||
+                                  manualVerdict === "clean"
+                                }
+                                onClick={() =>
+                                  void submitManualVerdict("manual_clean")
+                                }
+                                className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-50 transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                Подтвердить
+                              </button>
+                            </div>
+                            {verdictError && (
+                              <p className="text-xs text-rose-600 dark:text-rose-300">
+                                {verdictError}
+                              </p>
+                            )}
+                          </>
+                        )}
+                        {(verdictSkipNotice || verdictAutoClosePending) && (
+                          <div
+                            className="mt-3 flex flex-col gap-2.5"
+                            role="region"
+                            aria-label="Статус проверки"
+                          >
+                            {verdictSkipNotice ? (
+                              <div
+                                className="flex gap-3 rounded-xl border border-amber-200/80 bg-gradient-to-br from-amber-50 via-amber-50/80 to-orange-50/50 px-3.5 py-3 shadow-sm shadow-amber-900/5 dark:border-amber-400/20 dark:bg-gradient-to-br dark:from-amber-950/55 dark:via-amber-950/40 dark:to-orange-950/25 dark:shadow-none dark:ring-1 dark:ring-inset dark:ring-amber-400/10"
+                                role="status"
+                                aria-live="polite"
+                              >
+                                <FaInfoCircle
+                                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
+                                  aria-hidden
+                                />
+                                <p className="min-w-0 text-[13px] sm:text-sm leading-snug text-amber-950/95 dark:text-amber-50/95">
+                                  {verdictSkipNotice}
+                                </p>
+                              </div>
+                            ) : null}
+                            {verdictAutoClosePending ? (
+                              <div
+                                className="flex gap-3 rounded-xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50 via-emerald-50/80 to-teal-50/45 px-3.5 py-3 shadow-sm shadow-emerald-900/5 dark:border-emerald-400/20 dark:bg-gradient-to-br dark:from-emerald-950/50 dark:via-emerald-950/35 dark:to-teal-950/25 dark:shadow-none dark:ring-1 dark:ring-inset dark:ring-emerald-400/10"
+                                role="status"
+                                aria-live="polite"
+                              >
+                                <FaCheckCircle
+                                  className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400"
+                                  aria-hidden
+                                />
+                                <p className="min-w-0 text-[13px] sm:text-sm leading-snug text-emerald-950/90 dark:text-emerald-50/90">
+                                  Сохранено. Карточка закроется автоматически…
+                                </p>
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </motion.div>
           </motion.div>
-        </motion.div>
+        )}
       </AnimatePresence>
     );
   };
 
   return (
     <div>
-      {/* Content is always mounted so the marquee can measure and the header
-          is immediately visible. The loader overlays it via fixed positioning. */}
       {renderPhotos()}
 
-      {/* Fixed-center overlay loader — exits/enters with opacity only, zero layout shift */}
       <AnimatePresence>{loading && renderLoading()}</AnimatePresence>
 
       {renderSelectedPhoto()}
