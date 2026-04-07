@@ -14,6 +14,114 @@ function faceLandmarkerModelPath(): string {
   return `${mediapipePublicBase()}mediapipe-models/face_landmarker.task`;
 }
 
+const MEDIAPIPE_NATIVE_LOG_RE =
+  /OpenGL error checking is disabled|TensorFlow Lite XNNPACK delegate|Graph successfully started running|Graph finished closing successfully|Successfully destroyed WebGL context|gl_context(?:_webgl)?\.cc:\d+|[WIE]\d{4}\s+\d{1,2}:\d{2}:\d{2}/;
+
+function stringifyConsoleArg(a: unknown): string {
+  if (typeof a === "string") return a;
+  try {
+    return String(a);
+  } catch {
+    return "";
+  }
+}
+
+function shouldFilterMediapipeNativeLog(args: unknown[]): boolean {
+  return MEDIAPIPE_NATIVE_LOG_RE.test(args.map(stringifyConsoleArg).join(" "));
+}
+
+function withMediapipeConsoleFilteredSync<T>(fn: () => T): T {
+  const origWarn = console.warn.bind(console);
+  const origInfo = console.info.bind(console);
+  const origLog = console.log.bind(console);
+  const wrap =
+    (base: (...args: unknown[]) => void) =>
+    (...args: unknown[]) => {
+      if (shouldFilterMediapipeNativeLog(args)) return;
+      base(...args);
+    };
+  console.warn = wrap(origWarn);
+  console.info = wrap(origInfo);
+  console.log = wrap(origLog);
+  try {
+    return fn();
+  } finally {
+    console.warn = origWarn;
+    console.info = origInfo;
+    console.log = origLog;
+  }
+}
+
+async function withMediapipeConsoleFilteredAsync<T>(
+  fn: () => Promise<T>,
+): Promise<T> {
+  const origWarn = console.warn.bind(console);
+  const origInfo = console.info.bind(console);
+  const origLog = console.log.bind(console);
+  const wrap =
+    (base: (...args: unknown[]) => void) =>
+    (...args: unknown[]) => {
+      if (shouldFilterMediapipeNativeLog(args)) return;
+      base(...args);
+    };
+  console.warn = wrap(origWarn);
+  console.info = wrap(origInfo);
+  console.log = wrap(origLog);
+  try {
+    return await fn();
+  } finally {
+    console.warn = origWarn;
+    console.info = origInfo;
+    console.log = origLog;
+  }
+}
+
+function closeFaceLandmarker(lm: FaceLandmarker | null): void {
+  if (!lm) return;
+  withMediapipeConsoleFilteredSync(() => {
+    lm.close();
+  });
+}
+
+let mediapipeConsoleFilterDepth = 0;
+let mediapipeConsoleFilterOrig: {
+  warn: typeof console.warn;
+  info: typeof console.info;
+  log: typeof console.log;
+} | null = null;
+
+function mediapipeConsoleFilterPush(): void {
+  if (mediapipeConsoleFilterDepth++ === 0) {
+    mediapipeConsoleFilterOrig = {
+      warn: console.warn.bind(console),
+      info: console.info.bind(console),
+      log: console.log.bind(console),
+    };
+    const wrap =
+      (method: "warn" | "info" | "log") =>
+      (...args: unknown[]) => {
+        if (shouldFilterMediapipeNativeLog(args)) return;
+        const o = mediapipeConsoleFilterOrig;
+        if (o) o[method](...args);
+      };
+    console.warn = wrap("warn");
+    console.info = wrap("info");
+    console.log = wrap("log");
+  }
+}
+
+function mediapipeConsoleFilterPop(): void {
+  if (mediapipeConsoleFilterDepth <= 0) return;
+  mediapipeConsoleFilterDepth -= 1;
+  if (mediapipeConsoleFilterDepth > 0) return;
+  if (mediapipeConsoleFilterOrig) {
+    console.warn = mediapipeConsoleFilterOrig.warn;
+    console.info = mediapipeConsoleFilterOrig.info;
+    console.log = mediapipeConsoleFilterOrig.log;
+    mediapipeConsoleFilterOrig = null;
+  }
+}
+
 export type LivenessPhase =
   | "idle"
   | "loading"
@@ -184,7 +292,9 @@ export function useFaceLiveness({
       setPhase("face");
       setHint(HINT_FACE_IN_OVAL);
     } else if (phase === "unavailable") {
-      setHint("Проверка здесь недоступна. Можно нажать «Пропустить» и снять кадр вручную.");
+      setHint(
+        "Проверка здесь недоступна. Можно нажать «Пропустить» и снять кадр вручную.",
+      );
     }
   }, [active, skipped, phase, resetInternalToFace]);
 
@@ -193,12 +303,12 @@ export function useFaceLiveness({
       setPhase("idle");
       setHint("");
       setModelReady(false);
-      landmarkerRef.current?.close();
+      closeFaceLandmarker(landmarkerRef.current);
       landmarkerRef.current = null;
       return;
     }
     if (skipped) {
-      landmarkerRef.current?.close();
+      closeFaceLandmarker(landmarkerRef.current);
       landmarkerRef.current = null;
       setPhase("passed");
       setHint("");
@@ -209,53 +319,56 @@ export function useFaceLiveness({
     let cancelled = false;
 
     (async () => {
-      setPhase("loading");
-      setHint("Подождите, загружаем проверку…");
-      setModelReady(false);
-      try {
-        const fileset = await FilesetResolver.forVisionTasks(visionWasmRoot());
-        if (cancelled) return;
-
-        let lm: FaceLandmarker | null = null;
+      await withMediapipeConsoleFilteredAsync(async () => {
+        setPhase("loading");
+        setHint("Подождите, загружаем проверку…");
+        setModelReady(false);
         try {
-          lm = await FaceLandmarker.createFromOptions(fileset, {
-            baseOptions: {
-              modelAssetPath: faceLandmarkerModelPath(),
-              delegate: "GPU",
-            },
-            runningMode: "VIDEO",
-            numFaces: 1,
-            outputFaceBlendshapes: true,
-          });
-        } catch {
-          lm = await FaceLandmarker.createFromOptions(fileset, {
-            baseOptions: {
-              modelAssetPath: faceLandmarkerModelPath(),
-            },
-            runningMode: "VIDEO",
-            numFaces: 1,
-            outputFaceBlendshapes: true,
-          });
-        }
+          const fileset =
+            await FilesetResolver.forVisionTasks(visionWasmRoot());
+          if (cancelled) return;
 
-        if (cancelled) {
-          lm.close();
-          return;
+          let lm: FaceLandmarker | null = null;
+          try {
+            lm = await FaceLandmarker.createFromOptions(fileset, {
+              baseOptions: {
+                modelAssetPath: faceLandmarkerModelPath(),
+                delegate: "GPU",
+              },
+              runningMode: "VIDEO",
+              numFaces: 1,
+              outputFaceBlendshapes: true,
+            });
+          } catch {
+            lm = await FaceLandmarker.createFromOptions(fileset, {
+              baseOptions: {
+                modelAssetPath: faceLandmarkerModelPath(),
+              },
+              runningMode: "VIDEO",
+              numFaces: 1,
+              outputFaceBlendshapes: true,
+            });
+          }
+
+          if (cancelled) {
+            closeFaceLandmarker(lm);
+            return;
+          }
+          landmarkerRef.current = lm;
+          resetInternalToFace();
+          setHint(HINT_FACE_IN_OVAL);
+          setModelReady(true);
+        } catch {
+          if (!cancelled) {
+            landmarkerRef.current = null;
+            setPhase("unavailable");
+            setHint(
+              "Не получилось загрузить проверку. Нажмите «Пропустить», чтобы снять кадр вручную.",
+            );
+            setModelReady(false);
+          }
         }
-        landmarkerRef.current = lm;
-        resetInternalToFace();
-        setHint(HINT_FACE_IN_OVAL);
-        setModelReady(true);
-      } catch {
-        if (!cancelled) {
-          landmarkerRef.current = null;
-          setPhase("unavailable");
-          setHint(
-            "Не получилось загрузить проверку. Нажмите «Пропустить», чтобы снять кадр вручную.",
-          );
-          setModelReady(false);
-        }
-      }
+      });
     })();
 
     return () => {
@@ -274,6 +387,8 @@ export function useFaceLiveness({
 
     const lm = landmarkerRef.current;
     if (!lm) return;
+
+    mediapipeConsoleFilterPush();
 
     const tick = () => {
       if (!active || skipped) return;
@@ -320,9 +435,14 @@ export function useFaceLiveness({
 
       if (!geo.ok) {
         lostCenterRef.current += 1;
-        if (internalRef.current !== "face" && lostCenterRef.current >= LOST_CENTER_FRAMES) {
+        if (
+          internalRef.current !== "face" &&
+          lostCenterRef.current >= LOST_CENTER_FRAMES
+        ) {
           resetInternalToFace();
-          setHint("Верните лицо в овал на экране, пожалуйста — повторим шаг с начала.");
+          setHint(
+            "Верните лицо в овал на экране, пожалуйста — повторим шаг с начала.",
+          );
         } else if (!geo.inOval) {
           setHint("Сдвиньте лицо ближе к центру овала на экране.");
         } else {
@@ -342,9 +462,7 @@ export function useFaceLiveness({
         internalRef.current = "blink";
         blinkStageRef.current = "need_open";
         setPhase("blink");
-        setHint(
-          "Моргните один раз, пожалуйста. Тёмные очки лучше снять.",
-        );
+        setHint("Моргните один раз, пожалуйста. Тёмные очки лучше снять.");
       }
 
       if (internalRef.current === "blink") {
@@ -403,7 +521,10 @@ export function useFaceLiveness({
             } else {
               setHint("Сдвиньте лицо ближе к центру овала на экране.");
             }
-          } else if (smileCombo < SMILE_COMBO_MAX && blink < BLINK_OPEN_MAX + 0.1) {
+          } else if (
+            smileCombo < SMILE_COMBO_MAX &&
+            blink < BLINK_OPEN_MAX + 0.1
+          ) {
             smileNeutralStreakRef.current += 1;
             setHint("Ещё секунду спокойное лицо, без улыбки.");
             if (smileNeutralStreakRef.current >= SMILE_NEUTRAL_FRAMES) {
@@ -436,6 +557,7 @@ export function useFaceLiveness({
 
     rafRef.current = requestAnimationFrame(tick);
     return () => {
+      mediapipeConsoleFilterPop();
       if (rafRef.current != null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
@@ -445,7 +567,7 @@ export function useFaceLiveness({
 
   useEffect(() => {
     return () => {
-      landmarkerRef.current?.close();
+      closeFaceLandmarker(landmarkerRef.current);
       landmarkerRef.current = null;
     };
   }, []);
