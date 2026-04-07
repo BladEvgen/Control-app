@@ -1,3 +1,5 @@
+import type { FaceVerifyStatus } from "./faceVerificationSchema";
+
 export type FriendlyError = { title: string; detail?: string };
 
 export function sanitizeApiErrorString(raw: string): string {
@@ -47,7 +49,8 @@ export function humanizeApiError(raw: string): FriendlyError {
       },
     },
     {
-      test: (x) => x.includes("no face detected") || x.includes("лицо не обнаружено"),
+      test: (x) =>
+        x.includes("no face detected") || x.includes("лицо не обнаружено"),
       out: {
         title: "Лицо на фото не найдено",
         detail:
@@ -104,7 +107,8 @@ export function humanizeApiError(raw: string): FriendlyError {
       },
     },
     {
-      test: (x) => x.includes("network") || x.includes("timeout") || x.includes("econn"),
+      test: (x) =>
+        x.includes("network") || x.includes("timeout") || x.includes("econn"),
       out: {
         title: "Сеть или сервер не ответили",
         detail: "Проверьте подключение и попробуйте снова.",
@@ -193,7 +197,10 @@ export function humanizeGallerySearchError(raw: string): GallerySearchHelp {
     };
   }
 
-  if (n.includes("лица не найдены на изображении") || n.includes("no face detected")) {
+  if (
+    n.includes("лица не найдены на изображении") ||
+    n.includes("no face detected")
+  ) {
     return {
       title: "Лицо не найдено",
       detail: "Крупнее, ровный свет, лицо по центру.",
@@ -211,8 +218,13 @@ export function humanizeGallerySearchError(raw: string): GallerySearchHelp {
     };
   }
 
-  if (n.includes("face recognition error") || n.includes("ошибка при распознавании лиц")) {
-    const inner = sanitizeApiErrorString(s.replace(/^[^:]*:\s*/i, "").trim()).trim();
+  if (
+    n.includes("face recognition error") ||
+    n.includes("ошибка при распознавании лиц")
+  ) {
+    const inner = sanitizeApiErrorString(
+      s.replace(/^[^:]*:\s*/i, "").trim(),
+    ).trim();
     if (inner && inner !== s) {
       return humanizeGallerySearchError(inner);
     }
@@ -304,14 +316,33 @@ export function humanizePadTag(tag: string): string {
   return m[tag] ?? humanizeSnakeOrEnglishFragment(tag);
 }
 
-export function humanizeVerifyMode(mode: string | undefined): string {
-  if (mode === "embedding_gallery_strict") {
-    return "Сравнение с эталонами (строгий порог)";
-  }
-  if (mode === "embedding_gallery_fallback") {
-    return "Сравнение с эталонами (базовый режим)";
-  }
-  return mode ? humanizeSnakeOrEnglishFragment(mode) : "—";
+export function humanizeFaceVerifyStatus(status: FaceVerifyStatus): string {
+  const m: Record<FaceVerifyStatus, string> = {
+    VERIFIED: "Подтверждено (диагностика)",
+    REJECTED: "Не подтверждено (диагностика)",
+    QUALITY_FAIL: "Качество кадра",
+    LIVENESS_FAIL: "Живость не пройдена",
+    PAD_ERROR: "Ошибка PAD / кадр",
+  };
+  return m[status] ?? status;
+}
+
+export function humanizeVerifyReasonCode(code: string): string {
+  const r: Record<string, string> = {
+    PROBE_QUALITY_LOW: "низкое качество или уверенность детекции",
+    SCORE_BELOW_WEAK_GALLERY_THRESHOLD:
+      "ниже строгого порога для слабой галереи",
+    WEAK_ENROLLMENT: "мало независимых эталонов в галерее",
+    SCORE_BELOW_VERIFIED_THRESHOLD: "ниже порога для надёжной галереи",
+    SCORE_BELOW_COLD_START_THRESHOLD:
+      "ниже порога холодного старта (до сборки gallery_real; PAD и качество должны быть сильными)",
+    COLD_START_QUALITY_INSUFFICIENT:
+      "для режима без собранной галереи нужен более уверенный кадр (крупнее лицо, выше детекция)",
+    LIVENESS_FAILED: "живость не подтверждена",
+    PAD_PIPELINE_FAILED:
+      "PAD не обработал кадр (техническая ошибка или нет лица для PAD)",
+  };
+  return r[code] ?? humanizeSnakeOrEnglishFragment(code);
 }
 
 export function humanizeUnknownFaceStatus(status: string): string {
@@ -337,13 +368,17 @@ export function humanizeResponseFieldKey(key: string): string {
     detail: "Подробности",
     message: "Сообщение",
     status: "Статус",
-    verified: "Совпадение с эталоном",
     score: "Сходство (0–1)",
     max_cosine: "Лучшая схожесть",
-    trained_model_present: "Модель под сотрудника",
-    gallery_templates: "Число эталонов",
     threshold_used: "Порог",
-    verification_mode: "Режим",
+    matched: "Совпадение",
+    final_decision: "Итог",
+    summary: "Пояснение",
+    gallery_strength: "Надёжность галереи",
+    threshold_applied: "Применённый порог",
+    threshold_verified_strong: "Порог (сильная галерея)",
+    threshold_verified_weak: "Порог (слабая галерея)",
+    diagnostics: "Диагностика",
     recognized_staff: "Найденные сотрудники",
     unknown_faces: "Неизвестные лица",
     model_version: "Версия модели",
@@ -366,7 +401,6 @@ export function humanizeResponseFieldKey(key: string): string {
     height: "Высота",
     liveness: "Живость",
     pad: "Проверка кадра",
-    relaxed_match: "Допуск по ракурсу",
   };
   return labels[key] ?? humanizeSnakeOrEnglishFragment(key);
 }
@@ -382,7 +416,8 @@ export function humanizePadFailureReason(raw: string): FriendlyError {
   if (n.includes("500") || n.includes("internal")) {
     return {
       title: "Ошибка на сервере при проверке PAD",
-      detail: "Попробуйте позже. Распознавание ниже могло всё равно выполниться.",
+      detail:
+        "Попробуйте позже. Распознавание ниже могло всё равно выполниться.",
     };
   }
   return humanizeApiError(raw);

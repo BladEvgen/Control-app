@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FaUserCheck } from "react-icons/fa";
 
 export type StaffPickOption = {
@@ -12,18 +6,22 @@ export type StaffPickOption = {
   fio: string;
   deptName: string;
   deptId: number;
+  faceProfileState?: string;
 };
 
 function normalizeSearch(s: string): string {
-  return s
-    .trim()
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/\p{M}/gu, "");
+  return s.trim().toLowerCase().normalize("NFKD").replace(/\p{M}/gu, "");
 }
 
 function formatLabel(o: StaffPickOption): string {
-  return `${o.fio} — ${o.deptName}`;
+  const base = `${o.fio} — ${o.deptName}`;
+  if (o.faceProfileState === "bootstrap_required") {
+    return `${base} · нужен сбор лиц`;
+  }
+  if (o.faceProfileState === "weak_gallery") {
+    return `${base} · слабая галерея`;
+  }
+  return base;
 }
 
 type Props = {
@@ -88,7 +86,11 @@ export function FaceLabStaffCombobox({
       return optionsIndexed.slice(0, LIST_PREVIEW).map((x) => x.o);
     }
     const out: StaffPickOption[] = [];
-    for (let i = 0; i < optionsIndexed.length && out.length < LIST_SEARCH; i += 1) {
+    for (
+      let i = 0;
+      i < optionsIndexed.length && out.length < LIST_SEARCH;
+      i += 1
+    ) {
       const { o, hay } = optionsIndexed[i];
       if (tokensMatch(hay, nq)) out.push(o);
     }
@@ -182,7 +184,9 @@ export function FaceLabStaffCombobox({
   return (
     <div ref={rootRef} className="relative">
       <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
-        <label className="text-sm text-slate-600 dark:text-slate-400">Сотрудник</label>
+        <label className="text-sm text-slate-600 dark:text-slate-400">
+          Сотрудник
+        </label>
         {listHint ? (
           <span className="text-xs text-slate-500" aria-live="polite">
             {listHint}
@@ -221,7 +225,9 @@ export function FaceLabStaffCombobox({
             <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
               {selected.fio}
             </p>
-            <p className="truncate text-xs text-slate-600 dark:text-slate-400">{selected.deptName}</p>
+            <p className="truncate text-xs text-slate-600 dark:text-slate-400">
+              {selected.deptName}
+            </p>
           </div>
         </div>
       ) : null}
@@ -245,7 +251,9 @@ export function FaceLabStaffCombobox({
               onClick={() => pick(o)}
               onMouseEnter={() => setHighlight(idx)}
             >
-              <span className="font-medium text-slate-900 dark:text-slate-100">{o.fio}</span>
+              <span className="font-medium text-slate-900 dark:text-slate-100">
+                {o.fio}
+              </span>
               <span className="mt-0.5 block text-xs leading-snug text-slate-600 dark:text-slate-400">
                 {o.deptName}
               </span>

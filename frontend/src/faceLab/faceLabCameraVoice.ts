@@ -2,6 +2,8 @@ import { Howl } from "howler";
 import { isAxiosError } from "axios";
 import localforage from "localforage";
 import axiosInstance from "../api";
+import type { CameraGuidanceContext } from "./camera/types";
+import { faceLabLog } from "./faceLabLog";
 
 export type FaceLabVoiceLang = "off" | "ru" | "kk" | "en";
 
@@ -10,37 +12,45 @@ const PHASE: Record<
   Record<Exclude<FaceLabVoiceLang, "off">, string>
 > = {
   loading: {
-    ru: "Секунду, готовим проверку.",
-    kk: "Бір секунд, тексеруді дайындаймыз.",
-    en: "One moment, we are getting the check ready.",
+    ru: "Пожалуйста, подождите несколько секунд — мы готовим проверку.",
+    kk: "Өтінеміз, бірнеше секунд күтіңіз — тексеруді дайындаймыз.",
+    en: "Please wait a moment while we prepare the check for you.",
   },
   blink: {
-    ru: "Моргните один раз, пожалуйста.",
-    kk: "Көзіңізді бір рет жұмыңыз, өтінеміз.",
-    en: "Please blink once.",
+    ru: "Пожалуйста, один раз моргните.",
+    kk: "Өтінеміз, көзіңізді бір рет жұмыңыз.",
+    en: "Please blink once, when you are ready.",
   },
   yaw: {
-    ru: "Слегка поверните голову в сторону: влево или вправо, пожалуйста.",
-    kk: "Басыңызды сәл жаққа бұраңыз: солға немесе оңға, өтінеміз.",
-    en: "Please turn your head slightly to the side — left or right.",
+    ru: "Пожалуйста, слегка поверните голову влево или вправо.",
+    kk: "Өтінеміз, басыңызды сәл солға немесе оңға бұраңыз.",
+    en: "Please turn your head gently to the left or to the right.",
   },
   smile: {
-    ru: "Слегка улыбнитесь, пожалуйста.",
-    kk: "Жеңіл күлімсіреңіз, өтінеміз.",
-    en: "Please smile a little.",
+    ru: "Пожалуйста, слегка улыбнитесь.",
+    kk: "Өтінеміз, жеңіл күлімсіреңіз.",
+    en: "Please give a slight smile, if you would.",
   },
   unavailable: {
-    ru: "В этом браузере проверка недоступна. Можно снять кадр вручную.",
-    kk: "Бұл браузерде тексеру жоқ. Суретті қолмен ала аласыз.",
-    en: "This check is not available in this browser. You can take a photo manually.",
+    ru: "К сожалению, в этом браузере проверка недоступна. Вы можете снять кадр вручную — спасибо за понимание.",
+    kk: "Өкінішке орай, бұл браузерде тексеру қолжетімсіз. Суретті қолмен түсіре аласыз — түсінгеніңізге рахмет.",
+    en: "We are sorry — this check is not available in this browser. You may take a photo manually. Thank you for your understanding.",
   },
 };
 
-export const FACE_LAB_TTS_PHASE_KEYS: readonly string[] = Object.freeze(
-  Object.keys(PHASE),
-);
+const SETUP_TTS_PHASE_KEYS = [
+  "setup_profile_photo",
+  "setup_bootstrap_front",
+  "setup_bootstrap_left",
+  "setup_bootstrap_right",
+] as const;
 
-const TTS_IDB_VERSION = "v_1";
+export const FACE_LAB_TTS_PHASE_KEYS: readonly string[] = Object.freeze([
+  ...Object.keys(PHASE),
+  ...SETUP_TTS_PHASE_KEYS,
+]);
+
+const TTS_IDB_VERSION = "v_5";
 
 const ttsStore = localforage.createInstance({
   name: "control_front",
@@ -70,6 +80,43 @@ export function phraseForLivenessPhase(
   return line.trim() ? line : null;
 }
 
+const SETUP_GUIDE: Record<
+  Exclude<CameraGuidanceContext, "default">,
+  Record<Exclude<FaceLabVoiceLang, "off">, string>
+> = {
+  profile_photo: {
+    ru: "Пожалуйста, смотрите прямо в камеру. В светлой рамке на видео показан силуэт головы фронтально; совместите своё лицо с ним и нажмите затвор.",
+    kk: "Өтінеміз, камераға тік қараңыз. Бейнедегі жарық рамка ішінде беттің алдыңғы силуэті көрсетілген; бетіңізді сәйкестендіріп, түсіріңіз батырмасын басыңыз.",
+    en: "Please look straight at the camera. Inside the bright frame you will see a front-facing head silhouette; align your face with it, then tap the shutter.",
+  },
+  bootstrap_front: {
+    ru: "Пожалуйста, встаньте прямо перед камерой. В рамке на видео — силуэт головы анфас; повторите положение примерно как на макете, затем сделайте снимок.",
+    kk: "Өтінеміз, камера алдында тік тұрыңыз. Рамкадағы бейнеде беттің алдыңғы силуэті бар; макеттегідей орналастырып, сурет түсіріңіз.",
+    en: "Please stand squarely in front of the camera. The frame shows a front-facing head silhouette; match your pose to it, then take the photo.",
+  },
+  bootstrap_left: {
+    ru: "Пожалуйста, слегка поверните голову влево примерно на двадцать градусов — разворот лица к камере, не наклон ухом к плечу. В рамке анимация: лицо уходит вглубь экрана; повторите и снимите.",
+    kk: "Өтінеміз, басыңызды шамамен жиырма градусқа солға бұраңыз — бетті камераға бұраңыз, құлақты иіспей. Рамкадағы анимация бетті экран тереңіне қарай бұрады; соған сәйкестендіріп түсіріңіз.",
+    en: "Please turn your head slightly left, about twenty degrees — swivel your face toward the camera, not an ear-to-shoulder tilt. The animation in the frame shows the face turning in depth; match it, then capture.",
+  },
+  bootstrap_right: {
+    ru: "Пожалуйста, слегка поверните голову вправо примерно на двадцать градусов — разворот лица к камере, не наклон ухом к плечу. В рамке анимация: лицо уходит вглубь экрана; повторите и снимите.",
+    kk: "Өтінеміз, басыңызды шамамен жиырма градусқа оңға бұраңыз — бетті камераға бұраңыз, құлақты иіспей. Рамкадағы анимация бетті экран тереңіне қарай бұрады; соған сәйкестендіріп түсіріңіз.",
+    en: "Please turn your head slightly right, about twenty degrees — swivel your face toward the camera, not an ear-to-shoulder tilt. The animation in the frame shows the face turning in depth; match it, then capture.",
+  },
+};
+
+export function phraseForSetupGuidance(
+  ctx: CameraGuidanceContext,
+  lang: FaceLabVoiceLang,
+): string | null {
+  if (lang === "off" || ctx === "default") return null;
+  const row = SETUP_GUIDE[ctx];
+  if (!row) return null;
+  const line = row[lang] ?? row.ru;
+  return line.trim() ? line : null;
+}
+
 let lastSpeakDedupeKey = "";
 let ttsAbortController: AbortController | null = null;
 let currentHowl: Howl | null = null;
@@ -82,7 +129,9 @@ export class FaceLabSpeechCancelled extends Error {
   }
 }
 
-export function isFaceLabSpeechCancelled(e: unknown): e is FaceLabSpeechCancelled {
+export function isFaceLabSpeechCancelled(
+  e: unknown,
+): e is FaceLabSpeechCancelled {
   return e instanceof FaceLabSpeechCancelled;
 }
 
@@ -109,9 +158,6 @@ function abortAndStopPlayback(): void {
   ttsAbortController?.abort();
   ttsAbortController = null;
   stopHowl();
-  if (typeof window !== "undefined" && window.speechSynthesis) {
-    window.speechSynthesis.cancel();
-  }
 }
 
 export function cancelFaceLabSpeech(): void {
@@ -122,25 +168,6 @@ export function cancelFaceLabSpeech(): void {
     inFlightSpeech = null;
     w.reject(new FaceLabSpeechCancelled());
   }
-}
-
-function speakFaceLabBrowserAsync(
-  text: string,
-  lang: Exclude<FaceLabVoiceLang, "off">,
-): Promise<void> {
-  if (typeof window === "undefined" || !text.trim()) return Promise.resolve();
-  const synth = window.speechSynthesis;
-  if (!synth) return Promise.resolve();
-  synth.cancel();
-  return new Promise((resolve) => {
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = lang === "kk" ? "kk-KZ" : lang === "en" ? "en-US" : "ru-RU";
-    u.rate = 1.02;
-    u.volume = 1;
-    u.onend = () => resolve();
-    u.onerror = () => resolve();
-    synth.speak(u);
-  });
 }
 
 async function loadTtsBlob(
@@ -226,7 +253,6 @@ export type SpeakFaceLabOptions = {
   lang: Exclude<FaceLabVoiceLang, "off">;
 };
 
-
 export async function speakFaceLab(opts: SpeakFaceLabOptions): Promise<void> {
   const { phase, text, lang } = opts;
   if (typeof window === "undefined" || !text.trim()) return;
@@ -244,13 +270,15 @@ export async function speakFaceLab(opts: SpeakFaceLabOptions): Promise<void> {
     const finishOk = () => {
       if (settled) return;
       settled = true;
-      if (holder.mine != null && inFlightSpeech === holder.mine) inFlightSpeech = null;
+      if (holder.mine != null && inFlightSpeech === holder.mine)
+        inFlightSpeech = null;
       resolve();
     };
     const finishErr = (e: unknown) => {
       if (settled) return;
       settled = true;
-      if (holder.mine != null && inFlightSpeech === holder.mine) inFlightSpeech = null;
+      if (holder.mine != null && inFlightSpeech === holder.mine)
+        inFlightSpeech = null;
       reject(e);
     };
 
@@ -276,7 +304,11 @@ export async function speakFaceLab(opts: SpeakFaceLabOptions): Promise<void> {
           return;
         }
         if (!blob || blob.size === 0) {
-          await speakFaceLabBrowserAsync(text, lang);
+          faceLabLog.warn(
+            "TTS: нет MP3 с сервера, озвучка пропущена",
+            phase,
+            lang,
+          );
           finishOk();
           return;
         }
@@ -293,18 +325,14 @@ export async function speakFaceLab(opts: SpeakFaceLabOptions): Promise<void> {
             finishOk();
           },
           onloaderror: (_id, err) => {
-            if (import.meta.env.DEV) {
-              console.warn("Face Lab TTS load error", err);
-            }
+            faceLabLog.warn("TTS load error", err);
             stopHowl();
-            void speakFaceLabBrowserAsync(text, lang).then(finishOk, finishOk);
+            finishOk();
           },
           onplayerror: (_id, err) => {
-            if (import.meta.env.DEV) {
-              console.warn("Face Lab TTS play error", err);
-            }
+            faceLabLog.warn("TTS play error", err);
             stopHowl();
-            void speakFaceLabBrowserAsync(text, lang).then(finishOk, finishOk);
+            finishOk();
           },
         });
 
@@ -315,12 +343,8 @@ export async function speakFaceLab(opts: SpeakFaceLabOptions): Promise<void> {
           return;
         }
         stopHowl();
-        try {
-          await speakFaceLabBrowserAsync(text, lang);
-          finishOk();
-        } catch {
-          finishOk();
-        }
+        faceLabLog.warn("TTS: сбой загрузки", e);
+        finishOk();
       }
     })();
   });

@@ -1,3 +1,10 @@
+import {
+  parseFaceVerifyApiResponse,
+  type FaceVerifyApiResponse,
+} from "./faceVerificationSchema";
+
+export type { FaceVerifyApiResponse } from "./faceVerificationSchema";
+
 export type PadTestResponse = {
   status: string;
   trust_confirmed: boolean | null;
@@ -10,6 +17,25 @@ export type PadTestResponse = {
   frame_score: number;
   quality_penalty: number;
 };
+
+export function livenessToPadTestResponse(
+  l: FaceVerifyApiResponse["liveness"],
+): PadTestResponse | null {
+  if (!l.checked) return null;
+  return {
+    status: l.status ?? "pending",
+    trust_confirmed: l.trust_confirmed ?? null,
+    risk_score: typeof l.risk_score === "number" ? l.risk_score : 0,
+    tags: Array.isArray(l.tags) ? l.tags : [],
+    model_version: l.model_version ?? "",
+    elapsed_ms: typeof l.elapsed_ms === "number" ? l.elapsed_ms : 0,
+    deepface_score: typeof l.deepface_score === "number" ? l.deepface_score : 0,
+    device_score: typeof l.device_score === "number" ? l.device_score : 0,
+    frame_score: typeof l.frame_score === "number" ? l.frame_score : 0,
+    quality_penalty:
+      typeof l.quality_penalty === "number" ? l.quality_penalty : 0,
+  };
+}
 
 export type RecognizedStaffRow = {
   pin: string;
@@ -28,17 +54,6 @@ export type UnknownFaceRow = {
 export type RecognizeResponse = {
   recognized_staff: RecognizedStaffRow[];
   unknown_faces: UnknownFaceRow[];
-};
-
-export type VerifyResponse = {
-  verified: boolean;
-  score: number;
-  max_cosine?: number;
-  trained_model_present?: boolean;
-  gallery_templates?: number;
-  threshold_used?: number;
-  verification_mode?: string;
-  relaxed_match?: boolean;
 };
 
 export function isRecord(x: unknown): x is Record<string, unknown> {
@@ -72,16 +87,24 @@ export function parsePadResult(data: unknown): PadTestResponse | null {
   ) {
     return null;
   }
-  if (!Array.isArray(data.tags) || !data.tags.every((t) => typeof t === "string")) {
+  if (
+    !Array.isArray(data.tags) ||
+    !data.tags.every((t) => typeof t === "string")
+  ) {
     return null;
   }
   if (typeof data.model_version !== "string") return null;
-  return data as unknown as PadTestResponse;
+  return data as PadTestResponse;
 }
 
-export function parseRecognizeResponse(data: unknown): RecognizeResponse | null {
+export function parseRecognizeResponse(
+  data: unknown,
+): RecognizeResponse | null {
   if (!isRecord(data)) return null;
-  if (!Array.isArray(data.recognized_staff) || !Array.isArray(data.unknown_faces)) {
+  if (
+    !Array.isArray(data.recognized_staff) ||
+    !Array.isArray(data.unknown_faces)
+  ) {
     return null;
   }
   const recognized_staff: RecognizedStaffRow[] = [];
@@ -90,7 +113,10 @@ export function parseRecognizeResponse(data: unknown): RecognizeResponse | null 
     if (typeof row.pin !== "string" || typeof row.similarity !== "number") {
       return null;
     }
-    if (!Array.isArray(row.bbox) || !row.bbox.every((n) => typeof n === "number")) {
+    if (
+      !Array.isArray(row.bbox) ||
+      !row.bbox.every((n) => typeof n === "number")
+    ) {
       return null;
     }
     recognized_staff.push({
@@ -109,7 +135,10 @@ export function parseRecognizeResponse(data: unknown): RecognizeResponse | null 
   for (const row of data.unknown_faces) {
     if (!isRecord(row)) return null;
     if (typeof row.status !== "string") return null;
-    if (!Array.isArray(row.bbox) || !row.bbox.every((n) => typeof n === "number")) {
+    if (
+      !Array.isArray(row.bbox) ||
+      !row.bbox.every((n) => typeof n === "number")
+    ) {
       return null;
     }
     unknown_faces.push({ status: row.status, bbox: row.bbox as number[] });
@@ -117,32 +146,8 @@ export function parseRecognizeResponse(data: unknown): RecognizeResponse | null 
   return { recognized_staff, unknown_faces };
 }
 
-export function parseVerifyResponse(data: unknown): VerifyResponse | null {
-  if (!isRecord(data)) return null;
-  if (typeof data.verified !== "boolean" || typeof data.score !== "number") {
-    return null;
-  }
-  const out: VerifyResponse = {
-    verified: data.verified,
-    score: normalizeScore01(data.score),
-  };
-  if (typeof data.max_cosine === "number") {
-    out.max_cosine = normalizeScore01(data.max_cosine);
-  }
-  if (typeof data.trained_model_present === "boolean") {
-    out.trained_model_present = data.trained_model_present;
-  }
-  if (typeof data.gallery_templates === "number") {
-    out.gallery_templates = data.gallery_templates;
-  }
-  if (typeof data.threshold_used === "number") {
-    out.threshold_used = normalizeScore01(data.threshold_used);
-  }
-  if (typeof data.verification_mode === "string") {
-    out.verification_mode = data.verification_mode;
-  }
-  if (typeof data.relaxed_match === "boolean") {
-    out.relaxed_match = data.relaxed_match;
-  }
-  return out;
+export function parseVerifyPayload(
+  data: unknown,
+): FaceVerifyApiResponse | null {
+  return parseFaceVerifyApiResponse(data);
 }
