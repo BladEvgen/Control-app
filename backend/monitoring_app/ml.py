@@ -4,6 +4,7 @@ import logging
 import os
 import traceback
 from collections import Counter
+from collections.abc import Iterable
 from threading import Lock
 from typing import Any, Optional, cast
 
@@ -189,6 +190,64 @@ def load_image_from_memory(file):
     except Exception as e:
         logger.error(f"Ошибка при чтении изображения: {e}")
         raise ValidationError(f"Ошибка чтения изображения: {str(e)}")
+
+
+def _staff_upload_megapixel_guard(image_bgr: np.ndarray) -> None:
+    h, w = int(image_bgr.shape[0]), int(image_bgr.shape[1])
+    max_mp = int(getattr(settings, "STAFF_UPLOAD_MAX_MEGAPIXELS", 36))
+    if h <= 0 or w <= 0:
+        raise ValidationError("Некорректный размер изображения.")
+    if h * w > max_mp * 1_000_000:
+        raise ValidationError("Слишком большое разрешение изображения.")
+
+
+def decode_upload_image_bytes_to_bgr(raw_bytes: bytes) -> np.ndarray:
+    """
+    Decode an uploaded still image to BGR ``uint8`` (OpenCV first, PIL fallback).
+
+    Used before PAD / face pipelines and before re-encoding to canonical JPEG.
+    """
+    if not raw_bytes:
+        raise ValidationError("Пустой файл изображения.")
+    buf = np.frombuffer(bytearray(raw_bytes), dtype=np.uint8)
+    image = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    if image is None:
+        try:
+            from io import BytesIO
+
+            from PIL import Image
+
+            with Image.open(BytesIO(raw_bytes)) as im:
+                im = im.convert("RGB")
+                rgb = np.asarray(im, dtype=np.uint8)
+            image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        except Exception as exc:
+            logger.warning(
+                "decode_upload_image_bytes_to_bgr PIL fallback failed: %s", exc
+            )
+            raise ValidationError("Невозможно прочитать изображение.") from exc
+    _staff_upload_megapixel_guard(image)
+    return image
+
+
+def reencode_bgr_to_canonical_jpeg_bytes(
+    image_bgr: np.ndarray,
+    *,
+    quality: int | None = None,
+) -> bytes:
+    """
+    Encode a BGR image as baseline JPEG — canonical on-disk format for staff uploads.
+    """
+    q = (
+        quality
+        if quality is not None
+        else int(getattr(settings, "STAFF_UPLOAD_JPEG_QUALITY", 92))
+    )
+    q = max(1, min(100, int(q)))
+    ok, enc = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+    if not ok or enc is None:
+        raise ValidationError("Не удалось нормализовать изображение до JPEG.")
+    return enc.tobytes()
 
 
 def preprocess_image(image):
@@ -382,6 +441,33 @@ def _collect_readable_lesson_attendance_paths_for_staff(
         skipped_missing,
         skipped_unreadable,
     )
+    return out
+
+
+def _collect_trusted_staff_face_sample_paths_for_staff(
+    staff: "models.Staff",
+) -> list[str]:
+    """Paths for active trusted :class:`~monitoring_app.models.StaffFaceSample` images."""
+    cap = max(0, int(getattr(settings, "FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES", 5)))
+    if cap == 0:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    qs = models.StaffFaceSample.objects.filter(
+        staff=staff, is_active=True, is_trusted=True
+    ).order_by("-created_at")
+    for row in qs.iterator(chunk_size=50):
+        if len(out) >= cap:
+            break
+        f = row.image
+        p = getattr(f, "path", "") or ""
+        if not p or not os.path.isfile(p):
+            continue
+        ap = os.path.abspath(p)
+        if ap in seen:
+            continue
+        seen.add(ap)
+        out.append(p)
     return out
 
 
@@ -580,18 +666,56 @@ def create_face_encoding(image_or_path):
         return None
 
 
-def staff_has_trained_recognition_model(staff: "models.Staff") -> bool:
-    """True if per-staff PyTorch head was saved after training (not used in verify yet)."""
+def create_face_encoding_with_probe_meta(
+    image_bgr: np.ndarray,
+) -> tuple[Optional[list[float]], dict[str, object]]:
+    """
+    ArcFace embedding plus conservative probe quality hints (BGR image).
+
+    Returns:
+        (embedding list or None, meta with quality_pass, det_score, face_area_ratio, ...).
+    """
     try:
-        if not staff.avatar or not getattr(staff.avatar, "path", None):
-            return False
-        base = os.path.dirname(staff.avatar.path)
-    except Exception:
-        return False
-    pin = staff.pin
-    return os.path.isfile(os.path.join(base, f"{pin}_best_model.pt")) or os.path.isfile(
-        os.path.join(base, f"{pin}_model.pt")
-    )
+        load_arcface_model()
+        if not isinstance(image_bgr, np.ndarray):
+            return None, {"face_present": False, "quality_pass": False}
+
+        faces = _arcface_get_faces(image_bgr)
+        face = _largest_insight_face(faces)
+        if face is None:
+            return None, {"face_present": False, "quality_pass": False}
+
+        det_raw = getattr(face, "det_score", None)
+        det_f = float(det_raw) if det_raw is not None else None
+        bbox = face.bbox
+        h, w = int(image_bgr.shape[0]), int(image_bgr.shape[1])
+        area = _bbox_area_insight(bbox)
+        denom = float(max(1, h * w))
+        face_ratio = float(area) / denom
+
+        min_det = float(getattr(settings, "FACE_VERIFY_PROBE_DET_SCORE_MIN", 0.35))
+        min_face = float(
+            getattr(settings, "FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN", 0.008)
+        )
+        quality_pass = True
+        qreasons: list[str] = []
+        if det_f is not None and det_f < min_det:
+            quality_pass = False
+            qreasons.append("low_det_score")
+        if face_ratio < min_face:
+            quality_pass = False
+            qreasons.append("small_face")
+
+        return face.embedding.tolist(), {
+            "face_present": True,
+            "det_score": det_f,
+            "face_area_ratio": face_ratio,
+            "quality_pass": quality_pass,
+            "quality_reason_codes": qreasons,
+        }
+    except Exception as e:
+        logger.error("create_face_encoding_with_probe_meta: %s", e)
+        return None, {"face_present": False, "quality_pass": False}
 
 
 def _l2_normalize_embedding_rows(mat: np.ndarray) -> np.ndarray:
@@ -651,12 +775,21 @@ def _mask_json_to_matrix(mask_encoding: Any) -> Optional[np.ndarray]:
     return m.reshape(-1, m.shape[-1])
 
 
-def build_staff_gallery_embeddings(staff: "models.Staff") -> Optional[np.ndarray]:
+def build_runtime_gallery_embeddings(
+    staff: "models.Staff",
+) -> tuple[Optional[np.ndarray], dict[str, int]]:
     """
-    ArcFace embedding prototypes for verification: stored mask, fresh avatar file,
-    and optional {pin}_embeddings.npy (augmented gallery). Rows are L2-normalized.
+    Runtime gallery only: stored mask, live avatar file, optional ``{pin}_gallery_real.npy``.
+
+    Train-only ``embeddings.npy`` is never loaded here.
+    Rows are L2-normalized and near-duplicate collapsed.
     """
     rows: list[np.ndarray] = []
+    breakdown: dict[str, int] = {
+        "mask_prototypes": 0,
+        "avatar_prototypes": 0,
+        "gallery_real_npy_prototypes": 0,
+    }
 
     try:
         fm = staff.face_mask
@@ -664,6 +797,7 @@ def build_staff_gallery_embeddings(staff: "models.Staff") -> Optional[np.ndarray
             mm = _mask_json_to_matrix(fm.mask_encoding)
             if mm is not None:
                 rows.append(mm)
+                breakdown["mask_prototypes"] = int(mm.shape[0])
     except ObjectDoesNotExist:
         pass
 
@@ -674,41 +808,79 @@ def build_staff_gallery_embeddings(staff: "models.Staff") -> Optional[np.ndarray
                 enc = create_face_encoding(ap)
                 if enc is not None:
                     rows.append(np.asarray(enc, dtype=np.float64).reshape(1, -1))
+                    breakdown["avatar_prototypes"] = 1
     except Exception as e:
-        logger.warning("Avatar embedding for gallery skipped for %s: %s", staff.pin, e)
+        logger.warning(
+            "Avatar embedding for runtime gallery skipped for %s: %s", staff.pin, e
+        )
 
+    base_dir: Optional[str] = None
     try:
         if staff.avatar and getattr(staff.avatar, "path", None):
-            ep = os.path.join(
-                os.path.dirname(staff.avatar.path), f"{staff.pin}_embeddings.npy"
-            )
-            if os.path.isfile(ep):
-                e = np.load(ep)
+            base_dir = os.path.dirname(staff.avatar.path)
+    except Exception:
+        base_dir = None
+
+    if base_dir:
+        gr_path = os.path.join(base_dir, f"{staff.pin}_gallery_real.npy")
+        if os.path.isfile(gr_path):
+            try:
+                e = np.load(gr_path)
                 if e.ndim == 1:
                     e = e.reshape(1, -1)
                 if e.size > 0:
                     rows.append(e.astype(np.float64))
-    except Exception as e:
-        logger.warning("embeddings.npy for gallery skipped for %s: %s", staff.pin, e)
+                    breakdown["gallery_real_npy_prototypes"] = int(e.shape[0])
+            except Exception as e:
+                logger.warning("gallery_real.npy skipped for %s: %s", staff.pin, e)
 
     if not rows:
-        return None
+        return None, breakdown
     gal = np.vstack(rows)
     gal = _l2_normalize_embedding_rows(gal)
     gal = _dedupe_normalized_rows(gal, min_cos=0.999)
-    return gal
+    return gal, breakdown
+
+
+def build_multi_staff_runtime_gallery_matrix(
+    staff_iterable: Iterable["models.Staff"],
+) -> tuple[np.ndarray, list["models.Staff"]]:
+    """Stack runtime verification prototypes from many staff rows for 1:N search.
+
+    For each staff member, calls :func:`build_runtime_gallery_embeddings` (mask,
+    live avatar, optional ``gallery_real.npy``). Same runtime sources as verify.
+
+    Returns:
+        ``G`` with shape ``(n_prototypes, dim)`` (rows L2-normalized) and
+        ``owners[i]`` = staff owning prototype row ``i``.
+
+    Raises:
+        ValueError: If no prototypes exist for any staff in the iterable.
+    """
+    owners: list[models.Staff] = []
+    blocks: list[np.ndarray] = []
+    for staff in staff_iterable:
+        gal, _bd = build_runtime_gallery_embeddings(staff)
+        if gal is None or gal.size == 0:
+            continue
+        for i in range(int(gal.shape[0])):
+            owners.append(staff)
+            blocks.append(gal[i : i + 1])
+    if not blocks:
+        raise ValueError("No runtime gallery prototypes for any staff member.")
+    return np.vstack(blocks), owners
 
 
 def verify_staff_face_embedding_score(
     staff: "models.Staff", probe_embedding: np.ndarray
 ) -> tuple[bool, float, dict[str, Any]]:
     """
-    Compare probe ArcFace embedding to multi-prototype gallery.
+    Compare probe ArcFace embedding to multi-prototype **runtime** gallery.
 
-    Score: blend of max cosine and mean(top-k) so several agreeing templates help.
-    Threshold: stricter if per-staff .pt model exists (assumes operator ran full train).
+    Score: blend of max cosine and mean(top-k). Threshold from
+    ``FACE_VERIFY_THRESHOLD_VERIFIED`` (decoupled from per-staff .pt files).
     """
-    gal = build_staff_gallery_embeddings(staff)
+    gal, gallery_breakdown = build_runtime_gallery_embeddings(staff)
     if gal is None or gal.size == 0:
         raise ValueError("No gallery embeddings available for this staff member.")
 
@@ -727,69 +899,16 @@ def verify_staff_face_embedding_score(
     else:
         score = max_sim
 
-    has_model = staff_has_trained_recognition_model(staff)
-    thr = float(
-        getattr(settings, "FACE_RECOGNITION_THRESHOLD", 0.76)
-        if has_model
-        else getattr(settings, "FACE_VERIFY_FALLBACK_THRESHOLD", 0.74)
-    )
+    thr = float(getattr(settings, "FACE_VERIFY_THRESHOLD_VERIFIED", 0.76))
+    thr_review = float(getattr(settings, "FACE_VERIFY_THRESHOLD_REVIEW", 0.68))
     meta: dict[str, Any] = {
-        "trained_model_present": has_model,
         "gallery_templates": n,
+        "gallery_breakdown": dict(gallery_breakdown),
         "threshold_used": thr,
+        "threshold_review": thr_review,
         "max_cosine": max_sim,
-        "verification_mode": (
-            "embedding_gallery_strict" if has_model else "embedding_gallery_fallback"
-        ),
     }
     verified = score >= thr
-    relaxed = False
-    accessory_relaxed = False
-    if not verified and n >= 2:
-        sims_sorted = np.sort(sims)
-        second_best = float(sims_sorted[-2])
-        margin = max_sim - second_best
-        score_slack = float(getattr(settings, "FACE_VERIFY_RELAXED_SCORE_SLACK", 0.045))
-        max_slack = float(getattr(settings, "FACE_VERIFY_RELAXED_MAX_SLACK", 0.028))
-        margin_min = float(getattr(settings, "FACE_VERIFY_RELAXED_MARGIN_MIN", 0.042))
-        thr_lo = thr - score_slack
-        if score >= thr_lo and max_sim >= thr - max_slack and margin >= margin_min:
-            verified = True
-            relaxed = True
-    if not verified and bool(getattr(settings, "FACE_VERIFY_ACCESSORY_ENABLE", True)):
-        acc_max_min = float(getattr(settings, "FACE_VERIFY_ACCESSORY_MAX_MIN", 0.71))
-        gap_need = float(
-            getattr(settings, "FACE_VERIFY_ACCESSORY_SCORE_GAP_MIN", 0.035)
-        )
-        acc_margin = float(
-            getattr(settings, "FACE_VERIFY_ACCESSORY_SECOND_MARGIN", 0.044)
-        )
-        single_max_min = float(
-            getattr(settings, "FACE_VERIFY_ACCESSORY_SINGLE_MAX_MIN", 0.685)
-        )
-        single_score_min = float(
-            getattr(settings, "FACE_VERIFY_ACCESSORY_SINGLE_SCORE_MIN", 0.655)
-        )
-        if n >= 2 and max_sim >= acc_max_min and score < thr:
-            sims_sorted = np.sort(sims)
-            second_best = float(sims_sorted[-2])
-            margin2 = max_sim - second_best
-            gap_ms = max_sim - score
-            if gap_ms >= gap_need and margin2 >= acc_margin:
-                verified = True
-                relaxed = True
-                accessory_relaxed = True
-        elif (
-            n == 1
-            and max_sim >= single_max_min
-            and max_sim < thr
-            and score >= single_score_min
-        ):
-            verified = True
-            relaxed = True
-            accessory_relaxed = True
-    meta["relaxed_match"] = relaxed
-    meta["accessory_relaxed"] = accessory_relaxed
     return verified, score, meta
 
 
@@ -1615,8 +1734,13 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
 
 
 def recognize_faces_in_image(image_file):
-    """
-    Recognizes faces in an image and identifies staff members.
+    """Recognize staff faces using the same **runtime gallery** rules as verify.
+
+    Builds a joint matrix of all per-staff prototypes from
+    :func:`build_runtime_gallery_embeddings` (mask, avatar, ``gallery_real.npy``,
+    optional legacy full ``embeddings.npy`` if enabled), then k-NN per detected
+    face. Thresholds remain ``FACE_RECOGNITION_THRESHOLD*`` (1:N gallery search),
+    not ``FACE_VERIFY_*`` (1:1 verify).
 
     Args:
         image_file (InMemoryUploadedFile): Uploaded image file.
@@ -1649,44 +1773,36 @@ def recognize_faces_in_image(image_file):
         embeddings = np.stack(face_rows, axis=0)
         embeddings_normalized = _l2_normalize_embedding_rows(embeddings)
 
-        staff_qs = list(models.Staff.objects.filter(face_mask__isnull=False))
+        staff_qs = list(
+            models.Staff.objects.filter(
+                Q(face_mask__isnull=False) | Q(avatar__isnull=False)
+            ).select_related("department", "face_mask")
+        )
         if not staff_qs:
-            raise ValidationError("В базе нет сотрудников с сохранённой маской лица.")
-
-        staff_rows: list[np.ndarray] = []
-        staff_members: list = []
-        for staff in staff_qs:
-            try:
-                enc = staff.face_mask.mask_encoding
-                staff_rows.append(_staff_mask_encoding_row(enc))
-                staff_members.append(staff)
-            except (TypeError, ValueError) as e:
-                logger.warning(
-                    "Пропуск сотрудника %s: неверный формат mask_encoding: %s",
-                    getattr(staff, "pin", "?"),
-                    e,
-                )
-                continue
-        if not staff_rows:
             raise ValidationError(
-                "Нет ни одного корректного эмбеддинга сотрудников в базе (проверьте маски лиц)."
+                "В базе нет сотрудников с аватаром или сохранённой маской лица."
             )
-        dim_staff = int(staff_rows[0].shape[0])
-        for row in staff_rows:
-            if row.shape[0] != dim_staff:
-                raise ValidationError(
-                    "У сотрудников разная размерность векторов в масках — переобучите/пересохраните маски."
-                )
+
+        try:
+            staff_embeddings_normalized, row_owners = (
+                build_multi_staff_runtime_gallery_matrix(staff_qs)
+            )
+        except ValueError:
+            raise ValidationError(
+                "Нет ни одного эталона для распознавания (маска, аватар или "
+                "gallery_real.npy). При необходимости выполните: "
+                "python manage.py build_staff_gallery_real"
+            ) from None
+
+        dim_staff = int(staff_embeddings_normalized.shape[1])
         if dim_staff != dim_face:
             raise ValidationError(
-                f"Размерность маски в базе ({dim_staff}) не совпадает с моделью "
+                f"Размерность эталонов в базе ({dim_staff}) не совпадает с моделью "
                 f"распознавания ({dim_face})."
             )
-        staff_embeddings = np.stack(staff_rows, axis=0)
-        staff_embeddings_normalized = _l2_normalize_embedding_rows(staff_embeddings)
 
-        n_staff = len(staff_members)
-        k_nn = min(3, n_staff)
+        n_proto = int(staff_embeddings_normalized.shape[0])
+        k_nn = min(3, n_proto)
         nbrs = NearestNeighbors(n_neighbors=k_nn, metric="cosine").fit(
             staff_embeddings_normalized
         )
@@ -1704,12 +1820,15 @@ def recognize_faces_in_image(image_file):
             dist_row = distances[idx]
             idx_row = indices[idx]
             similarity = float(1.0 - dist_row[0])
-            best_staff_i = int(idx_row[0])
+            best_proto_i = int(idx_row[0])
+            staff_best = row_owners[best_proto_i]
             if k_nn >= 2:
+                second_proto_i = int(idx_row[1])
                 sim_second = float(1.0 - dist_row[1])
-                gap = (
-                    1.0 if int(idx_row[1]) == best_staff_i else similarity - sim_second
-                )
+                if row_owners[second_proto_i].pk == staff_best.pk:
+                    gap = 1.0
+                else:
+                    gap = similarity - sim_second
             else:
                 gap = 1.0
 
@@ -1718,14 +1837,15 @@ def recognize_faces_in_image(image_file):
             )
 
             if accept:
-                staff = staff_members[best_staff_i]
                 recognized_staff.append(
                     {
-                        "pin": staff.pin,
-                        "name": staff.name,
-                        "surname": staff.surname,
+                        "pin": staff_best.pin,
+                        "name": staff_best.name,
+                        "surname": staff_best.surname,
                         "department": (
-                            staff.department.name if staff.department else None
+                            staff_best.department.name
+                            if staff_best.department
+                            else None
                         ),
                         "similarity": similarity,
                         "bbox": bbox,
@@ -1740,7 +1860,9 @@ def recognize_faces_in_image(image_file):
                 )
 
         logger.info(
-            f"Recognition completed. Recognized: {len(recognized_staff)}, Unknown: {len(unknown_faces)}"
+            "Recognition completed (runtime gallery). Recognized: %s, Unknown: %s",
+            len(recognized_staff),
+            len(unknown_faces),
         )
         return recognized_staff, unknown_faces
 
