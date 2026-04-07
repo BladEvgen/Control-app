@@ -6,6 +6,7 @@ type LoaderComponentProps = {
   variant?: "spinner" | "bars";
   className?: string;
   showGlow?: boolean;
+  messageClassName?: string;
 };
 
 const BAR_HEIGHTS_NORMAL = [14, 22, 28, 22, 14, 20];
@@ -19,6 +20,7 @@ const LoaderComponent = ({
   variant = "spinner",
   className = "",
   showGlow = true,
+  messageClassName,
 }: LoaderComponentProps) => {
   const wrapperClassName = fullscreen ? "min-h-screen" : "min-h-0";
   const layoutClassName = inline
@@ -94,7 +96,9 @@ const LoaderComponent = ({
     >
       {loaderVisual}
       {message && (
-        <p className={`${textClassName} ${textToneClassName} opacity-80`}>
+        <p
+          className={`${textClassName} ${messageClassName ?? `${textToneClassName} opacity-80`}`}
+        >
           {message}
         </p>
       )}
