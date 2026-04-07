@@ -12,18 +12,18 @@ import type { Aspect } from "./types";
 import { vibrate } from "./camera-utils";
 
 const ASPECT_OPTIONS: { value: Aspect; label: string; title?: string }[] = [
-  { value: "9:16", label: "9:16", title: "Книжная узкая" },
-  { value: "3:4", label: "3:4", title: "Книжная" },
-  { value: "1:1", label: "1:1", title: "Квадрат" },
+  { value: "9:16", label: "9:16", title: "Узкая вертикальная рамка" },
+  { value: "3:4", label: "3:4", title: "Классическая вертикаль" },
+  { value: "1:1", label: "1:1", title: "Квадрат — удобно для лица по центру" },
   {
     value: "4:3",
     label: "4:3",
-    title: "Альбомная рамка в интерфейсе (телефон не крутить)",
+    title: "Шире по горизонтали — если держите телефон альбомно",
   },
   {
     value: "16:9",
     label: "16:9",
-    title: "Широкая альбомная рамка",
+    title: "Широкая рамка под горизонтальный хват",
   },
 ];
 
@@ -285,11 +285,7 @@ export function BottomControls({
           exit={{ opacity: 0, y: -5 }}
           transition={{ duration: 0.2 }}
         >
-          {!isCameraReady
-            ? "Камера…"
-            : shouldMirror
-              ? "Фронт"
-              : "Основная"}
+          {!isCameraReady ? "Камера…" : shouldMirror ? "Фронт" : "Основная"}
         </motion.span>
       </motion.div>
     </motion.div>

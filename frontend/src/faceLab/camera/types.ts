@@ -1,6 +1,13 @@
 export type Facing = "user" | "environment";
 export type Aspect = "3:4" | "1:1" | "9:16" | "4:3" | "16:9";
 
+export type CameraGuidanceContext =
+  | "default"
+  | "profile_photo"
+  | "bootstrap_front"
+  | "bootstrap_left"
+  | "bootstrap_right";
+
 export type FaceCameraOverlayRef = {
   open: (facing?: Facing) => Promise<void>;
   close: () => void;

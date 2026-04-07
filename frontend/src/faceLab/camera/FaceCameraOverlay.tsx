@@ -8,7 +8,12 @@ import {
 } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import type { Aspect, Facing, FaceCameraOverlayRef } from "./types";
+import type {
+  Aspect,
+  CameraGuidanceContext,
+  Facing,
+  FaceCameraOverlayRef,
+} from "./types";
 import {
   vibrate,
   playShutterSound,
@@ -25,10 +30,12 @@ import {
 import type { FaceLabVoiceLang } from "../faceLabCameraVoice";
 import {
   phraseForLivenessPhase,
+  phraseForSetupGuidance,
   speakFaceLab,
   cancelFaceLabSpeech,
   isFaceLabSpeechCancelled,
 } from "../faceLabCameraVoice";
+import { faceLabLog } from "../faceLabLog";
 import {
   capturePhoto,
   createPreviewUrl,
@@ -38,6 +45,7 @@ import { useCameraFrame } from "./useCameraFrame";
 import {
   VideoFrame,
   AspectMask,
+  ViewfinderBootstrapHint,
   GridOverlay,
   FlashEffect,
   ThumbnailPreview,
@@ -55,10 +63,16 @@ type Props = {
   onShot: (blob: Blob) => void;
   requireLiveness?: boolean;
   voiceLang?: FaceLabVoiceLang;
+  guidanceContext?: CameraGuidanceContext;
 };
 
 function FaceCameraOverlayInner(
-  { onShot, requireLiveness = true, voiceLang = "off" }: Props,
+  {
+    onShot,
+    requireLiveness = true,
+    voiceLang = "off",
+    guidanceContext = "default",
+  }: Props,
   ref: React.Ref<FaceCameraOverlayRef>,
 ) {
   const [open, setOpen] = useState(false);
@@ -183,8 +197,8 @@ function FaceCameraOverlayInner(
         text: line,
         lang: voiceLang,
       }).catch((e: unknown) => {
-        if (!isFaceLabSpeechCancelled(e) && import.meta.env.DEV) {
-          console.warn("Face Lab TTS", e);
+        if (!isFaceLabSpeechCancelled(e)) {
+          faceLabLog.warn("TTS liveness", e);
         }
       });
     }, delay);
@@ -193,6 +207,29 @@ function FaceCameraOverlayInner(
       window.clearTimeout(id);
     };
   }, [open, voiceLang, requireLiveness, livenessSkipped, liveness.phase]);
+
+  useEffect(() => {
+    if (!open || voiceLang === "off" || requireLiveness) return;
+    const text = phraseForSetupGuidance(guidanceContext, voiceLang);
+    if (!text) return;
+    const phaseKey = `setup_${guidanceContext}`;
+    const delay = window.setTimeout(() => {
+      if (!openRef.current) return;
+      cancelFaceLabSpeech();
+      void speakFaceLab({
+        phase: phaseKey,
+        text,
+        lang: voiceLang,
+      }).catch((e: unknown) => {
+        if (!isFaceLabSpeechCancelled(e)) {
+          faceLabLog.warn("TTS setup", e);
+        }
+      });
+    }, 450);
+    return () => {
+      window.clearTimeout(delay);
+    };
+  }, [open, voiceLang, requireLiveness, guidanceContext]);
 
   const stopStream = useCallback(() => {
     attachStreamCleanupRef.current?.();
@@ -255,6 +292,8 @@ function FaceCameraOverlayInner(
 
       let cancelled = false;
       const playKickTimers: number[] = [];
+      let didLogStreamDims = false;
+      let didLogAfterMaxResolution = false;
 
       const bumpReady = () => {
         if (cancelled) return;
@@ -267,12 +306,21 @@ function FaceCameraOverlayInner(
       const handleVideoReady = () => {
         void (async () => {
           if (cancelled || !video.videoWidth || !video.videoHeight) return;
-          camLog.info("Camera stream", {
-            beforeMax: `${video.videoWidth}x${video.videoHeight}`,
-          });
+          if (!didLogStreamDims) {
+            didLogStreamDims = true;
+            camLog.info("Camera stream", {
+              beforeMax: `${video.videoWidth}x${video.videoHeight}`,
+            });
+          }
           const after = await applyMaxVideoResolution(trackRef.current);
           if (cancelled) return;
-          if (after?.width && after?.height && !conservative) {
+          if (
+            after?.width &&
+            after?.height &&
+            !conservative &&
+            !didLogAfterMaxResolution
+          ) {
+            didLogAfterMaxResolution = true;
             camLog.info(
               "Applied max resolution",
               `${after.width}x${after.height}`,
@@ -790,6 +838,10 @@ function FaceCameraOverlayInner(
               />
 
               <AspectMask frame={frame} aspect={aspect} />
+              <ViewfinderBootstrapHint
+                frame={frame}
+                context={guidanceContext}
+              />
               <GridOverlay visible={gridOn} frame={frame} aspect={aspect} />
 
               <AnimatePresence>
@@ -843,7 +895,9 @@ function FaceCameraOverlayInner(
                       ? "Снимок…"
                       : displayLivenessHint ||
                         "Снимок сделается сам после проверки"
-                    : null
+                    : isCameraReady && !isCapturing
+                      ? "Сделать снимок"
+                      : null
                 }
               />
             </motion.div>
