@@ -3,6 +3,7 @@ import React, {
   useState,
   useCallback,
   useMemo,
+  useRef,
   Suspense,
 } from "react";
 import { motion } from "framer-motion";
@@ -10,6 +11,9 @@ import { useParams } from "react-router-dom";
 import { useNavigate } from "../../RouterUtils";
 import axiosInstance from "../../api";
 import { apiUrl } from "../../../apiConfig";
+import { installFaceLabAxiosLogging } from "../../faceLab/faceLabAxiosLogging";
+
+installFaceLabAxiosLogging(axiosInstance);
 import { StaffData, AttendanceData } from "../../schemas/IData";
 import Notification from "../../components/Notification";
 import LoaderComponent from "../../components/LoaderComponent";
@@ -21,14 +25,19 @@ import StaffHeader from "./StaffHeader";
 import EmployeeInfo from "./EmployeeInfo";
 import AttendanceSection from "./AttendanceSection";
 import { lazyWithRetry } from "../../utils/lazyWithRetry";
+import type { FaceCameraOverlayRef } from "../../faceLab/camera/types";
 
 const NewAbsenceModal = lazyWithRetry(
   () => import("../../components/NewAbsenceModal"),
 );
 
+const StaffFaceCameraOverlay = lazyWithRetry(
+  () => import("../../faceLab/camera/FaceCameraOverlay"),
+);
+
 const containerVariants = {
-  hidden: { opacity: 0, y: 30 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.8 } },
+  hidden: { opacity: 0, y: 12 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.35 } },
 };
 
 const StaffDetail: React.FC = () => {
@@ -55,6 +64,40 @@ const StaffDetail: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [isFirstLoad, setIsFirstLoad] = useState(true);
   const [showAbsenceModal, setShowAbsenceModal] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const avatarCameraRef = useRef<FaceCameraOverlayRef>(null);
+  const [avatarUploadBusy, setAvatarUploadBusy] = useState(false);
+  const [avatarUploadMessage, setAvatarUploadMessage] = useState<string | null>(
+    null,
+  );
+  const [faceSetupAngles, setFaceSetupAngles] = useState<{
+    loading: boolean;
+    done: number;
+  }>({ loading: true, done: 0 });
+
+  const refreshFaceSetupAngles = useCallback(async () => {
+    if (!pin) return;
+    setFaceSetupAngles((s) => ({ ...s, loading: true }));
+    try {
+      const res = await axiosInstance.get<{
+        angles_present?: string[];
+        bootstrap_complete?: boolean;
+      }>(`face-lab/bootstrap-status/?pin=${encodeURIComponent(pin)}`);
+      const present = new Set(
+        (res.data?.angles_present ?? []).map((x) => String(x).toLowerCase()),
+      );
+      const req = ["front", "left", "right"] as const;
+      const done = req.filter((a) => present.has(a)).length;
+      const complete =
+        res.data?.bootstrap_complete === true || done >= req.length;
+      setFaceSetupAngles({
+        loading: false,
+        done: complete ? req.length : done,
+      });
+    } catch {
+      setFaceSetupAngles({ loading: false, done: 0 });
+    }
+  }, [pin]);
 
   const fetchAttendanceData = useCallback(async () => {
     if (startDate && endDate && new Date(startDate) <= new Date(endDate)) {
@@ -97,6 +140,11 @@ const StaffDetail: React.FC = () => {
   useEffect(() => {
     fetchAttendanceData();
   }, [startDate, endDate, fetchAttendanceData]);
+
+  useEffect(() => {
+    if (!pin || !staffData) return;
+    void refreshFaceSetupAngles();
+  }, [pin, staffData, refreshFaceSetupAngles]);
 
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newStartDate = e.target.value;
@@ -228,6 +276,49 @@ const StaffDetail: React.FC = () => {
     return items;
   }, [staffData, navigate]);
 
+  const uploadAvatarFile = useCallback(
+    async (file: File) => {
+      if (!pin) return;
+      setAvatarUploadMessage(null);
+      setAvatarUploadBusy(true);
+      try {
+        const fd = new FormData();
+        fd.append("image", file);
+        await axiosInstance.put(`staff/${encodeURIComponent(pin)}/avatar/`, fd);
+        setAvatarUploadMessage("Фото профиля обновлено.");
+        await fetchAttendanceData();
+        await refreshFaceSetupAngles();
+      } catch {
+        setAvatarUploadMessage(
+          "Не удалось обновить фото. Попробуйте снова или другой файл (PNG или JPEG).",
+        );
+      } finally {
+        setAvatarUploadBusy(false);
+      }
+    },
+    [pin, fetchAttendanceData, refreshFaceSetupAngles],
+  );
+
+  const handleAvatarFileSelected = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const f = e.target.files?.[0];
+      e.target.value = "";
+      if (!f) return;
+      await uploadAvatarFile(f);
+    },
+    [uploadAvatarFile],
+  );
+
+  const handleAvatarCameraShot = useCallback(
+    (blob: Blob) => {
+      const file = new File([blob], "profile-photo.jpg", {
+        type: blob.type || "image/jpeg",
+      });
+      void uploadAvatarFile(file);
+    },
+    [uploadAvatarFile],
+  );
+
   useEffect(() => {
     const scrollButton = document.querySelector(
       '[aria-label="Прокрутить наверх"]',
@@ -293,6 +384,27 @@ const StaffDetail: React.FC = () => {
               </motion.div>
 
               <div className="bg-white dark:bg-gray-900 shadow-lg sm:shadow-2xl rounded-lg sm:rounded-xl overflow-hidden">
+                {pin ? (
+                  <>
+                    <input
+                      ref={avatarInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,.png,.jpg,.jpeg,.PNG,.JPG,.JPEG"
+                      className="sr-only"
+                      aria-label="Выбор фото для профиля с устройства"
+                      onChange={handleAvatarFileSelected}
+                    />
+                    <Suspense fallback={null}>
+                      <StaffFaceCameraOverlay
+                        ref={avatarCameraRef}
+                        onShot={handleAvatarCameraShot}
+                        requireLiveness={false}
+                        guidanceContext="profile_photo"
+                        voiceLang="off"
+                      />
+                    </Suspense>
+                  </>
+                ) : null}
                 {/* Хедер */}
                 <StaffHeader
                   staffData={staffData}
@@ -300,6 +412,15 @@ const StaffDetail: React.FC = () => {
                   handleDownloadZip={handleDownloadZip}
                   setShowAbsenceModal={setShowAbsenceModal}
                   hasAbsenceWithReason={hasAbsenceWithReason}
+                  staffPin={pin}
+                  onOpenAvatarFromFile={() => avatarInputRef.current?.click()}
+                  onOpenAvatarFromCamera={() =>
+                    void avatarCameraRef.current?.open("user")
+                  }
+                  avatarUploadBusy={avatarUploadBusy}
+                  avatarActionMessage={avatarUploadMessage}
+                  faceSetupAnglesDone={faceSetupAngles.done}
+                  faceSetupAnglesLoading={faceSetupAngles.loading}
                 />
 
                 {/* Информация о сотруднике */}

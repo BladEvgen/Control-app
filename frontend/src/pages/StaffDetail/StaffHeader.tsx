@@ -5,6 +5,10 @@ import { formatDepartmentName } from "../../utils/utils";
 import { apiUrl } from "../../../apiConfig";
 import { StaffData } from "../../schemas/IData";
 import { motion } from "framer-motion";
+import {
+  ProfileAvatarWithPhotoMenu,
+  ProfileFaceSetupCard,
+} from "./StaffProfilePhotoHub";
 
 interface ActionButtonProps {
   icon: React.ReactNode;
@@ -65,6 +69,13 @@ interface StaffHeaderProps {
   handleDownloadZip: () => void;
   setShowAbsenceModal: (show: boolean) => void;
   hasAbsenceWithReason: boolean;
+  staffPin?: string;
+  onOpenAvatarFromFile?: () => void;
+  onOpenAvatarFromCamera?: () => void;
+  avatarUploadBusy?: boolean;
+  avatarActionMessage?: string | null;
+  faceSetupAnglesDone?: number;
+  faceSetupAnglesLoading?: boolean;
 }
 
 const StaffHeader: React.FC<StaffHeaderProps> = ({
@@ -73,52 +84,103 @@ const StaffHeader: React.FC<StaffHeaderProps> = ({
   handleDownloadZip,
   setShowAbsenceModal,
   hasAbsenceWithReason,
+  staffPin,
+  onOpenAvatarFromFile,
+  onOpenAvatarFromCamera,
+  avatarUploadBusy = false,
+  avatarActionMessage = null,
+  faceSetupAnglesDone = 0,
+  faceSetupAnglesLoading = false,
 }) => {
+  const faceLabHref =
+    staffPin && staffPin.length > 0
+      ? `/face-lab?bootstrap=1&pin=${encodeURIComponent(staffPin)}`
+      : "/face-lab?bootstrap=1";
+
+  const avatarSrc = `${apiUrl}${staffData.avatar}`;
+  const avatarAlt = `${staffData.surname} ${staffData.name}`;
+
+  const showPhotoHub =
+    Boolean(staffPin) &&
+    Boolean(onOpenAvatarFromFile) &&
+    Boolean(onOpenAvatarFromCamera);
+
   return (
     <div className="border-b border-gray-200 dark:border-gray-700">
-      {/* Мобильная версия - компактная карточка */}
+      {/* Мобильная версия */}
       <div className="sm:hidden p-4 space-y-4">
-        {/* Аватарка и ФИО */}
-        <div className="flex items-center space-x-4">
-          <div className="w-20 h-20 rounded-full overflow-hidden shadow-lg flex-shrink-0 border-2 border-primary-200 dark:border-primary-800">
-            <img
-              src={`${apiUrl}${staffData.avatar}`}
-              alt={`${staffData.surname} ${staffData.name}`}
-              className="object-cover w-full h-full"
+        <div className="flex items-start gap-4">
+          {showPhotoHub ? (
+            <ProfileAvatarWithPhotoMenu
+              avatarSrc={avatarSrc}
+              avatarAlt={avatarAlt}
+              sizeClassName="h-20 w-20"
+              uploadBusy={avatarUploadBusy}
+              onPickFile={() => onOpenAvatarFromFile?.()}
+              onOpenCamera={() => onOpenAvatarFromCamera?.()}
             />
-          </div>
-          <div className="flex-1 min-w-0">
-            <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100 truncate">
+          ) : (
+            <div className="h-20 w-20 shrink-0 overflow-hidden rounded-full border-2 border-primary-200 shadow-lg dark:border-primary-800">
+              <img
+                src={avatarSrc}
+                alt={avatarAlt}
+                className="h-full w-full object-cover"
+              />
+            </div>
+          )}
+          <div className="min-w-0 flex-1 pt-0.5">
+            <h2 className="truncate text-xl font-bold text-gray-800 dark:text-gray-100">
               {staffData.surname} {staffData.name}
             </h2>
             {staffData.department && (
-              <p className="text-sm text-gray-600 dark:text-gray-400 truncate mt-1">
+              <p className="mt-1 truncate text-sm text-gray-600 dark:text-gray-400">
                 {formatDepartmentName(staffData.department)}
               </p>
             )}
           </div>
         </div>
 
-        {/* Информация в виде компактных меток */}
+        {staffPin ? (
+          <ProfileFaceSetupCard
+            href={faceLabHref}
+            anglesDone={faceSetupAnglesDone}
+            loading={faceSetupAnglesLoading}
+          />
+        ) : null}
+
+        {avatarActionMessage ? (
+          <p
+            className={`text-sm ${
+              avatarActionMessage.includes("Не удалось") ||
+              avatarActionMessage.includes("ошибк")
+                ? "text-red-600 dark:text-red-400"
+                : "text-emerald-700 dark:text-emerald-300"
+            }`}
+            role="status"
+          >
+            {avatarActionMessage}
+          </p>
+        ) : null}
+
         <div className="grid grid-cols-2 gap-2">
-          <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+          <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-800">
+            <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
               Должность
             </p>
-            <p className="text-sm font-medium text-gray-800 dark:text-gray-200 line-clamp-2">
+            <p className="line-clamp-2 text-sm font-medium text-gray-800 dark:text-gray-200">
               {staffData.positions[0] || "Не указано"}
             </p>
           </div>
-          <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+          <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-800">
+            <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
               Тип занятости
             </p>
             <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
               {getContractTypeLabel(staffData.contract_type || "")}
             </p>
           </div>
-          <div className="bg-primary-50 dark:bg-primary-900/20 rounded-lg p-3 col-span-2">
-            <p className="text-xs text-primary-600 dark:text-primary-400 mb-1">
+          <div className="col-span-2 rounded-lg bg-primary-50 p-3 dark:bg-primary-900/20">
+            <p className="mb-1 text-xs text-primary-600 dark:text-primary-400">
               Процент за период
             </p>
             <p className="text-lg font-bold text-primary-700 dark:text-primary-300">
@@ -128,46 +190,84 @@ const StaffHeader: React.FC<StaffHeaderProps> = ({
         </div>
       </div>
 
-      {/* Десктопная версия - переработанный layout */}
+      {/* Десктоп */}
       <div className="hidden sm:block">
         <div className="p-5 lg:p-6">
           <div className="flex items-start justify-between gap-4 lg:gap-6">
-            {/* Левая часть - аватарка и основная информация */}
-            <div className="flex items-start gap-4 lg:gap-5 flex-1 min-w-0">
-              <div className="w-20 h-20 lg:w-24 lg:h-24 rounded-full overflow-hidden shadow-lg flex-shrink-0 border-2 border-primary-200 dark:border-primary-800">
-                <img
-                  src={`${apiUrl}${staffData.avatar}`}
-                  alt={`${staffData.surname} ${staffData.name}`}
-                  className="object-cover w-full h-full"
+            <div className="flex min-w-0 flex-1 items-start gap-4 lg:gap-5">
+              {showPhotoHub ? (
+                <ProfileAvatarWithPhotoMenu
+                  avatarSrc={avatarSrc}
+                  avatarAlt={avatarAlt}
+                  uploadBusy={avatarUploadBusy}
+                  onPickFile={() => onOpenAvatarFromFile?.()}
+                  onOpenCamera={() => onOpenAvatarFromCamera?.()}
                 />
-              </div>
-              <div className="flex-1 min-w-0 space-y-2">
+              ) : (
+                <div className="h-20 w-20 shrink-0 overflow-hidden rounded-full border-2 border-primary-200 shadow-lg dark:border-primary-800 lg:h-24 lg:w-24">
+                  <img
+                    src={avatarSrc}
+                    alt={avatarAlt}
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+              )}
+
+              <div className="min-w-0 flex-1 space-y-3">
                 <div>
-                  <h2 className="text-xl lg:text-2xl font-bold text-gray-800 dark:text-gray-100 leading-tight">
+                  <h2 className="text-xl font-bold leading-tight text-gray-800 dark:text-gray-100 lg:text-2xl">
                     {staffData.surname} {staffData.name}
                   </h2>
                   {staffData.department && (
-                    <p className="text-sm lg:text-base text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
+                    <p className="mt-1 text-sm leading-relaxed text-gray-500 dark:text-gray-400 lg:text-base">
                       {formatDepartmentName(staffData.department)}
                     </p>
                   )}
                 </div>
-                {/* Информация в компактном виде */}
+
+                {staffPin ? (
+                  <ProfileFaceSetupCard
+                    href={faceLabHref}
+                    anglesDone={faceSetupAnglesDone}
+                    loading={faceSetupAnglesLoading}
+                  />
+                ) : null}
+
+                {avatarActionMessage ? (
+                  <p
+                    className={`text-sm ${
+                      avatarActionMessage.includes("Не удалось") ||
+                      avatarActionMessage.includes("ошибк")
+                        ? "text-red-600 dark:text-red-400"
+                        : "text-emerald-700 dark:text-emerald-300"
+                    }`}
+                    role="status"
+                  >
+                    {avatarActionMessage}
+                  </p>
+                ) : null}
+
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs lg:text-sm">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-gray-500 dark:text-gray-400">Должность:</span>
+                    <span className="text-gray-500 dark:text-gray-400">
+                      Должность:
+                    </span>
                     <span className="font-medium text-gray-700 dark:text-gray-300">
                       {staffData.positions[0] || "Не указано"}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-gray-500 dark:text-gray-400">Тип занятости:</span>
+                    <span className="text-gray-500 dark:text-gray-400">
+                      Тип занятости:
+                    </span>
                     <span className="font-medium text-gray-700 dark:text-gray-300">
                       {getContractTypeLabel(staffData.contract_type || "")}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-gray-500 dark:text-gray-400">Процент за период:</span>
+                    <span className="text-gray-500 dark:text-gray-400">
+                      Процент за период:
+                    </span>
                     <span className="font-semibold text-primary-600 dark:text-primary-400">
                       {staffData.percent_for_period}%
                     </span>
@@ -176,8 +276,7 @@ const StaffHeader: React.FC<StaffHeaderProps> = ({
               </div>
             </div>
 
-            {/* Правая часть - кнопки действий */}
-            <div className="flex items-center gap-2 lg:gap-3 flex-shrink-0">
+            <div className="flex shrink-0 items-center gap-2 lg:gap-3">
               <ActionButton
                 icon={<FaFileExcel size={16} />}
                 label="Excel"
