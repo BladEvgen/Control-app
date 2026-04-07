@@ -1,5 +1,6 @@
 import os
 import shutil
+import uuid
 from contextlib import AbstractContextManager
 from datetime import date, datetime
 from decimal import Decimal
@@ -360,6 +361,21 @@ class Staff(models.Model):
     needs_training = boolean_field(
         True, verbose_name="Требуется обучение модели распознавания лиц"
     )
+    FACE_PROFILE_STATE_READY = "ready"
+    FACE_PROFILE_STATE_WEAK_GALLERY = "weak_gallery"
+    FACE_PROFILE_STATE_BOOTSTRAP_REQUIRED = "bootstrap_required"
+    FACE_PROFILE_STATE_CHOICES = [
+        (FACE_PROFILE_STATE_READY, "Галерея для обычной верификации"),
+        (FACE_PROFILE_STATE_WEAK_GALLERY, "Слабая галерея"),
+        (FACE_PROFILE_STATE_BOOTSTRAP_REQUIRED, "Нужен базовый сбор углов"),
+    ]
+    face_profile_state = models.CharField(
+        max_length=24,
+        choices=FACE_PROFILE_STATE_CHOICES,
+        default=FACE_PROFILE_STATE_READY,
+        verbose_name="Состояние профиля Face ID",
+        db_index=True,
+    )
 
     def __str__(self):
         return f"{self.surname} {self.name}"
@@ -423,6 +439,102 @@ def delete_avatar_on_staff_delete(sender, instance, **kwargs):
                     )
             return
     print("Аватар отсутствует, ничего не удаляется.")
+
+
+def staff_face_sample_upload_to(instance: "StaffFaceSample", filename: str) -> str:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+    if ext not in ("jpg", "jpeg", "png"):
+        ext = "jpg"
+    return (
+        f"user_images/{instance.staff.pin}/face_samples/"
+        f"{instance.staff.pin}_fs_{uuid.uuid4().hex[:12]}.{ext}"
+    )
+
+
+class StaffFaceSample(models.Model):
+    """Small set of trusted real-face captures for gallery_real.npy (not a photo archive)."""
+
+    SOURCE_BOOTSTRAP_CAPTURE = "bootstrap_capture"
+    SOURCE_ADMIN_CAPTURE = "admin_capture"
+    SOURCE_SUCCESSFUL_VERIFY = "successful_verify_capture"
+    SOURCE_LESSON_ATTENDANCE = "lesson_attendance"
+    SOURCE_AVATAR = "avatar"
+    SOURCE_CHOICES = [
+        (SOURCE_BOOTSTRAP_CAPTURE, "Сбор Face Lab"),
+        (SOURCE_ADMIN_CAPTURE, "Админ / карточка"),
+        (SOURCE_SUCCESSFUL_VERIFY, "Успешная верификация"),
+        (SOURCE_LESSON_ATTENDANCE, "Посещаемость"),
+        (SOURCE_AVATAR, "Аватар"),
+    ]
+    ANGLE_FRONT = "front"
+    ANGLE_LEFT = "left"
+    ANGLE_RIGHT = "right"
+    ANGLE_UNKNOWN = "unknown"
+    ANGLE_CHOICES = [
+        (ANGLE_FRONT, "Фронт"),
+        (ANGLE_LEFT, "Чуть влево"),
+        (ANGLE_RIGHT, "Чуть вправо"),
+        (ANGLE_UNKNOWN, "Не указан"),
+    ]
+
+    staff = models.ForeignKey(
+        Staff,
+        on_delete=models.CASCADE,
+        related_name="face_samples",
+        verbose_name="Сотрудник",
+    )
+    image = models.ImageField(
+        upload_to=staff_face_sample_upload_to,
+        verbose_name="Кадр",
+        validators=[FileExtensionValidator(allowed_extensions=["jpg", "jpeg", "png"])],
+    )
+    source = models.CharField(
+        max_length=32,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_BOOTSTRAP_CAPTURE,
+        verbose_name="Источник",
+    )
+    angle = models.CharField(
+        max_length=16,
+        choices=ANGLE_CHOICES,
+        default=ANGLE_UNKNOWN,
+        verbose_name="Ракурс",
+        db_index=True,
+    )
+    with_glasses = boolean_field(
+        False,
+        verbose_name="На кадре видны очки",
+        help_text="Включите, если в этот момент сотрудник в очках — так эталон "
+        "лучше совпадает с реальными проходами.",
+    )
+    pad_status = models.CharField(
+        max_length=32, blank=True, default="", verbose_name="PAD статус"
+    )
+    quality_passed = boolean_field(False, verbose_name="Качество пройдено")
+    is_trusted = boolean_field(True, verbose_name="Доверенный")
+    is_active = boolean_field(True, verbose_name="Активен", db_index=True)
+    embedding_ready = boolean_field(
+        False,
+        verbose_name="Эмбеддинг учтён в gallery_real (после команды)",
+    )
+    probe_eyeglasses_likely = models.BooleanField(
+        null=True,
+        blank=True,
+        verbose_name="Парсер: вероятны очки",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Создано")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Обновлено")
+
+    class Meta:
+        verbose_name = "Эталонный кадр лица"
+        verbose_name_plural = "Эталонные кадры лица"
+        indexes = [
+            models.Index(fields=["staff", "is_active", "is_trusted"]),
+            models.Index(fields=["staff", "angle", "is_active"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.staff.pin} {self.angle} ({self.source})"
 
 
 class StaffFaceMask(models.Model):
@@ -824,9 +936,7 @@ class LessonAttendance(models.Model, GeoItem):
                 attendance_relative = ""
 
             if attendance_relative:
-                return (
-                    f"{settings.ATTENDANCE_URL.rstrip('/')}/{attendance_relative}"
-                )
+                return f"{settings.ATTENDANCE_URL.rstrip('/')}/{attendance_relative}"
 
             try:
                 media_relative = (
@@ -836,9 +946,9 @@ class LessonAttendance(models.Model, GeoItem):
                 )
                 return f"{settings.MEDIA_URL.rstrip('/')}/{media_relative}"
             except (OSError, RuntimeError, ValueError):
-                media_tail = str(path_value).replace("\\", "/").rsplit(
-                    "media/", maxsplit=1
-                )[-1]
+                media_tail = (
+                    str(path_value).replace("\\", "/").rsplit("media/", maxsplit=1)[-1]
+                )
                 return f"{settings.MEDIA_URL.rstrip('/')}/{media_tail.lstrip('/')}"
         return "/static/media/images/no-avatar.png"
 
