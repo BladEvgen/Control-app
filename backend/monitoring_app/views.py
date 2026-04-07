@@ -8,6 +8,7 @@ import mimetypes
 import os
 import re
 import time
+import uuid
 import zipfile
 from collections import Counter, defaultdict
 from contextlib import AbstractContextManager, contextmanager
@@ -45,7 +46,12 @@ from monitoring_app import (
     serializers,
     utils,
 )
-from monitoring_app.cache_conf import Cache, get_cache
+from monitoring_app.cache_conf import (
+    Cache,
+    get_cache,
+    invalidate_cache,
+    invalidate_cache_pattern,
+)
 from monitoring_app.lesson_locations_conf import (
     ACCEPTANCE_R_CLUSTER,
     ACCEPTANCE_R_SAME_POINT,
@@ -78,6 +84,14 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 def _db_atomic() -> AbstractContextManager[None]:
     """Типизированная обёртка над transaction.atomic() для статического анализа."""
     return cast(AbstractContextManager[None], transaction.atomic())
+
+
+def _face_lab_bool_param(v: object) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return False
 
 
 def _drf_validation_error_text(exc: ValidationError) -> str:
@@ -217,6 +231,16 @@ def _parse_query_bool(raw_value: Optional[str]) -> bool:
     if raw_value is None:
         return False
     return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _invalidate_staff_face_caches(staff_pin: str) -> None:
+    """Invalidate staff row cache, all staff-detail date windows, Face Lab options."""
+    pin = (staff_pin or "").strip()
+    if not pin:
+        return
+    invalidate_cache(f"staff_{pin}")
+    invalidate_cache_pattern(f"staff_detail_{LESSON_REPORT_CACHE_VERSION}_{pin}_")
+    invalidate_cache("face_lab_staff_options_v2")
 
 
 def _department_confirmation_hour_bucket(
@@ -8862,7 +8886,7 @@ def face_lab_staff_options(request):
     Flat list of all staff with department (Face Lab «С эталоном»).
     One DB round-trip + cache instead of N requests per department.
     """
-    cache_key = "face_lab_staff_options_v1"
+    cache_key = "face_lab_staff_options_v2"
 
     def fetch_rows():
         rows = []
@@ -8885,6 +8909,9 @@ def face_lab_staff_options(request):
                     "fio": fio,
                     "dept_id": dept_id,
                     "dept_name": dept_name,
+                    "face_profile_state": getattr(
+                        s, "face_profile_state", models.Staff.FACE_PROFILE_STATE_READY
+                    ),
                 }
             )
         return rows
@@ -8937,11 +8964,347 @@ def face_lab_pad_test(request):
     )
 
 
+@api_view(["GET"])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def face_lab_bootstrap_status(request):
+    """Angles already saved for trusted StaffFaceSample (Face Lab bootstrap)."""
+    pin = (request.query_params.get("pin") or "").strip()
+    if not pin:
+        return Response(
+            {"error": "query param pin is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        staff = models.Staff.objects.only(
+            "id",
+            "pin",
+            "avatar",
+            "face_profile_state",
+        ).get(pin=pin)
+    except models.Staff.DoesNotExist:
+        return Response({"error": "Staff not found."}, status=status.HTTP_404_NOT_FOUND)
+    qs = models.StaffFaceSample.objects.filter(
+        staff=staff, is_active=True, is_trusted=True
+    )
+    angles = list(qs.values_list("angle", flat=True).distinct())
+    max_n = int(getattr(settings, "FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES", 5))
+    req = (
+        models.StaffFaceSample.ANGLE_FRONT,
+        models.StaffFaceSample.ANGLE_LEFT,
+        models.StaffFaceSample.ANGLE_RIGHT,
+    )
+    present_l = {str(a).strip().lower() for a in angles}
+    missing = [a for a in req if a not in present_l]
+    next_angle = missing[0] if missing else None
+    has_avatar = bool(
+        getattr(staff, "avatar", None) and getattr(staff.avatar, "name", "")
+    )
+    return Response(
+        {
+            "pin": pin,
+            "angles_present": angles,
+            "angles_required": list(req),
+            "angles_missing": missing,
+            "next_angle": next_angle,
+            "bootstrap_complete": len(missing) == 0,
+            "active_count": qs.count(),
+            "max_active_samples": max_n,
+            "face_profile_state": staff.face_profile_state,
+            "has_avatar": has_avatar,
+            "cold_start_note": (
+                "Пока нет собранной gallery_real.npy, verify при чистом PAD может "
+                "идти по режиму холодного старта. Три ракурса (фронт / влево / вправо) "
+                "и команда build_staff_gallery_real дают полноценную боковую галерею "
+                "для сравнения."
+            ),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def face_lab_save_face_sample(request):
+    """Save one trusted PAD+quality-approved capture (no embedding build in-request)."""
+    import numpy as np
+    from monitoring_app.face_verification_pad import pad_allows_identity_probe
+    from monitoring_app.photo_pad import check_photo_bgr
+
+    pin = (request.data.get("pin") or "").strip()
+    angle = (request.data.get("angle") or "").strip()
+    raw_source = (request.data.get("source") or "").strip()
+    with_glasses = _face_lab_bool_param(request.data.get("with_glasses"))
+    uploaded = request.FILES.get("image")
+    allowed_angles = frozenset(
+        {
+            models.StaffFaceSample.ANGLE_FRONT,
+            models.StaffFaceSample.ANGLE_LEFT,
+            models.StaffFaceSample.ANGLE_RIGHT,
+        }
+    )
+    allowed_src = {c[0] for c in models.StaffFaceSample.SOURCE_CHOICES}
+    source = (
+        raw_source
+        if raw_source in allowed_src
+        else models.StaffFaceSample.SOURCE_BOOTSTRAP_CAPTURE
+    )
+    if not pin or not uploaded or uploaded.size == 0:
+        return Response(
+            {"error": "pin and non-empty image are required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if angle not in allowed_angles:
+        return Response(
+            {"error": "angle must be one of: front, left, right."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        staff = models.Staff.objects.get(pin=pin)
+    except models.Staff.DoesNotExist:
+        return Response({"error": "Staff not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    raw_bytes = uploaded.read()
+    try:
+        img_bgr = ml.decode_upload_image_bytes_to_bgr(raw_bytes)
+        jpeg_bytes = ml.reencode_bgr_to_canonical_jpeg_bytes(img_bgr)
+    except ValidationError as ve:
+        return Response(
+            {"error": _drf_validation_error_text(ve)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    pad_result = check_photo_bgr(img_bgr)
+    if not pad_allows_identity_probe(pad_result):
+        return Response(
+            {
+                "error": "PAD не подтвердил живость кадра — образец не сохранён.",
+                "pad_status": pad_result.status,
+                "trust_confirmed": pad_result.trust_confirmed,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    embedding, probe_meta = ml.create_face_encoding_with_probe_meta(img_bgr)
+    if embedding is None or not probe_meta.get("quality_pass"):
+        return Response(
+            {
+                "error": "Качество кадра или детекция недостаточны — образец не сохранён.",
+                "quality_pass": bool(probe_meta.get("quality_pass")),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    dedupe_cos = float(getattr(settings, "FACE_SAMPLE_DEDUPE_MAX_COS", 0.992))
+    new_v = np.asarray(embedding, dtype=np.float64).reshape(-1)
+    new_n = float(np.linalg.norm(new_v))
+    new_v = new_v / max(new_n, 1e-10)
+    for ex in models.StaffFaceSample.objects.filter(
+        staff=staff, is_active=True, is_trusted=True
+    ).iterator(chunk_size=20):
+        pth = getattr(ex.image, "path", "") or ""
+        if not pth or not os.path.isfile(pth):
+            continue
+        old_enc = ml.create_face_encoding(pth)
+        if old_enc is None:
+            continue
+        ov = np.asarray(old_enc, dtype=np.float64).reshape(-1)
+        ov = ov / max(float(np.linalg.norm(ov)), 1e-10)
+        if float(np.dot(new_v, ov)) >= dedupe_cos:
+            return Response(
+                {"error": "Слишком похожий кадр уже есть — дубликат не сохранён."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    parsing_meta = face_parsing.probe_bgr(img_bgr)
+    glasses_probe = parsing_meta.get("eyeglasses_likely")
+
+    max_active = int(getattr(settings, "FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES", 5))
+    fname = f"{staff.pin}_face_{angle}_{uuid.uuid4().hex[:10]}.jpg"
+    with _db_atomic():
+        models.StaffFaceSample.objects.filter(
+            staff=staff, angle=angle, is_active=True
+        ).update(is_active=False)
+        sample = models.StaffFaceSample(
+            staff=staff,
+            source=source,
+            angle=angle,
+            with_glasses=with_glasses,
+            pad_status=pad_result.status,
+            quality_passed=True,
+            is_trusted=True,
+            is_active=True,
+            probe_eyeglasses_likely=(
+                glasses_probe if isinstance(glasses_probe, bool) else None
+            ),
+        )
+        # pylint: disable-next=no-member
+        sample.image.save(fname, ContentFile(jpeg_bytes), save=False)
+        sample.save()
+
+        qs_active = models.StaffFaceSample.objects.filter(
+            staff=staff, is_active=True, is_trusted=True
+        ).order_by("created_at", "id")
+        extra = qs_active.count() - max_active
+        if extra > 0:
+            old_ids = list(qs_active.values_list("pk", flat=True)[:extra])
+            if old_ids:
+                models.StaffFaceSample.objects.filter(pk__in=old_ids).update(
+                    is_active=False,
+                    updated_at=timezone.now(),
+                )
+
+        if (
+            staff.face_profile_state
+            == models.Staff.FACE_PROFILE_STATE_BOOTSTRAP_REQUIRED
+            and models.StaffFaceSample.objects.filter(
+                staff=staff, is_active=True, is_trusted=True
+            ).count()
+            >= 3
+        ):
+            staff.face_profile_state = models.Staff.FACE_PROFILE_STATE_WEAK_GALLERY
+            staff.save(update_fields=["face_profile_state"])
+
+    _invalidate_staff_face_caches(pin)
+    return Response(
+        {
+            "ok": True,
+            "sample_id": sample.pk,
+            "angle": angle,
+            "saved_as": fname,
+            "stored_format": "jpeg",
+            "message": "Образец сохранён (JPEG). Запустите build_staff_gallery_real для обновления gallery_real.npy.",
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def face_lab_apply_sample_avatar(request):
+    """Replace staff avatar file from a saved StaffFaceSample image."""
+    pin = (request.data.get("pin") or "").strip()
+    raw_sid = request.data.get("sample_id")
+    try:
+        sample_id = int(raw_sid) if raw_sid is not None else 0
+    except (TypeError, ValueError):
+        sample_id = 0
+    if not pin or sample_id <= 0:
+        return Response(
+            {"error": "pin and positive sample_id are required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        staff = models.Staff.objects.get(pin=pin)
+    except models.Staff.DoesNotExist:
+        return Response({"error": "Staff not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        sample = models.StaffFaceSample.objects.get(
+            pk=sample_id, staff=staff, is_active=True, is_trusted=True
+        )
+    except models.StaffFaceSample.DoesNotExist:
+        return Response(
+            {"error": "Sample not found."}, status=status.HTTP_404_NOT_FOUND
+        )
+    path = getattr(sample.image, "path", "") or ""
+    if not path or not os.path.isfile(path):
+        return Response(
+            {"error": "Image file missing on disk."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    with open(path, "rb") as fh:
+        disk_bytes = fh.read()
+    try:
+        img_bgr = ml.decode_upload_image_bytes_to_bgr(disk_bytes)
+        jpeg_bytes = ml.reencode_bgr_to_canonical_jpeg_bytes(img_bgr)
+    except ValidationError as ve:
+        return Response(
+            {"error": _drf_validation_error_text(ve)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    name = f"{staff.pin}_from_sample_{sample.pk}.jpg"
+    staff.avatar.save(name, ContentFile(jpeg_bytes), save=True)
+    _invalidate_staff_face_caches(pin)
+    return Response(
+        {"ok": True, "message": "Аватар обновлён из выбранного образца."},
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["PUT", "PATCH", "POST"])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def staff_avatar_upload(request, staff_pin: str):
+    """
+    Replace ``Staff.avatar`` from multipart upload (StaffDetail / Face Lab).
+
+    Accepts PNG/JPEG uploads; **always stores canonical JPEG** (re-encoded pixels).
+    Does not run PAD (trusted admin path).
+    """
+    pin = (staff_pin or "").strip()
+    if not pin:
+        return Response(
+            {"error": "staff_pin is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    uploaded = request.FILES.get("image") or request.FILES.get("avatar")
+    if not uploaded or uploaded.size == 0:
+        return Response(
+            {"error": "Non-empty image file is required (field: image or avatar)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    max_bytes = int(settings.STAFF_AVATAR_UPLOAD_MAX_BYTES)
+    if uploaded.size > max_bytes:
+        return Response(
+            {"error": f"File too large (max {max_bytes // (1024 * 1024)} MB)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        staff = models.Staff.objects.get(pin=pin)
+    except models.Staff.DoesNotExist:
+        return Response({"error": "Staff not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    raw_bytes = uploaded.read()
+    try:
+        img_bgr = ml.decode_upload_image_bytes_to_bgr(raw_bytes)
+        jpeg_bytes = ml.reencode_bgr_to_canonical_jpeg_bytes(img_bgr)
+    except ValidationError as ve:
+        return Response(
+            {"error": _drf_validation_error_text(ve)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    name = f"{staff.pin}_avatar_{uuid.uuid4().hex[:12]}.jpg"
+    staff.avatar.save(name, ContentFile(jpeg_bytes), save=True)
+    _invalidate_staff_face_caches(pin)
+    avatar_url = staff.avatar.url if staff.avatar else None
+    return Response(
+        {
+            "ok": True,
+            "pin": pin,
+            "avatar_url": avatar_url,
+            "stored_format": "jpeg",
+            "message": "Аватар обновлён (сохранён как JPEG).",
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 @swagger_auto_schema(
     method="post",
     auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
-    operation_summary="Верификация лица",
-    operation_description="Верифицирует лицо сотрудника по PIN и изображению. Требует передачи заголовка X-API-KEY для просмотра в Swagger.",
+    operation_summary="Проверка лица сотрудника по PIN",
+    operation_description=(
+        "Проверяет, принадлежит ли фото указанному сотруднику.\n\n"
+        "Что делает сервер:\n"
+        "1. Проверяет живость кадра (PAD).\n"
+        "2. Проверяет качество и детекцию лица.\n"
+        "3. Сравнивает лицо с эталонами сотрудника.\n\n"
+        "Итог для продукта — поля `matched` и `final_decision`.\n"
+        "Поле `status` нужно для диагностики."
+    ),
     tags=["Face Recognition - Verify"],
     manual_parameters=[
         openapi.Parameter(
@@ -8949,87 +9312,173 @@ def face_lab_pad_test(request):
             in_=openapi.IN_HEADER,
             type=openapi.TYPE_STRING,
             required=True,
-            description="API ключ для доступа к этому эндпоинту. Без этого ключа эндпоинт скрыт в Swagger.",
+            description="API-ключ для доступа к эндпоинту.",
         ),
         openapi.Parameter(
             name="pin",
             in_=openapi.IN_FORM,
             type=openapi.TYPE_STRING,
             required=True,
-            description="PIN сотрудника для верификации.",
+            description="PIN сотрудника.",
         ),
         openapi.Parameter(
             name="image",
             in_=openapi.IN_FORM,
             type=openapi.TYPE_FILE,
             required=True,
-            description="Изображение лица для верификации.",
+            description="Фото лица для проверки.",
         ),
     ],
     request_body=no_body,
     responses={
         200: openapi.Response(
-            description="Результат верификации",
+            description=(
+                "Результат проверки лица. "
+                "Основные поля для интеграции: `matched`, `final_decision`, `summary`."
+            ),
             schema=openapi.Schema(
                 type=openapi.TYPE_OBJECT,
                 properties={
-                    "verified": openapi.Schema(
+                    "matched": openapi.Schema(
                         type=openapi.TYPE_BOOLEAN,
-                        description="Результат верификации (True/False).",
+                        description="Итог проверки: true — совпадение подтверждено, false — нет.",
+                    ),
+                    "final_decision": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Итог в явном виде: YES или NO.",
+                        enum=["YES", "NO"],
+                    ),
+                    "summary": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Короткое человеко-понятное объяснение результата.",
+                    ),
+                    "status": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Диагностический статус обработки.",
+                        enum=[
+                            "VERIFIED",
+                            "REJECTED",
+                            "QUALITY_FAIL",
+                            "LIVENESS_FAIL",
+                            "PAD_ERROR",
+                        ],
+                    ),
+                    "gallery_strength": openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description="Сила галереи эталонов.",
+                        enum=["strong", "weak"],
                     ),
                     "score": openapi.Schema(
                         type=openapi.TYPE_NUMBER,
-                        description="Оценка схожести (0–1), смесь max и среднего по лучшим прототипам.",
+                        description="Итоговый скор сходства (0–1).",
                     ),
                     "max_cosine": openapi.Schema(
                         type=openapi.TYPE_NUMBER,
-                        description="Максимальный косинус по прототипам галереи.",
+                        description="Лучшее совпадение с одним эталоном (0–1).",
                     ),
-                    "trained_model_present": openapi.Schema(
-                        type=openapi.TYPE_BOOLEAN,
-                        description="Есть ли сохранённый per-staff .pt после обучения.",
+                    "threshold_applied": openapi.Schema(
+                        type=openapi.TYPE_NUMBER,
+                        description="Порог, который был применён к этому ответу.",
                     ),
-                    "gallery_templates": openapi.Schema(
+                    "gallery_size": openapi.Schema(
                         type=openapi.TYPE_INTEGER,
-                        description="Число прототипов (маска + аватар + embeddings.npy).",
+                        description="Сколько эталонов участвовало в сравнении.",
                     ),
-                    "threshold_used": openapi.Schema(
-                        type=openapi.TYPE_NUMBER,
-                        description="Порог: строже при наличии .pt, мягче в fallback.",
+                    "reason_codes": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_STRING),
+                        description="Коды причин для диагностики.",
                     ),
-                    "verification_mode": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="embedding_gallery_strict | embedding_gallery_fallback",
+                    "quality": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        description="Результат проверки качества кадра.",
+                        properties={
+                            "passed": openapi.Schema(
+                                type=openapi.TYPE_BOOLEAN,
+                                description="Хватило ли качества кадра для сравнения.",
+                            ),
+                            "det_score": openapi.Schema(
+                                type=openapi.TYPE_NUMBER,
+                                description="Уверенность детектора лица.",
+                            ),
+                            "face_area_ratio": openapi.Schema(
+                                type=openapi.TYPE_NUMBER,
+                                description="Доля лица в кадре.",
+                            ),
+                            "reason_codes": openapi.Schema(
+                                type=openapi.TYPE_ARRAY,
+                                items=openapi.Schema(type=openapi.TYPE_STRING),
+                                description="Причины провала качества, если они есть.",
+                            ),
+                        },
                     ),
-                    "relaxed_match": openapi.Schema(
-                        type=openapi.TYPE_BOOLEAN,
-                        description="Сработал запасной порог по галерее (multi-prototype).",
+                    "liveness": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        description="Результат проверки живости (PAD).",
+                        properties={
+                            "checked": openapi.Schema(
+                                type=openapi.TYPE_BOOLEAN,
+                                description="Проверка живости была выполнена.",
+                            ),
+                            "trust_confirmed": openapi.Schema(
+                                type=openapi.TYPE_BOOLEAN,
+                                description="true — живость подтверждена, false — нет, null — неопределённо.",
+                            ),
+                            "status": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                description="Статус PAD.",
+                                enum=[
+                                    "clean",
+                                    "review",
+                                    "suspicious",
+                                    "error",
+                                    "pending",
+                                ],
+                            ),
+                            "risk_score": openapi.Schema(
+                                type=openapi.TYPE_NUMBER,
+                                description="Оценка риска подмены.",
+                            ),
+                            "model_version": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                description="Версия модели PAD.",
+                            ),
+                            "tags": openapi.Schema(
+                                type=openapi.TYPE_ARRAY,
+                                items=openapi.Schema(type=openapi.TYPE_STRING),
+                                description="Технические теги PAD.",
+                            ),
+                        },
                     ),
-                    "accessory_relaxed": openapi.Schema(
-                        type=openapi.TYPE_BOOLEAN,
-                        description="Сработал путь верификации при аксессуарах (очки и т.п.).",
+                    "gallery": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        description="Краткая информация о галерее эталонов.",
+                        properties={
+                            "total_templates": openapi.Schema(
+                                type=openapi.TYPE_INTEGER,
+                                description="Общее число эталонов.",
+                            ),
+                            "distinct_enrollment_sources": openapi.Schema(
+                                type=openapi.TYPE_INTEGER,
+                                description="Сколько независимых источников эталонов использовано.",
+                            ),
+                        },
                     ),
-                    "face_parsing_active": openapi.Schema(
-                        type=openapi.TYPE_BOOLEAN,
-                        description="BiSeNet face parsing доступен и отработал на кадре.",
-                    ),
-                    "probe_eyeglasses_likely": openapi.Schema(
-                        type=openapi.TYPE_BOOLEAN,
-                        description="По сегментации eye_g на фото вероятны очки (или null если парсинг выкл.).",
-                    ),
-                    "probe_eyeglasses_area_frac": openapi.Schema(
-                        type=openapi.TYPE_NUMBER,
-                        description="Доля пикселей класса очков (0–1).",
-                    ),
-                    "face_parsing_error": openapi.Schema(
-                        type=openapi.TYPE_STRING,
-                        description="Ошибка парсинга при наличии.",
+                    "diagnostics": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        description=(
+                            "Дополнительные технические детали. "
+                            "Нужны для отладки, но не обязательны для обычной интеграции."
+                        ),
                     ),
                 },
+                required=["matched", "final_decision", "summary", "status"],
             ),
         ),
-        400: "Bad Request: Неверные данные запроса.",
-        404: "Not Found: Сотрудник не найден.",
+        400: openapi.Response(
+            description="Некорректный запрос: отсутствует PIN, файл или обязательные параметры."
+        ),
+        404: openapi.Response(description="Сотрудник с указанным PIN не найден."),
     },
 )
 @api_view(["POST"])
@@ -9063,14 +9512,148 @@ def verify_face(request):
         return Response({"error": "Staff not found."}, status=status.HTTP_404_NOT_FOUND)
 
     try:
+        from monitoring_app.face_verification_contract import (
+            VERIFY_MODE_1_1,
+            LivenessPayload,
+            QualityPayload,
+        )
+        from monitoring_app.face_verification_pad import (
+            liveness_payload_from_pad_result,
+            pad_blocks_before_identity,
+        )
+        from monitoring_app.face_verification_policy import (
+            build_contract_core,
+            build_gallery_info,
+            decide_face_verify_binary,
+        )
+        from monitoring_app.photo_pad import check_photo_bgr
+
         new_image = ml.load_image_from_memory(staff_image)
-        new_embedding = ml.create_face_encoding(new_image)
+        pad_result = check_photo_bgr(new_image)
+        liveness_payload: LivenessPayload = liveness_payload_from_pad_result(pad_result)
+
+        thr_strong = float(getattr(settings, "FACE_VERIFY_THRESHOLD_VERIFIED", 0.76))
+        thr_weak_gal = float(
+            getattr(settings, "FACE_VERIFY_THRESHOLD_VERIFIED_WEAK_GALLERY", 0.86)
+        )
+        thr_cold = float(getattr(settings, "FACE_VERIFY_THRESHOLD_COLD_START", 0.835))
+
+        def _gallery_snapshot() -> tuple[int, dict[str, int]]:
+            gal, gb = ml.build_runtime_gallery_embeddings(staff)
+            _bk = (
+                "mask_prototypes",
+                "avatar_prototypes",
+                "gallery_real_npy_prototypes",
+            )
+            if not isinstance(gb, dict):
+                gb = {}
+            breakdown_ints = {k: int(gb.get(k, 0)) for k in _bk}
+            n_templates = int(gal.shape[0]) if gal is not None and gal.size else 0
+            return n_templates, breakdown_ints
+
+        def _optional_float(v: object) -> float | None:
+            if isinstance(v, bool):
+                return None
+            if isinstance(v, (int, float)):
+                return float(v)
+            return None
+
+        def _finalize_verify_body(
+            *,
+            quality_payload: QualityPayload,
+            score: float,
+            max_cosine: float,
+            gallery_templates: int,
+            breakdown_ints: dict[str, int],
+        ) -> dict[str, object]:
+            gallery_info = build_gallery_info(
+                gallery_templates=gallery_templates,
+                breakdown=breakdown_ints,
+            )
+            matched, fd, summary, status_v, reason_codes, thr_applied, gstr = (
+                decide_face_verify_binary(
+                    quality=quality_payload,
+                    liveness=liveness_payload,
+                    score=float(score),
+                    gallery_templates=int(gallery_templates),
+                    breakdown=breakdown_ints,
+                    threshold_verified=thr_strong,
+                    threshold_weak_gallery=thr_weak_gal,
+                    threshold_cold_start=thr_cold,
+                )
+            )
+            contract = build_contract_core(
+                matched=bool(matched),
+                final_decision=fd,
+                summary=summary,
+                status=status_v,
+                gallery_strength=gstr,
+                threshold_applied=float(thr_applied),
+                score=float(score),
+                max_cosine=float(max_cosine),
+                threshold_verified_strong=thr_strong,
+                threshold_verified_weak=thr_weak_gal,
+                gallery_size=int(gallery_templates),
+                reason_codes=reason_codes,
+                quality=quality_payload,
+                liveness=liveness_payload,
+                gallery=gallery_info,
+            )
+            body: dict[str, object] = {**contract}
+            body["diagnostics"] = {
+                "mode_used": VERIFY_MODE_1_1,
+                "gallery_breakdown": dict(breakdown_ints),
+                "threshold_cold_start": thr_cold,
+            }
+            parsing_meta = face_parsing.probe_bgr(new_image)
+            body["face_parsing_active"] = parsing_meta.get("face_parsing_active", False)
+            body["probe_eyeglasses_likely"] = parsing_meta.get("eyeglasses_likely")
+            body["probe_eyeglasses_area_frac"] = parsing_meta.get(
+                "eyeglasses_area_frac"
+            )
+            if parsing_meta.get("face_parsing_error"):
+                body["face_parsing_error"] = parsing_meta["face_parsing_error"]
+            return body
+
+        if pad_blocks_before_identity(pad_result):
+            n_templates, breakdown_ints = _gallery_snapshot()
+            quality_payload_pad: QualityPayload = {
+                "passed": True,
+                "det_score": None,
+                "face_area_ratio": None,
+                "reason_codes": [],
+            }
+            body = _finalize_verify_body(
+                quality_payload=quality_payload_pad,
+                score=0.0,
+                max_cosine=0.0,
+                gallery_templates=n_templates,
+                breakdown_ints=breakdown_ints,
+            )
+            return Response(body, status=status.HTTP_200_OK)
+
+        new_embedding, probe_meta = ml.create_face_encoding_with_probe_meta(new_image)
         if new_embedding is None:
             logger.warning("No face detected in the uploaded image.")
-            return Response(
-                {"error": "No face detected in the image."},
-                status=status.HTTP_400_BAD_REQUEST,
+            n_templates, breakdown_ints = _gallery_snapshot()
+            _qraw_nf = probe_meta.get("quality_reason_codes")
+            q_rc_nf: list[str] = (
+                [str(x) for x in _qraw_nf] if isinstance(_qraw_nf, list) else []
             )
+            quality_payload_nf: QualityPayload = {
+                "passed": bool(probe_meta.get("quality_pass")),
+                "det_score": _optional_float(probe_meta.get("det_score")),
+                "face_area_ratio": _optional_float(probe_meta.get("face_area_ratio")),
+                "reason_codes": q_rc_nf,
+            }
+            body = _finalize_verify_body(
+                quality_payload=quality_payload_nf,
+                score=0.0,
+                max_cosine=0.0,
+                gallery_templates=n_templates,
+                breakdown_ints=breakdown_ints,
+            )
+            return Response(body, status=status.HTTP_200_OK)
 
         face_logger.info("Face detected, calculating gallery similarity.")
         probe = np.asarray(new_embedding, dtype=np.float64)
@@ -9089,30 +9672,41 @@ def verify_face(request):
             )
 
         face_logger.info(
-            "Verification PIN %s: score=%s verified=%s mode=%s templates=%s",
+            "Verification PIN %s: score=%s ml_verified=%s templates=%s max_cos=%s",
             staff_pin,
             score,
             verified,
-            meta.get("verification_mode"),
             meta.get("gallery_templates"),
+            meta.get("max_cosine"),
         )
-        parsing_meta = face_parsing.probe_bgr(new_image)
-        body: dict = {
-            "verified": verified,
-            "score": score,
-            "max_cosine": meta["max_cosine"],
-            "trained_model_present": meta["trained_model_present"],
-            "gallery_templates": meta["gallery_templates"],
-            "threshold_used": meta["threshold_used"],
-            "verification_mode": meta["verification_mode"],
-            "relaxed_match": bool(meta.get("relaxed_match")),
-            "accessory_relaxed": bool(meta.get("accessory_relaxed")),
-            "face_parsing_active": parsing_meta.get("face_parsing_active", False),
-            "probe_eyeglasses_likely": parsing_meta.get("eyeglasses_likely"),
-            "probe_eyeglasses_area_frac": parsing_meta.get("eyeglasses_area_frac"),
+        _qraw = probe_meta.get("quality_reason_codes")
+        if isinstance(_qraw, list):
+            q_rc: list[str] = [str(x) for x in _qraw]
+        else:
+            q_rc = []
+
+        quality_payload: QualityPayload = {
+            "passed": bool(probe_meta.get("quality_pass")),
+            "det_score": _optional_float(probe_meta.get("det_score")),
+            "face_area_ratio": _optional_float(probe_meta.get("face_area_ratio")),
+            "reason_codes": q_rc,
         }
-        if parsing_meta.get("face_parsing_error"):
-            body["face_parsing_error"] = parsing_meta["face_parsing_error"]
+        gb = meta.get("gallery_breakdown") or {}
+        if not isinstance(gb, dict):
+            gb = {}
+        _bk = (
+            "mask_prototypes",
+            "avatar_prototypes",
+            "gallery_real_npy_prototypes",
+        )
+        breakdown_ints = {k: int(gb.get(k, 0)) for k in _bk}
+        body = _finalize_verify_body(
+            quality_payload=quality_payload,
+            score=float(score),
+            max_cosine=float(meta["max_cosine"]),
+            gallery_templates=int(meta["gallery_templates"]),
+            breakdown_ints=breakdown_ints,
+        )
         return Response(body, status=status.HTTP_200_OK)
 
     except ValidationError as ve:
@@ -9134,7 +9728,12 @@ def verify_face(request):
     method="post",
     auto_schema=FormOnlySwaggerAutoSchema,  # type: ignore[reportArgumentType]
     operation_summary="Распознавание лиц",
-    operation_description="Распознает лица сотрудников на изображении. Требует передачи заголовка X-API-KEY для просмотра в Swagger.",
+    operation_description=(
+        "Распознаёт лица сотрудников на изображении по той же **runtime-галерее**, "
+        "что и verify (маска, аватар, gallery_real.npy). "
+        "Пороги — FACE_RECOGNITION_THRESHOLD / RELAXED (1:N), не FACE_VERIFY_*. "
+        "Требует заголовок X-API-KEY в Swagger."
+    ),
     tags=["Face Recognition - Recognize"],
     manual_parameters=[
         openapi.Parameter(

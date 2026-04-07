@@ -101,6 +101,11 @@ urlpatterns = [
         views.root_departments_batch,
         name="root-departments-batch",
     ),
+    path(
+        "api/staff/<str:staff_pin>/avatar/",
+        views.staff_avatar_upload,
+        name="staff-avatar-upload",
+    ),
     path("api/staff/<str:staff_pin>/", views.staff_detail, name="staff-detail"),
     path(
         "api/token/",
@@ -141,6 +146,21 @@ urlpatterns = [
         "api/face-lab/pad-test/",
         views.face_lab_pad_test,
         name="face-lab-pad-test",
+    ),
+    path(
+        "api/face-lab/bootstrap-status/",
+        views.face_lab_bootstrap_status,
+        name="face-lab-bootstrap-status",
+    ),
+    path(
+        "api/face-lab/save-face-sample/",
+        views.face_lab_save_face_sample,
+        name="face-lab-save-face-sample",
+    ),
+    path(
+        "api/face-lab/apply-sample-avatar/",
+        views.face_lab_apply_sample_avatar,
+        name="face-lab-apply-sample-avatar",
     ),
     path(
         "api/face-lab/tts/",
