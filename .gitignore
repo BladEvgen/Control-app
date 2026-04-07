@@ -317,3 +317,5 @@ backend/media/
 DB/
 .cursor/rules/
 backend/models/general_face_model_meta.json
+scripts/augment_clear.sh
+scripts/git-commit-grouped-tracked.sh
