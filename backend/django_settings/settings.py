@@ -70,45 +70,65 @@ FACE_RECOGNITION_THRESHOLD_RELAXED = float(
 FACE_RECOGNITION_MIN_NEIGHBOR_GAP = float(
     os.getenv("FACE_RECOGNITION_MIN_NEIGHBOR_GAP", "0.055")
 )
-FACE_VERIFY_FALLBACK_THRESHOLD = float(
-    os.getenv("FACE_VERIFY_FALLBACK_THRESHOLD", "0.74")
-)
-FACE_VERIFY_ACCESSORY_ENABLE = os.getenv(
-    "FACE_VERIFY_ACCESSORY_ENABLE", "1"
+FACE_TRAINING_INCLUDE_LESSON_ATTENDANCE = os.getenv(
+    "FACE_TRAINING_INCLUDE_LESSON_ATTENDANCE", "1"
 ).strip().lower() in (
     "1",
     "true",
     "yes",
+    "on",
 )
-FACE_VERIFY_ACCESSORY_MAX_MIN = float(
-    os.getenv("FACE_VERIFY_ACCESSORY_MAX_MIN", "0.71")
-)
-FACE_VERIFY_ACCESSORY_SCORE_GAP_MIN = float(
-    os.getenv("FACE_VERIFY_ACCESSORY_SCORE_GAP_MIN", "0.035")
-)
-FACE_VERIFY_ACCESSORY_SECOND_MARGIN = float(
-    os.getenv("FACE_VERIFY_ACCESSORY_SECOND_MARGIN", "0.044")
-)
-FACE_VERIFY_ACCESSORY_SINGLE_MAX_MIN = float(
-    os.getenv("FACE_VERIFY_ACCESSORY_SINGLE_MAX_MIN", "0.685")
-)
-FACE_VERIFY_ACCESSORY_SINGLE_SCORE_MIN = float(
-    os.getenv("FACE_VERIFY_ACCESSORY_SINGLE_SCORE_MIN", "0.655")
-)
-FACE_VERIFY_RELAXED_SCORE_SLACK = float(
-    os.getenv("FACE_VERIFY_RELAXED_SCORE_SLACK", "0.045")
-)
-FACE_VERIFY_RELAXED_MAX_SLACK = float(
-    os.getenv("FACE_VERIFY_RELAXED_MAX_SLACK", "0.028")
-)
-FACE_VERIFY_RELAXED_MARGIN_MIN = float(
-    os.getenv("FACE_VERIFY_RELAXED_MARGIN_MIN", "0.042")
-)
-FACE_TRAINING_INCLUDE_LESSON_ATTENDANCE = os.getenv(
-    "FACE_TRAINING_INCLUDE_LESSON_ATTENDANCE", "1"
-).strip().lower() in ("1", "true", "yes", "on")
 FACE_TRAINING_LESSON_ATTENDANCE_MAX = int(
     os.getenv("FACE_TRAINING_LESSON_ATTENDANCE_MAX", "80")
+)
+
+FACE_VERIFY_THRESHOLD_VERIFIED = float(
+    os.getenv("FACE_VERIFY_THRESHOLD_VERIFIED", str(FACE_RECOGNITION_THRESHOLD))
+)
+# Weak gallery: fewer distinct enrollment sources or templates than FACE_VERIFY_MIN_*.
+# Compare is still binary YES/NO: weak path requires score >= this stricter cosine floor
+# (strong gallery uses FACE_VERIFY_THRESHOLD_VERIFIED only).
+FACE_VERIFY_THRESHOLD_VERIFIED_WEAK_GALLERY = float(
+    os.getenv("FACE_VERIFY_THRESHOLD_VERIFIED_WEAK_GALLERY", "0.73")
+)
+FACE_VERIFY_THRESHOLD_REVIEW = float(os.getenv("FACE_VERIFY_THRESHOLD_REVIEW", "0.68"))
+FACE_VERIFY_MIN_ENROLLMENT_SOURCES = int(
+    os.getenv("FACE_VERIFY_MIN_ENROLLMENT_SOURCES", "2")
+)
+FACE_VERIFY_MIN_TEMPLATES_STRONG = int(
+    os.getenv("FACE_VERIFY_MIN_TEMPLATES_STRONG", "2")
+)
+FACE_VERIFY_MAX_COSINE_FACTOR = float(
+    os.getenv("FACE_VERIFY_MAX_COSINE_FACTOR", "0.97")
+)
+FACE_VERIFY_PROBE_DET_SCORE_MIN = float(
+    os.getenv("FACE_VERIFY_PROBE_DET_SCORE_MIN", "0.35")
+)
+FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN = float(
+    os.getenv("FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN", "0.008")
+)
+# Cold-start verify: only when runtime gallery has no gallery_real.npy rows (avatar/mask only).
+# Softer cosine floor than weak-gallery strict, but stricter probe quality (det + face area).
+FACE_VERIFY_THRESHOLD_COLD_START = float(
+    os.getenv("FACE_VERIFY_THRESHOLD_COLD_START", "0.835")
+)
+FACE_VERIFY_COLD_START_DET_MIN = float(
+    os.getenv("FACE_VERIFY_COLD_START_DET_MIN", "0.42")
+)
+FACE_VERIFY_COLD_START_FACE_AREA_MIN = float(
+    os.getenv("FACE_VERIFY_COLD_START_FACE_AREA_MIN", "0.012")
+)
+# Trusted face bootstrap samples (StaffFaceSample): cap and near-duplicate rejection.
+FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES = int(
+    os.getenv("FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES", "5")
+)
+FACE_SAMPLE_DEDUPE_MAX_COS = float(os.getenv("FACE_SAMPLE_DEDUPE_MAX_COS", "0.992"))
+
+# Staff / Face Lab: server normalizes uploads to JPEG (drops non-image payloads, EXIF, etc.).
+STAFF_UPLOAD_JPEG_QUALITY = int(os.getenv("STAFF_UPLOAD_JPEG_QUALITY", "92"))
+STAFF_UPLOAD_MAX_MEGAPIXELS = int(os.getenv("STAFF_UPLOAD_MAX_MEGAPIXELS", "36"))
+STAFF_AVATAR_UPLOAD_MAX_BYTES = int(
+    os.getenv("STAFF_AVATAR_UPLOAD_MAX_BYTES", str(12 * 1024 * 1024))
 )
 
 AUGMENT_SYNTH_GLASSES_RANDOM_P = float(
@@ -384,6 +404,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "monitoring_app.face_lab_log_middleware.FaceLabRequestLogMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -989,6 +1010,19 @@ LOGGING = {
             "level": "INFO",
             "filters": ["ignore_shutdown", "ignore_pylint"],
         },
+        "face_lab_file": {
+            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
+            "filename": str(LOG_DIR / "face_lab.log"),
+            "when": "H",
+            "interval": 1,
+            "backupCount": 24 * 14,
+            "utc": True,
+            "encoding": "utf-8",
+            "delay": True,
+            "formatter": "standard",
+            "level": "INFO",
+            "filters": ["ignore_shutdown", "ignore_pylint"],
+        },
     },
     "loggers": {
         "": {
@@ -1059,6 +1093,11 @@ LOGGING = {
         "monitoring_app.ws_user": {
             "handlers": ["file", "console", "ws_user_file"],
             "level": "INFO" if DEBUG else "WARNING",
+            "propagate": False,
+        },
+        "monitoring_app.face_lab": {
+            "handlers": ["face_lab_file", "file"] + (["console"] if DEBUG else []),
+            "level": "INFO",
             "propagate": False,
         },
     },
