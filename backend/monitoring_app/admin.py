@@ -61,6 +61,7 @@ from monitoring_app.models import (
     Staff,
     StaffAttendance,
     StaffFaceMask,
+    StaffFaceSample,
     UserProfile,
 )
 from monitoring_app.staff_face_ml import (
@@ -1255,7 +1256,7 @@ class StaffAdmin(admin.ModelAdmin):
         ),
     )
 
-    @admin.display(description="ФИО", ordering=("surname", "name"))
+    @admin.display(description="ФИО", ordering=cast(Any, ("surname", "name")))
     def full_name(self, obj):
         return f"{obj.surname} {obj.name}"
 
@@ -2094,6 +2095,25 @@ class StaffAdmin(admin.ModelAdmin):
         js = ("admin/js/staff_admin.js",)
 
 
+@admin.register(StaffFaceSample, site=admin_site)
+class StaffFaceSampleAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "staff",
+        "angle",
+        "source",
+        "with_glasses",
+        "is_active",
+        "quality_passed",
+        "created_at",
+    )
+    list_filter = ("source", "angle", "is_active", "is_trusted", "with_glasses")
+    search_fields = ("staff__pin", "staff__name", "staff__surname")
+    raw_id_fields = ("staff",)
+    readonly_fields = ("created_at", "updated_at")
+    ordering = ("-created_at",)
+
+
 @admin.register(StaffFaceMask, site=admin_site)
 class StaffFaceMaskAdmin(admin.ModelAdmin):
     list_display = (
@@ -2369,6 +2389,12 @@ class CachedCountQuerySet:
 
     def __getitem__(self, key):
         return self._queryset[key]
+
+    def __iter__(self):
+        return iter(self._queryset)
+
+    def __len__(self) -> int:
+        return len(self._queryset)
 
     def __getattr__(self, name):
         return getattr(self._queryset, name)
@@ -3763,8 +3789,6 @@ class ClassLocationAdmin(ModelAdmin):
 
     def export_for_upload(self, request, queryset):
         """Экспорт в Excel (формат загрузки). Выберите записи или нажмите «Выбрать все»."""
-        from urllib.parse import quote
-
         content = monitoring_utils.export_class_locations_to_excel(queryset)
         filename = "class_locations_export.xlsx"
         response = HttpResponse(
