@@ -1,6 +1,10 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
 import axiosInstance, { setCookie } from "../api";
+import {
+  jwtCookieMaxAgeSeconds,
+  scheduleNextRefreshBeforeExpiry,
+} from "../authSession/index.ts";
 import { useNavigate } from "../RouterUtils";
 import {
   FaEye,
@@ -12,7 +16,7 @@ import {
   FaCheckCircle,
 } from "react-icons/fa";
 import { FaBug } from "react-icons/fa6";
-import { apiUrl } from "../../apiConfig";
+import { apiUrl, isDebug } from "../../apiConfig";
 import { motion, AnimatePresence, Variants } from "framer-motion";
 import { useAuth } from "../store/hooks";
 
@@ -131,11 +135,22 @@ const LoginPage = () => {
       const res = await axiosInstance.post(
         "/token/",
         { username: formattedUsername, password },
-        { skipAuthInterceptor: true }
+        { skipAuthInterceptor: true },
       );
 
-      setCookie("access_token", res.data.access, { path: "/" });
-      setCookie("refresh_token", res.data.refresh, { path: "/" });
+      setCookie("access_token", res.data.access, {
+        path: "/",
+        secure: !isDebug,
+        sameSite: isDebug ? "Lax" : "Strict",
+        maxAge: jwtCookieMaxAgeSeconds(res.data.access),
+      });
+      setCookie("refresh_token", res.data.refresh, {
+        path: "/",
+        secure: !isDebug,
+        sameSite: isDebug ? "Lax" : "Strict",
+        maxAge: jwtCookieMaxAgeSeconds(res.data.refresh),
+      });
+      scheduleNextRefreshBeforeExpiry();
       setFailedAttempts(0);
 
       setTokens({
@@ -254,12 +269,12 @@ const LoginPage = () => {
                   </div>
                   <input
                     ref={usernameInputRef}
-                    className={`w-full pl-12 pr-4 py-3 text-base border dark:bg-gray-800 rounded-lg focus:outline-none focus:ring-2 transition-all duration-300 text-gray-900 dark:text-gray-100 disabled:opacity-50 disabled:cursor-not-allowed ${
+                    className={`w-full rounded-lg border bg-white py-3 pl-12 pr-4 text-base text-gray-900 transition-all duration-300 placeholder:text-gray-400 focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-900/90 dark:text-gray-100 dark:placeholder:text-gray-500 ${
                       touchedFields.username && fieldErrors.username
-                        ? "border-red-500 focus:ring-red-400 focus:border-red-500"
+                        ? "border-danger-500 focus:border-danger-500 focus:ring-danger-500/30 dark:border-danger-500"
                         : touchedFields.username && username.trim()
-                        ? "border-green-500 focus:ring-green-400 focus:border-green-500"
-                        : "border-gray-200 dark:border-gray-700 focus:ring-blue-400 focus:border-blue-500"
+                          ? "border-primary-500 focus:border-primary-500 focus:ring-primary-500/35 dark:border-primary-400 dark:focus:border-primary-400"
+                          : "border-gray-200 focus:border-primary-500 focus:ring-primary-500/30 dark:border-gray-600 dark:focus:border-primary-400"
                     }`}
                     value={username}
                     onChange={(e) => {
@@ -291,7 +306,10 @@ const LoginPage = () => {
                     username.trim() &&
                     !fieldErrors.username && (
                       <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none">
-                        <FaCheckCircle className="text-green-500" size={18} />
+                        <FaCheckCircle
+                          className="text-primary-600 dark:text-primary-400"
+                          size={18}
+                        />
                       </div>
                     )}
                 </div>
@@ -319,14 +337,14 @@ const LoginPage = () => {
                     />
                   </div>
                   <input
-                    className={`w-full pl-12 pr-12 py-3 text-base border dark:bg-gray-800 rounded-lg focus:outline-none focus:ring-2 transition-all duration-300 text-gray-900 dark:text-gray-100 disabled:opacity-50 disabled:cursor-not-allowed ${
+                    className={`w-full rounded-lg border bg-white py-3 pl-12 pr-12 text-base text-gray-900 transition-all duration-300 placeholder:text-gray-400 focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-900/90 dark:text-gray-100 dark:placeholder:text-gray-500 ${
                       touchedFields.password && fieldErrors.password
-                        ? "border-red-500 focus:ring-red-400 focus:border-red-500"
+                        ? "border-danger-500 focus:border-danger-500 focus:ring-danger-500/30 dark:border-danger-500"
                         : touchedFields.password &&
-                          password &&
-                          !fieldErrors.password
-                        ? "border-green-500 focus:ring-green-400 focus:border-green-500"
-                        : "border-gray-200 dark:border-gray-700 focus:ring-blue-400 focus:border-blue-500"
+                            password &&
+                            !fieldErrors.password
+                          ? "border-primary-500 focus:border-primary-500 focus:ring-primary-500/35 dark:border-primary-400 dark:focus:border-primary-400"
+                          : "border-gray-200 focus:border-primary-500 focus:ring-primary-500/30 dark:border-gray-600 dark:focus:border-primary-400"
                     }`}
                     value={password}
                     onChange={(e) => {
@@ -375,7 +393,10 @@ const LoginPage = () => {
                     password &&
                     !fieldErrors.password && (
                       <div className="absolute inset-y-0 right-10 pr-4 flex items-center pointer-events-none">
-                        <FaCheckCircle className="text-green-500" size={18} />
+                        <FaCheckCircle
+                          className="text-primary-600 dark:text-primary-400"
+                          size={18}
+                        />
                       </div>
                     )}
                 </div>
@@ -406,8 +427,8 @@ const LoginPage = () => {
                 isSubmitting
                   ? { opacity: [1, 0.8, 1] }
                   : isSuccess
-                  ? { scale: [1, 1.05, 1] }
-                  : {}
+                    ? { scale: [1, 1.05, 1] }
+                    : {}
               }
               transition={{ duration: 0.3 }}
             >
@@ -467,7 +488,7 @@ const LoginPage = () => {
               animate={failedAttempts >= 2 ? "animate" : ""}
             >
               <a
-                className="inline-flex items-center text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors duration-300 hover:underline"
+                className="inline-flex items-center text-sm text-primary-600 transition-colors duration-300 hover:text-primary-800 hover:underline dark:text-primary-400 dark:hover:text-primary-300"
                 href={`${apiUrl}/password-reset`}
                 target="_blank"
                 rel="noopener noreferrer"

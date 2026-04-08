@@ -117,15 +117,13 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
       transition: { duration: 0.3 },
     },
     hover: {
-      y: -5,
-      boxShadow:
-        "0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+      y: -2,
     },
   };
 
   return (
     <div className="flex flex-col">
-      <div className="p-6">
+      <div className="border-b border-gray-200/80 bg-primary-50/40 p-6 pb-4 dark:border-gray-800 dark:bg-gray-950/50">
         <div className="mb-6">
           <SearchInput
             value={searchQuery}
@@ -134,12 +132,12 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
           />
         </div>
 
-        <div className="flex flex-wrap gap-2 mb-6">
+        <div className="flex flex-wrap gap-2">
           <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.2 }}
-            className="inline-flex items-center px-4 py-2 bg-primary-50 dark:bg-primary-900/30 text-primary-800 dark:text-primary-200 rounded-full"
+            className="inline-flex items-center px-4 py-2 bg-primary-50 dark:bg-primary-900/30 text-primary-800 dark:text-primary-200 rounded-full ring-1 ring-primary-200/60 dark:ring-primary-800/40"
           >
             <FaFolder className="mr-2 text-primary-600 dark:text-primary-400" />
             <span className="font-medium">Всего сотрудников: </span>
@@ -148,14 +146,15 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
             </span>
           </motion.div>
         </div>
+      </div>
 
-        {/* Mobile card view */}
-        <motion.div
-          className="block md:hidden space-y-4"
-          variants={tableVariants}
-          initial="hidden"
-          animate="visible"
-        >
+      {/* Mobile card view */}
+      <motion.div
+        className="block md:hidden px-6 space-y-4 pb-2"
+        variants={tableVariants}
+        initial="hidden"
+        animate="visible"
+      >
           {visibleDepartments.length === 0 ? (
             <motion.div
               variants={rowVariants}
@@ -172,7 +171,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
                   key={department.child_id}
                   variants={cardVariants}
                   whileHover="hover"
-                  className="card p-5 cursor-pointer"
+                  className="card p-5 cursor-pointer motion-safe:transition-shadow motion-safe:duration-300 hover:shadow-card-hover"
                   onClick={() =>
                     handleRowClick(
                       String(department.child_id),
@@ -208,36 +207,39 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
               );
             })
           )}
-        </motion.div>
+      </motion.div>
 
-        {/* Desktop table view */}
-        <motion.div
-          className="hidden md:block overflow-hidden rounded-lg"
-          variants={tableVariants}
-          initial="hidden"
-          animate="visible"
-        >
-          <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-            <thead className="bg-gray-50 dark:bg-gray-800">
-              <tr>
-                <th
-                  scope="col"
-                  className="py-3.5 pl-6 pr-3 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
-                >
-                  Название отдела
-                </th>
-                <th
-                  scope="col"
-                  className="py-3.5 px-3 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
-                >
-                  Дата создания
-                </th>
-                <th scope="col" className="relative py-3.5 pl-3 pr-6">
-                  <span className="sr-only">Действия</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200 dark:bg-gray-800 dark:divide-gray-700">
+      {/* Desktop table — full width inside card (matches child department table) */}
+      <motion.div
+        className="data-table-in-card"
+        variants={tableVariants}
+        initial="hidden"
+        animate="visible"
+      >
+        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
+          <thead className="bg-primary-50/90 dark:bg-gray-900">
+            <tr>
+              <th
+                scope="col"
+                className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
+              >
+                Название отдела
+              </th>
+              <th
+                scope="col"
+                className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
+              >
+                Дата создания
+              </th>
+              <th
+                scope="col"
+                className="relative px-6 py-3.5 text-left text-sm font-semibold uppercase tracking-wider text-primary-900 dark:text-primary-100"
+              >
+                <span className="sr-only">Действия</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200 bg-white dark:divide-gray-800 dark:bg-gray-950">
               {visibleDepartments.length === 0 ? (
                 <tr>
                   <td
@@ -255,7 +257,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
                     <motion.tr
                       key={department.child_id}
                       variants={rowVariants}
-                      className="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors duration-200 cursor-pointer"
+                      className="cursor-pointer transition-colors duration-200 hover:bg-primary-50/80 dark:hover:bg-gray-900/85"
                       onClick={() =>
                         handleRowClick(
                           String(department.child_id),
@@ -263,7 +265,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
                         )
                       }
                     >
-                      <td className="py-4 pl-6 pr-3 whitespace-nowrap">
+                      <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center">
                           {hasChildDepartments ? (
                             <FaFolderOpen
@@ -281,13 +283,13 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
                           </span>
                         </div>
                       </td>
-                      <td className="px-3 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400 font-mono">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400 font-mono">
                         {new Date(
                           department.date_of_creation,
                         ).toLocaleDateString()}
                       </td>
-                      <td className="py-4 pl-3 pr-6 whitespace-nowrap text-right text-sm">
-                        <span className="inline-flex items-center px-2.5 py-1.5 border border-transparent text-xs font-medium rounded-full bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300 transition-colors duration-200">
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
+                        <span className="badge-primary px-3 py-1.5 rounded-lg">
                           Показать
                         </span>
                       </td>
@@ -296,12 +298,12 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
                 })
               )}
             </tbody>
-          </table>
-        </motion.div>
+        </table>
+      </motion.div>
 
-        {totalPages > 1 && (
-          <div className="mt-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <div className="text-sm text-gray-700 dark:text-gray-300">
+      {totalPages > 1 && (
+        <div className="mt-0 flex flex-col gap-4 border-t border-gray-200 bg-primary-50/25 px-6 py-5 transition-colors duration-300 dark:border-gray-800 dark:bg-black/25 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm text-gray-800 dark:text-gray-200">
               Показано{" "}
               <span className="font-medium text-primary-700 dark:text-primary-300">
                 {visibleDepartments.length}
@@ -320,10 +322,10 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
               <button
                 onClick={() => handleChangePage(0)}
                 disabled={page === 0}
-                className={`p-2 rounded-md ${
+                className={`p-2 rounded-md transition-colors duration-200 ${
                   page === 0
-                    ? "text-gray-400 dark:text-gray-600 cursor-not-allowed"
-                    : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                    ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
+                    : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
                 }`}
                 aria-label="Первая страница"
               >
@@ -333,10 +335,10 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
               <button
                 onClick={() => handleChangePage(page - 1)}
                 disabled={page === 0}
-                className={`p-2 rounded-md ${
+                className={`p-2 rounded-md transition-colors duration-200 ${
                   page === 0
-                    ? "text-gray-400 dark:text-gray-600 cursor-not-allowed"
-                    : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                    ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
+                    : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
                 }`}
                 aria-label="Предыдущая страница"
               >
@@ -355,10 +357,10 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
                   <button
                     key={pageNum}
                     onClick={() => handleChangePage(pageNum)}
-                    className={`px-3 py-1 rounded-md text-sm font-medium ${
+                    className={`px-3 py-1 rounded-md text-sm font-medium transition-colors duration-200 ${
                       page === pageNum
-                        ? "bg-primary-600 text-white dark:bg-primary-700"
-                        : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                        ? "bg-primary-600 text-white dark:bg-primary-600"
+                        : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
                     }`}
                     aria-current={page === pageNum ? "page" : undefined}
                   >
@@ -370,10 +372,10 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
               <button
                 onClick={() => handleChangePage(page + 1)}
                 disabled={page >= totalPages - 1}
-                className={`p-2 rounded-md ${
+                className={`p-2 rounded-md transition-colors duration-200 ${
                   page >= totalPages - 1
-                    ? "text-gray-400 dark:text-gray-600 cursor-not-allowed"
-                    : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                    ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
+                    : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
                 }`}
                 aria-label="Следующая страница"
               >
@@ -383,19 +385,18 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
               <button
                 onClick={() => handleChangePage(totalPages - 1)}
                 disabled={page >= totalPages - 1}
-                className={`p-2 rounded-md ${
+                className={`p-2 rounded-md transition-colors duration-200 ${
                   page >= totalPages - 1
-                    ? "text-gray-400 dark:text-gray-600 cursor-not-allowed"
-                    : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                    ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
+                    : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
                 }`}
                 aria-label="Последняя страница"
               >
                 <FaAngleDoubleRight size={16} />
               </button>
             </nav>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };

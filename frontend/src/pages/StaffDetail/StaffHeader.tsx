@@ -106,7 +106,7 @@ const StaffHeader: React.FC<StaffHeaderProps> = ({
     Boolean(onOpenAvatarFromCamera);
 
   return (
-    <div className="border-b border-gray-200 dark:border-gray-700">
+    <div className="border-b border-gray-200 dark:border-gray-800">
       {/* Мобильная версия */}
       <div className="sm:hidden p-4 space-y-4">
         <div className="flex items-start gap-4">
@@ -163,7 +163,7 @@ const StaffHeader: React.FC<StaffHeaderProps> = ({
         ) : null}
 
         <div className="grid grid-cols-2 gap-2">
-          <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-800">
+          <div className="rounded-lg border border-gray-200/80 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950/90">
             <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
               Должность
             </p>
@@ -171,7 +171,7 @@ const StaffHeader: React.FC<StaffHeaderProps> = ({
               {staffData.positions[0] || "Не указано"}
             </p>
           </div>
-          <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-800">
+          <div className="rounded-lg border border-gray-200/80 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950/90">
             <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">
               Тип занятости
             </p>

@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback, useRef } from "react";
 import { FaCalendarAlt } from "react-icons/fa";
 import { motion } from "framer-motion";
 
@@ -10,6 +10,16 @@ interface DateInputProps {
   max?: string;
 }
 
+function openNativeDatePicker(input: HTMLInputElement | null) {
+  if (!input) return;
+  try {
+    input.showPicker?.();
+  } catch {
+    input.focus();
+    input.click();
+  }
+}
+
 const DateInput: React.FC<DateInputProps> = ({
   label,
   id,
@@ -18,6 +28,11 @@ const DateInput: React.FC<DateInputProps> = ({
   max,
 }) => {
   const formattedValue = value || "";
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const onOpenPicker = useCallback(() => {
+    openNativeDatePicker(inputRef.current);
+  }, []);
 
   return (
     <motion.div
@@ -27,21 +42,27 @@ const DateInput: React.FC<DateInputProps> = ({
     >
       <label
         htmlFor={id}
-        className="block mb-2 font-medium text-sm text-gray-600 dark:text-gray-300"
+        className="block mb-2 font-medium text-sm text-gray-800 dark:text-gray-200"
       >
         {label}
       </label>
       <div className="relative">
-        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-          <FaCalendarAlt className="h-5 w-5 text-gray-400 dark:text-gray-500" />
-        </div>
+        <button
+          type="button"
+          className="absolute inset-y-0 left-0 z-[1] flex items-center rounded-l-lg pl-3 pr-2 text-gray-600 transition-colors hover:text-primary-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 dark:text-gray-200 dark:hover:text-primary-300 dark:focus-visible:ring-primary-400/45"
+          onClick={onOpenPicker}
+          aria-label={`Открыть календарь: ${label}`}
+        >
+          <FaCalendarAlt className="h-5 w-5 shrink-0" aria-hidden />
+        </button>
         <input
+          ref={inputRef}
           type="date"
           id={id}
           value={formattedValue}
           onChange={onChange}
           max={max}
-          className="bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 pl-10 pr-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm w-full focus:outline-none focus:ring-2 focus:ring-primary-500 dark:focus:ring-primary-600 focus:border-transparent transition-all duration-200"
+          className="w-full rounded-lg border border-gray-300 bg-white py-2.5 pl-10 pr-11 text-gray-800 shadow-sm transition-all duration-200 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/35 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100 dark:focus:border-primary-500 dark:focus:ring-primary-500/40"
           style={{ width: "100%", minWidth: "220px" }}
         />
       </div>

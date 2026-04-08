@@ -102,6 +102,18 @@ module.exports = {
           "0%, 100%": { transform: "translateY(0)" },
           "50%": { transform: "translateY(-5px)" },
         },
+        layoutOrbDrift: {
+          "0%, 100%": { transform: "translate(0, 0) scale(1)" },
+          "50%": { transform: "translate(6%, 4%) scale(1.07)" },
+        },
+        layoutOrbDriftReverse: {
+          "0%, 100%": { transform: "translate(0, 0) scale(1)" },
+          "50%": { transform: "translate(-5%, -6%) scale(1.05)" },
+        },
+        layoutAmbientPulse: {
+          "0%, 100%": { opacity: "0.28" },
+          "50%": { opacity: "0.42" },
+        },
       },
       animation: {
         fadeIn: "fadeIn 0.5s ease-out forwards",
@@ -113,6 +125,9 @@ module.exports = {
         slideLeft: "slideLeft 0.5s ease-out forwards",
         slideRight: "slideRight 0.5s ease-out forwards",
         float: "float 3s ease-in-out infinite",
+        "layout-orb-a": "layoutOrbDrift 24s ease-in-out infinite",
+        "layout-orb-b": "layoutOrbDriftReverse 32s ease-in-out infinite",
+        "layout-ambient": "layoutAmbientPulse 16s ease-in-out infinite",
       },
       boxShadow: {
         card: "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
@@ -135,14 +150,14 @@ module.exports = {
       addVariant("portrait", ({ modifySelectors, separator }) => {
         modifySelectors(({ className }) => {
           return `@media (orientation: portrait) { .${e(
-            `portrait${separator}${className}`
+            `portrait${separator}${className}`,
           )} }`;
         });
       });
       addVariant("landscape", ({ modifySelectors, separator }) => {
         modifySelectors(({ className }) => {
           return `@media (orientation: landscape) { .${e(
-            `landscape${separator}${className}`
+            `landscape${separator}${className}`,
           )} }`;
         });
       });

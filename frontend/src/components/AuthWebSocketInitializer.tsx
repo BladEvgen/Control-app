@@ -15,16 +15,18 @@ const AuthWebSocketInitializer: React.FC = () => {
   const dispatch = useAppDispatch();
   const token = useAppSelector((state: RootState) => state.auth.token);
   const wsReconnectRef = useRef<(() => void) | null>(null);
+  const releaseTokenRefreshLockRef = useRef<(() => void) | null>(null);
 
   const hasValidToken = Boolean(token && isTokenValid(token));
-  const refreshToken = getCookie("refresh_token");
+  const refreshTokenPresent = Boolean(getCookie("refresh_token"));
   const needsRefreshBeforeConnect =
-    token && !isTokenValid(token) && refreshToken;
+    token && !isTokenValid(token) && refreshTokenPresent;
 
   const handleTokenRefresh = useCallback(async () => {
     try {
       log.info("WebSocket требует обновления токена. Пытаемся обновить...");
-      if (!refreshToken) {
+      const rt = getCookie("refresh_token");
+      if (!rt) {
         log.error("Refresh токен не найден. Выполняем логаут.");
         dispatch(logout());
         window.dispatchEvent(new Event("userLoggedOut"));
@@ -43,10 +45,11 @@ const AuthWebSocketInitializer: React.FC = () => {
       }
     } catch (error) {
       log.error("Ошибка обновления токена:", error);
+      releaseTokenRefreshLockRef.current?.();
       dispatch(logout());
       window.dispatchEvent(new Event("userLoggedOut"));
     }
-  }, [dispatch, refreshToken]);
+  }, [dispatch]);
 
   const handleRefreshExpired = useCallback(() => {
     log.error("Refresh токен истек. Выполняем логаут.");
@@ -67,7 +70,7 @@ const AuthWebSocketInitializer: React.FC = () => {
     return `${protocol}://${urlObj.host}/ws/user-detail/?token=${token}`;
   }, [hasValidToken, token]);
 
-  const { reconnect } = useWebSocket({
+  const { reconnect, releaseTokenRefreshLock } = useWebSocket({
     url: wsUrl || "",
     onMessage: (event: MessageEvent) => {
       try {
@@ -113,7 +116,8 @@ const AuthWebSocketInitializer: React.FC = () => {
 
   useEffect(() => {
     wsReconnectRef.current = reconnect || null;
-  }, [reconnect]);
+    releaseTokenRefreshLockRef.current = releaseTokenRefreshLock;
+  }, [reconnect, releaseTokenRefreshLock]);
 
   return null;
 };

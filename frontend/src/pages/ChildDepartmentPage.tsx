@@ -28,8 +28,7 @@ import LoaderComponent from "../components/LoaderComponent";
 import Breadcrumbs from "../components/Breadcrumbs";
 import DateFilterBar from "../components/DateFilterBar";
 import SearchInput from "../components/SearchInput";
-import WaitNotification from "../components/WaitNotification";
-import useWaitNotification from "../hooks/useWaitNotification";
+import { runAttendanceExcelDownload } from "../utils/attendanceExcelDownloadHub";
 
 const LazyDashboard = lazy(() => import("./Dashboard"));
 
@@ -66,12 +65,9 @@ const ChildDepartmentPage = () => {
   const [endDate, setEndDate] = useState<string>(initialEndDate);
   const today = new Date().toISOString().split("T")[0];
 
-  const [isDownloading, setIsDownloading] = useState<boolean>(false);
   const [showDashboard, setShowDashboard] = useState<boolean>(false);
   const navigate = useNavigate();
 
-  const { showWaitMessage, startWaitNotification, clearWaitNotification } =
-    useWaitNotification();
 
   const dispatch = (
     action: BaseAction<boolean | IChildDepartmentData | string | null>,
@@ -183,49 +179,23 @@ const ChildDepartmentPage = () => {
     return items;
   }, [data?.child_department, data?.breadcrumb_path, navigateToParent]);
 
-  const handleDownload = useCallback(async () => {
+  const handleDownload = useCallback(() => {
     if (!id) return;
-    setIsDownloading(true);
-    startWaitNotification();
 
-    try {
-      const response = await axiosInstance.get(
-        `${apiUrl}/api/download/${id}/`,
-        {
-          params: { startDate, endDate },
-          responseType: "blob",
-          timeout: 600000,
-        },
-      );
-      clearWaitNotification();
-      setIsDownloading(false);
-
-      let departmentName = "";
-      if (data && data.child_department) {
-        departmentName = data.child_department.name
-          ? data.child_department.name.replace(/\s/g, "_")
-          : data.child_department.child_id.toString();
-      }
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement("a");
-      link.href = url;
-      link.setAttribute("download", `Посещаемость_${departmentName}.xlsx`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-    } catch (error) {
-      console.error("Error downloading the file:", error);
-      clearWaitNotification();
-      setIsDownloading(false);
+    let departmentName = "";
+    if (data && data.child_department) {
+      departmentName = data.child_department.name
+        ? data.child_department.name.replace(/\s/g, "_")
+        : String(data.child_department.child_id);
     }
-  }, [
-    id,
-    startDate,
-    endDate,
-    data,
-    startWaitNotification,
-    clearWaitNotification,
-  ]);
+
+    void runAttendanceExcelDownload({
+      url: `${apiUrl}/api/download/${id}/`,
+      params: { startDate, endDate },
+      filename: `Посещаемость_${departmentName}.xlsx`,
+      holdKey: id,
+    });
+  }, [id, startDate, endDate, data]);
 
   const isDownloadDisabled = !startDate || !endDate;
 
@@ -264,7 +234,7 @@ const ChildDepartmentPage = () => {
   return (
     <AnimatePresence mode="sync">
       <motion.div
-        className="max-w-7xl mx-auto pb-10"
+        className="page-shell"
         variants={containerVariants}
         initial="hidden"
         animate="visible"
@@ -312,8 +282,8 @@ const ChildDepartmentPage = () => {
                 onStartDateChange={handleStartDateChange}
                 onEndDateChange={handleEndDateChange}
                 onDownload={handleDownload}
-                isDownloading={isDownloading}
                 isDownloadDisabled={isDownloadDisabled}
+                excelHoldKey={id ?? null}
                 today={today}
               />
             </motion.div>
@@ -322,7 +292,7 @@ const ChildDepartmentPage = () => {
               <button
                 type="button"
                 onClick={() => setShowDashboard((v) => !v)}
-                className="flex items-center justify-between w-full card p-4 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors rounded-lg border border-gray-200 dark:border-gray-700"
+                className="panel-toggle"
                 aria-expanded={showDashboard}
               >
                 <span className="flex items-center gap-2 font-medium text-primary-700 dark:text-primary-300">
@@ -346,7 +316,7 @@ const ChildDepartmentPage = () => {
                     transition={{ duration: 0.2 }}
                     className="overflow-hidden"
                   >
-                    <div className="mt-4 border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50/50 dark:bg-gray-900/30">
+                    <div className="inset-panel">
                       <Suspense fallback={<LoaderComponent />}>
                         <LazyDashboard pin={id} />
                       </Suspense>
@@ -355,15 +325,6 @@ const ChildDepartmentPage = () => {
                 )}
               </AnimatePresence>
             </motion.div>
-
-            {showWaitMessage && (
-              <motion.div
-                variants={itemVariants}
-                className="mx-auto max-w-3xl my-4"
-              >
-                <WaitNotification />
-              </motion.div>
-            )}
 
             <motion.div variants={itemVariants} className="mb-6 card p-5">
               <div className="flex flex-col md:flex-row md:items-center gap-4">
@@ -467,10 +428,10 @@ const ChildDepartmentPage = () => {
             {/* Desktop table view */}
             <motion.div
               variants={itemVariants}
-              className="hidden md:block card overflow-hidden"
+              className="hidden md:block card overflow-hidden p-0"
             >
-              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                <thead className="bg-gray-50 dark:bg-gray-800">
+              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
+                <thead className="bg-primary-50/90 dark:bg-gray-900">
                   <tr>
                     <th
                       scope="col"
@@ -496,12 +457,15 @@ const ChildDepartmentPage = () => {
                     >
                       Статус
                     </th>
-                    <th scope="col" className="relative px-6 py-3.5">
+                    <th
+                      scope="col"
+                      className="relative px-6 py-3.5 text-left text-sm font-semibold uppercase tracking-wider text-primary-900 dark:text-primary-100"
+                    >
                       <span className="sr-only">Просмотр</span>
                     </th>
                   </tr>
                 </thead>
-                <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-800">
+                <tbody className="divide-y divide-gray-200 bg-white dark:divide-gray-800 dark:bg-gray-950">
                   {filteredStaff.length === 0 ? (
                     <tr>
                       <td
@@ -515,7 +479,7 @@ const ChildDepartmentPage = () => {
                     filteredStaff.map(([pin, staff]) => (
                       <tr
                         key={pin}
-                        className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors duration-150 cursor-pointer"
+                        className="cursor-pointer transition-colors duration-200 hover:bg-primary-50/80 dark:hover:bg-gray-900/85"
                         onClick={() => handleRowClick(pin)}
                       >
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -542,17 +506,17 @@ const ChildDepartmentPage = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           {staff.avatar ? (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+                            <span className="badge-success">
                               <FaUserCheck className="mr-1" /> Верифицирован
                             </span>
                           ) : (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">
+                            <span className="badge-danger">
                               <FaUserTimes className="mr-1" /> Не верифицирован
                             </span>
                           )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
-                          <span className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-lg bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400">
+                          <span className="badge-primary px-3 py-1.5 rounded-lg">
                             Показать детали
                           </span>
                         </td>

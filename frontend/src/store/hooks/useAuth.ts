@@ -9,11 +9,17 @@ import {
   UserProfile,
 } from "../slices/authSlice";
 import { useEffect } from "react";
-import { getCookie, scheduleNextRefreshBeforeExpiry } from "../../api";
-import { log } from "../../api";
+import { getCookie, log } from "../../api";
+import {
+  clearRefreshSchedule,
+  proactiveRefreshIfNeeded,
+  scheduleNextRefreshBeforeExpiry,
+} from "../../authSession/index.ts";
 import { requestAppVersionCheck } from "../../utils/appVersionGuard";
 
 const AUTH_SYNC_KEY = "app:authSync" as const;
+
+const REFRESH_EXPIRY_TICK_MS = 30_000;
 
 export const useAuth = () => {
   const dispatch = useAppDispatch();
@@ -30,12 +36,21 @@ export const useAuth = () => {
   }, [token, dispatch]);
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    const interval = window.setInterval(() => {
       dispatch(checkTokenExpiration());
-    }, 60000);
+      void proactiveRefreshIfNeeded();
+    }, REFRESH_EXPIRY_TICK_MS);
 
-    return () => clearInterval(interval);
+    return () => window.clearInterval(interval);
   }, [dispatch]);
+
+  useEffect(() => {
+    if (token && getCookie("refresh_token")) {
+      scheduleNextRefreshBeforeExpiry();
+    } else if (!token) {
+      clearRefreshSchedule();
+    }
+  }, [token]);
 
   useEffect(() => {
     const onUserLoggedIn = () => {
@@ -57,6 +72,7 @@ export const useAuth = () => {
       }>;
       if (customEvent.detail) {
         dispatch(setTokens(customEvent.detail));
+        scheduleNextRefreshBeforeExpiry();
         void requestAppVersionCheck("auth:tokensRefreshed");
       }
     };
@@ -73,7 +89,7 @@ export const useAuth = () => {
           refresh: refresh ?? undefined,
           accessTokenExpires: accessTokenExpires ?? undefined,
           refreshTokenExpires: refreshTokenExpires ?? undefined,
-        })
+        }),
       );
       scheduleNextRefreshBeforeExpiry();
       void requestAppVersionCheck("auth:syncFromOtherTab");

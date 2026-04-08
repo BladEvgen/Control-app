@@ -360,12 +360,21 @@ const useWebSocket = ({
     connect();
   }, [connect]);
 
+  const releaseTokenRefreshLock = useCallback(() => {
+    isRefreshingTokenRef.current = false;
+  }, []);
+
   if (!url) {
     wsLog("URL не задан, соединение не устанавливается");
-    return { sendMessage: () => {}, reconnect: () => {}, isConnected: false };
+    return {
+      sendMessage: () => {},
+      reconnect: () => {},
+      releaseTokenRefreshLock,
+      isConnected: false,
+    };
   }
 
-  return { sendMessage, reconnect, isConnected };
+  return { sendMessage, reconnect, releaseTokenRefreshLock, isConnected };
 };
 
 export default useWebSocket;

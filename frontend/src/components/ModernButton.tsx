@@ -78,13 +78,10 @@ const ModernButton: React.FC<ModernButtonProps> = ({
     <motion.button
       type={type}
       onClick={onClick}
-      disabled={disabled || loading}
-      className={`${getButtonStyles(
-        variant,
-        disabled || loading,
-      )} ${className}`}
-      whileHover={disabled || loading ? {} : { scale: 1.03 }}
-      whileTap={disabled || loading ? {} : { scale: 0.97 }}
+      disabled={disabled}
+      className={`${getButtonStyles(variant, disabled && !loading)} ${className}`}
+      whileHover={disabled ? {} : { scale: 1.03 }}
+      whileTap={disabled ? {} : { scale: 0.97 }}
       transition={{ duration: 0.2 }}
     >
       {loading ? (

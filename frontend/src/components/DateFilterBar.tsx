@@ -1,8 +1,9 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import DateInput from "./DateInput";
 import ModernButton from "./ModernButton";
 import { FaDownload, FaCalendarWeek } from "react-icons/fa";
 import { motion } from "framer-motion";
+import { subscribeAttendanceExcelDownloads } from "../utils/attendanceExcelDownloadHub";
 
 interface DateFilterBarProps {
   startDate: string;
@@ -10,8 +11,9 @@ interface DateFilterBarProps {
   onStartDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onEndDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onDownload: () => void;
-  isDownloading: boolean;
   isDownloadDisabled: boolean;
+  /** Department (or child department) id — button stays disabled until its Excel request finishes. */
+  excelHoldKey?: string | null;
   today: string;
 }
 
@@ -21,10 +23,34 @@ const DateFilterBar: React.FC<DateFilterBarProps> = ({
   onStartDateChange,
   onEndDateChange,
   onDownload,
-  isDownloading,
   isDownloadDisabled,
+  excelHoldKey,
   today,
 }) => {
+  const [holdCounts, setHoldCounts] = useState<Map<string, number>>(
+    () => new Map(),
+  );
+
+  useEffect(
+    () =>
+      subscribeAttendanceExcelDownloads(({ holdCounts: next }) =>
+        setHoldCounts(next),
+      ),
+    [],
+  );
+
+  const heldHere =
+    excelHoldKey != null && excelHoldKey !== "" &&
+    (holdCounts.get(excelHoldKey) ?? 0) > 0;
+  const nHere =
+    excelHoldKey != null ? holdCounts.get(excelHoldKey) ?? 0 : 0;
+
+  const downloadLabel = heldHere
+    ? nHere > 1
+      ? `Загрузка (${nHere})…`
+      : "Загрузка…"
+    : "Загрузить";
+
   return (
     <motion.div
       className="card p-5 mb-6"
@@ -36,7 +62,7 @@ const DateFilterBar: React.FC<DateFilterBarProps> = ({
         <div className="w-full">
           <div className="flex items-center mb-3">
             <FaCalendarWeek className="text-primary-600 dark:text-primary-400 mr-2" />
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+            <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-100">
               Диапазон дат
             </h3>
           </div>
@@ -67,11 +93,11 @@ const DateFilterBar: React.FC<DateFilterBarProps> = ({
             variant="download"
             icon={<FaDownload />}
             onClick={onDownload}
-            disabled={isDownloadDisabled}
-            loading={isDownloading}
+            disabled={isDownloadDisabled || heldHere}
+            loading={heldHere}
             className="w-full md:w-auto py-2.5"
           >
-            {isDownloading ? "Загрузка..." : "Загрузить"}
+            {downloadLabel}
           </ModernButton>
         </div>
       </div>

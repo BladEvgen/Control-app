@@ -118,7 +118,7 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
       <AnimatePresence>
         {isDropdownOpen && (
           <motion.div
-            className="absolute top-full right-0 mt-2 w-48 bg-white dark:bg-gray-800 text-gray-800 dark:text-text-light rounded-md shadow-lg z-50"
+            className="absolute top-full right-0 z-50 mt-2 w-48 rounded-xl border border-gray-200/90 bg-white/95 text-gray-800 shadow-xl ring-1 ring-black/5 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100 dark:ring-white/5"
             role="menu"
             aria-label="Основное меню"
             initial={{ opacity: 0, y: -10 }}
@@ -133,7 +133,7 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
             >
               <button
                 ref={statsButtonRef}
-                className="flex items-center w-full px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 text-left rounded text-sm sm:text-base md:text-lg"
+                className="flex w-full items-center rounded-lg px-4 py-3 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-900 sm:text-base md:text-lg"
                 aria-haspopup="true"
                 aria-expanded={isStatsDropdownOpen}
               >
@@ -144,7 +144,7 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
                 {isStatsDropdownOpen && (
                   <motion.div
                     ref={statsDropdownRef}
-                    className={`absolute top-0 mt-0 w-56 bg-white dark:bg-gray-800 text-gray-800 dark:text-text-light rounded-md shadow-lg z-50 transition-opacity duration-200 ease-in-out ${
+                    className={`absolute top-0 z-50 mt-0 w-56 rounded-xl border border-gray-200/90 bg-white/95 text-gray-800 shadow-xl ring-1 ring-black/5 backdrop-blur-sm transition-opacity duration-200 ease-in-out dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100 dark:ring-white/5 ${
                       statsMenuDirection === "left"
                         ? "right-full mr-2"
                         : "left-full ml-2"
@@ -159,27 +159,27 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
                     <Link to="/dashboard">
                       <button
                         onClick={() => setIsDropdownOpen(false)}
-                        className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left rounded text-sm sm:text-base md:text-lg"
+                        className="flex w-full items-center rounded-lg px-4 py-3 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-900 sm:text-base md:text-lg"
                       >
-                        <MdDashboard className="mr-2 text-blue-500" />
+                        <MdDashboard className="mr-2 text-primary-600 dark:text-primary-400" />
                         Attendance
                       </button>
                     </Link>
                     <Link to="/map">
                       <button
                         onClick={() => setIsDropdownOpen(false)}
-                        className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left rounded text-sm sm:text-base md:text-lg"
+                        className="flex w-full items-center rounded-lg px-4 py-3 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-900 sm:text-base md:text-lg"
                       >
-                        <FaMapLocationDot className="mr-2 text-yellow-500" />
+                        <FaMapLocationDot className="mr-2 text-warning-500 dark:text-warning-400" />
                         Map
                       </button>
                     </Link>
                     <Link to="/photo">
                       <button
                         onClick={() => setIsDropdownOpen(false)}
-                        className="flex items-center px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 w-full text-left rounded text-sm sm:text-base md:text-lg"
+                        className="flex w-full items-center rounded-lg px-4 py-3 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-900 sm:text-base md:text-lg"
                       >
-                        <ImCamera className="mr-2 text-gray-400" />
+                        <ImCamera className="mr-2 text-secondary-500 dark:text-secondary-400" />
                         Photos
                       </button>
                     </Link>
@@ -190,9 +190,9 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
             <a href={`${apiUrl}/upload`}>
               <button
                 onClick={() => setIsDropdownOpen(false)}
-                className="flex items-center w-full px-4 py-3 hover:bg-gray-200 dark:hover:bg-gray-900 text-left rounded text-sm sm:text-base md:text-lg"
+                className="flex w-full items-center rounded-lg px-4 py-3 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-900 sm:text-base md:text-lg"
               >
-                <FaUpload className="mr-2 text-green-500 hover:text-green-700" />
+                <FaUpload className="mr-2 text-success-600 dark:text-success-500" />
                 Upload
               </button>
             </a>
@@ -201,12 +201,12 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
                 toggleTheme();
                 setIsDropdownOpen(false);
               }}
-              className="flex items-center w-full px-4 py-3 border-t border-gray-300 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-gray-900 text-left rounded text-sm sm:text-base md:text-lg"
+              className="flex w-full items-center rounded-lg border-t border-gray-200 px-4 py-3 text-left text-sm transition-colors hover:bg-gray-100 dark:border-gray-800 dark:hover:bg-gray-900 sm:text-base md:text-lg"
             >
               {currentTheme === "dark" ? (
-                <FaSun className="mr-2 text-yellow-500" />
+                <FaSun className="mr-2 text-warning-500 dark:text-warning-400" />
               ) : (
-                <FaMoon className="mr-2 text-gray-900" />
+                <FaMoon className="mr-2 text-primary-800" />
               )}
               {currentTheme === "dark" ? "Light Mode" : "Dark Mode"}
             </button>
@@ -215,7 +215,7 @@ const DesktopNavbar: React.FC<DesktopNavbarProps> = ({
                 handleLogout();
                 setIsDropdownOpen(false);
               }}
-              className="flex items-center w-full px-4 py-3 border-t border-gray-300 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-gray-900 text-left text-red-500 rounded text-sm sm:text-base md:text-lg"
+              className="flex w-full items-center rounded-lg border-t border-gray-200 px-4 py-3 text-left text-sm text-danger-600 transition-colors hover:bg-red-50 dark:border-gray-800 dark:text-danger-400 dark:hover:bg-red-950/40 sm:text-base md:text-lg"
             >
               <FaSignOutAlt className="mr-2" />
               Logout

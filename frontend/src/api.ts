@@ -1,6 +1,7 @@
 import { addPrefix } from "./RouterUtils";
-import axios, { AxiosResponse } from "axios";
+import axios, { AxiosResponse, isAxiosError } from "axios";
 import { apiUrl, isDebug } from "../apiConfig";
+import { jwtCookieMaxAgeSeconds } from "./authSession/jwtCookieMaxAge.ts";
 
 let _prodWarningCount = 0;
 let _prodWarningShown = false;
@@ -177,42 +178,55 @@ const axiosInstance = axios.create({
 let refreshPromise: Promise<string> | null = null;
 let refreshAttempts = 0;
 const MAX_REFRESH_ATTEMPTS = 3;
-const ACCESS_EXPIRE_BUFFER_MS = 60 * 1000;
-const ONE_MINUTE_MS = 60 * 1000;
+
+export const ACCESS_TOKEN_REFRESH_LEAD_MS = 2 * 60 * 1000;
+
+/** If access JWT is valid longer than this, skip POST /token/refresh/ (another tab refreshed first). */
+const ACCESS_SKIP_REFRESH_IF_VALID_BEYOND_MS = 60_000;
 
 let refreshScheduleTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
-const resetRefreshAttempts = () => {
-  setTimeout(() => {
-    refreshAttempts = 0;
-  }, 60000);
-};
+class AuthRefreshFatalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuthRefreshFatalError";
+  }
+}
 
-const getAccessTokenExpiryMs = (): number | null => {
-  const accessToken = getCookie("access_token");
-  if (!accessToken) return null;
+function accessTokenExpiryMsFromJwt(accessToken: string): number | null {
   try {
     const parts = accessToken.split(".");
     if (parts.length !== 3) return null;
-    const payload = JSON.parse(atob(parts[1]));
-    if (!payload.exp) return null;
+    const payload = JSON.parse(atob(parts[1])) as { exp?: number };
+    if (typeof payload.exp !== "number") return null;
     return payload.exp * 1000;
   } catch {
     return null;
   }
+}
+
+const getAccessTokenExpiryMs = (): number | null => {
+  const accessToken = getCookie("access_token");
+  return accessToken ? accessTokenExpiryMsFromJwt(accessToken) : null;
 };
 
 const isAccessExpiredOrExpiringSoon = (accessToken: string): boolean => {
-  try {
-    const parts = accessToken.split(".");
-    if (parts.length !== 3) return true;
-    const payload = JSON.parse(atob(parts[1]));
-    if (!payload.exp) return false;
-    return payload.exp * 1000 <= Date.now() + ACCESS_EXPIRE_BUFFER_MS;
-  } catch {
-    return true;
-  }
+  const expMs = accessTokenExpiryMsFromJwt(accessToken);
+  if (expMs === null) return true;
+  return expMs <= Date.now() + ACCESS_TOKEN_REFRESH_LEAD_MS;
 };
+
+function isRefreshRetriableError(err: unknown): boolean {
+  if (isAxiosError(err)) {
+    const status = err.response?.status;
+    if (status === undefined) return true;
+    if (status === 429) return true;
+    if (status >= 500) return true;
+    return false;
+  }
+  if (err instanceof Error && err.name === "AbortError") return true;
+  return false;
+}
 
 export const clearRefreshSchedule = (): void => {
   if (refreshScheduleTimeoutId !== null) {
@@ -225,19 +239,24 @@ export const scheduleNextRefreshBeforeExpiry = (): void => {
   clearRefreshSchedule();
   const expiryMs = getAccessTokenExpiryMs();
   if (expiryMs === null) return;
-  const delayMs = expiryMs - ONE_MINUTE_MS - Date.now();
+  const delayMs = expiryMs - ACCESS_TOKEN_REFRESH_LEAD_MS - Date.now();
   if (delayMs <= 0) {
-    void proactiveRefreshIfNeeded();
+    void proactiveRefreshIfNeeded().finally(() => {
+      if (getCookie("refresh_token")) scheduleNextRefreshBeforeExpiry();
+    });
     return;
   }
   refreshScheduleTimeoutId = setTimeout(() => {
     refreshScheduleTimeoutId = null;
-    void proactiveRefreshIfNeeded();
+    void proactiveRefreshIfNeeded().finally(() => {
+      if (getCookie("refresh_token")) scheduleNextRefreshBeforeExpiry();
+    });
   }, delayMs);
 };
 
 const handleLogout = () => {
   log.info("Logging out. Clearing authentication data...");
+  refreshAttempts = 0;
   clearRefreshSchedule();
   try {
     clearAuthData();
@@ -251,18 +270,48 @@ const handleLogout = () => {
   }
 };
 
-const refreshTokens = async (): Promise<string> => {
-  if (refreshPromise) {
-    return refreshPromise;
+const JWT_REFRESH_LOCK_NAME = "control.app/jwt-refresh";
+
+function runWithJwtRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+  if (typeof navigator === "undefined" || !navigator.locks?.request) {
+    return fn();
+  }
+  return new Promise((resolve, reject) => {
+    void navigator.locks.request(
+      JWT_REFRESH_LOCK_NAME,
+      { mode: "exclusive" },
+      async () => {
+        try {
+          resolve(await fn());
+        } catch (e) {
+          reject(e);
+        }
+      },
+    );
+  });
+}
+
+async function performTokenRefresh(): Promise<string> {
+  const accessStillFresh = getCookie("access_token");
+  if (accessStillFresh) {
+    const expMs = accessTokenExpiryMsFromJwt(accessStillFresh);
+    if (
+      expMs !== null &&
+      expMs > Date.now() + ACCESS_SKIP_REFRESH_IF_VALID_BEYOND_MS
+    ) {
+      log.info(
+        "Skip token refresh: access still valid >60s (e.g. other tab refreshed).",
+      );
+      refreshAttempts = 0;
+      return accessStillFresh;
+    }
   }
 
   if (refreshAttempts >= MAX_REFRESH_ATTEMPTS) {
     log.error(
       `Maximum refresh attempts (${MAX_REFRESH_ATTEMPTS}) reached. Logging out.`,
     );
-    handleLogout();
-    resetRefreshAttempts();
-    return Promise.reject(new Error("Max refresh attempts reached"));
+    throw new AuthRefreshFatalError("Max refresh attempts reached");
   }
 
   refreshAttempts++;
@@ -270,98 +319,131 @@ const refreshTokens = async (): Promise<string> => {
   const refreshToken = getCookie("refresh_token");
   if (!refreshToken) {
     log.error("Refresh token not found. Logging out.");
-    handleLogout();
-    return Promise.reject(new Error("No refresh token"));
+    throw new AuthRefreshFatalError("No refresh token");
   }
 
   log.info("Attempting to refresh tokens...");
-  refreshPromise = axios
-    .post(
+
+  let response: AxiosResponse;
+  try {
+    response = await axios.post(
       `${apiUrl}/api/token/refresh/`,
       { refresh: refreshToken },
       { skipAuthInterceptor: true },
-    )
-    .then((response) => {
-      const newAccessToken = response.data.access;
-      const newRefreshToken = response.data.refresh;
+    );
+  } catch (err: unknown) {
+    if (isRefreshRetriableError(err)) {
+      log.warn("Token refresh: transient error, will retry on next schedule.");
+      throw err;
+    }
+    if (
+      isAxiosError(err) &&
+      (err.response?.status === 401 || err.response?.status === 403)
+    ) {
+      throw new AuthRefreshFatalError("Refresh token rejected");
+    }
+    throw new AuthRefreshFatalError(
+      isAxiosError(err)
+        ? `Refresh failed: HTTP ${err.response?.status ?? "?"}`
+        : "Refresh failed",
+    );
+  }
 
-      if (!newAccessToken) {
-        log.error("No access token in refresh response");
-        return Promise.reject(new Error("No access token in response"));
-      }
+  const newAccessToken = response.data.access;
+  const newRefreshToken = response.data.refresh;
 
-      refreshAttempts = 0;
+  if (!newAccessToken) {
+    log.error("No access token in refresh response");
+    throw new AuthRefreshFatalError("No access token in response");
+  }
 
-      setCookie("access_token", newAccessToken, {
-        secure: !isDebug,
-        sameSite: isDebug ? "Lax" : "Strict",
-        maxAge: 1800,
-      });
+  refreshAttempts = 0;
 
-      if (newRefreshToken) {
-        setCookie("refresh_token", newRefreshToken, {
-          secure: !isDebug,
-          sameSite: isDebug ? "Lax" : "Strict",
-          maxAge: 7200,
-        });
-      }
+  setCookie("access_token", newAccessToken, {
+    secure: !isDebug,
+    sameSite: isDebug ? "Lax" : "Strict",
+    maxAge: jwtCookieMaxAgeSeconds(newAccessToken),
+  });
 
-      try {
-        if (response.data.access_token_expires) {
-          localStorage.setItem(
-            "access_token_expires",
-            response.data.access_token_expires,
-          );
-        }
-        if (response.data.refresh_token_expires) {
-          localStorage.setItem(
-            "refresh_token_expires",
-            response.data.refresh_token_expires,
-          );
-        }
-      } catch (storageError) {
-        log.error(
-          "Failed to store token expiration in localStorage:",
-          storageError,
-        );
-      }
+  if (newRefreshToken) {
+    setCookie("refresh_token", newRefreshToken, {
+      secure: !isDebug,
+      sameSite: isDebug ? "Lax" : "Strict",
+      maxAge: jwtCookieMaxAgeSeconds(newRefreshToken),
+    });
+  }
 
-      log.info("Tokens refreshed successfully.");
-
-      window.dispatchEvent(
-        new CustomEvent("tokensRefreshed", {
-          detail: {
-            access: newAccessToken,
-            refresh: newRefreshToken,
-            accessTokenExpires: response.data.access_token_expires,
-            refreshTokenExpires: response.data.refresh_token_expires,
-          },
-        }),
+  try {
+    if (response.data.access_token_expires) {
+      localStorage.setItem(
+        "access_token_expires",
+        response.data.access_token_expires,
       );
+    }
+    if (response.data.refresh_token_expires) {
+      localStorage.setItem(
+        "refresh_token_expires",
+        response.data.refresh_token_expires,
+      );
+    }
+  } catch (storageError) {
+    log.error(
+      "Failed to store token expiration in localStorage:",
+      storageError,
+    );
+  }
 
-      scheduleNextRefreshBeforeExpiry();
+  log.info("Tokens refreshed successfully.");
 
-      if (typeof window !== "undefined") {
-        try {
-          if ("BroadcastChannel" in window) {
-            const ch = new BroadcastChannel("auth");
-            ch.postMessage({ type: "tokens-refreshed", timestamp: Date.now() });
-            ch.close();
-          }
-          localStorage.setItem("app:authSync", String(Date.now()));
-        } catch {
-          // ignore
-        }
+  window.dispatchEvent(
+    new CustomEvent("tokensRefreshed", {
+      detail: {
+        access: newAccessToken,
+        refresh: newRefreshToken,
+        accessTokenExpires: response.data.access_token_expires,
+        refreshTokenExpires: response.data.refresh_token_expires,
+      },
+    }),
+  );
+
+  scheduleNextRefreshBeforeExpiry();
+
+  if (typeof window !== "undefined") {
+    try {
+      if ("BroadcastChannel" in window) {
+        const ch = new BroadcastChannel("auth");
+        ch.postMessage({ type: "tokens-refreshed", timestamp: Date.now() });
+        ch.close();
       }
+      localStorage.setItem("app:authSync", String(Date.now()));
+    } catch {
+      // ignore
+    }
+  }
 
-      refreshPromise = null;
-      return newAccessToken;
-    })
-    .catch((err) => {
-      refreshPromise = null;
+  return newAccessToken;
+}
+
+const refreshTokens = async (): Promise<string> => {
+  if (refreshPromise) {
+    return refreshPromise;
+  }
+
+  refreshPromise = runWithJwtRefreshLock(() => performTokenRefresh())
+    .catch((err: unknown) => {
+      if (isRefreshRetriableError(err)) {
+        refreshAttempts = Math.max(0, refreshAttempts - 1);
+        if (getCookie("refresh_token")) {
+          scheduleNextRefreshBeforeExpiry();
+        }
+        return Promise.reject(err);
+      }
       log.error("Failed to refresh tokens.", err);
       handleLogout();
       return Promise.reject(err);
+    })
+    .finally(() => {
+      refreshPromise = null;
     });
 
   return refreshPromise;

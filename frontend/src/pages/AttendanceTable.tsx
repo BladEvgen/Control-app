@@ -85,10 +85,10 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
       };
     }
     return {
-      bg: "bg-white dark:bg-gray-800",
-      text: "text-gray-600 dark:text-gray-300",
-      border: "border-gray-200 dark:border-gray-700",
-      hoverBg: "hover:bg-gray-300 dark:hover:bg-gray-700",
+      bg: "bg-white dark:bg-gray-950",
+      text: "text-gray-700 dark:text-gray-200",
+      border: "border-gray-200 dark:border-gray-800",
+      hoverBg: "hover:bg-gray-100 dark:hover:bg-gray-900",
     };
   };
 
@@ -152,10 +152,10 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
 
   const renderDesktopTable = () => (
     <div className="hidden md:block w-full">
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+      <div className="overflow-hidden rounded-lg border border-gray-200 shadow-sm dark:border-gray-800">
         <table className="w-full">
           <thead>
-            <tr className="text-black dark:text-white">
+            <tr className="bg-gray-50 text-black dark:bg-gray-900 dark:text-white">
               {[
                 "Дата",
                 "Первое прибытие",
@@ -173,7 +173,7 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+          <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
             {Object.entries(attendance)
               .reverse()
               .map(([date, data], idx) => {

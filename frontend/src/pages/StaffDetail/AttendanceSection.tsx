@@ -26,7 +26,7 @@ const AttendanceSection: React.FC<AttendanceSectionProps> = ({
   legendItems,
 }) => {
   return (
-    <div className="px-4 sm:px-6 lg:px-8 pb-6 sm:pb-8 border-t border-gray-200 dark:border-gray-700">
+    <div className="border-t border-gray-200 bg-gray-50/40 px-4 pb-6 dark:border-gray-800 dark:bg-black/15 sm:px-6 sm:pb-8 lg:px-8">
       <div className="flex flex-col lg:flex-row items-center justify-between mb-4 sm:mb-6 gap-4 sm:gap-6">
         <div className="w-full max-w-md">
           <DateForm

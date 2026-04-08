@@ -383,7 +383,7 @@ const StaffDetail: React.FC = () => {
                 <Breadcrumbs items={breadcrumbs} />
               </motion.div>
 
-              <div className="bg-white dark:bg-gray-900 shadow-lg sm:shadow-2xl rounded-lg sm:rounded-xl overflow-hidden">
+              <div className="overflow-hidden rounded-lg border border-gray-200/90 bg-white shadow-lg sm:rounded-xl sm:shadow-2xl dark:border-gray-800 dark:bg-gray-950">
                 {pin ? (
                   <>
                     <input

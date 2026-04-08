@@ -16,8 +16,7 @@ import LoaderComponent from "../components/LoaderComponent";
 import Notification from "../components/Notification";
 import DateFilterBar from "../components/DateFilterBar";
 import Breadcrumbs from "../components/Breadcrumbs";
-import WaitNotification from "../components/WaitNotification";
-import useWaitNotification from "../hooks/useWaitNotification";
+import { runAttendanceExcelDownload } from "../utils/attendanceExcelDownloadHub";
 import { FaBuilding } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 import { cacheManager } from "../utils/cache";
@@ -110,11 +109,8 @@ const DepartmentPage: React.FC = () => {
   const [startDate, setStartDate] = useState<string>(
     getFormattedDate(startInitialDate),
   );
-  const [isDownloading, setIsDownloading] = useState<boolean>(false);
   const today = getFormattedDate(todayDate);
 
-  const { showWaitMessage, startWaitNotification, clearWaitNotification } =
-    useWaitNotification();
 
   const canDownload = Boolean(startDate && endDate && departmentId);
 
@@ -248,44 +244,16 @@ const DepartmentPage: React.FC = () => {
     }
   };
 
-  const handleDownload = useCallback(async () => {
+  const handleDownload = useCallback(() => {
     if (!canDownload) return;
-    setIsDownloading(true);
-    clearWaitNotification();
-    startWaitNotification();
-    try {
-      const response = await axiosInstance.get(
-        `${apiUrl}/api/download/${departmentId}/`,
-        {
-          params: { startDate, endDate },
-          responseType: "blob",
-          timeout: 600000,
-        },
-      );
-      clearWaitNotification();
-      setIsDownloading(false);
-      const departmentName = data.name.replace(/\s/g, "_");
-      const fileUrl = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement("a");
-      link.href = fileUrl;
-      link.setAttribute("download", `Посещаемость_${departmentName}.xlsx`);
-      document.body.appendChild(link);
-      link.click();
-      link.parentNode?.removeChild(link);
-    } catch (err) {
-      console.error("Error downloading the file:", err);
-      clearWaitNotification();
-      setIsDownloading(false);
-    }
-  }, [
-    canDownload,
-    departmentId,
-    data.name,
-    startDate,
-    endDate,
-    clearWaitNotification,
-    startWaitNotification,
-  ]);
+    const departmentName = data.name.replace(/\s/g, "_");
+    void runAttendanceExcelDownload({
+      url: `${apiUrl}/api/download/${departmentId}/`,
+      params: { startDate, endDate },
+      filename: `Посещаемость_${departmentName}.xlsx`,
+      holdKey: departmentId ?? undefined,
+    });
+  }, [canDownload, departmentId, data.name, startDate, endDate]);
 
   const pageVariants = useMemo(
     () => ({
@@ -330,7 +298,7 @@ const DepartmentPage: React.FC = () => {
     <AnimatePresence mode="wait">
       <motion.div
         key="department-page"
-        className="max-w-7xl mx-auto"
+        className="page-shell"
         variants={pageVariants}
         initial="initial"
         animate="animate"
@@ -367,26 +335,17 @@ const DepartmentPage: React.FC = () => {
                   onStartDateChange={handleStartDateChange}
                   onEndDateChange={handleEndDateChange}
                   onDownload={handleDownload}
-                  isDownloading={isDownloading}
                   isDownloadDisabled={!canDownload}
+                  excelHoldKey={departmentId}
                   today={today}
                 />
-              </motion.div>
-            )}
-
-            {showWaitMessage && (
-              <motion.div
-                variants={itemVariants}
-                className="mx-auto max-w-md my-6"
-              >
-                <WaitNotification />
               </motion.div>
             )}
 
             {data && (
               <motion.div
                 variants={itemVariants}
-                className="card overflow-hidden"
+                className="card overflow-hidden p-0"
               >
                 <DepartmentTable data={data} />
               </motion.div>

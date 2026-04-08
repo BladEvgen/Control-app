@@ -11,10 +11,8 @@ import HeaderComponent from "./components/HeaderComponent";
 import FooterComponent from "./components/FooterComponent";
 import AuthWebSocketInitializer from "./components/AuthWebSocketInitializer";
 import ScrollToTopButton from "./components/ScrollToTopButton";
-import {
-  proactiveRefreshIfNeeded,
-  scheduleNextRefreshBeforeExpiry,
-} from "./api";
+import AttendanceExcelDownloadBanner from "./components/AttendanceExcelDownloadBanner";
+import { AuthSessionWakeBridge } from "./authSession/AuthSessionWakeBridge.tsx";
 
 interface LayoutProps {
   children: ReactNode;
@@ -66,20 +64,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   }, [theme]);
 
   useEffect(() => {
-    const onVisible = () => {
-      void proactiveRefreshIfNeeded();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    if (document.visibilityState === "visible") {
-      void proactiveRefreshIfNeeded();
-    }
-    scheduleNextRefreshBeforeExpiry();
-    return () => {
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, []);
-
-  useEffect(() => {
     if (!isChangingTheme) {
       contentCache.current = children;
     }
@@ -89,31 +73,76 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     setIsChangingTheme(true);
     contentCache.current = children;
 
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!reduceMotion) {
+      document.documentElement.classList.add("theme-transition-active");
+    }
+
     setTimeout(() => {
       setTheme(theme === "dark" ? "light" : "dark");
       setTimeout(() => {
         setIsChangingTheme(false);
-      }, 100);
+        document.documentElement.classList.remove("theme-transition-active");
+      }, reduceMotion ? 0 : 440);
     }, 50);
   }, [theme, children]);
 
   return (
     <div className="flex flex-col min-h-screen overflow-hidden">
+      <AuthSessionWakeBridge />
       {!isLoginRoute && <AuthWebSocketInitializer />}
 
       <div
-        className="fixed inset-0 w-full h-full z-[-1] transition-colors duration-700"
-        style={{
-          background:
+        className="fixed inset-0 z-[-1] min-h-[100dvh] w-full overflow-hidden transition-colors duration-1000"
+        aria-hidden
+      >
+        <div
+          className={`absolute inset-0 transition-colors duration-1000 ${
             theme === "dark"
-              ? "linear-gradient(120deg, #0F172A 0%, #1E293B 25%, #1E3A8A 50%, #312E81 75%, #4C1D95 100%)"
-              : "linear-gradient(120deg, #F9FAFB 0%, #F3F4F6 25%, #EFF6FF 50%, #F5F3FF 75%, #FAF5FF 100%)",
-        }}
-      />
+              ? "bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950"
+              : "bg-gradient-to-br from-slate-100 via-indigo-50/95 to-violet-100/90"
+          }`}
+        />
+        <div className="layout-living-mesh" />
+        <div
+          className={`pointer-events-none absolute -left-[12%] -top-[18%] h-[min(85vw,720px)] w-[min(85vw,720px)] rounded-full blur-3xl motion-safe:animate-layout-orb-a motion-reduce:animate-none ${
+            theme === "dark"
+              ? "bg-primary-600/25"
+              : "bg-primary-400/42"
+          }`}
+        />
+        <div
+          className={`pointer-events-none absolute -bottom-[14%] -right-[8%] h-[min(78vw,640px)] w-[min(78vw,640px)] rounded-full blur-3xl motion-safe:animate-layout-orb-b motion-reduce:animate-none ${
+            theme === "dark"
+              ? "bg-secondary-600/22"
+              : "bg-secondary-400/38"
+          }`}
+        />
+        <div
+          className={`pointer-events-none absolute left-1/2 top-1/2 h-[min(110vw,900px)] w-[min(110vw,900px)] -translate-x-1/2 -translate-y-1/2 rounded-full blur-3xl motion-safe:animate-layout-ambient motion-reduce:animate-none ${
+            theme === "dark"
+              ? "bg-indigo-500/12"
+              : "bg-indigo-400/28"
+          }`}
+        />
+        {theme !== "dark" ? (
+          <div className="pointer-events-none absolute bottom-[6%] left-[-5%] h-[min(52vw,400px)] w-[min(52vw,400px)] rounded-full bg-teal-200/40 blur-3xl" />
+        ) : null}
+        <div
+          className={`pointer-events-none absolute inset-0 bg-gradient-to-t transition-opacity duration-1000 ${
+            theme === "dark"
+              ? "from-slate-950/40 via-transparent to-slate-950/30"
+              : "from-white/12 via-transparent to-violet-100/35"
+          }`}
+        />
+      </div>
 
       {!isKioskRoute && !isLoginRoute && (
         <HeaderComponent toggleTheme={toggleTheme} currentTheme={theme} />
       )}
+      {!isKioskRoute && !isLoginRoute && <AttendanceExcelDownloadBanner />}
 
       <main
         className={`flex-1 relative ${

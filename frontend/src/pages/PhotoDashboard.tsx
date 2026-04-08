@@ -27,7 +27,7 @@ import {
 } from "../schemas/IData";
 import { apiUrl } from "../../apiConfig";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
-import apiClient, { log } from "../api";
+import apiClient, { log, proactiveRefreshIfNeeded } from "../api";
 import useWebSocket from "../hooks/useWebSocket";
 import LoaderComponent from "../components/LoaderComponent";
 import { Toggle } from "../components/Toggle";
@@ -908,7 +908,7 @@ const MarqueeTrack: React.FC<{
               {seamHeadEnd != null && gapSpacerWidth > 0 && (
                 <li
                   key={`row-${rowIndex}-copy-${copyIndex}-gap-spacer`}
-                  className="my-1 flex-shrink-0 list-none"
+                  className="pointer-events-none my-0 h-0 min-h-0 flex-shrink-0 list-none overflow-hidden"
                   style={{ width: gapSpacerWidth }}
                   aria-hidden
                 />
@@ -918,7 +918,7 @@ const MarqueeTrack: React.FC<{
                 leftSpacerWidth > 0 && (
                   <li
                     key={`row-${rowIndex}-copy-${copyIndex}-left-spacer`}
-                    className="my-1 flex-shrink-0 list-none"
+                    className="pointer-events-none my-0 h-0 min-h-0 flex-shrink-0 list-none overflow-hidden"
                     style={{ width: leftSpacerWidth }}
                     aria-hidden
                   />
@@ -933,7 +933,7 @@ const MarqueeTrack: React.FC<{
               {hasVisibleSlice && rightSpacerWidth > 0 && (
                 <li
                   key={`row-${rowIndex}-copy-${copyIndex}-right-spacer`}
-                  className="my-1 flex-shrink-0 list-none"
+                  className="pointer-events-none my-0 h-0 min-h-0 flex-shrink-0 list-none overflow-hidden"
                   style={{ width: rightSpacerWidth }}
                   aria-hidden
                 />
@@ -1919,9 +1919,8 @@ const PhotoDashboard: React.FC = () => {
 
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible" && !isConnected) {
-        reconnect();
-      }
+      if (document.visibilityState !== "visible" || isConnected) return;
+      void proactiveRefreshIfNeeded().then(() => reconnect());
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
@@ -3241,17 +3240,13 @@ const PhotoDashboard: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div
-            className={`photo-marquee-lux-edges ${
-              isKiosk || isFullscreen ? "photo-marquee-lux-edges-kiosk" : ""
-            }`}
-          >
+          <div className="relative">
             <div
               ref={containerRef}
               className={`[scrollbar-width:none] [-ms-overflow-style:none] ${
                 isKiosk
-                  ? "photo-kiosk-marquee-mask flex-1 min-h-0 flex flex-col overflow-x-hidden overflow-y-hidden px-4 sm:px-6 md:px-8 lg:px-10 py-2 sm:py-3 md:py-4 pb-4 sm:pb-5 md:pb-6"
-                  : "overflow-x-hidden overflow-y-hidden py-4 pb-8 px-4 md:px-6"
+                  ? "flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-hidden px-4 py-2 pb-4 sm:px-6 sm:py-3 sm:pb-5 md:px-8 md:py-4 md:pb-6 lg:px-10"
+                  : "overflow-x-hidden overflow-y-hidden px-4 py-4 pb-8 md:px-6"
               }`}
               style={
                 isKiosk

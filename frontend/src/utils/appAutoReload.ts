@@ -1,10 +1,14 @@
-import { CURRENT_APP_BUILD_META } from "./appBuild";
+import {
+  APP_VERSION_ENDPOINT,
+  CURRENT_APP_BUILD_META,
+} from "./appBuild";
 import { isNavigationTransitionPending } from "./pageLifecycle";
 
 const AUTO_RELOAD_STATE_STORAGE_KEY = "__app_auto_reload_state__";
 const HARD_RELOAD_QUERY_PARAM = "__hard_reload";
 const HARD_RELOAD_TARGET_QUERY_PARAM = "__hard_reload_target";
-const AUTO_RELOAD_VISUAL_DELAY_MS = 260;
+/** Wait for a real server response before navigating away; cap so we never hang forever. */
+const RELOAD_PREFETCH_TIMEOUT_MS = 12_000;
 
 type AutoReloadState = {
   targetBuildId: string;
@@ -117,6 +121,32 @@ export const reconcilePendingAutoReload = (): void => {
   });
 };
 
+const prefetchAppVersionBeforeReload = async (): Promise<void> => {
+  if (!isBrowser) return;
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(
+    () => controller.abort(),
+    RELOAD_PREFETCH_TIMEOUT_MS,
+  );
+
+  try {
+    await fetch(`${APP_VERSION_ENDPOINT}?ts=${Date.now()}`, {
+      cache: "no-store",
+      credentials: "same-origin",
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        "Cache-Control": "no-cache",
+      },
+    });
+  } catch {
+    // Still reload: offline, timeout, or non-JSON — hard reload is the recovery path.
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
+
 export const forceHardReload = (targetBuildId?: string): void => {
   if (!isBrowser) return;
 
@@ -135,7 +165,7 @@ export const forceHardReload = (targetBuildId?: string): void => {
 export const guardedAutoReload = ({
   targetBuildId,
   reason,
-  message = "Обновляем приложение до последнего релиза…",
+  message = "Проверяем сервер и перезагружаем приложение…",
 }: {
   targetBuildId?: string;
   reason: string;
@@ -171,8 +201,8 @@ export const guardedAutoReload = ({
   }
 
   window.__APP_BOOT__?.showReloading?.(message);
-  window.setTimeout(() => {
+  void prefetchAppVersionBeforeReload().finally(() => {
     forceHardReload(normalizedTargetBuildId);
-  }, AUTO_RELOAD_VISUAL_DELAY_MS);
+  });
   return true;
 };
