@@ -58,6 +58,7 @@ import {
   useFaceLiveness,
   type LivenessPhase,
 } from "../liveness/useFaceLiveness";
+import { cameraGuidanceMessage } from "./cameraGuidanceMessage";
 
 type Props = {
   onShot: (blob: Blob) => void;
@@ -65,6 +66,47 @@ type Props = {
   voiceLang?: FaceLabVoiceLang;
   guidanceContext?: CameraGuidanceContext;
 };
+
+function overlayPhaseBadge(
+  phase: LivenessPhase,
+  requireLiveness: boolean,
+  skipped: boolean,
+): string {
+  if (!requireLiveness) return "Подсказка";
+  if (skipped) return "Ручной снимок";
+  if (phase === "loading") return "Подготовка";
+  if (phase === "face") return "Шаг 1";
+  if (phase === "blink") return "Шаг 2";
+  if (phase === "yaw") return "Шаг 3";
+  if (phase === "smile") return "Финал";
+  if (phase === "passed") return "Готово";
+  if (phase === "unavailable") return "Ручной снимок";
+  return "Подсказка";
+}
+
+function overlayPhaseTitle(
+  phase: LivenessPhase,
+  requireLiveness: boolean,
+  skipped: boolean,
+  guidanceContext: CameraGuidanceContext,
+): string {
+  if (!requireLiveness) {
+    if (guidanceContext === "bootstrap_front") return "Снимите прямой портрет";
+    if (guidanceContext === "bootstrap_left") return "Поверните лицо влево";
+    if (guidanceContext === "bootstrap_right") return "Поверните лицо вправо";
+    if (guidanceContext === "profile_photo") return "Снимите кадр профиля";
+    return "Снимите кадр";
+  }
+  if (skipped) return "Снимите кадр вручную";
+  if (phase === "loading") return "Готовим проверку";
+  if (phase === "face") return "Поставьте лицо в рамку";
+  if (phase === "blink") return "Моргните один раз";
+  if (phase === "yaw") return "Поверните голову";
+  if (phase === "smile") return "Посмотрите прямо и слегка улыбнитесь";
+  if (phase === "passed") return "Кадр готов";
+  if (phase === "unavailable") return "Проверка недоступна";
+  return "Держите лицо в рамке";
+}
 
 function FaceCameraOverlayInner(
   {
@@ -100,6 +142,7 @@ function FaceCameraOverlayInner(
   const [shouldMirror, setShouldMirror] = useState(false);
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [livenessSkipped, setLivenessSkipped] = useState(false);
+  const [showManualCaptureAction, setShowManualCaptureAction] = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -230,6 +273,35 @@ function FaceCameraOverlayInner(
       window.clearTimeout(delay);
     };
   }, [open, voiceLang, requireLiveness, guidanceContext]);
+
+  useEffect(() => {
+    if (!open || !requireLiveness || livenessSkipped) {
+      setShowManualCaptureAction(false);
+      return;
+    }
+    if (liveness.phase === "passed") {
+      setShowManualCaptureAction(false);
+      return;
+    }
+    if (liveness.phase === "unavailable") {
+      setShowManualCaptureAction(true);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setShowManualCaptureAction(true);
+    }, 6500);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [open, requireLiveness, livenessSkipped, liveness.phase]);
+
+  const overlayGuidanceText =
+    !requireLiveness && guidanceContext !== "default"
+      ? ""
+      : requireLiveness && !livenessSkipped
+        ? displayLivenessHint ||
+          cameraGuidanceMessage(guidanceContext, requireLiveness)
+        : cameraGuidanceMessage(guidanceContext, requireLiveness);
 
   const stopStream = useCallback(() => {
     attachStreamCleanupRef.current?.();
@@ -639,9 +711,9 @@ function FaceCameraOverlayInner(
               frame,
               container: c,
               shouldMirror,
-              maxWidth: 1280,
-              maxHeight: 1280,
-              quality: 0.88,
+              maxWidth: 1600,
+              maxHeight: 1600,
+              quality: 0.92,
             });
 
             if (gotBlob) {
@@ -855,22 +927,47 @@ function FaceCameraOverlayInner(
 
               <ErrorDisplay error={error} onClose={() => setError(null)} />
 
-              {requireLiveness &&
-                open &&
-                !livenessSkipped &&
-                liveness.phase !== "passed" &&
-                liveness.phase !== "unavailable" &&
-                liveness.phase !== "idle" && (
-                  <div className="pointer-events-auto absolute left-0 right-0 top-[max(52px,calc(env(safe-area-inset-top,0px)+40px))] z-40 flex justify-center px-4 md:top-[60px]">
+              <div className="pointer-events-none absolute left-0 right-0 top-[max(52px,calc(env(safe-area-inset-top,0px)+40px))] z-40 flex flex-col items-center gap-3 px-4 md:top-[60px]">
+                <div className="pointer-events-none flex max-w-xl flex-col items-center gap-2">
+                  <div className="inline-flex rounded-full border border-white/20 bg-black/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/85 shadow-lg backdrop-blur-md">
+                    {overlayPhaseBadge(
+                      liveness.phase,
+                      requireLiveness,
+                      livenessSkipped,
+                    )}
+                  </div>
+                  <div className="pointer-events-none max-w-xl rounded-[1.35rem] border border-white/15 bg-black/45 px-4 py-3 text-center text-white shadow-xl backdrop-blur-md">
+                    <p className="text-sm font-semibold leading-snug sm:text-[0.98rem]">
+                      {overlayPhaseTitle(
+                        liveness.phase,
+                        requireLiveness,
+                        livenessSkipped,
+                        guidanceContext,
+                      )}
+                    </p>
+                    {overlayGuidanceText ? (
+                      <p className="mt-1 text-xs leading-relaxed text-white/82 sm:text-sm">
+                        {overlayGuidanceText}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+
+                {requireLiveness &&
+                  open &&
+                  !livenessSkipped &&
+                  showManualCaptureAction &&
+                  liveness.phase !== "passed" &&
+                  liveness.phase !== "idle" && (
                     <button
                       type="button"
-                      className="rounded-full bg-white/15 px-4 py-2 text-sm font-medium text-white ring-1 ring-white/20 backdrop-blur-md hover:bg-white/25"
+                      className="pointer-events-auto rounded-full bg-white/15 px-4 py-2 text-sm font-medium text-white ring-1 ring-white/20 backdrop-blur-md hover:bg-white/25"
                       onClick={() => setLivenessSkipped(true)}
                     >
-                      Пропустить живость
+                      Снять вручную
                     </button>
-                  </div>
-                )}
+                  )}
+              </div>
 
               <TopControls
                 onClose={handleClose}
@@ -892,9 +989,8 @@ function FaceCameraOverlayInner(
                 captureHint={
                   manualShutterLocked
                     ? liveness.phase === "passed"
-                      ? "Снимок…"
-                      : displayLivenessHint ||
-                        "Снимок сделается сам после проверки"
+                      ? "Сохраняем кадр…"
+                      : null
                     : isCameraReady && !isCapturing
                       ? "Сделать снимок"
                       : null

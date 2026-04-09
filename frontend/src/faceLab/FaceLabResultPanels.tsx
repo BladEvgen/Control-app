@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { FaFolderOpen, FaHashtag, FaListUl, FaTable } from "react-icons/fa";
 import {
@@ -18,6 +19,7 @@ import {
   humanizeResponseFieldKey,
   humanizeUnknownFaceStatus,
 } from "./faceLabHumanMessages";
+import { PadDiagnosticsReadout } from "./faceLabPadDiagnostics";
 
 export type {
   PadTestResponse,
@@ -113,9 +115,52 @@ function Bar({
   );
 }
 
+function summaryBadgeClass(
+  tone: "success" | "warning" | "danger" | "neutral",
+): string {
+  if (tone === "success") {
+    return "border-emerald-200/80 bg-emerald-50 text-emerald-800 dark:border-emerald-800/40 dark:bg-emerald-500/15 dark:text-emerald-200";
+  }
+  if (tone === "warning") {
+    return "border-amber-200/80 bg-amber-50 text-amber-900 dark:border-amber-800/40 dark:bg-amber-500/15 dark:text-amber-100";
+  }
+  if (tone === "danger") {
+    return "border-rose-200/80 bg-rose-50 text-rose-800 dark:border-rose-800/40 dark:bg-rose-500/15 dark:text-rose-200";
+  }
+  return "border-slate-200/80 bg-slate-100 text-slate-700 dark:border-slate-700/60 dark:bg-slate-800/80 dark:text-slate-200";
+}
+
+function SummaryTile({
+  label,
+  value,
+  hint,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  tone?: "success" | "warning" | "danger" | "neutral";
+}) {
+  return (
+    <div
+      className={`rounded-xl border px-3 py-3 shadow-sm transition-colors ${summaryBadgeClass(tone)}`}
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-wide opacity-75">
+        {label}
+      </p>
+      <p className="mt-1 text-base font-semibold leading-snug">{value}</p>
+      {hint ? (
+        <p className="mt-1 text-xs leading-relaxed opacity-85">{hint}</p>
+      ) : null}
+    </div>
+  );
+}
+
 export function PadResultPanel({ pad }: { pad: PadTestResponse }) {
+  const [barsOpen, setBarsOpen] = useState(false);
   const trustOk = pad.trust_confirmed === true;
   const trustBad = pad.trust_confirmed === false;
+  const diag = pad.diagnostics ?? null;
   return (
     <motion.div
       className="rounded-xl border border-slate-200 bg-white/95 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900/60 sm:p-5"
@@ -130,59 +175,107 @@ export function PadResultPanel({ pad }: { pad: PadTestResponse }) {
         transition={{ type: "spring" as const, stiffness: 380, damping: 28 }}
       >
         <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-          Живость на сервере
+          Проверка фото
         </h3>
-        <span
-          className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-            trustOk
-              ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300"
+        {!diag ? (
+          <span
+            className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+              trustOk
+                ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300"
+                : trustBad
+                  ? "bg-rose-500/15 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300"
+                  : "bg-slate-200 text-slate-700 dark:bg-slate-600/40 dark:text-slate-300"
+            }`}
+          >
+            {trustOk
+              ? "Кадр принят"
               : trustBad
-                ? "bg-rose-500/15 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300"
-                : "bg-slate-200 text-slate-700 dark:bg-slate-600/40 dark:text-slate-300"
-          }`}
+                ? "Подозрение на подмену"
+                : "Нужна осторожность"}
+          </span>
+        ) : null}
+      </motion.div>
+      {diag ? (
+        <motion.div
+          className="mb-4"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.06 }}
         >
-          {trustOk
-            ? "Кадр принят"
-            : trustBad
-              ? "Подозрение на подмену"
-              : "Нужна осторожность"}
-        </span>
-      </motion.div>
-      <motion.p
-        className="mb-4 text-sm text-slate-600 dark:text-slate-400"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.08 }}
-      >
-        {humanizePadStatus(pad.status)}
-      </motion.p>
-      <motion.div
-        className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
-        variants={fadeContainer}
-        initial="hidden"
-        animate="show"
-      >
-        <Bar
-          label="Риск подмены"
-          value={pad.risk_score}
-          tone={
-            pad.risk_score > 0.45
-              ? "rose"
-              : pad.risk_score > 0.25
-                ? "amber"
-                : "emerald"
-          }
-        />
-        <Bar label="Подлинность лица" value={pad.deepface_score} tone="slate" />
-        <Bar label="Съёмка с экрана" value={pad.device_score} tone="slate" />
-        <Bar label="Рамка кадра" value={pad.frame_score} tone="slate" />
-        <Bar
-          label="Чёткость и размер лица"
-          value={pad.quality_penalty}
-          tone="amber"
-        />
-      </motion.div>
-      {pad.tags.length > 0 ? (
+          <PadDiagnosticsReadout diagnostics={diag} />
+        </motion.div>
+      ) : (
+        <motion.p
+          className="mb-4 text-sm text-slate-600 dark:text-slate-400"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.08 }}
+        >
+          {humanizePadStatus(pad.status)}
+        </motion.p>
+      )}
+      <div className="mb-3">
+        <button
+          type="button"
+          className="text-sm font-medium text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+          aria-expanded={barsOpen}
+          onClick={() => setBarsOpen((x) => !x)}
+        >
+          {barsOpen ? "Скрыть числовые сигналы" : "Числовые сигналы"}
+        </button>
+      </div>
+      {barsOpen ? (
+        <motion.div
+          className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
+          variants={fadeContainer}
+          initial="hidden"
+          animate="show"
+        >
+          <Bar
+            label="Риск подмены"
+            value={pad.risk_score}
+            tone={
+              pad.risk_score > 0.45
+                ? "rose"
+                : pad.risk_score > 0.25
+                  ? "amber"
+                  : "emerald"
+            }
+          />
+          <Bar
+            label="Подлинность лица"
+            value={pad.deepface_score}
+            tone="slate"
+          />
+          <Bar
+            label="Устройство у лица"
+            value={pad.device_score}
+            tone="slate"
+          />
+          <Bar
+            label="Устройство в кадре (фон)"
+            value={pad.device_bg_score}
+            tone="slate"
+          />
+          <Bar label="Рамка у лица" value={pad.frame_score} tone="slate" />
+          <Bar
+            label="Рамка в кадре (глоб.)"
+            value={pad.frame_global_score}
+            tone="slate"
+          />
+          <Bar
+            label="Рекапчер / периодика (лицо)"
+            value={pad.recapture_score}
+            tone="slate"
+          />
+          <Bar
+            label="Чёткость и размер лица"
+            value={pad.quality_penalty}
+            tone="amber"
+          />
+        </motion.div>
+      ) : null}
+      {!diag && pad.tags.length > 0 ? (
         <motion.div
           className="mb-3"
           initial={{ opacity: 0, y: 6 }}
@@ -209,33 +302,44 @@ export function PadResultPanel({ pad }: { pad: PadTestResponse }) {
           </motion.div>
         </motion.div>
       ) : null}
-      <motion.dl
-        className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-500 sm:grid-cols-3"
-        variants={fadeContainer}
-        initial="hidden"
-        animate="show"
-      >
-        <motion.div variants={fadeItem}>
-          <dt>Версия</dt>
-          <dd className="font-mono text-[11px] text-slate-600 dark:text-slate-400">
-            {pad.model_version}
-          </dd>
-        </motion.div>
-        <motion.div variants={fadeItem}>
-          <dt>Время на сервере</dt>
-          <dd className="text-slate-600 dark:text-slate-400">
-            {formatServerElapsed(pad.elapsed_ms)}
-            <span className="ml-1.5 font-mono text-[10px] text-slate-500 dark:text-slate-600">
-              ({pad.elapsed_ms} мс)
-            </span>
-          </dd>
-        </motion.div>
-      </motion.dl>
+      {!diag ? (
+        <motion.dl
+          className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-500 sm:grid-cols-3"
+          variants={fadeContainer}
+          initial="hidden"
+          animate="show"
+        >
+          <motion.div variants={fadeItem}>
+            <dt>Версия</dt>
+            <dd className="font-mono text-[11px] text-slate-600 dark:text-slate-400">
+              {pad.model_version}
+            </dd>
+          </motion.div>
+          <motion.div variants={fadeItem}>
+            <dt>Время на сервере</dt>
+            <dd className="text-slate-600 dark:text-slate-400">
+              {formatServerElapsed(pad.elapsed_ms)}
+              <span className="ml-1.5 font-mono text-[10px] text-slate-500 dark:text-slate-600">
+                ({pad.elapsed_ms} мс)
+              </span>
+            </dd>
+          </motion.div>
+        </motion.dl>
+      ) : null}
     </motion.div>
   );
 }
 
 export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
+  const bestMatch =
+    r.recognized_staff.length > 0
+      ? r.recognized_staff.reduce((best, row) =>
+          row.similarity > best.similarity ? row : best,
+        )
+      : null;
+  const hasMatches = r.recognized_staff.length > 0;
+  const bestScore = bestMatch ? bestMatch.similarity : 0;
+
   return (
     <motion.div
       className="rounded-xl border border-slate-200 bg-white/95 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900/60 sm:p-5"
@@ -244,44 +348,83 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
       transition={{ duration: 0.35, ease: "easeOut" }}
     >
       <motion.div
-        className="mb-3 flex flex-wrap items-center gap-2"
+        className="mb-4 flex flex-wrap items-start justify-between gap-3"
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ type: "spring" as const, stiffness: 380, damping: 28 }}
       >
-        <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-          Галерея
-        </h3>
-        <span className="rounded-full bg-slate-200 px-2 py-0.5 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-          Найдено: {r.recognized_staff.length} · без совпадения:{" "}
-          {r.unknown_faces.length}
+        <div className="space-y-1">
+          <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+            Поиск по галерее
+          </h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Короткий итог по найденным совпадениям.
+          </p>
+        </div>
+        <span
+          className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
+            hasMatches
+              ? summaryBadgeClass("success")
+              : summaryBadgeClass("warning")
+          }`}
+        >
+          {hasMatches ? "Есть совпадения" : "Совпадений нет"}
         </span>
       </motion.div>
-      {r.recognized_staff.length > 0 ? (
-        <motion.p
-          className="mb-4 text-sm text-slate-600 dark:text-slate-400"
+
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <SummaryTile
+          label="Лучший результат"
+          value={hasMatches ? `${pctExact(bestScore)}%` : "—"}
+          hint={
+            bestMatch
+              ? [bestMatch.surname, bestMatch.name].filter(Boolean).join(" ") ||
+                "Имя не указано"
+              : "Совпадение не дошло до порога."
+          }
+          tone={hasMatches ? "success" : "warning"}
+        />
+        <SummaryTile
+          label="Совпадений"
+          value={String(r.recognized_staff.length)}
+          hint="Кандидаты выше текущего порога."
+          tone={hasMatches ? "success" : "neutral"}
+        />
+        <SummaryTile
+          label="Без совпадения"
+          value={String(r.unknown_faces.length)}
+          hint="Лица, которым галерея не дала уверенный ответ."
+          tone={r.unknown_faces.length > 0 ? "warning" : "neutral"}
+        />
+        <SummaryTile
+          label="Галерея"
+          value={hasMatches ? "сработала" : "не подтвердила"}
+          hint={
+            hasMatches
+              ? "Есть кандидаты для ручной проверки."
+              : "Лицо могло не дойти до порога или не иметь эталона."
+          }
+          tone={hasMatches ? "success" : "warning"}
+        />
+      </div>
+
+      {!hasMatches ? (
+        <motion.div
+          className="rounded-2xl border border-amber-200/80 bg-amber-50/80 p-4 shadow-sm dark:border-amber-800/40 dark:bg-amber-500/10"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
         >
-          Лучшее сходство в ответе:{" "}
-          <span className="tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">
-            {pctExact(
-              Math.max(...r.recognized_staff.map((row) => row.similarity)),
-            )}
-            %
-          </span>
-        </motion.p>
-      ) : null}
-      {r.recognized_staff.length === 0 ? (
-        <motion.p
-          className="text-sm leading-relaxed text-slate-600 dark:text-slate-400"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-        >
-          По базе совпадений нет — лицо на кадре могло не дойти до порога
-          схожести. Попробуйте крупнее и ровнее по свету; если в организации ещё
-          не все маски заведены, поиск может быть пустым.
-        </motion.p>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-100">
+            Причина
+          </p>
+          <p className="mt-1 text-sm font-semibold leading-snug text-amber-950 dark:text-amber-50">
+            По базе совпадений сейчас не нашлось.
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-amber-900 dark:text-amber-100">
+            Лицо могло не дойти до порога схожести или для него нет эталона в
+            галерее.
+          </p>
+        </motion.div>
       ) : (
         <motion.ul
           className="grid gap-3 sm:grid-cols-2"
@@ -293,53 +436,69 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
             <motion.li
               key={`${row.pin}-${i}`}
               variants={fadeItem}
-              className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700/80 dark:bg-slate-950/50"
-              whileHover={{ scale: 1.01 }}
-              transition={{ type: "spring", stiffness: 400, damping: 28 }}
+              className={`rounded-2xl border p-3 shadow-sm transition-transform duration-200 hover:-translate-y-0.5 ${
+                bestMatch?.pin === row.pin &&
+                bestMatch?.similarity === row.similarity
+                  ? "border-emerald-200/80 bg-emerald-50/80 dark:border-emerald-800/40 dark:bg-emerald-500/10"
+                  : "border-slate-200 bg-slate-50 dark:border-slate-700/80 dark:bg-slate-950/50"
+              }`}
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0 flex-1 text-sm font-medium text-slate-900 dark:text-slate-100">
-                  {[row.surname, row.name].filter(Boolean).join(" ") ||
-                    "Имя не указано"}
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    {[row.surname, row.name].filter(Boolean).join(" ") ||
+                      "Имя не указано"}
+                  </p>
+                  {row.department ? (
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                      {row.department}
+                    </p>
+                  ) : null}
                 </div>
                 <motion.div
-                  className="flex shrink-0 flex-col items-end"
-                  initial={{ opacity: 0, scale: 0.85 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ type: "spring", stiffness: 400, damping: 22 }}
+                  className={`rounded-full border px-3 py-1 text-right ${
+                    bestMatch?.pin === row.pin &&
+                    bestMatch?.similarity === row.similarity
+                      ? summaryBadgeClass("success")
+                      : summaryBadgeClass("neutral")
+                  }`}
                 >
-                  <span className="text-[10px] font-medium uppercase tracking-wide text-emerald-700/90 dark:text-emerald-400/90">
+                  <span className="text-[10px] font-medium uppercase tracking-wide">
                     Схожесть
                   </span>
-                  <span className="tabular-nums text-2xl font-bold leading-none text-emerald-600 dark:text-emerald-400">
+                  <span className="block tabular-nums text-xl font-bold leading-none">
                     {pctExact(row.similarity)}
-                    <span className="text-lg font-bold text-emerald-700/70 dark:text-emerald-500/80">
-                      %
-                    </span>
+                    <span className="text-base font-bold opacity-70">%</span>
                   </span>
                 </motion.div>
               </div>
-              {row.department ? (
-                <p className="mt-1 text-xs text-slate-600 dark:text-slate-500">
-                  {row.department}
-                </p>
-              ) : null}
-              <p className="mt-1 text-xs text-slate-500 dark:text-slate-600">
-                Служебный PIN: {row.pin}
-              </p>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                <span className="rounded-full border border-slate-200/80 bg-white/80 px-2.5 py-1 text-slate-600 dark:border-slate-700/60 dark:bg-slate-900/60 dark:text-slate-300">
+                  PIN: {row.pin}
+                </span>
+                {bestMatch?.pin === row.pin &&
+                bestMatch?.similarity === row.similarity ? (
+                  <span className="rounded-full border border-emerald-200/80 bg-emerald-50 px-2.5 py-1 text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-500/10 dark:text-emerald-200">
+                    Лучший кандидат
+                  </span>
+                ) : null}
+              </div>
             </motion.li>
           ))}
         </motion.ul>
       )}
       {r.unknown_faces.length > 0 ? (
         <motion.div
-          className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/40 dark:bg-amber-950/20"
+          className="mt-4 rounded-2xl border border-amber-200 bg-amber-50/90 p-4 shadow-sm dark:border-amber-900/40 dark:bg-amber-950/20"
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.12 }}
         >
-          <p className="text-xs font-medium text-amber-900 dark:text-amber-200/90">
-            Лица без совпадения с галереей ({r.unknown_faces.length})
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-100">
+            Неопределённость
+          </p>
+          <p className="mt-1 text-sm font-semibold text-amber-950 dark:text-amber-50">
+            Лица без уверенного совпадения: {r.unknown_faces.length}
           </p>
           <motion.ul
             className="mt-2 space-y-1 text-xs text-amber-900/85 dark:text-amber-100/85"

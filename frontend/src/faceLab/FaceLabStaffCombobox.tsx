@@ -9,6 +9,12 @@ export type StaffPickOption = {
   faceProfileState?: string;
 };
 
+function faceProfileStateLabel(state?: string): string | null {
+  if (state === "bootstrap_required") return "Нужна настройка входа";
+  if (state === "weak_gallery") return "Эталонов пока мало";
+  return null;
+}
+
 function normalizeSearch(s: string): string {
   return s.trim().toLowerCase().normalize("NFKD").replace(/\p{M}/gu, "");
 }
@@ -32,6 +38,9 @@ type Props = {
   loading?: boolean;
   placeholder?: string;
   focusRequestId?: number;
+  label?: string;
+  helperText?: string;
+  emptyResultText?: string;
 };
 
 const LIST_PREVIEW = 80;
@@ -49,8 +58,11 @@ export function FaceLabStaffCombobox({
   onChange,
   disabled,
   loading,
-  placeholder = "ФИО или отдел",
+  placeholder = "ФИО, PIN или отдел",
   focusRequestId = 0,
+  label = "Сотрудник",
+  helperText,
+  emptyResultText = "Никого не нашли. Попробуйте фамилию, PIN или отдел.",
 }: Props) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
@@ -67,7 +79,7 @@ export function FaceLabStaffCombobox({
     () =>
       options.map((o) => ({
         o,
-        hay: normalizeSearch(`${o.fio} ${o.deptName}`),
+        hay: normalizeSearch(`${o.fio} ${o.deptName} ${o.pin}`),
       })),
     [options],
   );
@@ -184,8 +196,8 @@ export function FaceLabStaffCombobox({
   return (
     <div ref={rootRef} className="relative">
       <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
-        <label className="text-sm text-slate-600 dark:text-slate-400">
-          Сотрудник
+        <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
+          {label}
         </label>
         {listHint ? (
           <span className="text-xs text-slate-500" aria-live="polite">
@@ -193,6 +205,11 @@ export function FaceLabStaffCombobox({
           </span>
         ) : null}
       </div>
+      {helperText ? (
+        <p className="mb-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+          {helperText}
+        </p>
+      ) : null}
       <input
         ref={inputRef}
         type="text"
@@ -226,8 +243,13 @@ export function FaceLabStaffCombobox({
               {selected.fio}
             </p>
             <p className="truncate text-xs text-slate-600 dark:text-slate-400">
-              {selected.deptName}
+              {selected.deptName} · PIN {selected.pin}
             </p>
+            {faceProfileStateLabel(selected.faceProfileState) ? (
+              <span className="mt-2 inline-flex rounded-full border border-emerald-200/80 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-500/10 dark:text-emerald-200">
+                {faceProfileStateLabel(selected.faceProfileState)}
+              </span>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -251,19 +273,28 @@ export function FaceLabStaffCombobox({
               onClick={() => pick(o)}
               onMouseEnter={() => setHighlight(idx)}
             >
-              <span className="font-medium text-slate-900 dark:text-slate-100">
-                {o.fio}
-              </span>
-              <span className="mt-0.5 block text-xs leading-snug text-slate-600 dark:text-slate-400">
-                {o.deptName}
-              </span>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <span className="font-medium text-slate-900 dark:text-slate-100">
+                    {o.fio}
+                  </span>
+                  <span className="mt-0.5 block text-xs leading-snug text-slate-600 dark:text-slate-400">
+                    {o.deptName} · PIN {o.pin}
+                  </span>
+                </div>
+                {faceProfileStateLabel(o.faceProfileState) ? (
+                  <span className="shrink-0 rounded-full border border-slate-200/80 bg-white/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:border-slate-600/60 dark:bg-slate-900/70 dark:text-slate-300">
+                    {faceProfileStateLabel(o.faceProfileState)}
+                  </span>
+                ) : null}
+              </div>
             </li>
           ))}
         </ul>
       ) : null}
       {open && !loading && filtered.length === 0 && normalizeSearch(text) ? (
         <div className="absolute z-50 mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-500 shadow-md dark:border-slate-600 dark:bg-slate-900">
-          Ничего не найдено
+          {emptyResultText}
         </div>
       ) : null}
     </div>

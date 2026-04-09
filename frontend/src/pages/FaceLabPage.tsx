@@ -51,7 +51,6 @@ import {
   FaceLabBootstrapPanel,
   type BootstrapAngle,
 } from "../faceLab/FaceLabBootstrapPanel";
-import { fileForPadUpload } from "../faceLab/faceLabPadResize";
 import { useMuiDarkSync } from "../faceLab/useMuiDarkSync";
 import {
   readVoiceLang,
@@ -61,6 +60,9 @@ import {
 } from "../faceLab/faceLabCameraVoice";
 import {
   FaCamera,
+  FaCheckCircle,
+  FaCircleNotch,
+  FaExclamationTriangle,
   FaFolderOpen,
   FaImage,
   FaSearch,
@@ -106,6 +108,26 @@ type FaceLabEvaluateResult = {
   headline?: string;
 };
 
+type ProductUiState =
+  | "idle"
+  | "ready"
+  | "searching"
+  | "found"
+  | "not_found"
+  | "error"
+  | "retry_needed";
+
+type ProductTone = "neutral" | "info" | "success" | "warning" | "danger";
+
+type StatusCardSpec = {
+  state: ProductUiState;
+  tone: ProductTone;
+  badge: string;
+  title: string;
+  detail: string;
+  nextStep?: string;
+};
+
 const DEFAULT_OUTCOME_HEADLINE: Record<
   Exclude<SessionOutcome, "idle">,
   string
@@ -141,6 +163,182 @@ function compareOutcomeFromContract(
   };
 }
 
+function personLabel(
+  row:
+    | {
+        name?: string;
+        surname?: string;
+        fio?: string;
+      }
+    | null
+    | undefined,
+): string {
+  if (!row) return "Сотрудник";
+  if (typeof row.fio === "string" && row.fio.trim()) return row.fio.trim();
+  const combined = [row.surname, row.name].filter(Boolean).join(" ").trim();
+  return combined || "Сотрудник";
+}
+
+function bestRecognizedStaff(rec: ReturnType<typeof parseRecognizeResponse>) {
+  if (!rec || rec.recognized_staff.length === 0) return null;
+  return rec.recognized_staff.reduce((best, row) =>
+    row.similarity > best.similarity ? row : best,
+  );
+}
+
+function toneShellClass(tone: ProductTone): string {
+  if (tone === "success") {
+    return "border-emerald-200 bg-emerald-50/95 text-emerald-950 dark:border-emerald-800/50 dark:bg-emerald-950/35 dark:text-emerald-50";
+  }
+  if (tone === "info") {
+    return "border-sky-200 bg-sky-50/95 text-sky-950 dark:border-sky-800/50 dark:bg-sky-950/35 dark:text-sky-50";
+  }
+  if (tone === "warning") {
+    return "border-amber-200 bg-amber-50/95 text-amber-950 dark:border-amber-800/50 dark:bg-amber-950/35 dark:text-amber-50";
+  }
+  if (tone === "danger") {
+    return "border-rose-200 bg-rose-50/95 text-rose-950 dark:border-rose-800/50 dark:bg-rose-950/35 dark:text-rose-50";
+  }
+  return "border-slate-200 bg-white/95 text-slate-950 dark:border-slate-700/70 dark:bg-slate-900/55 dark:text-slate-50";
+}
+
+function toneBadgeClass(tone: ProductTone): string {
+  if (tone === "success") {
+    return "border-emerald-200/80 bg-emerald-100/90 text-emerald-800 dark:border-emerald-700/40 dark:bg-emerald-500/15 dark:text-emerald-200";
+  }
+  if (tone === "info") {
+    return "border-sky-200/80 bg-sky-100/90 text-sky-800 dark:border-sky-700/40 dark:bg-sky-500/15 dark:text-sky-200";
+  }
+  if (tone === "warning") {
+    return "border-amber-200/80 bg-amber-100/90 text-amber-900 dark:border-amber-700/40 dark:bg-amber-500/15 dark:text-amber-100";
+  }
+  if (tone === "danger") {
+    return "border-rose-200/80 bg-rose-100/90 text-rose-800 dark:border-rose-700/40 dark:bg-rose-500/15 dark:text-rose-200";
+  }
+  return "border-slate-200/80 bg-slate-100/90 text-slate-700 dark:border-slate-700/60 dark:bg-slate-800/90 dark:text-slate-200";
+}
+
+function PrimaryStateIcon({
+  state,
+  busy,
+}: {
+  state: ProductUiState;
+  busy?: boolean;
+}) {
+  if (busy || state === "searching") {
+    return <FaCircleNotch className="h-5 w-5 animate-spin" aria-hidden />;
+  }
+  if (state === "found") {
+    return <FaCheckCircle className="h-5 w-5" aria-hidden />;
+  }
+  if (state === "error") {
+    return <FaExclamationTriangle className="h-5 w-5" aria-hidden />;
+  }
+  if (state === "retry_needed") {
+    return <FaCamera className="h-5 w-5" aria-hidden />;
+  }
+  if (state === "not_found") {
+    return <FaSearch className="h-5 w-5" aria-hidden />;
+  }
+  return <FaUserCheck className="h-5 w-5" aria-hidden />;
+}
+
+function PrimaryStateCard({
+  spec,
+  busy,
+}: {
+  spec: StatusCardSpec;
+  busy?: boolean;
+}) {
+  return (
+    <motion.section
+      className={`rounded-2xl border p-4 shadow-sm sm:p-5 ${toneShellClass(spec.tone)}`}
+      initial={{ opacity: 0, y: 16, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ type: "spring", stiffness: 300, damping: 24 }}
+      aria-live="polite"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span
+            className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${toneBadgeClass(spec.tone)}`}
+          >
+            <PrimaryStateIcon state={spec.state} busy={busy} />
+          </span>
+          <div className="min-w-0">
+            <span
+              className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide ${toneBadgeClass(spec.tone)}`}
+            >
+              {spec.badge}
+            </span>
+            <p className="mt-2 text-lg font-semibold leading-snug">
+              {spec.title}
+            </p>
+            {spec.detail ? (
+              <p className="mt-2 text-sm leading-relaxed opacity-90">
+                {spec.detail}
+              </p>
+            ) : null}
+            {spec.nextStep ? (
+              <p className="mt-2 text-sm font-medium opacity-80">
+                {spec.nextStep}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </motion.section>
+  );
+}
+
+function ModeCard({
+  active,
+  title,
+  detail,
+  icon,
+  onClick,
+}: {
+  active: boolean;
+  title: string;
+  detail?: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group rounded-2xl border p-3.5 text-left transition-all ${
+        active
+          ? "border-primary-300 bg-primary-50/90 shadow-md shadow-primary-500/10 dark:border-primary-700/50 dark:bg-primary-500/10"
+          : "border-slate-200/90 bg-white/90 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700/70 dark:bg-slate-900/45 dark:hover:border-slate-600 dark:hover:bg-slate-900/70"
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <span
+          className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+            active
+              ? "bg-primary-600 text-white shadow-lg shadow-primary-600/20"
+              : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+          }`}
+        >
+          {icon}
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+            {title}
+          </p>
+          {detail ? (
+            <p className="mt-1 text-sm leading-snug text-slate-600 dark:text-slate-400">
+              {detail}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </button>
+  );
+}
+
 function evaluateFaceLabSession(
   mode: LabMode,
   pad: PadTestResponse | null,
@@ -153,7 +351,7 @@ function evaluateFaceLabSession(
       return {
         outcome: "fail",
         message: [f.title, f.detail].filter(Boolean).join(" "),
-        headline: "Проверка кадра не прошла",
+        headline: "Проверка фото не пройдена",
       };
     }
     const parsed = parseVerifyPayload(verifyPayload);
@@ -172,7 +370,7 @@ function evaluateFaceLabSession(
       return {
         outcome: "fail",
         message:
-          "В ответе verify нет результата PAD — обновите клиент или сервер.",
+          "В ответе verify нет результата проверки фото — обновите клиент или сервер.",
       };
     }
     return compareOutcomeFromContract(parsed);
@@ -183,7 +381,7 @@ function evaluateFaceLabSession(
     return {
       outcome: "fail",
       message: [f.title, f.detail].filter(Boolean).join(" "),
-      headline: "Живость кадра не подтверждена",
+      headline: "Проверка фото не пройдена",
     };
   }
 
@@ -191,8 +389,8 @@ function evaluateFaceLabSession(
     return {
       outcome: "fail",
       message:
-        "Живость на сервере не проверена — переснимите и отправьте снова.",
-      headline: "PAD не отработал",
+        "Проверка фото на сервере не завершилась — переснимите и отправьте снова.",
+      headline: "Проверка фото не завершилась",
     };
   }
 
@@ -227,15 +425,16 @@ function evaluateFaceLabSession(
   if (hits && padStrong) {
     return {
       outcome: "success",
-      message: `Найдено в галерее: ${rec.recognized_staff.length}. Живость подтверждена.`,
+      message: `Найдено в галерее: ${rec.recognized_staff.length}. Фото прошло проверку.`,
     };
   }
 
   if (hits && padWeak) {
     return {
       outcome: "partial",
-      message: "В галерее есть совпадения, живость без уверенного «да».",
-      headline: "Живость слабая",
+      message:
+        "В галерее есть совпадения, но проверка фото без уверенного подтверждения.",
+      headline: "Нужен более уверенный кадр",
     };
   }
 
@@ -244,15 +443,15 @@ function evaluateFaceLabSession(
       outcome: "partial",
       message:
         unknownN > 0
-          ? "Лицо есть, живость ок, по базе ниже порога — другой ракурс или нет маски."
-          : "Живость ок, по галерее пусто.",
+          ? "Фото прошло проверку, но в базе нет надёжного совпадения — попробуйте другой ракурс."
+          : "Фото прошло проверку, но надёжного совпадения в галерее нет.",
       headline: "Не нашли",
     };
   }
 
   return {
     outcome: "partial",
-    message: "Нет совпадений и живость не подтверждена — переснимите.",
+    message: "Нет совпадений, и фото не прошло проверку — переснимите.",
     headline: "Переснимите",
   };
 }
@@ -328,6 +527,7 @@ const FaceLabPage: React.FC = () => {
   }, [mode]);
 
   const cameraGuidanceContext = useMemo((): CameraGuidanceContext => {
+    if (mode === "search" || mode === "compare") return "profile_photo";
     if (mode !== "bootstrap") return "default";
     if (cameraBootstrapAngle === "front") return "bootstrap_front";
     if (cameraBootstrapAngle === "left") return "bootstrap_left";
@@ -487,44 +687,13 @@ const FaceLabPage: React.FC = () => {
     }
     setBusy(true);
 
-    let padLocal: PadTestResponse | null = null;
-    let padWarnLocal: string | null = null;
+    const padLocal: PadTestResponse | null = null;
+    const padWarnLocal: string | null = null;
     let verifyLocal: unknown = null;
 
     try {
-      if (mode === "search") {
-        try {
-          const padFile = await fileForPadUpload(file);
-          const fdPad = new FormData();
-          fdPad.append("image", padFile);
-          const res = await axiosInstance.post<PadTestResponse>(
-            "face-lab/pad-test/",
-            fdPad,
-            { timeout: FACE_LAB_HEAVY_REQUEST_MS },
-          );
-          padLocal = res.data;
-          setPadResult(res.data);
-        } catch (padErr: unknown) {
-          setPadResult(null);
-          if (axios.isAxiosError(padErr) && padErr.response?.data) {
-            padWarnLocal =
-              typeof padErr.response.data === "object" &&
-              padErr.response.data !== null &&
-              "error" in padErr.response.data
-                ? String((padErr.response.data as { error: string }).error)
-                : "Сбой проверки живости";
-          } else {
-            padWarnLocal =
-              padErr instanceof Error
-                ? padErr.message
-                : "Сбой проверки живости";
-          }
-          setPadWarning(padWarnLocal);
-        }
-      } else {
-        setPadResult(null);
-        setPadWarning(null);
-      }
+      setPadResult(null);
+      setPadWarning(null);
 
       const fd = new FormData();
       fd.append("image", file);
@@ -592,14 +761,369 @@ const FaceLabPage: React.FC = () => {
   const padWarningFriendly = padWarning
     ? humanizePadFailureReason(padWarning)
     : null;
+  const selectedStaff = useMemo(
+    () => allStaffFlat.find((row) => row.pin === selectedPin) ?? null,
+    [allStaffFlat, selectedPin],
+  );
+  const recognized = useMemo(
+    () => (mode === "search" ? parseRecognizeResponse(verifyResult) : null),
+    [mode, verifyResult],
+  );
+  const verifyContract = useMemo(
+    () => (mode === "compare" ? parseVerifyPayload(verifyResult) : null),
+    [mode, verifyResult],
+  );
+  const verifyPayloadError =
+    isRecord(verifyResult) && typeof verifyResult.error === "string"
+      ? verifyResult.error
+      : null;
+  const primaryStateSpec = useMemo<StatusCardSpec>(() => {
+    const fallbackHeadline =
+      sessionOutcome !== "idle"
+        ? (outcomeHeadline ?? DEFAULT_OUTCOME_HEADLINE[sessionOutcome])
+        : null;
+    const fallbackMessage = outcomeMessage.trim();
+    const selectedName = selectedStaff?.fio?.trim() || "Сотрудник";
 
-  const outcomeBannerTitle =
-    sessionOutcome !== "idle"
-      ? (outcomeHeadline ?? DEFAULT_OUTCOME_HEADLINE[sessionOutcome])
-      : "";
+    if (mode === "search") {
+      if (busy) {
+        return {
+          state: "searching",
+          tone: "info",
+          badge: "Идёт поиск",
+          title: "Ищем человека в базе",
+          detail:
+            "Сравниваем кадр с галереей и готовим понятный итог: найдено, не найдено или нужен новый кадр.",
+        };
+      }
+      if (!file) {
+        return {
+          state: "idle",
+          tone: "neutral",
+          badge: "Готово к поиску",
+          title: "Сначала нужен кадр",
+          detail:
+            "Сделайте снимок или загрузите фото. После этого можно сразу запускать поиск по базе.",
+          nextStep: "Снимите прямой кадр при хорошем свете.",
+        };
+      }
+      if (recognized) {
+        const best = bestRecognizedStaff(recognized);
+        if (best) {
+          const hasWeakPad = Boolean(padWarning) || padTrustWeak(padResult);
+          return {
+            state: "found",
+            tone: hasWeakPad ? "warning" : "success",
+            badge: hasWeakPad ? "Найдено, но кадр слабый" : "Найдено",
+            title: personLabel(best),
+            detail: hasWeakPad
+              ? `Лучший кандидат ${Math.round(best.similarity * 100)}%. Совпадение есть, но кадр требует осторожной проверки.`
+              : `Лучший кандидат ${Math.round(best.similarity * 100)}%. Поиск уверенно нашёл человека в базе.`,
+            nextStep: hasWeakPad
+              ? "Проверьте кандидата ниже и при необходимости переснимите кадр."
+              : "Проверьте карточку кандидата ниже и переходите к следующему действию.",
+          };
+        }
+        const retryNeeded = Boolean(padWarning) || padTrustWeak(padResult);
+        return {
+          state: retryNeeded ? "retry_needed" : "not_found",
+          tone: "warning",
+          badge: retryNeeded ? "Нужен новый кадр" : "Не найдено",
+          title: retryNeeded
+            ? "Надёжного совпадения нет"
+            : "Поиск никого не подтвердил",
+          detail: retryNeeded
+            ? "По этому кадру база не дала уверенный результат. Лицо могло не дойти до порога или кадр слишком слабый."
+            : "По этому кадру база не нашла надёжного совпадения.",
+          nextStep:
+            "Попробуйте новый кадр: лицо ровно по центру, ближе к камере и без сильного размытия.",
+        };
+      }
+      if (verifyPayloadError) {
+        const help = humanizeGallerySearchError(verifyPayloadError);
+        return {
+          state: help.outcome === "fail" ? "retry_needed" : "error",
+          tone: help.outcome === "fail" ? "warning" : "danger",
+          badge: help.outcome === "fail" ? "Нужен новый кадр" : "Ошибка",
+          title: help.headline,
+          detail: [help.title, help.detail].filter(Boolean).join(". "),
+          nextStep:
+            help.outcome === "fail"
+              ? "Сделайте новый кадр и попробуйте ещё раз."
+              : "Проверьте соединение или повторите поиск чуть позже.",
+        };
+      }
+      if (errorFriendly) {
+        return {
+          state: "error",
+          tone: "danger",
+          badge: "Ошибка",
+          title: errorFriendly.title,
+          detail: errorFriendly.detail ?? "Поиск не завершился.",
+          nextStep: "Повторите попытку или выберите другой кадр.",
+        };
+      }
+      if (fallbackHeadline || fallbackMessage) {
+        return {
+          state:
+            sessionOutcome === "success"
+              ? "found"
+              : sessionOutcome === "partial"
+                ? "retry_needed"
+                : "error",
+          tone:
+            sessionOutcome === "success"
+              ? "success"
+              : sessionOutcome === "partial"
+                ? "warning"
+                : "danger",
+          badge:
+            sessionOutcome === "success"
+              ? "Найдено"
+              : sessionOutcome === "partial"
+                ? "Нужен новый кадр"
+                : "Ошибка",
+          title: fallbackHeadline ?? "Итог готов",
+          detail: fallbackMessage || "Результат поиска готов.",
+        };
+      }
+      return {
+        state: "ready",
+        tone: "info",
+        badge: "Кадр готов",
+        title: "Можно запускать поиск",
+        detail:
+          "Фото уже выбрано. Нажмите основную кнопку, чтобы найти человека в базе.",
+        nextStep: "Запустите поиск по базе.",
+      };
+    }
+
+    if (mode === "compare") {
+      if (busy) {
+        return {
+          state: "searching",
+          tone: "info",
+          badge: "Идёт сверка",
+          title: "Сверяем лицо с эталоном",
+          detail:
+            "Проверяем совпадение, качество кадра и проверку фото. Итог появится здесь.",
+        };
+      }
+      if (!selectedPin) {
+        return {
+          state: "idle",
+          tone: "neutral",
+          badge: "Нужен выбор",
+          title: "Сначала выберите сотрудника",
+          detail:
+            "Выберите человека, затем сделайте новый кадр и запустите сверку с эталоном.",
+          nextStep: "Начните с поиска сотрудника по ФИО, PIN или отделу.",
+        };
+      }
+      if (!file) {
+        return {
+          state: "ready",
+          tone: "info",
+          badge: "Ждём кадр",
+          title: `Выбран: ${selectedName}`,
+          detail: "Теперь нужен новый кадр для сравнения с эталонным профилем.",
+          nextStep: "Откройте камеру или загрузите фото для сверки.",
+        };
+      }
+      if (verifyContract) {
+        const matched =
+          verifyContract.matched && verifyContract.final_decision === "YES";
+        const contractSummary = (
+          verifyContract.summary ||
+          verifyContract.decision_summary ||
+          ""
+        ).trim();
+        const softRetryMatch =
+          matched &&
+          (verifyContract.liveness.status === "insufficient_input_review" ||
+            verifyContract.liveness.status === "review");
+        if (softRetryMatch) {
+          return {
+            state: "retry_needed",
+            tone: "warning",
+            badge: "Совпало, но кадр слабый",
+            title: `${selectedName}: совпадение видно`,
+            detail:
+              contractSummary ||
+              "Система видит совпадение, но для уверенного кадра лучше переснять фото.",
+            nextStep:
+              "Если нужен уверенный итог, снимите кадр ещё раз крупнее и ровнее.",
+          };
+        }
+        if (matched) {
+          return {
+            state: "found",
+            tone: "success",
+            badge: "Подтверждено",
+            title: `${selectedName}: совпадение подтверждено`,
+            detail:
+              contractSummary ||
+              "Система подтвердила совпадение между кадром и выбранным профилем.",
+            nextStep:
+              "Проверьте детали ниже, если нужна дополнительная уверенность.",
+          };
+        }
+        if (
+          verifyContract.status === "QUALITY_FAIL" ||
+          verifyContract.status === "PAD_ERROR" ||
+          verifyContract.liveness.status === "insufficient_input_review"
+        ) {
+          return {
+            state: "retry_needed",
+            tone: "warning",
+            badge: "Нужен новый кадр",
+            title: "Для уверенной сверки не хватило качества",
+            detail:
+              contractSummary ||
+              "Кадр слишком слабый или системе не хватило пригодного изображения для уверенного ответа.",
+            nextStep:
+              "Сделайте новый кадр крупнее, без поворотов головы и при более стабильном свете.",
+          };
+        }
+        if (verifyContract.status === "LIVENESS_FAIL") {
+          return {
+            state: "error",
+            tone: "danger",
+            badge: "Кадр отклонён",
+            title: "Проверка фото не подтвердилась",
+            detail:
+              contractSummary ||
+              "Система не подтвердила, что кадр относится к живому лицу.",
+            nextStep:
+              "Переснимите человека вживую и убедитесь, что лицо хорошо видно в рамке.",
+          };
+        }
+        return {
+          state: "not_found",
+          tone: "danger",
+          badge: "Не подтверждено",
+          title: `${selectedName}: совпадение не подтверждено`,
+          detail:
+            contractSummary ||
+            "Система не подтвердила совпадение между кадром и выбранным профилем.",
+          nextStep:
+            "Проверьте результат ниже и при необходимости сделайте новый кадр.",
+        };
+      }
+      if (verifyPayloadError) {
+        const help = humanizeApiError(verifyPayloadError);
+        return {
+          state: "error",
+          tone: "danger",
+          badge: "Ошибка",
+          title: help.title,
+          detail: help.detail ?? "Сверка не завершилась.",
+          nextStep: "Повторите попытку или выберите другой кадр.",
+        };
+      }
+      if (errorFriendly) {
+        return {
+          state: "error",
+          tone: "danger",
+          badge: "Ошибка",
+          title: errorFriendly.title,
+          detail: errorFriendly.detail ?? "Сверка не завершилась.",
+          nextStep: "Повторите попытку позже.",
+        };
+      }
+      if (fallbackHeadline || fallbackMessage) {
+        return {
+          state:
+            sessionOutcome === "success"
+              ? "found"
+              : sessionOutcome === "partial"
+                ? "retry_needed"
+                : "error",
+          tone:
+            sessionOutcome === "success"
+              ? "success"
+              : sessionOutcome === "partial"
+                ? "warning"
+                : "danger",
+          badge:
+            sessionOutcome === "success"
+              ? "Подтверждено"
+              : sessionOutcome === "partial"
+                ? "Нужен новый кадр"
+                : "Ошибка",
+          title: fallbackHeadline ?? "Итог готов",
+          detail: fallbackMessage || "Результат сверки готов.",
+        };
+      }
+      return {
+        state: "ready",
+        tone: "info",
+        badge: "Всё готово",
+        title: `Можно сверять с профилем ${selectedName}`,
+        detail:
+          "Сотрудник выбран и кадр готов. Основная кнопка запустит сверку с эталоном.",
+        nextStep: "Нажмите «Сверить с эталоном».",
+      };
+    }
+
+    if (!selectedPin) {
+      return {
+        state: "idle",
+        tone: "neutral",
+        badge: "Шаг 1",
+        title: "Сначала выберите сотрудника",
+        detail:
+          "После выбора откроется пошаговая настройка трёх ракурсов для входа по лицу.",
+        nextStep: "Выберите сотрудника слева и начните с прямого кадра.",
+      };
+    }
+    if (file) {
+      return {
+        state: "ready",
+        tone: "success",
+        badge: "Снимок готов",
+        title: "Кадр уже можно сохранить",
+        detail:
+          "Текущий снимок готов для шага настройки. Сохраните его в блоке выше и переходите к следующему ракурсу.",
+        nextStep: "Нажмите «Сохранить» в пошаговом блоке настройки.",
+      };
+    }
+    return {
+      state: "ready",
+      tone: "info",
+      badge: cameraBootstrapAngle ? "Текущий шаг" : "Подготовка",
+      title:
+        cameraBootstrapAngle === "left"
+          ? "Снимите левый ракурс"
+          : cameraBootstrapAngle === "right"
+            ? "Снимите правый ракурс"
+            : "Снимите прямой кадр",
+      detail:
+        "Следуйте подсказкам на экране: один чёткий ракурс за раз, затем сохранение в пошаговом блоке.",
+      nextStep: "Откройте камеру или загрузите фото для текущего шага.",
+    };
+  }, [
+    mode,
+    busy,
+    file,
+    recognized,
+    padWarning,
+    padResult,
+    verifyPayloadError,
+    errorFriendly,
+    sessionOutcome,
+    outcomeHeadline,
+    outcomeMessage,
+    selectedPin,
+    selectedStaff,
+    verifyContract,
+    cameraBootstrapAngle,
+  ]);
 
   const hasWideResults =
     busy ||
+    file !== null ||
+    (mode !== "search" && Boolean(selectedPin)) ||
     padResult !== null ||
     verifyResult !== null ||
     padWarning !== null ||
@@ -624,8 +1148,8 @@ const FaceLabPage: React.FC = () => {
             Face Lab
           </h1>
           <p className="mt-2 max-w-xl text-sm text-slate-600 dark:text-slate-400">
-            Проверка кадра, поиск по базе, сравнение с профилем или пошаговая
-            настройка трёх ракурсов для входа.
+            Поиск по базе, сверка с профилем и простая настройка трёх фото для
+            входа.
           </p>
         </header>
 
@@ -666,84 +1190,49 @@ const FaceLabPage: React.FC = () => {
               className={hasWideResults ? "w-full" : "mx-auto w-full max-w-xl"}
             >
               <section className="rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-md shadow-slate-200/30 dark:border-slate-600/80 dark:bg-slate-900/55 dark:shadow-black/25 sm:p-5 md:p-6">
-                <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500 sm:mb-4">
-                  Режим
-                </h2>
-                <Box className="relative rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 dark:border-slate-600 dark:bg-slate-950">
-                  <motion.div
-                    className="pointer-events-none absolute bottom-1 top-1 rounded-lg bg-white shadow-md ring-1 ring-slate-200/60 dark:bg-slate-600 dark:shadow-none dark:ring-slate-500/40"
-                    initial={false}
-                    animate={{
-                      left:
-                        mode === "search"
-                          ? 4
-                          : mode === "compare"
-                            ? "calc(33.333% + 1px)"
-                            : "calc(66.666% - 2px)",
-                      width: "calc(33.333% - 6px)",
-                    }}
-                    transition={{ type: "spring", stiffness: 420, damping: 34 }}
-                  />
-                  <div className="relative z-10 grid min-h-[3rem] grid-cols-3 gap-0">
-                    <button
-                      type="button"
-                      className={`flex min-h-[3rem] items-center justify-center gap-1.5 rounded-lg px-1.5 py-2.5 text-center text-xs font-semibold leading-snug transition-colors sm:min-h-0 sm:gap-2 sm:px-2 sm:py-3.5 sm:text-sm ${
-                        mode === "search"
-                          ? "text-slate-900 dark:text-white"
-                          : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
-                      }`}
-                      onClick={() => {
-                        setMode("search");
-                        setError(null);
-                        resetSessionFromScratch();
-                      }}
-                    >
-                      <FaSearch
-                        className="h-4 w-4 shrink-0 opacity-80"
-                        aria-hidden
-                      />
-                      Поиск
-                    </button>
-                    <button
-                      type="button"
-                      className={`flex min-h-[3rem] items-center justify-center gap-1.5 rounded-lg px-1.5 py-2.5 text-center text-xs font-semibold leading-snug transition-colors sm:min-h-0 sm:gap-2 sm:px-2 sm:py-3.5 sm:text-sm ${
-                        mode === "compare"
-                          ? "text-slate-900 dark:text-white"
-                          : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
-                      }`}
-                      onClick={() => {
-                        setMode("compare");
-                        setError(null);
-                        resetSessionFromScratch();
-                      }}
-                    >
-                      <FaUserCheck
-                        className="h-4 w-4 shrink-0 opacity-80"
-                        aria-hidden
-                      />
-                      <span className="leading-tight">Эталон</span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`flex min-h-[3rem] flex-col items-center justify-center gap-0.5 rounded-lg px-1.5 py-2 text-center text-xs font-semibold leading-tight transition-colors sm:min-h-0 sm:flex-row sm:gap-1.5 sm:py-3.5 sm:text-sm ${
-                        mode === "bootstrap"
-                          ? "text-slate-900 dark:text-white"
-                          : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
-                      }`}
-                      onClick={() => {
-                        setMode("bootstrap");
-                        setError(null);
-                        resetSessionFromScratch();
-                      }}
-                    >
-                      <FaUserPlus
-                        className="h-4 w-4 shrink-0 opacity-80"
-                        aria-hidden
-                      />
-                      <span className="leading-tight">Настройка входа</span>
-                    </button>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Выберите режим
+                    </h2>
+                    <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600 dark:text-slate-400">
+                      Выберите задачу и сделайте кадр.
+                    </p>
                   </div>
-                </Box>
+                </div>
+
+                <div className="mt-4 grid gap-3 lg:grid-cols-3">
+                  <ModeCard
+                    active={mode === "search"}
+                    title="Поиск по базе"
+                    icon={<FaSearch className="h-4 w-4" aria-hidden />}
+                    onClick={() => {
+                      setMode("search");
+                      setError(null);
+                      resetSessionFromScratch();
+                    }}
+                  />
+                  <ModeCard
+                    active={mode === "compare"}
+                    title="Сверка с эталоном"
+                    icon={<FaUserCheck className="h-4 w-4" aria-hidden />}
+                    onClick={() => {
+                      setMode("compare");
+                      setError(null);
+                      resetSessionFromScratch();
+                    }}
+                  />
+                  <ModeCard
+                    active={mode === "bootstrap"}
+                    title="Настройка входа"
+                    icon={<FaUserPlus className="h-4 w-4" aria-hidden />}
+                    onClick={() => {
+                      setMode("bootstrap");
+                      setError(null);
+                      resetSessionFromScratch();
+                    }}
+                  />
+                </div>
               </section>
 
               {(mode === "compare" || mode === "bootstrap") && (
@@ -760,14 +1249,18 @@ const FaceLabPage: React.FC = () => {
                         Настройка входа по лицу
                       </h2>
                       <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                        Выберите человека, снимите три ракурса по шагам — дальше
-                        всё подскажем.
+                        Выберите человека и сохраните три ракурса.
                       </p>
                     </div>
                   ) : (
-                    <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Сотрудник
-                    </h2>
+                    <div className="mb-4">
+                      {" "}
+                      0695
+                      <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                        Выберите сотрудника, затем сделайте новый кадр для
+                        сравнения.
+                      </p>
+                    </div>
                   )}
                   {staffListError ? (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800/40 dark:bg-amber-950/20 dark:text-amber-100">
@@ -801,6 +1294,12 @@ const FaceLabPage: React.FC = () => {
                       value={selectedPin}
                       onChange={setSelectedPin}
                       focusRequestId={staffSearchFocusTick}
+                      label={
+                        mode === "bootstrap"
+                          ? "Кого настраиваем"
+                          : "Кого сверяем"
+                      }
+                      emptyResultText="Ничего не нашли. Попробуйте ФИО, PIN или отдел."
                     />
                   )}
                   {mode === "bootstrap" ? (
@@ -831,15 +1330,11 @@ const FaceLabPage: React.FC = () => {
                   <div>
                     <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                       {mode === "bootstrap"
-                        ? "Снимок для текущего шага"
-                        : "Фото"}
+                        ? "Кадр текущего шага"
+                        : mode === "search"
+                          ? "Кадр для поиска"
+                          : "Кадр для сравнения"}
                     </h2>
-                    {mode === "bootstrap" ? (
-                      <p className="mt-1 max-w-md text-sm text-slate-600 dark:text-slate-400">
-                        Камера или файл — затем вернитесь к шагам выше и
-                        сохраните кадр.
-                      </p>
-                    ) : null}
                   </div>
                   <ToggleButtonGroup
                     exclusive
@@ -913,7 +1408,7 @@ const FaceLabPage: React.FC = () => {
                       },
                     }}
                   >
-                    Камера
+                    Снять камерой
                   </Button>
                   <input
                     ref={fileInputRef}
@@ -961,7 +1456,7 @@ const FaceLabPage: React.FC = () => {
                       },
                     }}
                   >
-                    Выбрать файл
+                    Загрузить фото
                   </Button>
                 </Stack>
 
@@ -1071,7 +1566,13 @@ const FaceLabPage: React.FC = () => {
                           },
                         }}
                       >
-                        {busy ? "Отправка…" : "Отправить на проверку"}
+                        {busy
+                          ? mode === "search"
+                            ? "Ищем по базе…"
+                            : "Сверяем с эталоном…"
+                          : mode === "search"
+                            ? "Запустить поиск"
+                            : "Сверить с эталоном"}
                       </Button>
                     </motion.div>
                   ) : null}
@@ -1091,89 +1592,7 @@ const FaceLabPage: React.FC = () => {
                 transition={springLayoutMain}
                 className="min-w-0 space-y-8 sm:space-y-10 lg:col-span-7"
               >
-                {mode === "bootstrap" && selectedPin && file ? (
-                  <motion.section
-                    className="rounded-2xl border border-primary-200/80 bg-primary-50/80 p-4 text-sm text-slate-700 shadow-sm dark:border-primary-900/40 dark:bg-primary-950/25 dark:text-slate-200 sm:p-4"
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ type: "spring", stiffness: 320, damping: 26 }}
-                  >
-                    <p className="font-semibold text-slate-900 dark:text-slate-50">
-                      Снимок готов
-                    </p>
-                    <p className="mt-1 leading-snug text-slate-600 dark:text-slate-300">
-                      Сохраните текущий шаг в блоке настройки выше.
-                    </p>
-                  </motion.section>
-                ) : null}
-
-                {busy &&
-                padResult === null &&
-                verifyResult === null &&
-                !padWarning &&
-                !error &&
-                sessionOutcome === "idle" ? (
-                  <motion.div
-                    className="rounded-2xl border border-slate-200 bg-white/90 px-4 py-10 text-center text-sm text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-400 sm:py-12"
-                    initial={{ opacity: 0, scale: 0.96 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ type: "spring", stiffness: 360, damping: 28 }}
-                  >
-                    <LoaderComponent
-                      fullscreen={false}
-                      compact
-                      inline
-                      variant="bars"
-                      showGlow={false}
-                      message="Проверяем кадр на сервере…"
-                      className="justify-center py-2"
-                    />
-                  </motion.div>
-                ) : null}
-
-                {sessionOutcome !== "idle" ? (
-                  <motion.section
-                    key={sessionOutcome}
-                    className={`rounded-2xl border p-4 sm:p-5 md:p-6 ${
-                      sessionOutcome === "success"
-                        ? "border-emerald-200 bg-emerald-50 dark:border-emerald-700/70 dark:bg-emerald-950/35"
-                        : sessionOutcome === "partial"
-                          ? "border-amber-200 bg-amber-50 dark:border-amber-700/60 dark:bg-amber-950/30"
-                          : "border-rose-200 bg-rose-50 dark:border-rose-800/70 dark:bg-rose-950/25"
-                    }`}
-                    initial={{ opacity: 0, y: 20, scale: 0.97 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    transition={{
-                      type: "spring" as const,
-                      stiffness: 300,
-                      damping: 22,
-                      mass: 0.9,
-                    }}
-                  >
-                    <motion.p
-                      className={`text-base font-semibold sm:text-lg ${
-                        sessionOutcome === "success"
-                          ? "text-emerald-800 dark:text-emerald-200"
-                          : sessionOutcome === "partial"
-                            ? "text-amber-900 dark:text-amber-200"
-                            : "text-rose-800 dark:text-rose-200"
-                      }`}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ delay: 0.05 }}
-                    >
-                      {outcomeBannerTitle}
-                    </motion.p>
-                    <motion.p
-                      className="mt-2 text-sm leading-relaxed text-slate-700 dark:text-slate-300"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ delay: 0.12 }}
-                    >
-                      {outcomeMessage}
-                    </motion.p>
-                  </motion.section>
-                ) : null}
+                <PrimaryStateCard spec={primaryStateSpec} busy={busy} />
 
                 {padWarning && padWarningFriendly ? (
                   <motion.div
@@ -1218,15 +1637,14 @@ const FaceLabPage: React.FC = () => {
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     transition={{ type: "spring", stiffness: 320, damping: 24 }}
                   >
-                    <motion.h2
-                      className="text-xs font-semibold uppercase tracking-wider text-slate-500"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ delay: 0.05 }}
-                    >
-                      Живость (сервер)
-                    </motion.h2>
-                    <PadResultPanel pad={padResult} />
+                    <details className="rounded-2xl border border-slate-200/90 bg-slate-50/90 dark:border-slate-700/70 dark:bg-slate-900/40">
+                      <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 [&::-webkit-details-marker]:hidden">
+                        Проверка фото
+                      </summary>
+                      <div className="border-t border-slate-200/80 p-3 dark:border-slate-700/70">
+                        <PadResultPanel pad={padResult} />
+                      </div>
+                    </details>
                   </motion.section>
                 ) : null}
 

@@ -2,8 +2,13 @@ import {
   parseFaceVerifyApiResponse,
   type FaceVerifyApiResponse,
 } from "./faceVerificationSchema";
+import {
+  coercePadDiagnostics,
+  type PadDiagnosticsPayload,
+} from "./faceLabPadTypes";
 
 export type { FaceVerifyApiResponse } from "./faceVerificationSchema";
+export type { PadDiagnosticsPayload } from "./faceLabPadTypes";
 
 export type PadTestResponse = {
   status: string;
@@ -16,12 +21,20 @@ export type PadTestResponse = {
   device_score: number;
   frame_score: number;
   quality_penalty: number;
+  device_bg_score: number;
+  frame_global_score: number;
+  recapture_score: number;
+  diagnostics?: PadDiagnosticsPayload | null;
 };
 
 export function livenessToPadTestResponse(
   l: FaceVerifyApiResponse["liveness"],
 ): PadTestResponse | null {
   if (!l.checked) return null;
+  const diag =
+    l.diagnostics !== undefined && l.diagnostics !== null
+      ? coercePadDiagnostics(l.diagnostics)
+      : null;
   return {
     status: l.status ?? "pending",
     trust_confirmed: l.trust_confirmed ?? null,
@@ -34,6 +47,13 @@ export function livenessToPadTestResponse(
     frame_score: typeof l.frame_score === "number" ? l.frame_score : 0,
     quality_penalty:
       typeof l.quality_penalty === "number" ? l.quality_penalty : 0,
+    device_bg_score:
+      typeof l.device_bg_score === "number" ? l.device_bg_score : 0,
+    frame_global_score:
+      typeof l.frame_global_score === "number" ? l.frame_global_score : 0,
+    recapture_score:
+      typeof l.recapture_score === "number" ? l.recapture_score : 0,
+    ...(diag ? { diagnostics: diag } : {}),
   };
 }
 
@@ -76,6 +96,9 @@ export function parsePadResult(data: unknown): PadTestResponse | null {
     "device_score",
     "frame_score",
     "quality_penalty",
+    "device_bg_score",
+    "frame_global_score",
+    "recapture_score",
   ] as const;
   for (const k of nums) {
     if (typeof data[k] !== "number") return null;
@@ -94,7 +117,30 @@ export function parsePadResult(data: unknown): PadTestResponse | null {
     return null;
   }
   if (typeof data.model_version !== "string") return null;
-  return data as PadTestResponse;
+  const diagRaw = data.diagnostics;
+  const diagnostics =
+    diagRaw !== undefined && diagRaw !== null
+      ? coercePadDiagnostics(diagRaw)
+      : null;
+  const base: PadTestResponse = {
+    status: data.status as string,
+    trust_confirmed: data.trust_confirmed as boolean | null,
+    risk_score: data.risk_score as number,
+    tags: data.tags as string[],
+    model_version: data.model_version as string,
+    elapsed_ms: data.elapsed_ms as number,
+    deepface_score: data.deepface_score as number,
+    device_score: data.device_score as number,
+    frame_score: data.frame_score as number,
+    quality_penalty: data.quality_penalty as number,
+    device_bg_score: data.device_bg_score as number,
+    frame_global_score: data.frame_global_score as number,
+    recapture_score: data.recapture_score as number,
+  };
+  if (diagnostics) {
+    base.diagnostics = diagnostics;
+  }
+  return base;
 }
 
 export function parseRecognizeResponse(

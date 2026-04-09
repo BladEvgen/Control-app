@@ -9,17 +9,15 @@ const BOOTSTRAP_ANGLES = ["front", "left", "right"] as const;
 export type BootstrapAngle = (typeof BOOTSTRAP_ANGLES)[number];
 
 const ANGLE_HINTS: Record<BootstrapAngle, string> = {
-  front:
-    "В камере внутри рамки — контур лица анфас; совместите с ним своё лицо.",
-  left: "В рамке лицо разворачивается вглубь экрана (3D) — это поворот влево, не наклон ухом.",
-  right:
-    "В рамке лицо разворачивается вглубь экрана (3D) — это поворот вправо, не наклон ухом.",
+  front: "Смотрите прямо в камеру.",
+  left: "Поверните голову немного влево.",
+  right: "Поверните голову немного вправо.",
 };
 
 const ANGLE_STEP_TITLES: Record<BootstrapAngle, string> = {
-  front: "Шаг 1 — прямо",
-  left: "Шаг 2 — чуть влево",
-  right: "Шаг 3 — чуть вправо",
+  front: "Шаг 1",
+  left: "Шаг 2",
+  right: "Шаг 3",
 };
 
 const ANGLE_SHORT: Record<BootstrapAngle, string> = {
@@ -292,7 +290,7 @@ export function FaceLabBootstrapPanel({
           Сначала выберите сотрудника
         </p>
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-          Затем откроются три простых шага съёмки.
+          Дальше откроются три шага съёмки.
         </p>
       </div>
     );
@@ -303,10 +301,10 @@ export function FaceLabBootstrapPanel({
       <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-            Три шага для входа по лицу
+            Три кадра для входа
           </h3>
           <p className="mt-0.5 max-w-md text-xs text-slate-600 dark:text-slate-400">
-            Снимок внизу — затем «Сохранить» здесь. Вы сами нажимаете затвор.
+            Сохраните прямо, влево и вправо.
           </p>
         </div>
         {status && (!allDone || inRetake) ? (
@@ -364,8 +362,7 @@ export function FaceLabBootstrapPanel({
             Все шаги пройдены
           </p>
           <p className="mt-1 text-sm leading-relaxed text-emerald-900/90 dark:text-emerald-200/90">
-            Распознавание со временем станет стабильнее. При сбоях обратитесь к
-            администратору.
+            Три ракурса уже сохранены. При необходимости можно переснять любой.
           </p>
         </div>
       ) : null}
@@ -397,7 +394,7 @@ export function FaceLabBootstrapPanel({
       {showCaptureUi && workAngle ? (
         <div className="mb-5 rounded-lg border border-slate-200/90 bg-slate-50/90 px-3 py-3 dark:border-slate-600/70 dark:bg-slate-800/40 sm:px-4 sm:py-4">
           <p className="text-base font-semibold text-slate-900 dark:text-slate-50">
-            {ANGLE_STEP_TITLES[workAngle]}
+            {ANGLE_STEP_TITLES[workAngle]}: {ANGLE_SHORT[workAngle]}
           </p>
           <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
             {ANGLE_HINTS[workAngle]}
@@ -418,8 +415,7 @@ export function FaceLabBootstrapPanel({
               На фото видны очки
             </span>
             <span className="mt-1 block text-xs leading-snug text-slate-600 dark:text-slate-400">
-              Отметьте только если очки на лице в этом кадре — так эталон точнее
-              совпадёт с проходами без смены образа.
+              Отметьте только если очки видны на этом кадре.
             </span>
           </span>
         </label>
@@ -472,7 +468,7 @@ export function FaceLabBootstrapPanel({
           <details className="group rounded-xl border border-slate-200/90 bg-slate-50/80 dark:border-slate-600/60 dark:bg-slate-900/40">
             <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-slate-700 outline-none marker:content-none dark:text-slate-200 [&::-webkit-details-marker]:hidden">
               <span className="flex items-center justify-between gap-2">
-                Другие действия с этим снимком
+                Дополнительно
                 <span className="text-slate-400 transition group-open:rotate-180">
                   ▼
                 </span>
@@ -493,7 +489,7 @@ export function FaceLabBootstrapPanel({
                 onClick={() => void applyAvatar()}
                 className="w-full rounded-lg py-2.5 text-sm font-medium text-primary-700 hover:underline disabled:opacity-45 dark:text-primary-300"
               >
-                Поставить последний сохранённый кадр в профиль
+                Поставить последний кадр в профиль
               </button>
             </div>
           </details>

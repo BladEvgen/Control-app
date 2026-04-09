@@ -12,18 +12,12 @@ import type { Aspect } from "./types";
 import { vibrate } from "./camera-utils";
 
 const ASPECT_OPTIONS: { value: Aspect; label: string; title?: string }[] = [
-  { value: "9:16", label: "9:16", title: "Узкая вертикальная рамка" },
   { value: "3:4", label: "3:4", title: "Классическая вертикаль" },
   { value: "1:1", label: "1:1", title: "Квадрат — удобно для лица по центру" },
   {
     value: "4:3",
     label: "4:3",
-    title: "Шире по горизонтали — если держите телефон альбомно",
-  },
-  {
-    value: "16:9",
-    label: "16:9",
-    title: "Широкая рамка под горизонтальный хват",
+    title: "Шире по горизонтали",
   },
 ];
 
@@ -198,7 +192,7 @@ export function BottomControls({
                   : isCapturing
                     ? "Съёмка…"
                     : captureDisabled
-                      ? captureHint || "Живость…"
+                      ? captureHint || "Подготовка…"
                       : "Снимок"
               }
               icon={

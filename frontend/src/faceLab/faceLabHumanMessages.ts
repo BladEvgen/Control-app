@@ -24,7 +24,7 @@ function glossEnglishSnippet(s: string): string {
     .replace(/\bblurry\b/gi, "размыто")
     .replace(/\bsharpness\b/gi, "резкость")
     .replace(/\bnoise\b/gi, "шум")
-    .replace(/\bliveness\b/gi, "живость")
+    .replace(/\bliveness\b/gi, "проверка фото")
     .replace(/\btimeout\b/gi, "тайм-аут");
 }
 
@@ -160,17 +160,17 @@ export function humanizeGallerySearchError(raw: string): GallerySearchHelp {
     n.includes("сохраненной маской лица")
   ) {
     return {
-      title: "В базе нет масок",
-      detail: "Сгенерируйте маски на сервере — тогда поиск заработает.",
+      title: "База для поиска пока не готова",
+      detail: "Серверу пока не из чего искать совпадение. Нужны эталоны лиц.",
       outcome: "partial",
-      headline: "Галерея пустая",
+      headline: "Поиск недоступен",
     };
   }
 
   if (n.includes("нет ни одного корректного эмбеддинга")) {
     return {
-      title: "Маски без векторов",
-      detail: "Пересоздайте маски или проверьте данные на сервере.",
+      title: "База поиска не готова",
+      detail: "Нужно обновить серверные эталоны лиц.",
       outcome: "partial",
       headline: "Нужно обновить базу",
     };
@@ -190,10 +190,24 @@ export function humanizeGallerySearchError(raw: string): GallerySearchHelp {
     n.includes("несовпадение размерности векторов")
   ) {
     return {
-      title: "Разный формат масок",
-      detail: "Нужна выравнивающая перегенерация масок.",
+      title: "База поиска устарела",
+      detail: "Серверные эталоны нужно пересчитать под текущую модель.",
       outcome: "partial",
       headline: "Галерея неоднородна",
+    };
+  }
+
+  if (
+    n.includes("timeout") ||
+    n.includes("timed out") ||
+    n.includes("aborted")
+  ) {
+    return {
+      title: "Поиск отвечает слишком долго",
+      detail:
+        "Сервер ещё обрабатывает кадр. Попробуйте ещё раз через несколько секунд.",
+      outcome: "partial",
+      headline: "Сервер занят",
     };
   }
 
@@ -211,8 +225,8 @@ export function humanizeGallerySearchError(raw: string): GallerySearchHelp {
 
   if (n.includes("no staff members recognized")) {
     return {
-      title: "Нет совпадения",
-      detail: "Другой ракурс или в базе нет этого человека.",
+      title: "Надёжного совпадения нет",
+      detail: "Попробуйте другой кадр: лицо ближе, ровнее и без смаза.",
       outcome: "partial",
       headline: "Не нашли",
     };
@@ -246,13 +260,19 @@ export function humanizeGallerySearchError(raw: string): GallerySearchHelp {
 
 export function humanizePadStatus(status: string): string {
   const m: Record<string, string> = {
+    clean: "Кадр принят автоматически.",
+    suspicious: "Есть сильные признаки подмены.",
+    insufficient_input_review:
+      "Системе не хватило качества кадра для авто-вердикта.",
+    error: "Проверка фото не завершилась.",
+    pending: "Проверка фото ещё не завершена.",
     trust_confirmed: "Система считает кадр живым и приемлемым.",
     trust_rejected: "Кадр не прошёл проверку на подлинность.",
     review: "Нужна ручная оценка.",
     rejected: "Кадр отклонён.",
     ambiguous: "Результат неоднозначный.",
   };
-  return m[status] ?? "Результат проверки кадра.";
+  return m[status] ?? "Результат проверки фото.";
 }
 
 const SNAKE_TOKEN_RU: Record<string, string> = {
@@ -312,43 +332,46 @@ export function humanizePadTag(tag: string): string {
     quality_small_face: "Лицо слишком мелкое на кадре",
     frame_screen_like: "Похоже на фото экрана",
     frame_edges: "Подозрительные края кадра",
+    recapture_fft_periodicity: "Техн. метка: периодика FFT на лице",
+    recapture_gradient_aniso: "Техн. метка: направленность градиентов на лице",
+    recapture_combined: "Техн. метка: сводная текстура лица",
+    recapture_blur_dampened: "Техн. метка: текстура ослаблена из‑за размытия",
   };
   return m[tag] ?? humanizeSnakeOrEnglishFragment(tag);
 }
 
 export function humanizeFaceVerifyStatus(status: FaceVerifyStatus): string {
   const m: Record<FaceVerifyStatus, string> = {
-    VERIFIED: "Подтверждено (диагностика)",
-    REJECTED: "Не подтверждено (диагностика)",
-    QUALITY_FAIL: "Качество кадра",
-    LIVENESS_FAIL: "Живость не пройдена",
-    PAD_ERROR: "Ошибка PAD / кадр",
+    VERIFIED: "Совпадение подтверждено",
+    REJECTED: "Совпадение не подтверждено",
+    QUALITY_FAIL: "Кадр слабый для сравнения",
+    LIVENESS_FAIL: "Кадр не прошёл проверку фото",
+    PAD_ERROR: "Проверка фото не завершилась",
   };
   return m[status] ?? status;
 }
 
 export function humanizeVerifyReasonCode(code: string): string {
   const r: Record<string, string> = {
-    PROBE_QUALITY_LOW: "низкое качество или уверенность детекции",
+    PROBE_QUALITY_LOW: "кадр слабый для уверенного сравнения",
     SCORE_BELOW_WEAK_GALLERY_THRESHOLD:
-      "ниже строгого порога для слабой галереи",
-    WEAK_ENROLLMENT: "мало независимых эталонов в галерее",
-    SCORE_BELOW_VERIFIED_THRESHOLD: "ниже порога для надёжной галереи",
+      "сходство ниже порога для слабой галереи",
+    WEAK_ENROLLMENT: "в галерее мало независимых эталонов",
+    SCORE_BELOW_VERIFIED_THRESHOLD: "сходство ниже обычного порога",
     SCORE_BELOW_COLD_START_THRESHOLD:
-      "ниже порога холодного старта (до сборки gallery_real; PAD и качество должны быть сильными)",
+      "сходство ниже порога для режима без собранной галереи",
     COLD_START_QUALITY_INSUFFICIENT:
-      "для режима без собранной галереи нужен более уверенный кадр (крупнее лицо, выше детекция)",
-    LIVENESS_FAILED: "живость не подтверждена",
-    PAD_PIPELINE_FAILED:
-      "PAD не обработал кадр (техническая ошибка или нет лица для PAD)",
+      "для режима без собранной галереи нужен более уверенный кадр",
+    LIVENESS_FAILED: "проверка фото не подтверждена",
+    PAD_PIPELINE_FAILED: "проверка фото не завершилась",
   };
   return r[code] ?? humanizeSnakeOrEnglishFragment(code);
 }
 
 export function humanizeUnknownFaceStatus(status: string): string {
   const m: Record<string, string> = {
-    unknown: "в галерее не найдено",
-    below_threshold: "ниже порога схожести",
+    unknown: "совпадение в галерее не найдено",
+    below_threshold: "сходство ниже текущего порога",
   };
   return m[status] ?? humanizeSnakeOrEnglishFragment(status);
 }
@@ -399,8 +422,8 @@ export function humanizeResponseFieldKey(key: string): string {
     bbox: "Область лица",
     width: "Ширина",
     height: "Высота",
-    liveness: "Живость",
-    pad: "Проверка кадра",
+    liveness: "Проверка фото",
+    pad: "Проверка фото",
   };
   return labels[key] ?? humanizeSnakeOrEnglishFragment(key);
 }
@@ -409,13 +432,13 @@ export function humanizePadFailureReason(raw: string): FriendlyError {
   const n = norm(raw);
   if (n.includes("timeout") || n.includes("timed out")) {
     return {
-      title: "Проверка PAD не успела завершиться",
+      title: "Проверка фото не успела завершиться",
       detail: "Попробуйте уменьшить размер фото или повторить запрос.",
     };
   }
   if (n.includes("500") || n.includes("internal")) {
     return {
-      title: "Ошибка на сервере при проверке PAD",
+      title: "Ошибка на сервере при проверке фото",
       detail:
         "Попробуйте позже. Распознавание ниже могло всё равно выполниться.",
     };

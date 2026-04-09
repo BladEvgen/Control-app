@@ -22,7 +22,6 @@ export function isWebKitCameraConservativeMode(): boolean {
   return isDesktopSafari;
 }
 
-
 export function computeVideoMirror(input: {
   deviceLabel?: string | undefined;
   mirrorIfUnlabeled: boolean;
@@ -30,7 +29,9 @@ export function computeVideoMirror(input: {
 }): boolean {
   const isFrontStream =
     input.streamFacing === "user" ||
-    (input.deviceLabel ? isFrontCamera(input.deviceLabel) : input.mirrorIfUnlabeled);
+    (input.deviceLabel
+      ? isFrontCamera(input.deviceLabel)
+      : input.mirrorIfUnlabeled);
 
   if (!isFrontStream) return false;
   return true;
@@ -80,37 +81,51 @@ export function createHighQualityConstraints(
 ): MediaTrackConstraints[] {
   const candidates: MediaTrackConstraints[] = [];
   const conservative = isWebKitCameraConservativeMode();
+  const highResLandscape = {
+    width: { ideal: 2560 },
+    height: { ideal: 1440 },
+    frameRate: { ideal: 30, max: 60 },
+  } satisfies MediaTrackConstraints;
+  const standardLandscape = {
+    width: { ideal: 1920 },
+    height: { ideal: 1080 },
+    frameRate: { ideal: 30, max: 60 },
+  } satisfies MediaTrackConstraints;
+  const balancedPortraitCrop = {
+    width: { ideal: 1440 },
+    height: { ideal: 1080 },
+    aspectRatio: { ideal: 4 / 3 },
+    frameRate: { ideal: 30, max: 60 },
+  } satisfies MediaTrackConstraints;
 
   if (deviceId) {
-    candidates.push(
-      conservative
-        ? {
-            deviceId: { exact: deviceId },
-            frameRate: { ideal: 30, max: 60 },
-          }
-        : {
-            deviceId: { exact: deviceId },
-            width: { ideal: 1920 },
-            height: { ideal: 1920 },
-            frameRate: { ideal: 45 },
-          },
-    );
+    if (conservative) {
+      candidates.push({
+        deviceId: { exact: deviceId },
+        frameRate: { ideal: 30, max: 60 },
+      });
+    } else {
+      candidates.push(
+        { deviceId: { exact: deviceId }, ...highResLandscape },
+        { deviceId: { exact: deviceId }, ...standardLandscape },
+        { deviceId: { exact: deviceId }, ...balancedPortraitCrop },
+      );
+    }
   }
 
   if (facing) {
-    candidates.push(
-      conservative
-        ? {
-            facingMode: { ideal: facing },
-            frameRate: { ideal: 30, max: 60 },
-          }
-        : {
-            facingMode: { ideal: facing },
-            width: { ideal: 1920 },
-            height: { ideal: 1920 },
-            frameRate: { ideal: 45 },
-          },
-    );
+    if (conservative) {
+      candidates.push({
+        facingMode: { ideal: facing },
+        frameRate: { ideal: 30, max: 60 },
+      });
+    } else {
+      candidates.push(
+        { facingMode: { ideal: facing }, ...highResLandscape },
+        { facingMode: { ideal: facing }, ...standardLandscape },
+        { facingMode: { ideal: facing }, ...balancedPortraitCrop },
+      );
+    }
   }
 
   candidates.push({});
@@ -134,7 +149,7 @@ export async function applyMaxVideoResolution(
     const wMax = caps.width?.max;
     const hMax = caps.height?.max;
     if (!wMax || !hMax) return null;
-    const TRACK_MAX_LONG = 1920;
+    const TRACK_MAX_LONG = 2560;
     let tw = wMax;
     let th = hMax;
     const L = Math.max(tw, th);

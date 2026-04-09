@@ -12,27 +12,27 @@ const PHASE: Record<
   Record<Exclude<FaceLabVoiceLang, "off">, string>
 > = {
   loading: {
-    ru: "Пожалуйста, подождите несколько секунд — мы готовим проверку.",
+    ru: "Секунду, готовим кадр.",
     kk: "Өтінеміз, бірнеше секунд күтіңіз — тексеруді дайындаймыз.",
     en: "Please wait a moment while we prepare the check for you.",
   },
   blink: {
-    ru: "Пожалуйста, один раз моргните.",
+    ru: "Моргните один раз.",
     kk: "Өтінеміз, көзіңізді бір рет жұмыңыз.",
     en: "Please blink once, when you are ready.",
   },
   yaw: {
-    ru: "Пожалуйста, слегка поверните голову влево или вправо.",
+    ru: "Поверните голову чуть в сторону.",
     kk: "Өтінеміз, басыңызды сәл солға немесе оңға бұраңыз.",
     en: "Please turn your head gently to the left or to the right.",
   },
   smile: {
-    ru: "Пожалуйста, слегка улыбнитесь.",
+    ru: "Посмотрите прямо и слегка улыбнитесь.",
     kk: "Өтінеміз, жеңіл күлімсіреңіз.",
     en: "Please give a slight smile, if you would.",
   },
   unavailable: {
-    ru: "К сожалению, в этом браузере проверка недоступна. Вы можете снять кадр вручную — спасибо за понимание.",
+    ru: "Автопроверка недоступна. Можно снять вручную.",
     kk: "Өкінішке орай, бұл браузерде тексеру қолжетімсіз. Суретті қолмен түсіре аласыз — түсінгеніңізге рахмет.",
     en: "We are sorry — this check is not available in this browser. You may take a photo manually. Thank you for your understanding.",
   },
@@ -85,22 +85,22 @@ const SETUP_GUIDE: Record<
   Record<Exclude<FaceLabVoiceLang, "off">, string>
 > = {
   profile_photo: {
-    ru: "Пожалуйста, смотрите прямо в камеру. В светлой рамке на видео показан силуэт головы фронтально; совместите своё лицо с ним и нажмите затвор.",
+    ru: "Смотрите прямо в камеру.",
     kk: "Өтінеміз, камераға тік қараңыз. Бейнедегі жарық рамка ішінде беттің алдыңғы силуэті көрсетілген; бетіңізді сәйкестендіріп, түсіріңіз батырмасын басыңыз.",
     en: "Please look straight at the camera. Inside the bright frame you will see a front-facing head silhouette; align your face with it, then tap the shutter.",
   },
   bootstrap_front: {
-    ru: "Пожалуйста, встаньте прямо перед камерой. В рамке на видео — силуэт головы анфас; повторите положение примерно как на макете, затем сделайте снимок.",
+    ru: "Шаг один. Смотрите прямо.",
     kk: "Өтінеміз, камера алдында тік тұрыңыз. Рамкадағы бейнеде беттің алдыңғы силуэті бар; макеттегідей орналастырып, сурет түсіріңіз.",
     en: "Please stand squarely in front of the camera. The frame shows a front-facing head silhouette; match your pose to it, then take the photo.",
   },
   bootstrap_left: {
-    ru: "Пожалуйста, слегка поверните голову влево примерно на двадцать градусов — разворот лица к камере, не наклон ухом к плечу. В рамке анимация: лицо уходит вглубь экрана; повторите и снимите.",
+    ru: "Шаг два. Поверните голову чуть влево.",
     kk: "Өтінеміз, басыңызды шамамен жиырма градусқа солға бұраңыз — бетті камераға бұраңыз, құлақты иіспей. Рамкадағы анимация бетті экран тереңіне қарай бұрады; соған сәйкестендіріп түсіріңіз.",
     en: "Please turn your head slightly left, about twenty degrees — swivel your face toward the camera, not an ear-to-shoulder tilt. The animation in the frame shows the face turning in depth; match it, then capture.",
   },
   bootstrap_right: {
-    ru: "Пожалуйста, слегка поверните голову вправо примерно на двадцать градусов — разворот лица к камере, не наклон ухом к плечу. В рамке анимация: лицо уходит вглубь экрана; повторите и снимите.",
+    ru: "Шаг три. Поверните голову чуть вправо.",
     kk: "Өтінеміз, басыңызды шамамен жиырма градусқа оңға бұраңыз — бетті камераға бұраңыз, құлақты иіспей. Рамкадағы анимация бетті экран тереңіне қарай бұрады; соған сәйкестендіріп түсіріңіз.",
     en: "Please turn your head slightly right, about twenty degrees — swivel your face toward the camera, not an ear-to-shoulder tilt. The animation in the frame shows the face turning in depth; match it, then capture.",
   },

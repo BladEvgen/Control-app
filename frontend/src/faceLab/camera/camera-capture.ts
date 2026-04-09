@@ -39,9 +39,9 @@ export async function capturePhoto(
     frame,
     container,
     shouldMirror,
-    maxWidth = 1280,
-    maxHeight = 1280,
-    quality = 0.88,
+    maxWidth = 1920,
+    maxHeight = 1920,
+    quality = 0.94,
   } = options;
 
   const videoWidth = video.videoWidth;

@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import { motion } from "framer-motion";
 import type { FaceVerifyApiResponse } from "./faceLabApi";
 import { formatServerElapsed } from "./faceLabFormat";
+import { PadDiagnosticsReadout } from "./faceLabPadDiagnostics";
+import { coercePadDiagnostics } from "./faceLabPadTypes";
 import {
   humanizeFaceVerifyStatus,
   humanizePadStatus,
@@ -96,29 +98,320 @@ function Bar({
 function galleryStrengthLine(
   g: FaceVerifyApiResponse["gallery_strength"],
 ): string {
-  if (g === "strong") return "Надёжная галерея эталонов.";
-  return "Слабая галерея эталонов — применён строгий порог.";
+  if (g === "strong") return "Галерея надёжная.";
+  return "Галерея небольшая, поэтому порог строже.";
 }
 
-function livenessSummary(v: FaceVerifyApiResponse): string {
-  if (v.status === "PAD_ERROR")
-    return "Проверка живости не выполнена (техническая ошибка).";
-  if (v.status === "LIVENESS_FAIL") return "Живость не подтверждена.";
+function outcomeBadgeClass(tone: "success" | "warning" | "danger"): string {
+  if (tone === "success") {
+    return "border-emerald-200/80 bg-emerald-50 text-emerald-800 dark:border-emerald-800/40 dark:bg-emerald-500/15 dark:text-emerald-200";
+  }
+  if (tone === "warning") {
+    return "border-amber-200/80 bg-amber-50 text-amber-900 dark:border-amber-800/40 dark:bg-amber-500/15 dark:text-amber-100";
+  }
+  return "border-rose-200/80 bg-rose-50 text-rose-800 dark:border-rose-800/40 dark:bg-rose-500/15 dark:text-rose-200";
+}
+
+function evidenceTileClass(
+  tone: "success" | "warning" | "danger" | "neutral" = "neutral",
+): string {
+  if (tone === "success") {
+    return "border-emerald-200/80 bg-emerald-50/80 dark:border-emerald-800/40 dark:bg-emerald-500/10";
+  }
+  if (tone === "warning") {
+    return "border-amber-200/80 bg-amber-50/80 dark:border-amber-800/40 dark:bg-amber-500/10";
+  }
+  if (tone === "danger") {
+    return "border-rose-200/80 bg-rose-50/80 dark:border-rose-800/40 dark:bg-rose-500/10";
+  }
+  return "border-slate-200/80 bg-slate-50/80 dark:border-slate-700/60 dark:bg-slate-950/40";
+}
+
+function verifyVerdictLabel(v: FaceVerifyApiResponse, yes: boolean): string {
+  if (
+    yes &&
+    (v.liveness.status === "insufficient_input_review" ||
+      v.liveness.status === "review")
+  ) {
+    return "Совпало, но кадр слабый";
+  }
+  if (yes) return "Совпадение подтверждено";
+  if (v.status === "QUALITY_FAIL") return "Кадр слабый для сравнения";
+  if (v.status === "LIVENESS_FAIL") return "Кадр не прошёл проверку фото";
+  if (v.status === "PAD_ERROR") return "Проверка фото не завершилась";
+  return "Совпадение не подтверждено";
+}
+
+function verifyVerdictTone(
+  v: FaceVerifyApiResponse,
+  yes: boolean,
+): "success" | "warning" | "danger" {
+  if (
+    yes &&
+    (v.liveness.status === "insufficient_input_review" ||
+      v.liveness.status === "review")
+  ) {
+    return "warning";
+  }
+  if (yes) return "success";
+  if (
+    v.status === "QUALITY_FAIL" ||
+    v.status === "PAD_ERROR" ||
+    v.liveness.status === "insufficient_input_review"
+  ) {
+    return "warning";
+  }
+  return "danger";
+}
+
+function livenessValue(v: FaceVerifyApiResponse): string {
+  if (v.status === "PAD_ERROR") return "нет ответа";
+  if (
+    v.matched &&
+    v.final_decision === "YES" &&
+    (v.liveness.status === "insufficient_input_review" ||
+      v.liveness.status === "review")
+  ) {
+    return "нужен кадр лучше";
+  }
+  if (v.liveness.status === "insufficient_input_review") return "мало данных";
   if (
     v.liveness.checked &&
     v.liveness.trust_confirmed === true &&
     v.liveness.status === "clean"
   ) {
-    return "Живость подтверждена.";
+    return "подтверждена";
   }
-  if (v.liveness.checked) return "Живость не подтверждена.";
-  return "Результат живости отсутствует.";
+  if (v.liveness.checked) return "не подтверждена";
+  return "не проверена";
+}
+
+function buildVerifyUncertaintyLines(v: FaceVerifyApiResponse): string[] {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  const push = (line: string | null | undefined) => {
+    const text = (line ?? "").trim();
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    lines.push(text);
+  };
+
+  if (!v.quality.passed) {
+    push("Кадр слабый для уверенного сравнения.");
+  }
+  if (v.liveness.status === "insufficient_input_review") {
+    push("Для проверки фото системе не хватило пригодного изображения.");
+  }
+  if (v.gallery_strength === "weak") {
+    push("Эталонов мало, поэтому порог сравнения строже.");
+  }
+  for (const code of v.reason_codes.slice(0, 3)) {
+    push(humanizeVerifyReasonCode(code));
+  }
+  return lines;
+}
+
+function EvidenceTile({
+  label,
+  value,
+  hint,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  tone?: "success" | "warning" | "danger" | "neutral";
+}) {
+  return (
+    <div
+      className={`rounded-xl border px-3 py-3 shadow-sm transition-colors ${evidenceTileClass(tone)}`}
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        {label}
+      </p>
+      <p className="mt-1 text-base font-semibold leading-snug text-slate-900 dark:text-slate-100">
+        {value}
+      </p>
+      {hint ? (
+        <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+          {hint}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function VerifyPadLivenessDetails({
+  liveness,
+  padBarsOpen,
+  setPadBarsOpen,
+}: {
+  liveness: FaceVerifyApiResponse["liveness"];
+  padBarsOpen: boolean;
+  setPadBarsOpen: Dispatch<SetStateAction<boolean>>;
+}) {
+  const padDiag = coercePadDiagnostics(liveness.diagnostics);
+  return (
+    <>
+      {padDiag ? (
+        <PadDiagnosticsReadout diagnostics={padDiag} />
+      ) : typeof liveness.status === "string" ? (
+        <p className="mb-2 text-slate-600 dark:text-slate-400">
+          {humanizePadStatus(liveness.status)}
+        </p>
+      ) : null}
+      <div className="mt-2">
+        <button
+          type="button"
+          className="text-xs font-medium text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+          aria-expanded={padBarsOpen}
+          onClick={() => setPadBarsOpen((x) => !x)}
+        >
+          {padBarsOpen
+            ? "Скрыть числовые сигналы проверки фото"
+            : "Показать числовые сигналы проверки фото"}
+        </button>
+      </div>
+      {padBarsOpen &&
+      typeof liveness.risk_score === "number" &&
+      typeof liveness.deepface_score === "number" ? (
+        <motion.div
+          className="mt-2 space-y-2"
+          variants={fadeContainer}
+          initial="hidden"
+          animate="show"
+        >
+          <Bar
+            label="Риск подмены"
+            value={liveness.risk_score}
+            tone={
+              liveness.risk_score > 0.45
+                ? "rose"
+                : liveness.risk_score > 0.25
+                  ? "amber"
+                  : "emerald"
+            }
+          />
+          <Bar
+            label="Подлинность лица (FasNet)"
+            value={liveness.deepface_score}
+            tone="slate"
+          />
+          {typeof liveness.device_score === "number" ? (
+            <Bar
+              label="Устройство у лица"
+              value={liveness.device_score}
+              tone="slate"
+            />
+          ) : null}
+          {typeof liveness.device_bg_score === "number" ? (
+            <Bar
+              label="Устройство (фон)"
+              value={liveness.device_bg_score}
+              tone="slate"
+            />
+          ) : null}
+          {typeof liveness.frame_score === "number" ? (
+            <Bar
+              label="Рамка у лица"
+              value={liveness.frame_score}
+              tone="slate"
+            />
+          ) : null}
+          {typeof liveness.frame_global_score === "number" ? (
+            <Bar
+              label="Рамка (глоб.)"
+              value={liveness.frame_global_score}
+              tone="slate"
+            />
+          ) : null}
+          {typeof liveness.recapture_score === "number" ? (
+            <Bar
+              label="Рекапчер (лицо)"
+              value={liveness.recapture_score}
+              tone="slate"
+            />
+          ) : null}
+          {typeof liveness.quality_penalty === "number" ? (
+            <Bar
+              label="Штраф за качество"
+              value={liveness.quality_penalty}
+              tone="amber"
+            />
+          ) : null}
+        </motion.div>
+      ) : null}
+      {!padDiag && liveness.tags && liveness.tags.length > 0 ? (
+        <div className="mt-2">
+          <p className="mb-1 text-[11px] font-medium text-slate-500">
+            Служебные пометки
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {liveness.tags.map((tag) => (
+              <span
+                key={tag}
+                className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-600 dark:border-slate-600 dark:bg-slate-950/80 dark:text-slate-300"
+              >
+                {humanizePadTag(tag)}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {!padDiag &&
+      typeof liveness.elapsed_ms === "number" &&
+      typeof liveness.model_version === "string" ? (
+        <p className="mt-2 tabular-nums text-[11px] text-slate-500">
+          {liveness.model_version} · {formatServerElapsed(liveness.elapsed_ms)}{" "}
+          ({liveness.elapsed_ms.toFixed(0)} мс)
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+function livenessSummary(v: FaceVerifyApiResponse): string {
+  if (v.status === "PAD_ERROR") return "Проверка фото не завершилась.";
+  if (v.status === "LIVENESS_FAIL") return "Проверка фото не подтверждена.";
+  if (
+    v.matched &&
+    v.final_decision === "YES" &&
+    (v.liveness.status === "insufficient_input_review" ||
+      v.liveness.status === "review")
+  ) {
+    return "Сходство посчитано, но для уверенного кадра лучше переснять фото.";
+  }
+  if (v.liveness.status === "insufficient_input_review") {
+    return "Для проверки фото не хватило качества кадра.";
+  }
+  if (
+    v.liveness.checked &&
+    v.liveness.trust_confirmed === true &&
+    v.liveness.status === "clean"
+  ) {
+    return "Проверка фото пройдена.";
+  }
+  if (v.liveness.checked) return "Проверка фото не подтверждена.";
+  return "Результат проверки фото отсутствует.";
 }
 
 export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
   const [open, setOpen] = useState(false);
+  const [padBarsOpen, setPadBarsOpen] = useState(false);
   const yes = v.matched && v.final_decision === "YES";
   const displayScore = Math.max(v.score, v.max_cosine);
+  const verdictTone = verifyVerdictTone(v, yes);
+  const verdictLabel = verifyVerdictLabel(v, yes);
+  const shortReason = (
+    v.summary ||
+    v.decision_summary ||
+    humanizeVerifyReasonCode(v.reason_codes[0] ?? "")
+  ).trim();
+  const uncertaintyLines = buildVerifyUncertaintyLines(v);
+  const qualityHint =
+    typeof v.quality.face_area_ratio === "number"
+      ? `Лицо занимает ${(v.quality.face_area_ratio * 100).toFixed(2)}% кадра.`
+      : undefined;
 
   return (
     <motion.div
@@ -127,47 +420,78 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35, ease: "easeOut" }}
     >
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-          Сравнение с эталоном
-        </h3>
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+            Сравнение с эталоном
+          </h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Короткий итог по сверке лица.
+          </p>
+        </div>
         <span
-          className={`rounded-full px-3 py-0.5 text-sm font-semibold ${
-            yes
-              ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300"
-              : "bg-rose-50 text-rose-800 dark:bg-rose-500/20 dark:text-rose-300"
-          }`}
+          className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${outcomeBadgeClass(verdictTone)}`}
         >
-          {v.final_decision}
+          {verdictLabel}
         </span>
       </div>
 
-      <p className="mb-3 text-sm text-slate-700 dark:text-slate-300">
-        {(v.summary || v.decision_summary || "").trim()}
-      </p>
-
-      <div className="mb-3 rounded-lg border border-slate-200/90 bg-slate-50/90 px-3 py-2.5 text-sm dark:border-slate-600/60 dark:bg-slate-950/40">
-        <p className="tabular-nums font-medium text-slate-800 dark:text-slate-200">
-          Сходство:{" "}
-          <span
-            className={
-              yes
-                ? "text-emerald-700 dark:text-emerald-400"
-                : "text-slate-900 dark:text-slate-100"
-            }
-          >
-            {pctExact(displayScore)}%
-          </span>
-          <span className="mx-1.5 text-slate-400">·</span>
-          порог для этого кадра: {pctExact(v.threshold_applied)}%
+      <div className="mb-4 rounded-2xl border border-slate-200/80 bg-gradient-to-br from-slate-50/95 via-white to-slate-50/80 p-4 shadow-sm dark:border-slate-700/60 dark:from-slate-950/90 dark:via-slate-900/75 dark:to-slate-950/80">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          Причина
         </p>
-        <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
-          {livenessSummary(v)}
-        </p>
-        <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
-          {galleryStrengthLine(v.gallery_strength)}
+        <p className="mt-1 text-base font-semibold leading-snug text-slate-900 dark:text-slate-100">
+          {shortReason || "Сравнение завершено."}
         </p>
       </div>
+
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <EvidenceTile
+          label="Сходство"
+          value={`${pctExact(displayScore)}%`}
+          hint={`Порог для этого кадра: ${pctExact(v.threshold_applied)}%`}
+          tone={yes ? "success" : "neutral"}
+        />
+        <EvidenceTile
+          label="Проверка фото"
+          value={livenessValue(v)}
+          hint={livenessSummary(v)}
+          tone={
+            v.liveness.status === "insufficient_input_review"
+              ? "warning"
+              : yes
+                ? "success"
+                : v.status === "LIVENESS_FAIL"
+                  ? "danger"
+                  : "neutral"
+          }
+        />
+        <EvidenceTile
+          label="Галерея"
+          value={v.gallery_strength === "strong" ? "надёжная" : "строгий режим"}
+          hint={`${galleryStrengthLine(v.gallery_strength)} ${v.gallery_size} эталонов · ${v.gallery.distinct_enrollment_sources} источника`}
+          tone={v.gallery_strength === "strong" ? "success" : "warning"}
+        />
+        <EvidenceTile
+          label="Качество"
+          value={v.quality.passed ? "достаточно" : "с ограничениями"}
+          hint={qualityHint}
+          tone={v.quality.passed ? "neutral" : "warning"}
+        />
+      </div>
+
+      {uncertaintyLines.length > 0 ? (
+        <div className="mb-4 rounded-2xl border border-amber-200/80 bg-amber-50/80 p-4 shadow-sm dark:border-amber-800/40 dark:bg-amber-500/10">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-100">
+            Неопределённость
+          </p>
+          <ul className="mt-2 space-y-1.5 text-sm leading-relaxed text-amber-950 dark:text-amber-50">
+            {uncertaintyLines.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <button
         type="button"
@@ -175,7 +499,7 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
         aria-expanded={open}
         onClick={() => setOpen((x) => !x)}
       >
-        {open ? "Скрыть технические детали" : "Технические детали"}
+        {open ? "Скрыть подробности" : "Подробности"}
       </button>
 
       {open ? (
@@ -228,88 +552,14 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
 
           <div className="rounded-lg border border-slate-200/80 bg-slate-50/60 p-3 text-xs dark:border-slate-600/50 dark:bg-slate-950/30">
             <p className="mb-2 font-medium text-slate-700 dark:text-slate-200">
-              Живость (PAD), метрики
+              Проверка фото
             </p>
-            {v.liveness.checked && typeof v.liveness.status === "string" ? (
-              <p className="mb-2 text-slate-600 dark:text-slate-400">
-                {humanizePadStatus(v.liveness.status)}
-              </p>
-            ) : null}
-            {v.liveness.checked &&
-            typeof v.liveness.risk_score === "number" &&
-            typeof v.liveness.deepface_score === "number" ? (
-              <motion.div
-                className="space-y-2"
-                variants={fadeContainer}
-                initial="hidden"
-                animate="show"
-              >
-                <Bar
-                  label="Риск подмены"
-                  value={v.liveness.risk_score}
-                  tone={
-                    v.liveness.risk_score > 0.45
-                      ? "rose"
-                      : v.liveness.risk_score > 0.25
-                        ? "amber"
-                        : "emerald"
-                  }
-                />
-                <Bar
-                  label="Подлинность лица (FasNet)"
-                  value={v.liveness.deepface_score}
-                  tone="slate"
-                />
-                {typeof v.liveness.device_score === "number" ? (
-                  <Bar
-                    label="Съёмка с экрана"
-                    value={v.liveness.device_score}
-                    tone="slate"
-                  />
-                ) : null}
-                {typeof v.liveness.frame_score === "number" ? (
-                  <Bar
-                    label="Рамка кадра"
-                    value={v.liveness.frame_score}
-                    tone="slate"
-                  />
-                ) : null}
-                {typeof v.liveness.quality_penalty === "number" ? (
-                  <Bar
-                    label="Штраф за качество"
-                    value={v.liveness.quality_penalty}
-                    tone="amber"
-                  />
-                ) : null}
-              </motion.div>
-            ) : null}
-            {v.liveness.checked &&
-            v.liveness.tags &&
-            v.liveness.tags.length > 0 ? (
-              <div className="mt-2">
-                <p className="mb-1 text-[11px] font-medium text-slate-500">
-                  Теги PAD
-                </p>
-                <div className="flex flex-wrap gap-1">
-                  {v.liveness.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-600 dark:border-slate-600 dark:bg-slate-950/80 dark:text-slate-300"
-                    >
-                      {humanizePadTag(tag)}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            {v.liveness.checked &&
-            typeof v.liveness.elapsed_ms === "number" &&
-            typeof v.liveness.model_version === "string" ? (
-              <p className="mt-2 tabular-nums text-[11px] text-slate-500">
-                {v.liveness.model_version} ·{" "}
-                {formatServerElapsed(v.liveness.elapsed_ms)} (
-                {v.liveness.elapsed_ms.toFixed(0)} мс)
-              </p>
+            {v.liveness.checked ? (
+              <VerifyPadLivenessDetails
+                liveness={v.liveness}
+                padBarsOpen={padBarsOpen}
+                setPadBarsOpen={setPadBarsOpen}
+              />
             ) : null}
           </div>
 
@@ -364,9 +614,23 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
               <p className="mb-1 font-medium text-slate-700 dark:text-slate-300">
                 Разбивка галереи
               </p>
-              <pre className="overflow-x-auto font-mono text-[10px]">
-                {JSON.stringify(v.diagnostics.gallery_breakdown, null, 0)}
-              </pre>
+              <dl className="space-y-1">
+                {Object.entries(v.diagnostics.gallery_breakdown).map(
+                  ([key, val]) => (
+                    <div
+                      key={key}
+                      className="flex justify-between gap-2 border-b border-slate-200/60 pb-1 last:border-0 dark:border-slate-700/50"
+                    >
+                      <dt className="text-slate-500 dark:text-slate-400">
+                        {key.replace(/_/g, " ")}
+                      </dt>
+                      <dd className="tabular-nums font-medium text-slate-800 dark:text-slate-200">
+                        {typeof val === "number" ? val : String(val)}
+                      </dd>
+                    </div>
+                  ),
+                )}
+              </dl>
             </div>
           ) : null}
 
