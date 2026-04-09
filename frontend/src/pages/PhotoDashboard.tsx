@@ -19,12 +19,7 @@ import {
   FaInfoCircle,
   FaCheckCircle,
 } from "react-icons/fa";
-import {
-  PhotoData,
-  PhotoManualVerdict,
-  PhotoSpoofStatus,
-  PhotoWsMessage,
-} from "../schemas/IData";
+import { PhotoData, PhotoSpoofStatus, PhotoWsMessage } from "../schemas/IData";
 import { apiUrl } from "../../apiConfig";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import apiClient, { log, proactiveRefreshIfNeeded } from "../api";
@@ -233,16 +228,25 @@ const resolvePhotoUiStatus = (photo: Partial<PhotoData>): PhotoUiStatus => {
   return "clean";
 };
 
-const isManualReviewRequiredByBackend = (
-  photo: Partial<PhotoData>,
-): boolean => {
+const canPhotoSetManualVerdict = (photo: Partial<PhotoData>): boolean => {
   if (typeof photo.photoCanSetManualVerdict === "boolean") {
     return photo.photoCanSetManualVerdict;
   }
+  if (photo.hasPhoto === false) return false;
+  return true;
+};
+
+const isManualVerdictActionDisabled = (
+  photo: Partial<PhotoData>,
+  action: Extract<PhotoVerdictAction, "manual_suspicious" | "manual_clean">,
+): boolean => {
   const manualVerdict = photo.photoManualVerdict ?? "none";
-  if (manualVerdict !== "none") return false;
-  const status = photo.photoSpoofStatus ?? "pending";
-  return status === "pending" || status === "review" || status === "error";
+  if (manualVerdict === "suspicious") return action === "manual_suspicious";
+  if (manualVerdict === "clean") return action === "manual_clean";
+  const effectiveStatus = resolvePhotoEffectiveStatus(photo);
+  if (effectiveStatus === "suspicious") return action === "manual_suspicious";
+  if (effectiveStatus === "clean") return action === "manual_clean";
+  return false;
 };
 
 const isRiskPhotoCandidate = (photo: Partial<PhotoData>): boolean => {
@@ -268,8 +272,9 @@ const buildVerdictSkipFallbackPatch = (
 ): PhotoData => {
   const next: PhotoData = {
     ...photo,
-    photoCanSetManualVerdict: false,
   };
+  next.photoCanSetManualVerdict =
+    reasonFromServer === "no_photo" ? false : canPhotoSetManualVerdict(next);
   if (reasonFromServer === "status_not_reviewable") {
     const st = photo.photoSpoofStatus ?? "pending";
     if (st === "pending" || st === "review" || st === "error") {
@@ -1096,7 +1101,9 @@ const PhotoDashboard: React.FC = () => {
   const photosRef = useRef<PhotoData[]>([]);
   const [selectedPhoto, setSelectedPhoto] = useState<PhotoData | null>(null);
   const selectedPhotoRef = useRef<PhotoData | null>(null);
-  const [isVerdictSubmitting, setIsVerdictSubmitting] = useState(false);
+  const [verdictSubmittingPhotoId, setVerdictSubmittingPhotoId] = useState<
+    number | null
+  >(null);
   const [verdictError, setVerdictError] = useState("");
   const [verdictSkipNotice, setVerdictSkipNotice] = useState("");
   const [verdictAutoClosePending, setVerdictAutoClosePending] = useState(false);
@@ -1555,9 +1562,10 @@ const PhotoDashboard: React.FC = () => {
         photoCanSetManualVerdict:
           typeof merged.photoCanSetManualVerdict === "boolean"
             ? merged.photoCanSetManualVerdict
-            : isManualReviewRequiredByBackend({
+            : canPhotoSetManualVerdict({
                 photoManualVerdict: normalizedManualVerdict,
                 photoSpoofStatus: normalizedSpoofStatus,
+                hasPhoto: merged.hasPhoto,
               }),
         op: merged.op,
         stateCode: merged.stateCode,
@@ -2208,20 +2216,32 @@ const PhotoDashboard: React.FC = () => {
     [mergeCanonicalPhotoEvents],
   );
 
+  const isSubmittingVerdictForPhoto = useCallback(
+    (photoId?: number) =>
+      photoId != null && verdictSubmittingPhotoId === photoId,
+    [verdictSubmittingPhotoId],
+  );
+
   const submitManualVerdict = useCallback(
-    async (action: PhotoVerdictAction) => {
-      const currentPhoto = selectedPhotoRef.current;
-      if (!currentPhoto?.id) {
+    async (
+      targetPhoto: PhotoData,
+      action: PhotoVerdictAction,
+      options: { closeOnSuccess?: boolean } = {},
+    ) => {
+      if (!targetPhoto?.id) {
         return;
       }
-      clearScheduledVerdictModalClose();
-      setVerdictError("");
-      setIsVerdictSubmitting(true);
+      const isSelectedPhoto = selectedPhotoRef.current?.id === targetPhoto.id;
+      if (isSelectedPhoto) {
+        clearScheduledVerdictModalClose();
+        setVerdictError("");
+      }
+      setVerdictSubmittingPhotoId(targetPhoto.id);
       let verdictSucceeded = false;
       let scheduleSkipAutoClose = false;
       try {
         const response = await apiClient.post(
-          `/lesson_attendance/${currentPhoto.id}/photo_verdict/`,
+          `/lesson_attendance/${targetPhoto.id}/photo_verdict/`,
           { action },
         );
         const updatedCount = Number(response.data?.updated_count ?? 0);
@@ -2236,18 +2256,20 @@ const PhotoDashboard: React.FC = () => {
           : undefined;
         if (updatedRecord) {
           applySinglePhotoUpdate(updatedRecord);
-          setSelectedPhoto(updatedRecord);
+          if (isSelectedPhoto) {
+            setSelectedPhoto(updatedRecord);
+          }
           verdictSucceeded = true;
-        } else if (updatedCount === 0 && skippedIds.includes(currentPhoto.id)) {
+        } else if (updatedCount === 0 && skippedIds.includes(targetPhoto.id)) {
           const reasonEntry = skippedReasons.find(
-            (r) => r.id === currentPhoto.id,
+            (r) => r.id === targetPhoto.id,
           );
           const reasonFromServer = reasonEntry?.reason ?? "unknown";
           console.warn("[PhotoVerdict] manual verdict unavailable", {
-            photoId: currentPhoto.id,
-            photoManualVerdict: currentPhoto.photoManualVerdict,
-            photoSpoofStatus: currentPhoto.photoSpoofStatus,
-            photoCanSetManualVerdict: currentPhoto.photoCanSetManualVerdict,
+            photoId: targetPhoto.id,
+            photoManualVerdict: targetPhoto.photoManualVerdict,
+            photoSpoofStatus: targetPhoto.photoSpoofStatus,
+            photoCanSetManualVerdict: targetPhoto.photoCanSetManualVerdict,
             reasonFromServer,
           });
           const reasonMessage: Record<string, string> = {
@@ -2261,7 +2283,9 @@ const PhotoDashboard: React.FC = () => {
           const noticeText =
             reasonMessage[reasonFromServer] ??
             "Для этой записи ручной вердикт сейчас недоступен.";
-          setVerdictSkipNotice(noticeText);
+          if (isSelectedPhoto) {
+            setVerdictSkipNotice(noticeText);
+          }
           scheduleSkipAutoClose = true;
 
           let refreshedRow: PhotoData | null = null;
@@ -2269,10 +2293,10 @@ const PhotoDashboard: React.FC = () => {
             const refreshResp = await apiClient.get<{
               results?: PhotoData[];
             }>("/lesson_attendance/photo_verdicts/", {
-              params: { id: currentPhoto.id },
+              params: { id: targetPhoto.id },
             });
             const row = refreshResp.data?.results?.[0];
-            if (row != null && row.id === currentPhoto.id) {
+            if (row != null && row.id === targetPhoto.id) {
               refreshedRow = row;
             }
           } catch (refreshErr) {
@@ -2283,10 +2307,18 @@ const PhotoDashboard: React.FC = () => {
           }
           if (refreshedRow) {
             applySinglePhotoUpdate(refreshedRow);
+            if (isSelectedPhoto) {
+              setSelectedPhoto(refreshedRow);
+            }
           } else {
-            applySinglePhotoUpdate(
-              buildVerdictSkipFallbackPatch(currentPhoto, reasonFromServer),
+            const fallbackPatch = buildVerdictSkipFallbackPatch(
+              targetPhoto,
+              reasonFromServer,
             );
+            applySinglePhotoUpdate(fallbackPatch);
+            if (isSelectedPhoto) {
+              setSelectedPhoto(fallbackPatch);
+            }
           }
         } else if (updatedCount > 0) {
           verdictSucceeded = true;
@@ -2294,7 +2326,7 @@ const PhotoDashboard: React.FC = () => {
       } catch (error) {
         log.error("Failed to update manual photo verdict", error);
         console.error("[PhotoVerdict] submit failed", {
-          photoId: currentPhoto?.id,
+          photoId: targetPhoto?.id,
           action,
           error,
         });
@@ -2312,18 +2344,24 @@ const PhotoDashboard: React.FC = () => {
           (typeof fallbackError === "string" && fallbackError.trim()) ||
           "";
         if (statusCode === 401 || statusCode === 403) {
-          setVerdictError(
-            serverMessage ||
-              "Нет доступа к сохранению. Обновите страницу и войдите заново.",
-          );
+          if (isSelectedPhoto) {
+            setVerdictError(
+              serverMessage ||
+                "Нет доступа к сохранению. Обновите страницу и войдите заново.",
+            );
+          }
         } else {
-          setVerdictError(
-            serverMessage || "Не удалось сохранить ручной вердикт.",
-          );
+          if (isSelectedPhoto) {
+            setVerdictError(
+              serverMessage || "Не удалось сохранить ручной вердикт.",
+            );
+          }
         }
       } finally {
-        setIsVerdictSubmitting(false);
-        if (verdictSucceeded) {
+        setVerdictSubmittingPhotoId((prev) =>
+          prev === targetPhoto.id ? null : prev,
+        );
+        if (verdictSucceeded && options.closeOnSuccess && isSelectedPhoto) {
           setVerdictAutoClosePending(true);
           const delayMs = prefersReducedMotion
             ? VERDICT_AUTO_CLOSE_DELAY_REDUCED_MS
@@ -2334,7 +2372,7 @@ const PhotoDashboard: React.FC = () => {
             setVerdictSkipNotice("");
             setSelectedPhoto(null);
           }, delayMs);
-        } else if (scheduleSkipAutoClose) {
+        } else if (scheduleSkipAutoClose && isSelectedPhoto) {
           setVerdictAutoClosePending(true);
           const delayMs = prefersReducedMotion
             ? VERDICT_SKIP_MODAL_CLOSE_REDUCED_MS
@@ -3375,11 +3413,15 @@ const PhotoDashboard: React.FC = () => {
                   uiStatus === "suspicious_manual";
                 const showCheckBadge =
                   uiStatus === "check" || uiStatus === "check_error";
-                const manualVerdict: PhotoManualVerdict =
-                  p.photoManualVerdict ?? "none";
-                const canSetManualVerdict = isManualReviewRequiredByBackend(p);
+                const canSetManualVerdict = canPhotoSetManualVerdict(p);
                 const verdictButtonsLocked =
-                  isVerdictSubmitting || verdictAutoClosePending;
+                  isSubmittingVerdictForPhoto(p.id) || verdictAutoClosePending;
+                const disableSuspiciousButton =
+                  verdictButtonsLocked ||
+                  isManualVerdictActionDisabled(p, "manual_suspicious");
+                const disableCleanButton =
+                  verdictButtonsLocked ||
+                  isManualVerdictActionDisabled(p, "manual_clean");
 
                 return (
                   <div className="flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain [@media(orientation:landscape)]:flex-row [@media(orientation:landscape)]:overflow-hidden">
@@ -3437,12 +3479,13 @@ const PhotoDashboard: React.FC = () => {
                             <div className="mt-4 flex flex-wrap items-center gap-2">
                               <button
                                 type="button"
-                                disabled={
-                                  verdictButtonsLocked ||
-                                  manualVerdict === "suspicious"
-                                }
+                                disabled={disableSuspiciousButton}
                                 onClick={() =>
-                                  void submitManualVerdict("manual_suspicious")
+                                  void submitManualVerdict(
+                                    p,
+                                    "manual_suspicious",
+                                    { closeOnSuccess: true },
+                                  )
                                 }
                                 className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-rose-50 transition-colors hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
                               >
@@ -3450,12 +3493,11 @@ const PhotoDashboard: React.FC = () => {
                               </button>
                               <button
                                 type="button"
-                                disabled={
-                                  verdictButtonsLocked ||
-                                  manualVerdict === "clean"
-                                }
+                                disabled={disableCleanButton}
                                 onClick={() =>
-                                  void submitManualVerdict("manual_clean")
+                                  void submitManualVerdict(p, "manual_clean", {
+                                    closeOnSuccess: true,
+                                  })
                                 }
                                 className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-50 transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                               >
