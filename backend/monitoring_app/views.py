@@ -242,6 +242,7 @@ def _invalidate_staff_face_caches(staff_pin: str) -> None:
     invalidate_cache(f"staff_{pin}")
     invalidate_cache_pattern(f"staff_detail_{LESSON_REPORT_CACHE_VERSION}_{pin}_")
     invalidate_cache("face_lab_staff_options_v2")
+    ml.invalidate_runtime_gallery_caches(pin)
 
 
 def _department_confirmation_hour_bucket(
@@ -6629,17 +6630,6 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
     def _reason_manual_verdict_unavailable(record: models.LessonAttendance) -> str:
         if not bool(record.staff_image_path):
             return "no_photo"
-        if (
-            record.photo_manual_verdict
-            != models.LessonAttendance.PHOTO_MANUAL_VERDICT_NONE
-        ):
-            return "verdict_already_set"
-        if record.photo_spoof_status not in {
-            models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
-            models.LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
-            models.LessonAttendance.PHOTO_SPOOF_STATUS_ERROR,
-        }:
-            return "status_not_reviewable"
         return "unknown"
 
     if action in {
@@ -8897,6 +8887,10 @@ def face_lab_staff_options(request):
 @permission_classes([IsAuthenticated])
 def face_lab_pad_test(request):
     """Run presentation-attack detection on an uploaded frame (authenticated testers)."""
+    from monitoring_app.pad_diagnostics import (
+        diagnostics_from_pad_result,
+        filter_operator_facing_tags,
+    )
     from monitoring_app.photo_pad import check_photo_bgr
 
     uploaded = request.FILES.get("image")
@@ -8919,18 +8913,23 @@ def face_lab_pad_test(request):
         )
 
     result = check_photo_bgr(img_bgr)
+    diagnostics = diagnostics_from_pad_result(result)
     return Response(
         {
             "status": result.status,
             "trust_confirmed": result.trust_confirmed,
             "risk_score": result.risk_score,
-            "tags": result.tags,
+            "tags": filter_operator_facing_tags(list(result.tags)),
+            "diagnostics": diagnostics,
             "model_version": result.model_version,
             "elapsed_ms": result.elapsed_ms,
             "deepface_score": result.deepface_score,
             "device_score": result.device_score,
             "frame_score": result.frame_score,
             "quality_penalty": result.quality_penalty,
+            "device_bg_score": result.device_bg_score,
+            "frame_global_score": result.frame_global_score,
+            "recapture_score": result.recapture_score,
         },
         status=status.HTTP_200_OK,
     )
@@ -8999,9 +8998,13 @@ def face_lab_bootstrap_status(request):
 @authentication_classes([JWTAuthentication])
 @permission_classes([IsAuthenticated])
 def face_lab_save_face_sample(request):
-    """Save one trusted PAD+quality-approved capture (no embedding build in-request)."""
+    """Save one usable setup frame for the three-photo enrollment flow.
+
+    Returns:
+        API response that keeps setup focused on usable photos, not on PAD jargon.
+    """
     import numpy as np
-    from monitoring_app.face_verification_pad import pad_allows_identity_probe
+    from monitoring_app.face_verification_pad import pad_blocks_bootstrap_sample
     from monitoring_app.photo_pad import check_photo_bgr
 
     pin = (request.data.get("pin") or "").strip()
@@ -9048,10 +9051,13 @@ def face_lab_save_face_sample(request):
         )
 
     pad_result = check_photo_bgr(img_bgr)
-    if not pad_allows_identity_probe(pad_result):
+    if pad_blocks_bootstrap_sample(pad_result):
         return Response(
             {
-                "error": "PAD не подтвердил живость кадра — образец не сохранён.",
+                "error": (
+                    "Похоже, это не живой кадр человека. "
+                    "Сделайте новый снимок прямо с камеры."
+                ),
                 "pad_status": pad_result.status,
                 "trust_confirmed": pad_result.trust_confirmed,
             },

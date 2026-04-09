@@ -13,7 +13,12 @@ from monitoring_app.face_verification_contract import (
     LivenessPayload,
     QualityPayload,
 )
+from monitoring_app.face_verification_pad import (
+    pad_blocks_before_identity,
+    pad_blocks_bootstrap_sample,
+)
 from monitoring_app.face_verification_policy import decide_face_verify_binary
+from monitoring_app.photo_pad import PadResult
 
 _QUALITY_OK: QualityPayload = {
     "passed": True,
@@ -152,9 +157,9 @@ class FaceVerifyPolicyPadMappingTests(SimpleTestCase):
         self.assertEqual(fd, "YES")
         self.assertEqual(st, "VERIFIED")
         self.assertEqual(codes, [])
-        self.assertAlmostEqual(thr_applied, 0.86)
+        self.assertAlmostEqual(thr_applied, 0.835)
         self.assertEqual(gstr, "weak")
-        self.assertIn("строг", summary.lower())
+        self.assertIn("холод", summary.lower())
 
     def test_weak_gallery_mid_score_no_not_review(self) -> None:
         weak_bd: dict[str, int] = {
@@ -187,9 +192,8 @@ class FaceVerifyPolicyPadMappingTests(SimpleTestCase):
         self.assertFalse(matched)
         self.assertEqual(fd, "NO")
         self.assertEqual(st, "REJECTED")
-        self.assertIn(R_WEAK_ENROLLMENT, codes)
-        self.assertIn(R_SCORE_BELOW_WEAK_GALLERY_THRESHOLD, codes)
-        self.assertAlmostEqual(thr_applied, 0.86)
+        self.assertEqual(codes, [R_SCORE_BELOW_COLD_START_THRESHOLD])
+        self.assertAlmostEqual(thr_applied, 0.835)
         self.assertEqual(gstr, "weak")
 
     def test_zero_templates_is_no(self) -> None:
@@ -470,3 +474,126 @@ class FaceVerifyPolicyPadMappingTests(SimpleTestCase):
         self.assertEqual(fd, "NO")
         self.assertEqual(st, "QUALITY_FAIL")
         self.assertEqual(codes[0], R_PROBE_QUALITY_LOW)
+
+    def test_insufficient_input_retry_can_still_verify(self) -> None:
+        live: LivenessPayload = {
+            "checked": True,
+            "trust_confirmed": None,
+            "status": "insufficient_input_review",
+            "risk_score": 0.0,
+            "model_version": "pad_v6",
+            "tags": [],
+            "elapsed_ms": 1.0,
+            "deepface_score": 0.0,
+            "device_score": 0.0,
+            "frame_score": 0.0,
+            "quality_penalty": 0.35,
+            "note": "",
+        }
+        matched, fd, summary, st, codes, thr_applied, gstr = _call(
+            quality=_QUALITY_OK,
+            live=live,
+            score=0.9,
+            gallery_templates=3,
+            breakdown=_GALLERY_STRONG_BD,
+        )
+        self.assertTrue(matched)
+        self.assertEqual(fd, "YES")
+        self.assertEqual(st, "VERIFIED")
+        self.assertEqual(codes, [])
+        self.assertAlmostEqual(thr_applied, 0.76)
+        self.assertEqual(gstr, "strong")
+        self.assertIn("пересня", summary.lower())
+
+    def test_review_retry_can_still_verify(self) -> None:
+        live: LivenessPayload = {
+            "checked": True,
+            "trust_confirmed": None,
+            "status": "review",
+            "risk_score": 0.12,
+            "model_version": "pad_v6",
+            "tags": [],
+            "elapsed_ms": 1.0,
+            "deepface_score": 0.0,
+            "device_score": 0.0,
+            "frame_score": 0.0,
+            "quality_penalty": 0.18,
+            "note": "",
+        }
+        matched, fd, summary, st, codes, thr_applied, gstr = _call(
+            quality=_QUALITY_OK,
+            live=live,
+            score=0.9,
+            gallery_templates=3,
+            breakdown=_GALLERY_STRONG_BD,
+        )
+        self.assertTrue(matched)
+        self.assertEqual(fd, "YES")
+        self.assertEqual(st, "VERIFIED")
+        self.assertEqual(codes, [])
+        self.assertAlmostEqual(thr_applied, 0.76)
+        self.assertEqual(gstr, "strong")
+        self.assertIn("пересня", summary.lower())
+
+    def test_insufficient_input_retry_below_threshold_is_quality_fail(self) -> None:
+        live: LivenessPayload = {
+            "checked": True,
+            "trust_confirmed": None,
+            "status": "insufficient_input_review",
+            "risk_score": 0.0,
+            "model_version": "pad_v6",
+            "tags": [],
+            "elapsed_ms": 1.0,
+            "deepface_score": 0.0,
+            "device_score": 0.0,
+            "frame_score": 0.0,
+            "quality_penalty": 0.35,
+            "note": "",
+        }
+        matched, fd, summary, st, codes, thr_applied, gstr = _call(
+            quality=_QUALITY_OK,
+            live=live,
+            score=0.6,
+            gallery_templates=3,
+            breakdown=_GALLERY_STRONG_BD,
+        )
+        self.assertFalse(matched)
+        self.assertEqual(fd, "NO")
+        self.assertEqual(st, "QUALITY_FAIL")
+        self.assertEqual(codes, [R_PROBE_QUALITY_LOW])
+        self.assertAlmostEqual(thr_applied, 0.76)
+        self.assertEqual(gstr, "strong")
+        self.assertIn("кадр слабый", summary.lower())
+
+
+class FaceVerifyPadGateTests(SimpleTestCase):
+    def _pad(self, *, status: str, trust_confirmed: bool | None) -> PadResult:
+        return PadResult(
+            status=status,
+            risk_score=0.0,
+            trust_confirmed=trust_confirmed,
+            tags=[],
+            model_version="pad_v6",
+            elapsed_ms=0.0,
+            deepface_score=0.0,
+            device_score=0.0,
+            frame_score=0.0,
+            quality_penalty=0.0,
+        )
+
+    def test_insufficient_input_does_not_block_identity_probe(self) -> None:
+        pad = self._pad(status="insufficient_input_review", trust_confirmed=None)
+        self.assertFalse(pad_blocks_before_identity(pad))
+
+    def test_review_does_not_block_identity_probe(self) -> None:
+        pad = self._pad(status="review", trust_confirmed=None)
+        self.assertFalse(pad_blocks_before_identity(pad))
+
+    def test_bootstrap_blocks_only_clear_spoof_frames(self) -> None:
+        suspicious = self._pad(status="suspicious", trust_confirmed=False)
+        insufficient = self._pad(
+            status="insufficient_input_review",
+            trust_confirmed=None,
+        )
+        self.assertTrue(pad_blocks_bootstrap_sample(suspicious))
+        self.assertFalse(pad_blocks_bootstrap_sample(insufficient))

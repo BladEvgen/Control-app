@@ -47,6 +47,10 @@ class LivenessPayload(TypedDict, total=False):
     device_score: float
     frame_score: float
     quality_penalty: float
+    device_bg_score: float
+    frame_global_score: float
+    recapture_score: float
+    diagnostics: dict[str, object]
     note: str
 
 

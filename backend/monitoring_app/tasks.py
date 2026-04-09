@@ -2,7 +2,7 @@ import datetime
 import logging
 import os
 from pathlib import Path
-from typing import Any, Union, cast
+from typing import Any, Optional, Union, cast
 
 from celery import shared_task
 from django.conf import settings
@@ -16,6 +16,222 @@ from monitoring_app.photo_ws_broadcast import (
 logger = logging.getLogger(__name__)
 DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY = "department_confirmation_epoch_hour"
 DEPARTMENT_CONFIRMATION_EPOCH_TTL = 5 * 60 * 60
+
+
+def _lesson_attendance_pad_candidate_queryset(
+    *,
+    pad_model_version: str,
+    only_today: bool,
+    backlog_only: bool = False,
+):
+    """Build the PAD candidate queryset for hourly or backlog scans.
+
+    Args:
+        pad_model_version: Active PAD model version.
+        only_today: Whether to keep only rows for the local current date.
+        backlog_only: Whether to keep only rows older than the local current date.
+
+    Returns:
+        QuerySet of LessonAttendance rows still needing PAD work.
+    """
+    from monitoring_app.photo_pad import MANUAL_NONE
+
+    q_checked_null = cast(Q, Q(photo_spoof_checked_at__isnull=True))
+    q_version_old = cast(Q, ~Q(photo_spoof_model_version=pad_model_version))
+    q_pending = cast(
+        Q,
+        Q(photo_spoof_status=models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING),
+    )
+    q_error = cast(
+        Q,
+        Q(photo_spoof_status=models.LessonAttendance.PHOTO_SPOOF_STATUS_ERROR),
+    )
+    q_needs_scan = cast(
+        Q, cast(Q, cast(Q, q_checked_null | q_version_old) | q_pending) | q_error
+    )
+    q_has_path = cast(Q, Q(staff_image_path__isnull=False))
+    q_non_empty = cast(Q, ~Q(staff_image_path=""))
+    q_manual_none = cast(Q, Q(photo_manual_verdict=MANUAL_NONE))
+    qs = models.LessonAttendance.objects.filter(
+        cast(
+            Q, cast(Q, cast(Q, q_has_path & q_non_empty) & q_manual_none) & q_needs_scan
+        )
+    )
+    today = timezone.localdate()
+    if only_today:
+        return (
+            qs.filter(date_at=today)
+            .only("id", "date_at", "staff_image_path")
+            .order_by("id")
+        )
+    if backlog_only:
+        return (
+            qs.filter(date_at__lt=today)
+            .only("id", "date_at", "staff_image_path")
+            .order_by("date_at", "id")
+        )
+    return qs.only("id", "date_at", "staff_image_path").order_by("date_at", "id")
+
+
+def _run_lesson_attendance_pad_scan(
+    *,
+    records: list[models.LessonAttendance],
+    device: str,
+    batch_size: int,
+    log_prefix: str,
+    mode: str,
+) -> dict[str, Union[int, float, str]]:
+    """Run PAD on the provided rows and persist results.
+
+    Args:
+        records: Ordered LessonAttendance rows to scan.
+        device: PAD device hint.
+        batch_size: Chunk size for progress logging.
+        log_prefix: Prefix for log lines.
+        mode: Human-readable scan mode for logs.
+
+    Returns:
+        Scan stats with counts and average latency.
+    """
+    from monitoring_app.photo_pad import check_photo, normalize_device
+
+    resolved_device = normalize_device(device)
+    total = len(records)
+    oldest_date = records[0].date_at.isoformat() if records else "—"
+    updated_records_by_date: dict[datetime.date, list[int]] = {}
+    checked_count = 0
+    status_counts: dict[str, int] = {
+        "clean": 0,
+        "review": 0,
+        "suspicious": 0,
+        "error": 0,
+    }
+    elapsed_sum_ms = 0.0
+
+    logger.info(
+        "%s start mode=%s total=%s batch_size=%s device=%s oldest_date=%s",
+        log_prefix,
+        mode,
+        total,
+        batch_size,
+        resolved_device,
+        oldest_date,
+    )
+
+    for start in range(0, total, batch_size):
+        batch = records[start : start + batch_size]
+        for record in batch:
+            image_path = record.staff_image_path
+            if not image_path:
+                logger.warning("%s skip_empty_path pk=%s", log_prefix, record.pk)
+                status_counts["error"] += 1
+                checked_count += 1
+                continue
+            try:
+                result = check_photo(image_path=image_path, device=resolved_device)
+            except Exception as exc:
+                logger.exception(
+                    "%s scan_exception mode=%s pk=%s path=%s error=%s",
+                    log_prefix,
+                    mode,
+                    record.pk,
+                    image_path,
+                    exc,
+                )
+                status_counts["error"] += 1
+                checked_count += 1
+                continue
+
+            elapsed_sum_ms += result.elapsed_ms
+            checked_count += 1
+            status_counts[result.status] = status_counts.get(result.status, 0) + 1
+            updated_rows = models.LessonAttendance.objects.filter(pk=record.pk).update(
+                **result.to_update_kwargs()
+            )
+            if updated_rows:
+                updated_records_by_date.setdefault(record.date_at, []).append(record.id)
+
+        if total > batch_size:
+            logger.info(
+                "%s progress mode=%s %s/%s checked=%s suspicious=%s review=%s error=%s",
+                log_prefix,
+                mode,
+                min(start + batch_size, total),
+                total,
+                checked_count,
+                status_counts["suspicious"],
+                status_counts["review"],
+                status_counts["error"],
+            )
+
+    avg_ms = (elapsed_sum_ms / checked_count) if checked_count else 0.0
+    broadcast_lesson_attendance_photo_meta_updates(
+        updated_records_by_date,
+        log_prefix=log_prefix,
+    )
+    logger.info(
+        "%s done mode=%s checked=%s clean=%s review=%s suspicious=%s error=%s avg_ms=%.2f",
+        log_prefix,
+        mode,
+        checked_count,
+        status_counts["clean"],
+        status_counts["review"],
+        status_counts["suspicious"],
+        status_counts["error"],
+        avg_ms,
+    )
+    return {
+        "checked": checked_count,
+        "clean": status_counts["clean"],
+        "review": status_counts["review"],
+        "suspicious": status_counts["suspicious"],
+        "error": status_counts["error"],
+        "mode": mode,
+        "oldest_date": oldest_date,
+        "avg_ms": round(avg_ms, 2),
+    }
+
+
+def lesson_attendance_pad_rescan_eligible(
+    record: models.LessonAttendance,
+    *,
+    force_manual: bool,
+    auto_eligible_only: bool,
+    pad_model_version: str,
+) -> tuple[bool, Optional[str]]:
+    """Decide whether a ``LessonAttendance`` row should be scanned inside Celery rescan.
+
+    The admin action ``Пересканировать выбранные фото (auto)`` does not use this to
+    drop manual or «fresh» rows: it calls :func:`prepare_lesson_attendance_admin_pad_full_rescan`
+    first so only the selected ids are cleared and queued.
+
+    Args:
+        record: Row with ``staff_image_path``, manual verdict, and spoof metadata
+            (``photo_spoof_*``) populated.
+        force_manual: When ``True``, allow rescan even when a manual photo verdict is set.
+        auto_eligible_only: When ``True``, skip rows that already have a current-model
+            PAD result and are not pending, error, or never checked (hourly-style semantics).
+        pad_model_version: Active :data:`monitoring_app.photo_pad.PAD_MODEL_VERSION` string.
+
+    Returns:
+        ``(True, None)`` if the row should be rescanned, else ``(False, reason)`` where
+        ``reason`` is ``"no_photo"``, ``"manual"``, or ``"auto_ineligible"``.
+    """
+    from monitoring_app.photo_pad import MANUAL_NONE
+
+    if not record.staff_image_path:
+        return False, "no_photo"
+    if not force_manual and record.photo_manual_verdict != MANUAL_NONE:
+        return False, "manual"
+    if auto_eligible_only and not force_manual:
+        la = models.LessonAttendance
+        pending = record.photo_spoof_status == la.PHOTO_SPOOF_STATUS_PENDING
+        error_status = record.photo_spoof_status == la.PHOTO_SPOOF_STATUS_ERROR
+        never_checked = record.photo_spoof_checked_at is None
+        version_stale = (record.photo_spoof_model_version or "") != pad_model_version
+        if not (never_checked or pending or error_status or version_stale):
+            return False, "auto_ineligible"
+    return True, None
 
 
 @shared_task
@@ -174,14 +390,14 @@ def update_lesson_attendance_last_out():
             logger.info("%s no records to update", log_prefix)
             return
 
-        BATCH_SIZE = 1000
+        batch_size = 1000
         total_updated = 0
         total_records = lessons_to_update.count()
         current_tz = timezone.get_current_timezone()
         skipped_not_due = 0
 
-        for offset in range(0, total_records, BATCH_SIZE):
-            batch = lessons_to_update[offset : offset + BATCH_SIZE]
+        for offset in range(0, total_records, batch_size):
+            batch = lessons_to_update[offset : offset + batch_size]
             updates = []
 
             for lesson in batch.iterator(chunk_size=100):
@@ -213,11 +429,11 @@ def update_lesson_attendance_last_out():
                 )
                 total_updated += len(updates)
 
-            if total_records > BATCH_SIZE:
+            if total_records > batch_size:
                 logger.info(
                     "%s progress %s/%s",
                     log_prefix,
-                    min(offset + BATCH_SIZE, total_records),
+                    min(offset + batch_size, total_records),
                     total_records,
                 )
 
@@ -368,7 +584,10 @@ def process_lesson_attendance_batch(attendance_data, _image_name, image_content)
     return {"success_records": success_records, "error_records": error_records}
 
 
-@shared_task(name="monitoring_app.tasks.scan_lesson_attendance_photos_hourly")
+@shared_task(
+    name="monitoring_app.tasks.scan_lesson_attendance_photos_hourly",
+    queue="control_app_queue",
+)
 def scan_lesson_attendance_photos_hourly(
     batch_size: int = 100,
     max_records: int = 200,
@@ -384,13 +603,12 @@ def scan_lesson_attendance_photos_hourly(
     При only_today=True задача берёт только текущую локальную дату (date_at=today),
     и ограничивает объём одним запуском (max_records), чтобы остаток шёл в
     следующий час без перегруза.
+
+    PAD: записи со старым ``photo_spoof_model_version`` (не совпадает с текущим
+    ``PAD_MODEL_VERSION`` в ``photo_pad``) попадают в очередь перескана
+    автоматически.
     """
-    from monitoring_app.photo_pad import (
-        MANUAL_NONE,
-        PAD_MODEL_VERSION,
-        check_photo,
-        normalize_device,
-    )
+    from monitoring_app.photo_pad import PAD_MODEL_VERSION
 
     log_prefix = "[lesson_photo_pad_hourly]"
     batch_size = max(
@@ -401,133 +619,180 @@ def scan_lesson_attendance_photos_hourly(
         1,
         int(max_records or getattr(settings, "PHOTO_PAD_HOURLY_MAX_RECORDS", 200)),
     )
-    resolved_device = normalize_device(device)
-    target_date = timezone.localdate() if only_today else None
-
-    q_checked_null = cast(Q, Q(photo_spoof_checked_at__isnull=True))
-    q_version_old = cast(Q, ~Q(photo_spoof_model_version=PAD_MODEL_VERSION))
-    q_pending = cast(
-        Q,
-        Q(photo_spoof_status=models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING),
+    qs = _lesson_attendance_pad_candidate_queryset(
+        pad_model_version=PAD_MODEL_VERSION,
+        only_today=only_today,
+        backlog_only=False,
     )
-    inner_q = cast(Q, cast(Q, q_checked_null | q_version_old) | q_pending)
-    q_has_path = cast(Q, Q(staff_image_path__isnull=False))
-    q_non_empty = cast(Q, ~Q(staff_image_path=""))
-    q_manual_none = cast(Q, Q(photo_manual_verdict=MANUAL_NONE))
-    candidates_q = cast(
-        Q,
-        cast(Q, cast(Q, q_has_path & q_non_empty) & q_manual_none) & inner_q,
-    )
-    qs = models.LessonAttendance.objects.filter(candidates_q)
-    if target_date is not None:
-        qs = qs.filter(date_at=target_date)
-    qs = qs.only("id", "date_at", "staff_image_path").order_by("id")
-    if max_records:
-        records = list(qs[:max_records])
-    else:
-        records = list(qs)
-
-    stats: dict[str, Union[int, float]] = {
-        "checked": 0,
-        "clean": 0,
-        "review": 0,
-        "suspicious": 0,
-        "error": 0,
-    }
-    elapsed_sum_ms = 0.0
-    total = len(records)
-    updated_records_by_date: dict[datetime.date, list[int]] = {}
-
-    logger.info(
-        "%s start total=%s batch_size=%s max_records=%s device=%s date=%s",
-        log_prefix,
-        total,
-        batch_size,
-        max_records,
-        resolved_device,
-        target_date.isoformat() if target_date is not None else "all",
-    )
-
-    for start in range(0, total, batch_size):
-        batch = records[start : start + batch_size]
-        for record in batch:
-            image_path = record.staff_image_path
-            if not image_path:
-                logger.warning(
-                    "%s skip_empty_path pk=%s",
-                    log_prefix,
-                    record.pk,
-                )
-                stats["error"] += 1
-                stats["checked"] += 1
-                continue
-            try:
-                result = check_photo(image_path=image_path, device=resolved_device)
-            except Exception as exc:
-                logger.exception(
-                    "%s scan_exception pk=%s path=%s error=%s",
-                    log_prefix,
-                    record.pk,
-                    image_path,
-                    exc,
-                )
-                stats["error"] += 1
-                stats["checked"] += 1
-                continue
-
-            elapsed_sum_ms += result.elapsed_ms
-            stats["checked"] += 1
-            stats[result.status] = stats.get(result.status, 0) + 1
-            updated_rows = models.LessonAttendance.objects.filter(pk=record.pk).update(
-                **result.to_update_kwargs()
-            )
-            if updated_rows:
-                updated_records_by_date.setdefault(record.date_at, []).append(record.id)
-
-        if total > batch_size:
-            logger.info(
-                "%s progress=%s/%s checked=%s suspicious=%s review=%s error=%s",
-                log_prefix,
-                min(start + batch_size, total),
-                total,
-                stats["checked"],
-                stats["suspicious"],
-                stats["review"],
-                stats["error"],
-            )
-
-    avg_ms = (elapsed_sum_ms / stats["checked"]) if stats["checked"] else 0.0
-    broadcast_lesson_attendance_photo_meta_updates(
-        updated_records_by_date,
+    records = list(qs[:max_records]) if max_records else list(qs)
+    return _run_lesson_attendance_pad_scan(
+        records=records,
+        device=device,
+        batch_size=batch_size,
         log_prefix=log_prefix,
+        mode=("today" if only_today else "all"),
     )
-    logger.info(
-        "%s done checked=%s clean=%s review=%s suspicious=%s error=%s avg_ms=%.2f",
-        log_prefix,
-        stats["checked"],
-        stats["clean"],
-        stats["review"],
-        stats["suspicious"],
-        stats["error"],
-        avg_ms,
-    )
-    stats["avg_ms"] = round(avg_ms, 2)
-    return stats
 
 
-@shared_task(name="monitoring_app.tasks.rescan_lesson_attendance_photo_ids")
+@shared_task(
+    name="monitoring_app.tasks.scan_lesson_attendance_photos_backlog",
+    queue="control_app_queue",
+)
+def scan_lesson_attendance_photos_backlog(
+    batch_size: int = 50,
+    max_records: int = 100,
+    device: str = "auto",
+) -> dict[str, Union[int, float, str]]:
+    """Scan the oldest historical PAD backlog outside the current local date.
+
+    Args:
+        batch_size: Chunk size for progress logging.
+        max_records: Maximum number of backlog rows per run.
+        device: PAD device hint.
+
+    Returns:
+        Scan stats for the bounded backlog pass.
+    """
+    from monitoring_app.photo_pad import PAD_MODEL_VERSION
+
+    log_prefix = "[lesson_photo_pad_backlog]"
+    hourly_batch = int(getattr(settings, "PHOTO_PAD_HOURLY_BATCH_SIZE", 100))
+    hourly_max = int(getattr(settings, "PHOTO_PAD_HOURLY_MAX_RECORDS", 200))
+    batch_size = max(1, int(batch_size or min(hourly_batch, 50)))
+    max_records = max(1, int(max_records or max(50, min(hourly_max // 4, 100))))
+    qs = _lesson_attendance_pad_candidate_queryset(
+        pad_model_version=PAD_MODEL_VERSION,
+        only_today=False,
+        backlog_only=True,
+    )
+    records = list(qs[:max_records]) if max_records else list(qs)
+    return _run_lesson_attendance_pad_scan(
+        records=records,
+        device=device,
+        batch_size=batch_size,
+        log_prefix=log_prefix,
+        mode="backlog",
+    )
+
+
+def prepare_lesson_attendance_admin_pad_full_rescan(
+    selected_ids: list[int],
+) -> tuple[list[int], dict[str, int]]:
+    """Clear PAD and manual photo fields, then return ids ready for Celery rescan.
+
+    Used exclusively by the LessonAttendance admin action
+    ``Пересканировать выбранные фото (auto)``. For every selected primary key that
+    exists and has a non-empty ``staff_image_path``, resets spoof scores, tags,
+    trust, and manual verdict columns to a pending clean slate, then notifies
+    live photo meta subscribers so the UI matches the database.
+
+    Args:
+        selected_ids: Changelist selection order; duplicates keep the first
+            occurrence only.
+
+    Returns:
+        ``(photo_ids, skipped_counts)`` where ``photo_ids`` preserves selection
+        order among rows with photos, and ``skipped_counts`` has non-negative
+        ``no_photo`` and ``not_found`` tallies.
+    """
+    la = models.LessonAttendance
+    skipped = {"no_photo": 0, "not_found": 0}
+    normalized_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in selected_ids or []:
+        try:
+            parsed_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if parsed_id <= 0 or parsed_id in seen:
+            continue
+        seen.add(parsed_id)
+        normalized_ids.append(parsed_id)
+
+    if not normalized_ids:
+        return [], skipped
+
+    records = list(
+        la.objects.filter(id__in=normalized_ids).only("id", "staff_image_path")
+    )
+    by_id = {row.id: row for row in records}
+    photo_ids: list[int] = []
+    for aid in normalized_ids:
+        rec = by_id.get(aid)
+        if rec is None:
+            skipped["not_found"] += 1
+            continue
+        path = (rec.staff_image_path or "").strip()
+        if not path:
+            skipped["no_photo"] += 1
+            continue
+        photo_ids.append(aid)
+
+    if not photo_ids:
+        return [], skipped
+
+    updated_by_date: dict[datetime.date, list[int]] = {}
+    for pk, day in la.objects.filter(id__in=photo_ids).values_list("id", "date_at"):
+        updated_by_date.setdefault(day, []).append(pk)
+
+    la.objects.filter(id__in=photo_ids).update(
+        photo_spoof_status=la.PHOTO_SPOOF_STATUS_PENDING,
+        photo_spoof_score=None,
+        photo_spoof_tags=[],
+        photo_spoof_checked_at=None,
+        photo_spoof_model_version="",
+        photo_trust_confirmed=None,
+        photo_manual_verdict=la.PHOTO_MANUAL_VERDICT_NONE,
+        photo_manual_comment="",
+        photo_manual_by=None,
+        photo_manual_at=None,
+    )
+
+    broadcast_lesson_attendance_photo_meta_updates(
+        updated_by_date,
+        log_prefix="[lesson_photo_pad_admin_prepare]",
+    )
+
+    return photo_ids, skipped
+
+
+@shared_task(
+    name="monitoring_app.tasks.rescan_lesson_attendance_photo_ids",
+    queue="control_app_queue",
+)
 def rescan_lesson_attendance_photo_ids(
     attendance_ids: list[int] | tuple[int, ...],
     device: str = "auto",
     force_manual: bool = False,
     batch_size: int = 100,
+    auto_eligible_only: bool = False,
 ) -> dict[str, Any]:
     """Фоновый перескан PAD для заданных LessonAttendance.id.
 
-    Используется админ-экшеном, чтобы не блокировать HTTP-запрос и избежать 500/timeout
-    при массовом перескане.
+    Админ-экшен сначала вызывает
+    :func:`prepare_lesson_attendance_admin_pad_full_rescan`, чтобы сбросить PAD и
+    ручной вердикт только по выбранным строкам, затем ставит эту задачу в Celery.
+
+    Args:
+        attendance_ids: Явный список первичных ключей (только они участвуют; лишние id
+            в БД не найдены — учитываются в ``skipped_not_found``).
+        device: Подсказка устройства для Faster R-CNN / torch.
+        force_manual: Если True — записывать результат PAD даже при ненулевом
+            ручном вердикте (по умолчанию админ сбрасывает ручной вердикт заранее).
+        batch_size: Размер чанка при обходе записей.
+        auto_eligible_only: Если True — пропускать записи, у которых уже актуальная
+            версия PAD и статус не ``pending`` (для узких фоновых сценариев; админ
+            передаёт ``False`` после полного сброса).
+
+    Returns:
+        Счётчики обработанных, пропущенных и ошибок.
     """
-    from monitoring_app.photo_pad import MANUAL_NONE, check_photo, normalize_device
+    from monitoring_app.photo_pad import (
+        MANUAL_NONE,
+        PAD_MODEL_VERSION,
+        check_photo,
+        normalize_device,
+    )
 
     log_prefix = "[lesson_photo_pad_admin_ids]"
     normalized_ids: list[int] = []
@@ -552,10 +817,19 @@ def rescan_lesson_attendance_photo_ids(
             "error": 0,
             "skipped_manual": 0,
             "skipped_no_photo": 0,
+            "skipped_not_found": 0,
+            "skipped_auto_ineligible": 0,
         }
 
     resolved_device = normalize_device(device)
     batch_size = max(1, int(batch_size or 100))
+    logger.info(
+        "%s start immediate check_photo run (not beat): ids=%s count=%s device=%s",
+        log_prefix,
+        normalized_ids,
+        len(normalized_ids),
+        resolved_device,
+    )
     id_order = {attendance_id: idx for idx, attendance_id in enumerate(normalized_ids)}
     records = list(
         models.LessonAttendance.objects.filter(id__in=normalized_ids).only(
@@ -563,9 +837,13 @@ def rescan_lesson_attendance_photo_ids(
             "date_at",
             "staff_image_path",
             "photo_manual_verdict",
+            "photo_spoof_model_version",
+            "photo_spoof_status",
+            "photo_spoof_checked_at",
         )
     )
     records.sort(key=lambda item: id_order.get(item.id, 10**9))
+    skipped_not_found = max(0, len(normalized_ids) - len(records))
 
     stats: dict[str, Any] = {
         "requested": len(normalized_ids),
@@ -576,20 +854,31 @@ def rescan_lesson_attendance_photo_ids(
         "error": 0,
         "skipped_manual": 0,
         "skipped_no_photo": 0,
+        "skipped_not_found": skipped_not_found,
+        "skipped_auto_ineligible": 0,
         "device": resolved_device,
+        "auto_eligible_only": bool(auto_eligible_only),
     }
     updated_records_by_date: dict[datetime.date, list[int]] = {}
 
     for start in range(0, len(records), batch_size):
         batch = records[start : start + batch_size]
         for record in batch:
+            eligible, skip_reason = lesson_attendance_pad_rescan_eligible(
+                record,
+                force_manual=force_manual,
+                auto_eligible_only=auto_eligible_only,
+                pad_model_version=PAD_MODEL_VERSION,
+            )
+            if not eligible:
+                if skip_reason == "no_photo":
+                    stats["skipped_no_photo"] += 1
+                elif skip_reason == "manual":
+                    stats["skipped_manual"] += 1
+                elif skip_reason == "auto_ineligible":
+                    stats["skipped_auto_ineligible"] += 1
+                continue
             image_path = record.staff_image_path
-            if not image_path:
-                stats["skipped_no_photo"] += 1
-                continue
-            if not force_manual and record.photo_manual_verdict != MANUAL_NONE:
-                stats["skipped_manual"] += 1
-                continue
             try:
                 result = check_photo(image_path=image_path, device=resolved_device)
             except Exception as exc:
@@ -622,6 +911,13 @@ def rescan_lesson_attendance_photo_ids(
                 continue
 
             if not updated_rows:
+                logger.warning(
+                    "%s pad_update_no_rows lesson_id=%s force_manual=%s path=%s",
+                    log_prefix,
+                    record.id,
+                    force_manual,
+                    image_path,
+                )
                 continue
             stats["checked"] += 1
             stats[result.status] = int(stats.get(result.status, 0)) + 1
@@ -633,7 +929,9 @@ def rescan_lesson_attendance_photo_ids(
     )
 
     logger.info(
-        "%s done requested=%s checked=%s clean=%s review=%s suspicious=%s error=%s skipped_manual=%s skipped_no_photo=%s device=%s",
+        "%s done requested=%s checked=%s clean=%s review=%s suspicious=%s error=%s "
+        "skipped_manual=%s skipped_no_photo=%s skipped_not_found=%s "
+        "skipped_auto_ineligible=%s auto_eligible_only=%s device=%s",
         log_prefix,
         stats["requested"],
         stats["checked"],
@@ -643,6 +941,9 @@ def rescan_lesson_attendance_photo_ids(
         stats["error"],
         stats["skipped_manual"],
         stats["skipped_no_photo"],
+        stats["skipped_not_found"],
+        stats["skipped_auto_ineligible"],
+        stats["auto_eligible_only"],
         resolved_device,
     )
     return stats
@@ -866,15 +1167,13 @@ def warmup_cache_task(force: bool = False, keys=None):
     Returns:
         dict: Результаты прогрева кэша.
     """
-    from typing import List, Optional
-
     from monitoring_app.cache_conf import warmup_cache
     from monitoring_app.management.commands.warmup_cache import Command
 
     command = Command()
     command.handle(force=force, keys=keys)
 
-    keys_list: Optional[List[str]] = keys if keys else None
+    keys_list: Optional[list[str]] = list(keys) if keys else None
     results = warmup_cache(keys=keys_list, force=force)
 
     logger.info(

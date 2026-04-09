@@ -58,12 +58,9 @@ FACE_LAB_TTS_PHRASES: dict[str, dict[str, str]] = {
         "front-facing head silhouette; align your face with it, then tap the shutter.",
     },
     "setup_bootstrap_front": {
-        "ru": "Пожалуйста, встаньте прямо перед камерой. В рамке на видео — силуэт головы "
-        "анфас; повторите положение примерно как на макете, затем сделайте снимок.",
-        "kk": "Өтінеміз, камера алдында тік тұрыңыз. Рамкадағы бейнеде беттің алдыңғы "
-        "силуэті бар; макеттегідей орналастырып, сурет түсіріңіз.",
-        "en": "Please stand squarely in front of the camera. The frame shows a front-facing "
-        "head silhouette; match your pose to it, then take the photo.",
+        "ru": "Пожалуйста, встаньте прямо перед камерой.",
+        "kk": "Өтінеміз, камера алдында тік тұрыңыз.",
+        "en": "Please stand squarely in front of the camera.",
     },
     "setup_bootstrap_left": {
         "ru": "Пожалуйста, слегка поверните голову влево примерно на двадцать градусов — "

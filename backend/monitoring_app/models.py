@@ -996,15 +996,8 @@ class LessonAttendance(models.Model, GeoItem):
 
     @property
     def photo_can_set_manual_verdict(self) -> bool:
-        if not bool(self.staff_image_path):
-            return False
-        if self.photo_manual_verdict != self.PHOTO_MANUAL_VERDICT_NONE:
-            return False
-        return self.photo_spoof_status in {
-            self.PHOTO_SPOOF_STATUS_PENDING,
-            self.PHOTO_SPOOF_STATUS_REVIEW,
-            self.PHOTO_SPOOF_STATUS_ERROR,
-        }
+        """Return whether the operator can set or change a manual photo verdict."""
+        return bool(self.staff_image_path)
 
     @property
     def photo_effective_trust_confirmed(self) -> Optional[bool]:

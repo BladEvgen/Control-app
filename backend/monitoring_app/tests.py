@@ -1944,6 +1944,107 @@ class PhotoConsumerProtocolTest(SimpleTestCase):
         self.assertEqual(payload["events"][0]["id"], 201)
 
 
+class LessonAttendancePhotoVerdictActionabilityTest(SimpleTestCase):
+    def test_auto_clean_photo_stays_manually_actionable(self):
+        record = LessonAttendance(
+            staff_image_path="/tmp/clean.jpg",
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        )
+
+        self.assertTrue(record.photo_can_set_manual_verdict)
+
+    def test_auto_suspicious_photo_stays_manually_actionable(self):
+        record = LessonAttendance(
+            staff_image_path="/tmp/suspicious.jpg",
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        )
+
+        self.assertTrue(record.photo_can_set_manual_verdict)
+
+    def test_manual_verdict_stays_actionable_for_correction(self):
+        with_manual = LessonAttendance(
+            staff_image_path="/tmp/review.jpg",
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN,
+        )
+        with_manual_suspicious = LessonAttendance(
+            staff_image_path="/tmp/review2.jpg",
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS,
+        )
+
+        self.assertTrue(with_manual.photo_can_set_manual_verdict)
+        self.assertTrue(with_manual_suspicious.photo_can_set_manual_verdict)
+
+    def test_missing_photo_blocks_actionability(self):
+        without_photo = LessonAttendance(
+            staff_image_path="",
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        )
+
+        self.assertFalse(without_photo.photo_can_set_manual_verdict)
+
+
+class LessonAttendancePhotoVerdictApiTest(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="photo-verdict-tester",
+            password="secret123",
+        )
+        self.client.force_authenticate(user=self.user)
+        self.staff = Staff.objects.create(
+            pin="S4455S",
+            name="Photo",
+            surname="Verdict",
+        )
+        event_dt = timezone.make_aware(datetime(2026, 4, 9, 9, 0))
+        self.lesson = LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=event_dt,
+            last_out=event_dt + timedelta(hours=1),
+            latitude=43.2389,
+            longitude=76.8897,
+            date_at=event_dt.date(),
+            staff_image_path="/tmp/photo.jpg",
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+        )
+        self.url = reverse(
+            "lesson_attendance_photo_verdict_single",
+            kwargs={"attendance_id": self.lesson.id},
+        )
+
+    def test_manual_verdict_can_switch_between_suspicious_and_clean(self):
+        suspicious_response = self.client.post(
+            self.url,
+            {"action": "manual_suspicious"},
+            format="json",
+        )
+        self.assertEqual(suspicious_response.status_code, status.HTTP_200_OK)
+        self.lesson.refresh_from_db()
+        self.assertEqual(
+            self.lesson.photo_manual_verdict,
+            LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS,
+        )
+
+        clean_response = self.client.post(
+            self.url,
+            {"action": "manual_clean"},
+            format="json",
+        )
+        self.assertEqual(clean_response.status_code, status.HTTP_200_OK)
+        self.lesson.refresh_from_db()
+        self.assertEqual(
+            self.lesson.photo_manual_verdict,
+            LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN,
+        )
+
+
 class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
     def setUp(self):
         self.staff = Staff.objects.create(
@@ -1960,6 +2061,7 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
         image_path: str,
         auto_status: str = LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
         manual_verdict: str = LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        date_at=None,
     ) -> LessonAttendance:
         return LessonAttendance.objects.create(
             staff=self.staff,
@@ -1969,7 +2071,7 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
             first_in=self.now,
             latitude=43.238949,
             longitude=76.889709,
-            date_at=timezone.localdate(),
+            date_at=date_at or timezone.localdate(),
             staff_image_path=image_path,
             photo_spoof_status=auto_status,
             photo_manual_verdict=manual_verdict,
@@ -2066,6 +2168,100 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
         mock_check_photo.assert_not_called()
         mock_get_channel_layer.assert_not_called()
         self.assertEqual(cache.get(cache_key), "keep-me")
+
+    @patch("monitoring_app.photo_ws_broadcast.get_channel_layer")
+    @patch("monitoring_app.photo_pad.check_photo")
+    def test_hourly_scan_only_today_skips_old_pending_rows(
+        self,
+        mock_check_photo,
+        mock_get_channel_layer,
+    ):
+        yesterday = timezone.localdate() - datetime.timedelta(days=1)
+        old_lesson = self._create_lesson(
+            image_path="/tmp/hourly-pad-old-pending.jpg",
+            date_at=yesterday,
+        )
+        today_lesson = self._create_lesson(
+            image_path="/tmp/hourly-pad-today-pending.jpg"
+        )
+
+        mock_check_photo.return_value = self._mock_pad_result(
+            status_value=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+            trust_confirmed=True,
+            risk_score=0.01,
+            tags=["face_ok"],
+        )
+        channel_layer = Mock()
+        channel_layer.group_send = AsyncMock()
+        mock_get_channel_layer.return_value = channel_layer
+
+        result = monitoring_tasks.scan_lesson_attendance_photos_hourly(
+            batch_size=10,
+            max_records=10,
+            only_today=True,
+        )
+
+        old_lesson.refresh_from_db()
+        today_lesson.refresh_from_db()
+
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(
+            today_lesson.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN
+        )
+        self.assertEqual(
+            old_lesson.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_PENDING
+        )
+
+    @patch("monitoring_app.photo_ws_broadcast.get_channel_layer")
+    @patch("monitoring_app.photo_pad.check_photo")
+    def test_backlog_scan_processes_old_pending_and_error_rows(
+        self,
+        mock_check_photo,
+        mock_get_channel_layer,
+    ):
+        yesterday = timezone.localdate() - datetime.timedelta(days=1)
+        old_pending = self._create_lesson(
+            image_path="/tmp/backlog-pad-pending.jpg",
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
+            date_at=yesterday,
+        )
+        old_error = self._create_lesson(
+            image_path="/tmp/backlog-pad-error.jpg",
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_ERROR,
+            date_at=yesterday,
+        )
+        today_pending = self._create_lesson(image_path="/tmp/backlog-pad-today.jpg")
+
+        mock_check_photo.return_value = self._mock_pad_result(
+            status_value=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+            trust_confirmed=True,
+            risk_score=0.02,
+            tags=["face_ok"],
+        )
+        channel_layer = Mock()
+        channel_layer.group_send = AsyncMock()
+        mock_get_channel_layer.return_value = channel_layer
+
+        result = monitoring_tasks.scan_lesson_attendance_photos_backlog(
+            batch_size=10,
+            max_records=10,
+        )
+
+        old_pending.refresh_from_db()
+        old_error.refresh_from_db()
+        today_pending.refresh_from_db()
+
+        self.assertEqual(result["checked"], 2)
+        self.assertEqual(
+            old_pending.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN
+        )
+        self.assertEqual(
+            old_error.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN
+        )
+        self.assertEqual(
+            today_pending.photo_spoof_status,
+            LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
+        )
 
 
 class LessonAttendanceSignalStateTest(SimpleTestCase):

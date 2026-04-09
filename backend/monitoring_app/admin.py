@@ -64,6 +64,12 @@ from monitoring_app.models import (
     StaffFaceSample,
     UserProfile,
 )
+from monitoring_app.pad_admin_summary import (
+    _is_auto_insufficient_input,
+    format_lesson_attendance_antifraud_list_hint,
+    format_lesson_attendance_antifraud_operator_panel,
+    format_lesson_attendance_pad_technical_compact,
+)
 from monitoring_app.staff_face_ml import (
     allowed_augment_basename,
     allowed_ml_basenames,
@@ -2816,7 +2822,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
             "absence_reason__staff",
         )
         qs = qs.defer("staff__avatar")
-        if getattr(request, "_staffattendance_changelist", False):
+        if getattr(request, "staffattendance_changelist", False):
             if "date_range" not in request.GET:
                 today = timezone.now().date()
                 start_wd = today - timedelta(days=13)
@@ -2868,11 +2874,11 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         return value
 
     def changelist_view(self, request, extra_context=None):
-        request._staffattendance_changelist = True
+        request.staffattendance_changelist = True
         try:
             return super().changelist_view(request, extra_context=extra_context)
         finally:
-            request._staffattendance_changelist = False
+            request.staffattendance_changelist = False
 
     def export_attendance_data(self, request, queryset):
         count = queryset.count()
@@ -2894,7 +2900,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
 
 class PhotoEffectiveStatusFilter(SimpleListFilter):
-    title = "Эффективный фото-статус"
+    title = "Итог фото"
     parameter_name = "photo_effective_status"
 
     def lookups(self, request, model_admin):
@@ -2902,7 +2908,8 @@ class PhotoEffectiveStatusFilter(SimpleListFilter):
         _ = model_admin
         return (
             (LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN, "Нормальное"),
-            (LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW, "На ручную проверку"),
+            ("insufficient_input_review", "Недостаточно данных"),
+            (LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW, "На проверку"),
             (LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS, "Подозрительное"),
             (LessonAttendance.PHOTO_SPOOF_STATUS_PENDING, "Ожидает проверки"),
             (LessonAttendance.PHOTO_SPOOF_STATUS_ERROR, "Ошибка проверки"),
@@ -2932,6 +2939,25 @@ class PhotoEffectiveStatusFilter(SimpleListFilter):
                         photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS
                     )
                 )
+            )
+
+        if value == "insufficient_input_review":
+            return queryset.filter(
+                photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+                photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+                photo_spoof_tags__contains=[
+                    "pad_rule:presentation_insufficient_input_review"
+                ],
+            )
+
+        if value == LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW:
+            return queryset.filter(
+                photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+                photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+            ).exclude(
+                photo_spoof_tags__contains=[
+                    "pad_rule:presentation_insufficient_input_review"
+                ]
             )
 
         return queryset.filter(
@@ -2965,10 +2991,13 @@ class LessonAttendanceAdmin(ModelAdmin):
         "lesson_duration",
         "formatted_duration_seconds",
         "photo_effective_status_badge",
-        "photo_verdict_summary",
-        "photo_spoof_score_short",
+        "photo_pad_scan_status_line",
+        "photo_pad_operator_readout",
         "photo_spoof_checked_at",
         "photo_spoof_status_badge",
+        "photo_trust_line",
+        "photo_spoof_model_version_display",
+        "photo_pad_technical_metrics",
         "photo_manual_verdict_badge",
         "photo_manual_by",
         "photo_manual_at",
@@ -3003,9 +3032,16 @@ class LessonAttendanceAdmin(ModelAdmin):
             },
         ),
         (
-            "Проверка фото",
+            "Антифрод и проверка фото",
             {
-                "fields": ("photo_effective_status_badge", "photo_verdict_summary"),
+                "description": (
+                    "Сверху: итог, причина и ключевые сигналы. «Недостаточно данных» означает слабый кадр, а не подозрение."
+                ),
+                "fields": (
+                    "photo_effective_status_badge",
+                    "photo_pad_scan_status_line",
+                    "photo_pad_operator_readout",
+                ),
                 "classes": ("wide",),
             },
         ),
@@ -3020,14 +3056,14 @@ class LessonAttendanceAdmin(ModelAdmin):
             },
         ),
         (
-            "Автоматическая проверка",
+            "Авто-проверка фото: время, версия и числа",
             {
+                "description": (
+                    "Сворачиваемый блок со справочными числами последнего авто-анализа."
+                ),
                 "fields": (
-                    (
-                        "photo_spoof_status_badge",
-                        "photo_spoof_score_short",
-                    ),
-                    "photo_spoof_checked_at",
+                    ("photo_spoof_status_badge", "photo_trust_line"),
+                    "photo_pad_technical_metrics",
                 ),
                 "classes": ("wide", "grp-collapse", "grp-closed"),
             },
@@ -3073,7 +3109,7 @@ class LessonAttendanceAdmin(ModelAdmin):
         "date_at",
         "has_photo",
         "photo_effective_status_badge",
-        "photo_spoof_score_short",
+        "photo_antifraud_list_compact",
     )
     list_per_page = 50
     list_display_links = ("staff", "photo_effective_status_badge")
@@ -3083,7 +3119,6 @@ class LessonAttendanceAdmin(ModelAdmin):
         DateRangeFilter,
         monitoring_utils.HierarchicalDepartmentFilter,
         "photo_manual_verdict",
-        "photo_spoof_status",
     )
 
     search_fields = (
@@ -3278,7 +3313,10 @@ class LessonAttendanceAdmin(ModelAdmin):
             "longitude",
             "photo_spoof_status",
             "photo_spoof_score",
+            "photo_spoof_tags",
             "photo_spoof_checked_at",
+            "photo_spoof_model_version",
+            "photo_trust_confirmed",
             "photo_manual_verdict",
             "photo_manual_comment",
             "photo_manual_by",
@@ -3312,7 +3350,11 @@ class LessonAttendanceAdmin(ModelAdmin):
                 "#c62828",
                 "Подозрительное",
             ),
-            LessonAttendance.PHOTO_SPOOF_STATUS_PENDING: ("#6d6d6d", "Ожидает"),
+            "insufficient_input_review": ("#8a6d1f", "Недостаточно данных"),
+            LessonAttendance.PHOTO_SPOOF_STATUS_PENDING: (
+                "#6d6d6d",
+                "Ожидает проверки",
+            ),
             LessonAttendance.PHOTO_SPOOF_STATUS_ERROR: ("#616161", "Ошибка"),
         }
         color, label = status_map.get(
@@ -3334,9 +3376,55 @@ class LessonAttendanceAdmin(ModelAdmin):
             return self._format_photo_status_badge(
                 LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS, "ручное"
             )
-        return self._format_photo_status_badge(obj.photo_spoof_status, "авто")
+        auto_status = (
+            "insufficient_input_review"
+            if _is_auto_insufficient_input(obj)
+            else obj.photo_spoof_status
+        )
+        return self._format_photo_status_badge(auto_status, "авто")
 
     photo_effective_status_badge.short_description = "Фото-вердикт"
+
+    def photo_pad_scan_status_line(self, obj):
+        """Clarify whether ``check_photo`` has already persisted vs still pending."""
+        if obj is None:
+            return format_html("")
+        if (
+            not obj.staff_image_path
+            or obj.staff_image_path == "/static/media/images/no-avatar.png"
+        ):
+            return format_html(
+                "<p class='la-pad-muted'>Нет файла фото на диске — автоматическая проверка фото не запускалась.</p>"
+            )
+        la = LessonAttendance
+        pending = obj.photo_spoof_status == la.PHOTO_SPOOF_STATUS_PENDING
+        if obj.photo_spoof_checked_at is None and pending:
+            return format_html(
+                "<p class='la-pad-warn'><strong>Ожидает автоматической проверки</strong> "
+                "(результат ещё не записан).</p>"
+            )
+        if obj.photo_spoof_checked_at is None:
+            return format_html(
+                "<p class='la-pad-muted'>Время последнего авто-скана в БД не заполнено.</p>"
+            )
+        local = timezone.localtime(obj.photo_spoof_checked_at).strftime(
+            "%d.%m.%Y %H:%M:%S"
+        )
+        ver = (obj.photo_spoof_model_version or "").strip() or "—"
+        st_label = (
+            "Недостаточно данных"
+            if _is_auto_insufficient_input(obj)
+            else obj.get_photo_spoof_status_display()
+        )
+        return format_html(
+            "<p class='la-pad-p'><strong>Последний авто-разбор</strong>: {} · модель {} · "
+            "статус <strong>{}</strong>.</p>",
+            local,
+            ver,
+            st_label,
+        )
+
+    photo_pad_scan_status_line.short_description = "Состояние авто-проверки фото"
 
     def photo_manual_verdict_badge(self, obj):
         verdict_map = {
@@ -3363,112 +3451,58 @@ class LessonAttendanceAdmin(ModelAdmin):
     photo_manual_verdict_badge.short_description = "Ручной вердикт"
 
     def photo_spoof_status_badge(self, obj):
-        return self._format_photo_status_badge(obj.photo_spoof_status, "авто")
+        auto_status = (
+            "insufficient_input_review"
+            if _is_auto_insufficient_input(obj)
+            else obj.photo_spoof_status
+        )
+        return self._format_photo_status_badge(auto_status, "авто")
 
     photo_spoof_status_badge.short_description = "Авто-статус"
 
-    def photo_spoof_score_short(self, obj):
-        if obj.photo_spoof_score is None:
-            return format_html("<span style='color:#9ca3af;'>—</span>")
-        score = float(obj.photo_spoof_score)
-        score_text = f"{score:.3f}"
-        if score >= 0.75:
-            color = "#c62828"
-        elif score >= 0.50:
-            color = "#ef6c00"
-        else:
-            color = "#455a64"
-        return format_html(
-            "<span style='color:{}; font-weight:600;'>{}</span>",
-            color,
-            score_text,
-        )
+    def photo_pad_operator_readout(self, obj):
+        """Render the short operator-facing PAD explanation block."""
+        return format_lesson_attendance_antifraud_operator_panel(obj)
 
-    photo_spoof_score_short.short_description = "PAD score"
+    photo_pad_operator_readout.short_description = "Пояснение проверки фото"
 
-    def photo_spoof_tags_pretty(self, obj):
-        tags = obj.photo_spoof_tags or []
-        if not tags:
-            return format_html("<span style='color:#999;'>—</span>")
-        if isinstance(tags, list):
-            return format_html_join(
-                "",
-                "<span class='la-tag'>{}</span> ",
-                ((str(tag),) for tag in tags),
+    def photo_pad_technical_metrics(self, obj):
+        """Secondary numeric PAD table (collapsed fieldset by default)."""
+        return format_lesson_attendance_pad_technical_compact(obj)
+
+    photo_pad_technical_metrics.short_description = "Служебные метрики проверки"
+
+    def photo_trust_line(self, obj):
+        """Tri-state live-trust from the last automatic PAD scan."""
+        la = LessonAttendance
+        if obj.photo_manual_verdict != la.PHOTO_MANUAL_VERDICT_NONE:
+            return format_html(
+                "<span class='la-pad-muted'>Не применяется при ручном вердикте "
+                "(ниже — значение последнего авто-скана).</span>"
             )
-        return format_html(str(tags))
+        val = obj.photo_trust_confirmed
+        if val is True:
+            return format_html("<strong>да</strong> (авто)")
+        if val is False:
+            return format_html("<strong>нет</strong> (авто)")
+        return format_html("<span class='la-pad-muted'>не определено (авто)</span>")
 
-    photo_spoof_tags_pretty.short_description = "PAD теги"
+    photo_trust_line.short_description = "Проверка фото, авто"
 
-    def photo_status_details_short(self, obj):
-        manual_label = obj.get_photo_manual_verdict_display()
-        auto_label = obj.get_photo_spoof_status_display()
-        score = (
-            "—"
-            if obj.photo_spoof_score is None
-            else f"{float(obj.photo_spoof_score):.3f}"
-        )
-        return format_html(
-            "<span style='color:#4b5563;'>manual:</span> {}<br>"
-            "<span style='color:#4b5563;'>auto:</span> {}<br>"
-            "<span style='color:#4b5563;'>score:</span> {}",
-            manual_label,
-            auto_label,
-            score,
-        )
+    def photo_spoof_model_version_display(self, obj):
+        """PAD model version string stored on the row."""
+        ver = (obj.photo_spoof_model_version or "").strip()
+        if not ver:
+            return format_html("<span class='la-pad-muted'>—</span>")
+        return format_html("<code>{}</code>", ver)
 
-    photo_status_details_short.short_description = "Антифрод детали"
+    photo_spoof_model_version_display.short_description = "Версия модели проверки"
 
-    def photo_verdict_summary(self, obj):
-        effective_source = (
-            "ручное"
-            if obj.photo_manual_verdict != LessonAttendance.PHOTO_MANUAL_VERDICT_NONE
-            else "авто"
-        )
-        checked_at = (
-            timezone.localtime(obj.photo_spoof_checked_at).strftime("%d.%m.%Y %H:%M:%S")
-            if obj.photo_spoof_checked_at
-            else "—"
-        )
-        manual_at = (
-            timezone.localtime(obj.photo_manual_at).strftime("%d.%m.%Y %H:%M:%S")
-            if obj.photo_manual_at
-            else "—"
-        )
-        score = (
-            "—"
-            if obj.photo_spoof_score is None
-            else f"{float(obj.photo_spoof_score):.3f}"
-        )
-        manual_display = obj.get_photo_manual_verdict_display()
-        auto_display = obj.get_photo_spoof_status_display()
-        need_review = obj.photo_spoof_status in {
-            LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
-            LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
-            LessonAttendance.PHOTO_SPOOF_STATUS_ERROR,
-        }
-        return format_html(
-            "<div class='la-verdict-summary'>"
-            "  <div class='la-summary-row'><span class='la-k'>Эффективный вердикт:</span><span class='la-v'>{}</span></div>"
-            "  <div class='la-summary-row'><span class='la-k'>Источник:</span><span class='la-v'>{}</span></div>"
-            "  <div class='la-summary-row'><span class='la-k'>Авто-статус:</span><span class='la-v'>{}</span></div>"
-            "  <div class='la-summary-row'><span class='la-k'>Ручной вердикт:</span><span class='la-v'>{}</span></div>"
-            "  <div class='la-summary-row'><span class='la-k'>PAD score:</span><span class='la-v'>{}</span></div>"
-            "  <div class='la-summary-row'><span class='la-k'>Проверено авто:</span><span class='la-v'>{}</span></div>"
-            "  <div class='la-summary-row'><span class='la-k'>Проверено вручную:</span><span class='la-v'>{}</span></div>"
-            "  <div class='la-summary-row'><span class='la-k'>Нужна ручная проверка:</span><span class='la-v'>{}</span></div>"
-            "</div>",
-            self.photo_effective_status_badge(obj),
-            effective_source,
-            auto_display,
-            manual_display,
-            score,
-            checked_at,
-            manual_at,
-            "Да" if need_review else "Нет",
-        )
+    def photo_antifraud_list_compact(self, obj):
+        """One-line effective PAD hint for the changelist."""
+        return format_lesson_attendance_antifraud_list_hint(obj)
 
-    photo_verdict_summary.short_description = "Сводка антифрод-вердикта"
+    photo_antifraud_list_compact.short_description = "Проверка фото (кратко)"
 
     @staticmethod
     def _manual_verdict_update(
@@ -3524,8 +3558,46 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     reset_photo_manual_verdict.short_description = "Сбросить ручной вердикт фото"
 
+    @staticmethod
+    def _format_lesson_attendance_pad_rescan_message(
+        *,
+        selected_n: int,
+        queued_n: int,
+        skipped: dict[str, int],
+    ) -> str:
+        """Build a short admin message after a PAD rescan request."""
+
+        parts: list[str] = []
+        if queued_n > 0:
+            parts.append(
+                f"Выбрано {selected_n}, повторная проверка начата для {queued_n} "
+                f"записей с фото (сброшены авто-разбор и ручной вердикт)."
+            )
+        else:
+            parts.append(
+                f"Выбрано записей: {selected_n}. Повторная проверка не начата: нет строк с путём к фото."
+            )
+        skip_bits: list[str] = []
+        if skipped.get("no_photo", 0):
+            skip_bits.append(f"нет пути к фото — {skipped['no_photo']}")
+        if skipped.get("not_found", 0):
+            skip_bits.append(f"не найдено в БД — {skipped['not_found']}")
+        if skip_bits:
+            parts.append("Пропущено: " + "; ".join(skip_bits) + ".")
+        return " ".join(parts)
+
     def rescan_selected_photos(self, request, queryset):
-        from monitoring_app.tasks import rescan_lesson_attendance_photo_ids
+        """Reset PAD/manual fields for selected rows with photos and start a full rescan.
+
+        Only changelist-selected primary keys are touched. Every selected row that
+        has a non-empty ``staff_image_path`` is cleared synchronously (automatic PAD
+        outputs and manual verdict), then the same ids are submitted for a
+        background ``check_photo`` run. Rows without a stored path are skipped.
+        """
+        from monitoring_app.tasks import (
+            prepare_lesson_attendance_admin_pad_full_rescan,
+            rescan_lesson_attendance_photo_ids,
+        )
 
         selected_ids = list(queryset.values_list("id", flat=True))
         if not selected_ids:
@@ -3535,37 +3607,64 @@ class LessonAttendanceAdmin(ModelAdmin):
                 level=messages.WARNING,
             )
             return
-        try:
-            rescan_task = cast(Any, rescan_lesson_attendance_photo_ids)
-            task = rescan_task.delay(
-                attendance_ids=selected_ids,
-                device=getattr(settings, "PHOTO_PAD_DEVICE", "auto"),
-                force_manual=False,
-                batch_size=getattr(settings, "PHOTO_PAD_HOURLY_BATCH_SIZE", 100),
-            )
-        except Exception as exc:
-            logger.exception(
-                "PAD rescan queue failed in admin action ids=%s error=%s",
-                selected_ids[:20],
-                exc,
-            )
-            self.message_user(
-                request,
-                "Не удалось поставить перескан в очередь. Проверь Celery/Rabbit/Redis.",
-                level=messages.ERROR,
-            )
-            return
 
-        self.message_user(
-            request,
-            (
-                f"Перескан поставлен в очередь: {len(selected_ids)} записей. "
-                f"Task ID: {task.id}"
-            ),
-            level=messages.SUCCESS,
+        photo_ids, skipped = prepare_lesson_attendance_admin_pad_full_rescan(
+            selected_ids
         )
 
-    rescan_selected_photos.short_description = "Пересканировать выбранные фото (auto)"
+        if not photo_ids:
+            msg = self._format_lesson_attendance_pad_rescan_message(
+                selected_n=len(selected_ids),
+                queued_n=0,
+                skipped=skipped,
+            )
+            self.message_user(request, msg, level=messages.WARNING)
+            return
+
+        rescan_task = cast(Any, rescan_lesson_attendance_photo_ids)
+        pad_device = getattr(settings, "PHOTO_PAD_DEVICE", "auto")
+        pad_batch = getattr(settings, "PHOTO_PAD_HOURLY_BATCH_SIZE", 100)
+        selected_count = len(selected_ids)
+        queued_count = len(photo_ids)
+
+        def enqueue_pad_rescan_after_commit() -> None:
+            """Run async rescan after DB commit so PAD fields are visible."""
+            try:
+                task = rescan_task.delay(
+                    attendance_ids=photo_ids,
+                    device=pad_device,
+                    force_manual=True,
+                    batch_size=pad_batch,
+                    auto_eligible_only=False,
+                )
+                logger.info(
+                    "PAD admin: rescan task_id=%s lesson_ids=%s",
+                    task.id,
+                    photo_ids,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "PAD admin rescan queue failed ids=%s error=%s",
+                    selected_ids[:20],
+                    exc,
+                )
+                self.message_user(
+                    request,
+                    "Не удалось запустить перескан. Повторите позже или обратитесь к администратору.",
+                    level=messages.ERROR,
+                )
+                return
+
+            msg = self._format_lesson_attendance_pad_rescan_message(
+                selected_n=selected_count,
+                queued_n=queued_count,
+                skipped=skipped,
+            )
+            self.message_user(request, msg, level=messages.SUCCESS)
+
+        transaction.on_commit(enqueue_pad_rescan_after_commit)
+
+    rescan_selected_photos.short_description = "Перепроверить фото по выбранным"
 
     def closest_location(self, obj):
         if obj.latitude is None or obj.longitude is None:

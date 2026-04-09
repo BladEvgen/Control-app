@@ -1,4 +1,6 @@
+import contextlib
 import importlib
+import io
 import json
 import logging
 import os
@@ -119,6 +121,15 @@ class _ArcFaceModelHolder:
 arcface_model_holder = _ArcFaceModelHolder()
 
 arcface_lock = Lock()
+runtime_gallery_cache_lock = Lock()
+
+RUNTIME_GALLERY_CACHE_VERSION = 2
+_staff_runtime_gallery_mem_cache: dict[
+    str, tuple[str, Optional[np.ndarray], dict[str, int]]
+] = {}
+_multi_staff_runtime_gallery_mem_cache: Optional[
+    tuple[tuple[str, ...], np.ndarray, tuple[str, ...]]
+] = None
 
 
 class _ArcfacePrepareCache:
@@ -130,7 +141,15 @@ class _ArcfacePrepareCache:
 def _arcface_prepare_det(model: Any, ctx_id: int, det_size: tuple[int, int]) -> None:
     if _ArcfacePrepareCache.det_size == det_size:
         return
-    model.prepare(ctx_id=ctx_id, det_size=det_size)
+    from monitoring_app.ml_log_quiet import ml_third_party_stdout_verbose
+
+    _stdout_ctx: contextlib.AbstractContextManager[Any] = (
+        contextlib.nullcontext()
+        if ml_third_party_stdout_verbose()
+        else contextlib.redirect_stdout(io.StringIO())
+    )
+    with _stdout_ctx:
+        model.prepare(ctx_id=ctx_id, det_size=det_size)
     _ArcfacePrepareCache.det_size = det_size
 
 
@@ -144,6 +163,8 @@ def load_arcface_model():
     if arcface_model_holder.instance is None:
         with arcface_lock:
             if arcface_model_holder.instance is None:
+                from monitoring_app.ml_log_quiet import ml_third_party_stdout_verbose
+
                 FaceAnalysis = _get_face_analysis()
                 cuda_available = torch.cuda.is_available()
                 device_type = "GPU" if cuda_available else "CPU"
@@ -153,14 +174,320 @@ def load_arcface_model():
                     if cuda_available
                     else ["CPUExecutionProvider"]
                 )
-                model = FaceAnalysis(
-                    name="buffalo_l",
-                    providers=providers,
+                _stdout_ctx: contextlib.AbstractContextManager[Any] = (
+                    contextlib.nullcontext()
+                    if ml_third_party_stdout_verbose()
+                    else contextlib.redirect_stdout(io.StringIO())
                 )
-                ctx_id = 0 if cuda_available else -1
-                model.prepare(ctx_id=ctx_id, det_size=(640, 640))
+                with _stdout_ctx:
+                    model = FaceAnalysis(
+                        name="buffalo_l",
+                        providers=providers,
+                    )
+                    ctx_id = 0 if cuda_available else -1
+                    model.prepare(ctx_id=ctx_id, det_size=(640, 640))
                 _ArcfacePrepareCache.det_size = (640, 640)
                 arcface_model_holder.instance = model
+
+
+def _runtime_gallery_cache_dir() -> str:
+    """Return directory for persisted runtime gallery caches.
+
+    Returns:
+        Absolute cache directory path.
+    """
+    root = os.path.join(settings.MEDIA_ROOT, "_face_runtime_cache")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _runtime_gallery_file_signature(path: Optional[str]) -> Optional[str]:
+    """Build a cheap signature for a source file.
+
+    Args:
+        path: Absolute file path or None.
+
+    Returns:
+        ``mtime:size`` signature or None when file is absent.
+    """
+    if not path or not os.path.isfile(path):
+        return None
+    stat = os.stat(path)
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
+
+
+def _staff_runtime_gallery_signature(staff: "models.Staff") -> str:
+    """Describe all runtime gallery sources for one staff row.
+
+    Args:
+        staff: Staff row used for verify/search gallery.
+
+    Returns:
+        Stable JSON signature for cache validation.
+    """
+    avatar_path: Optional[str] = None
+    gallery_real_path: Optional[str] = None
+    try:
+        if staff.avatar and getattr(staff.avatar, "path", None):
+            avatar_path = staff.avatar.path
+            gallery_real_path = os.path.join(
+                os.path.dirname(staff.avatar.path), f"{staff.pin}_gallery_real.npy"
+            )
+    except Exception:
+        avatar_path = None
+        gallery_real_path = None
+
+    mask_updated: Optional[str] = None
+    mask_present = False
+    try:
+        fm = staff.face_mask
+        if fm is not None and fm.mask_encoding:
+            mask_present = True
+            if fm.updated_at is not None:
+                mask_updated = fm.updated_at.isoformat()
+    except ObjectDoesNotExist:
+        mask_present = False
+
+    payload = {
+        "pin": staff.pin,
+        "avatar": _runtime_gallery_file_signature(avatar_path),
+        "gallery_real": _runtime_gallery_file_signature(gallery_real_path),
+        "mask_present": mask_present,
+        "mask_updated": mask_updated,
+        "version": RUNTIME_GALLERY_CACHE_VERSION,
+    }
+    return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _staff_runtime_gallery_cache_path(pin: str) -> str:
+    """Return file path for one staff runtime gallery cache.
+
+    Args:
+        pin: Staff PIN.
+
+    Returns:
+        Absolute ``.npz`` path.
+    """
+    safe_pin = "".join(ch if ch.isalnum() else "_" for ch in pin.upper())
+    return os.path.join(
+        _runtime_gallery_cache_dir(),
+        f"{safe_pin}_runtime_gallery_v{RUNTIME_GALLERY_CACHE_VERSION}.npz",
+    )
+
+
+def _multi_staff_runtime_gallery_cache_path() -> str:
+    """Return file path for the global search gallery cache.
+
+    Returns:
+        Absolute ``.npz`` path.
+    """
+    return os.path.join(
+        _runtime_gallery_cache_dir(),
+        f"runtime_search_gallery_v{RUNTIME_GALLERY_CACHE_VERSION}.npz",
+    )
+
+
+def _load_staff_runtime_gallery_cache(
+    cache_path: str,
+    signature: str,
+) -> Optional[tuple[Optional[np.ndarray], dict[str, int]]]:
+    """Load one-staff runtime gallery from disk when signature matches.
+
+    Args:
+        cache_path: Cache file path.
+        signature: Current signature for this staff row.
+
+    Returns:
+        Cached matrix + breakdown, or None when cache is stale/unreadable.
+    """
+    if not os.path.isfile(cache_path):
+        return None
+    try:
+        with np.load(cache_path, allow_pickle=False) as data:
+            cached_signature = str(data["signature"].tolist())
+            if cached_signature != signature:
+                return None
+            breakdown = json.loads(str(data["breakdown_json"].tolist()))
+            has_gallery = bool(int(data["has_gallery"].tolist()))
+            if not has_gallery:
+                return None, breakdown
+            gallery = np.asarray(data["gallery"], dtype=np.float64)
+            if gallery.ndim == 1:
+                gallery = gallery.reshape(1, -1)
+            return gallery, breakdown
+    except Exception:
+        return None
+
+
+def _save_staff_runtime_gallery_cache(
+    cache_path: str,
+    signature: str,
+    gallery: Optional[np.ndarray],
+    breakdown: dict[str, int],
+) -> None:
+    """Persist one-staff runtime gallery cache to disk.
+
+    Args:
+        cache_path: Cache file path.
+        signature: Source signature.
+        gallery: L2-normalized matrix or None.
+        breakdown: Prototype counts by source.
+    """
+    payload: dict[str, Any] = {
+        "signature": np.asarray(signature),
+        "breakdown_json": np.asarray(
+            json.dumps(breakdown, ensure_ascii=True, sort_keys=True)
+        ),
+        "has_gallery": np.asarray(1 if gallery is not None and gallery.size else 0),
+    }
+    if gallery is not None and gallery.size:
+        payload["gallery"] = np.asarray(gallery, dtype=np.float32)
+    tmp_path = f"{cache_path}.tmp"
+    with open(tmp_path, "wb") as tmp_file:
+        np.savez(tmp_file, **payload)
+    os.replace(tmp_path, cache_path)
+
+
+def _load_multi_staff_runtime_gallery_cache(
+    cache_path: str,
+    staff_list: list["models.Staff"],
+) -> Optional[tuple[np.ndarray, list["models.Staff"]]]:
+    """Load cached 1:N search gallery when current staff set matches.
+
+    Args:
+        cache_path: Cache file path.
+        staff_list: Current searchable staff rows.
+
+    Returns:
+        Cached matrix and owner rows, or None when cache is stale/unreadable.
+    """
+    if not os.path.isfile(cache_path):
+        return None
+    staff_by_pin = {staff.pin: staff for staff in staff_list}
+    current_pins = tuple(staff_by_pin.keys())
+    try:
+        with np.load(cache_path, allow_pickle=False) as data:
+            cached_staff_pins = tuple(str(v) for v in data["staff_pins"].tolist())
+            if cached_staff_pins != current_pins:
+                return None
+            owner_pins = tuple(str(v) for v in data["owner_pins"].tolist())
+            if any(pin not in staff_by_pin for pin in owner_pins):
+                return None
+            matrix = np.asarray(data["matrix"], dtype=np.float64)
+            owners = [staff_by_pin[pin] for pin in owner_pins]
+            return matrix, owners
+    except Exception:
+        return None
+
+
+def _load_cached_runtime_gallery_only(
+    staff: "models.Staff",
+) -> Optional[tuple[Optional[np.ndarray], dict[str, int]]]:
+    """Load one-staff gallery only from already prepared caches.
+
+    Args:
+        staff: Staff row to probe.
+
+    Returns:
+        Cached gallery payload or None when nothing is prepared yet.
+    """
+    signature = _staff_runtime_gallery_signature(staff)
+    mem_cached = _staff_runtime_gallery_mem_cache.get(staff.pin)
+    if mem_cached and mem_cached[0] == signature:
+        return mem_cached[1], dict(mem_cached[2])
+    cache_path = _staff_runtime_gallery_cache_path(staff.pin)
+    disk_cached = _load_staff_runtime_gallery_cache(cache_path, signature)
+    if disk_cached is not None:
+        gallery, breakdown = disk_cached
+        _staff_runtime_gallery_mem_cache[staff.pin] = (
+            signature,
+            gallery,
+            dict(breakdown),
+        )
+    return disk_cached
+
+
+def build_cached_staff_runtime_gallery_matrix(
+    staff_iterable: Iterable["models.Staff"],
+) -> tuple[np.ndarray, list["models.Staff"]]:
+    """Stack only already cached runtime prototypes for fast early search.
+
+    Args:
+        staff_iterable: Searchable staff rows.
+
+    Returns:
+        Matrix and owner rows from existing caches only.
+
+    Raises:
+        ValueError: When no cached staff galleries exist yet.
+    """
+    owners: list[models.Staff] = []
+    blocks: list[np.ndarray] = []
+    for staff in staff_iterable:
+        cached = _load_cached_runtime_gallery_only(staff)
+        if cached is None:
+            continue
+        gal, _breakdown = cached
+        if gal is None or gal.size == 0:
+            continue
+        for i in range(int(gal.shape[0])):
+            owners.append(staff)
+            blocks.append(gal[i : i + 1])
+    if not blocks:
+        raise ValueError("No cached runtime gallery prototypes available.")
+    return np.vstack(blocks), owners
+
+
+def _save_multi_staff_runtime_gallery_cache(
+    cache_path: str,
+    staff_pins: tuple[str, ...],
+    matrix: np.ndarray,
+    owner_pins: tuple[str, ...],
+) -> None:
+    """Persist the full 1:N search gallery to disk.
+
+    Args:
+        cache_path: Cache file path.
+        staff_pins: Ordered searchable staff pins.
+        matrix: L2-normalized prototype matrix.
+        owner_pins: Prototype owner pin for each row.
+    """
+    tmp_path = f"{cache_path}.tmp"
+    with open(tmp_path, "wb") as tmp_file:
+        np.savez(
+            tmp_file,
+            staff_pins=np.asarray(staff_pins),
+            owner_pins=np.asarray(owner_pins),
+            matrix=np.asarray(matrix, dtype=np.float32),
+        )
+    os.replace(tmp_path, cache_path)
+
+
+def invalidate_runtime_gallery_caches(staff_pin: Optional[str] = None) -> None:
+    """Drop persisted and in-memory runtime gallery caches.
+
+    Args:
+        staff_pin: Optional PIN whose per-staff cache should be removed too.
+    """
+    global _multi_staff_runtime_gallery_mem_cache
+    with runtime_gallery_cache_lock:
+        _multi_staff_runtime_gallery_mem_cache = None
+        if staff_pin:
+            _staff_runtime_gallery_mem_cache.pop(staff_pin, None)
+            staff_cache = _staff_runtime_gallery_cache_path(staff_pin)
+            if os.path.isfile(staff_cache):
+                try:
+                    os.remove(staff_cache)
+                except OSError:
+                    pass
+        else:
+            _staff_runtime_gallery_mem_cache.clear()
+        global_cache = _multi_staff_runtime_gallery_cache_path()
+        if os.path.isfile(global_cache):
+            try:
+                os.remove(global_cache)
+            except OSError:
+                pass
 
 
 # -----------------------------------
@@ -784,6 +1111,22 @@ def build_runtime_gallery_embeddings(
     Train-only ``embeddings.npy`` is never loaded here.
     Rows are L2-normalized and near-duplicate collapsed.
     """
+    signature = _staff_runtime_gallery_signature(staff)
+    mem_cached = _staff_runtime_gallery_mem_cache.get(staff.pin)
+    if mem_cached and mem_cached[0] == signature:
+        return mem_cached[1], dict(mem_cached[2])
+
+    cache_path = _staff_runtime_gallery_cache_path(staff.pin)
+    disk_cached = _load_staff_runtime_gallery_cache(cache_path, signature)
+    if disk_cached is not None:
+        gallery, breakdown = disk_cached
+        _staff_runtime_gallery_mem_cache[staff.pin] = (
+            signature,
+            gallery,
+            dict(breakdown),
+        )
+        return gallery, dict(breakdown)
+
     rows: list[np.ndarray] = []
     breakdown: dict[str, int] = {
         "mask_prototypes": 0,
@@ -834,11 +1177,16 @@ def build_runtime_gallery_embeddings(
             except Exception as e:
                 logger.warning("gallery_real.npy skipped for %s: %s", staff.pin, e)
 
+    gal: Optional[np.ndarray]
     if not rows:
-        return None, breakdown
-    gal = np.vstack(rows)
-    gal = _l2_normalize_embedding_rows(gal)
-    gal = _dedupe_normalized_rows(gal, min_cos=0.999)
+        gal = None
+    else:
+        gal = np.vstack(rows)
+        gal = _l2_normalize_embedding_rows(gal)
+        gal = _dedupe_normalized_rows(gal, min_cos=0.999)
+
+    _save_staff_runtime_gallery_cache(cache_path, signature, gal, breakdown)
+    _staff_runtime_gallery_mem_cache[staff.pin] = (signature, gal, dict(breakdown))
     return gal, breakdown
 
 
@@ -857,18 +1205,55 @@ def build_multi_staff_runtime_gallery_matrix(
     Raises:
         ValueError: If no prototypes exist for any staff in the iterable.
     """
+    global _multi_staff_runtime_gallery_mem_cache
+
+    staff_list = list(staff_iterable)
+    staff_pins = tuple(staff.pin for staff in staff_list)
+
+    mem_cached = _multi_staff_runtime_gallery_mem_cache
+    if mem_cached and mem_cached[0] == staff_pins:
+        owners_by_pin = {staff.pin: staff for staff in staff_list}
+        owners = [owners_by_pin[pin] for pin in mem_cached[2] if pin in owners_by_pin]
+        if owners and len(owners) == int(mem_cached[1].shape[0]):
+            return mem_cached[1], owners
+
+    cache_path = _multi_staff_runtime_gallery_cache_path()
+    disk_cached = _load_multi_staff_runtime_gallery_cache(cache_path, staff_list)
+    if disk_cached is not None:
+        matrix, owners = disk_cached
+        _multi_staff_runtime_gallery_mem_cache = (
+            staff_pins,
+            matrix,
+            tuple(owner.pin for owner in owners),
+        )
+        return matrix, owners
+
     owners: list[models.Staff] = []
+    owner_pins: list[str] = []
     blocks: list[np.ndarray] = []
-    for staff in staff_iterable:
+    for staff in staff_list:
         gal, _bd = build_runtime_gallery_embeddings(staff)
         if gal is None or gal.size == 0:
             continue
         for i in range(int(gal.shape[0])):
             owners.append(staff)
+            owner_pins.append(staff.pin)
             blocks.append(gal[i : i + 1])
     if not blocks:
         raise ValueError("No runtime gallery prototypes for any staff member.")
-    return np.vstack(blocks), owners
+    matrix = np.vstack(blocks)
+    _save_multi_staff_runtime_gallery_cache(
+        cache_path,
+        staff_pins,
+        matrix,
+        tuple(owner_pins),
+    )
+    _multi_staff_runtime_gallery_mem_cache = (
+        staff_pins,
+        matrix,
+        tuple(owner_pins),
+    )
+    return matrix, owners
 
 
 def verify_staff_face_embedding_score(
@@ -910,6 +1295,75 @@ def verify_staff_face_embedding_score(
     }
     verified = score >= thr
     return verified, score, meta
+
+
+def _classify_runtime_gallery_matches(
+    faces: list,
+    embeddings_normalized: np.ndarray,
+    staff_embeddings_normalized: np.ndarray,
+    row_owners: list["models.Staff"],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Run k-NN search against a prepared runtime gallery matrix.
+
+    Args:
+        faces: Detected face objects from ArcFace.
+        embeddings_normalized: Probe embeddings with shape ``(n, dim)``.
+        staff_embeddings_normalized: Gallery prototype matrix.
+        row_owners: Owner row for each gallery prototype.
+
+    Returns:
+        Recognized staff rows and unknown face rows.
+    """
+    n_proto = int(staff_embeddings_normalized.shape[0])
+    k_nn = min(3, n_proto)
+    nbrs = NearestNeighbors(n_neighbors=k_nn, metric="cosine").fit(
+        staff_embeddings_normalized
+    )
+    distances, indices = nbrs.kneighbors(embeddings_normalized)
+
+    thr_main = float(getattr(settings, "FACE_RECOGNITION_THRESHOLD", 0.76))
+    thr_relax = float(getattr(settings, "FACE_RECOGNITION_THRESHOLD_RELAXED", 0.70))
+    gap_min = float(getattr(settings, "FACE_RECOGNITION_MIN_NEIGHBOR_GAP", 0.085))
+
+    recognized_staff: list[dict[str, Any]] = []
+    unknown_faces: list[dict[str, Any]] = []
+
+    for idx, face in enumerate(faces):
+        bbox = face.bbox.astype(int).tolist()
+        dist_row = distances[idx]
+        idx_row = indices[idx]
+        similarity = float(1.0 - dist_row[0])
+        best_proto_i = int(idx_row[0])
+        staff_best = row_owners[best_proto_i]
+        if k_nn >= 2:
+            second_proto_i = int(idx_row[1])
+            sim_second = float(1.0 - dist_row[1])
+            if row_owners[second_proto_i].pk == staff_best.pk:
+                gap = 1.0
+            else:
+                gap = similarity - sim_second
+        else:
+            gap = 1.0
+
+        accept = similarity >= thr_main or (similarity >= thr_relax and gap >= gap_min)
+
+        if accept:
+            recognized_staff.append(
+                {
+                    "pin": staff_best.pin,
+                    "name": staff_best.name,
+                    "surname": staff_best.surname,
+                    "department": (
+                        staff_best.department.name if staff_best.department else None
+                    ),
+                    "similarity": similarity,
+                    "bbox": bbox,
+                }
+            )
+        else:
+            unknown_faces.append({"status": "unknown", "bbox": bbox})
+
+    return recognized_staff, unknown_faces
 
 
 # -----------------------------------
@@ -1775,13 +2229,49 @@ def recognize_faces_in_image(image_file):
 
         staff_qs = list(
             models.Staff.objects.filter(
-                Q(face_mask__isnull=False) | Q(avatar__isnull=False)
-            ).select_related("department", "face_mask")
+                Q(face_mask__isnull=False) | (Q(avatar__isnull=False) & ~Q(avatar=""))
+            )
+            .select_related("department", "face_mask")
+            .order_by("pin")
         )
         if not staff_qs:
             raise ValidationError(
                 "В базе нет сотрудников с аватаром или сохранённой маской лица."
             )
+
+        def ensure_dim_matches(matrix: np.ndarray) -> None:
+            dim_staff = int(matrix.shape[1])
+            if dim_staff != dim_face:
+                raise ValidationError(
+                    f"Размерность эталонов в базе ({dim_staff}) не совпадает с моделью "
+                    f"распознавания ({dim_face})."
+                )
+
+        recognized_staff: list[dict[str, Any]] = []
+        unknown_faces: list[dict[str, Any]] = []
+
+        try:
+            cached_matrix, cached_owners = build_cached_staff_runtime_gallery_matrix(
+                staff_qs
+            )
+        except ValueError:
+            cached_matrix = None
+            cached_owners = []
+        if cached_matrix is not None:
+            ensure_dim_matches(cached_matrix)
+            recognized_staff, unknown_faces = _classify_runtime_gallery_matches(
+                faces,
+                embeddings_normalized,
+                cached_matrix,
+                cached_owners,
+            )
+            if recognized_staff:
+                logger.info(
+                    "Recognition completed from cached runtime subset. Recognized: %s, Unknown: %s",
+                    len(recognized_staff),
+                    len(unknown_faces),
+                )
+                return recognized_staff, unknown_faces
 
         try:
             staff_embeddings_normalized, row_owners = (
@@ -1794,70 +2284,13 @@ def recognize_faces_in_image(image_file):
                 "python manage.py build_staff_gallery_real"
             ) from None
 
-        dim_staff = int(staff_embeddings_normalized.shape[1])
-        if dim_staff != dim_face:
-            raise ValidationError(
-                f"Размерность эталонов в базе ({dim_staff}) не совпадает с моделью "
-                f"распознавания ({dim_face})."
-            )
-
-        n_proto = int(staff_embeddings_normalized.shape[0])
-        k_nn = min(3, n_proto)
-        nbrs = NearestNeighbors(n_neighbors=k_nn, metric="cosine").fit(
-            staff_embeddings_normalized
+        ensure_dim_matches(staff_embeddings_normalized)
+        recognized_staff, unknown_faces = _classify_runtime_gallery_matches(
+            faces,
+            embeddings_normalized,
+            staff_embeddings_normalized,
+            row_owners,
         )
-        distances, indices = nbrs.kneighbors(embeddings_normalized)
-
-        thr_main = float(getattr(settings, "FACE_RECOGNITION_THRESHOLD", 0.76))
-        thr_relax = float(getattr(settings, "FACE_RECOGNITION_THRESHOLD_RELAXED", 0.70))
-        gap_min = float(getattr(settings, "FACE_RECOGNITION_MIN_NEIGHBOR_GAP", 0.085))
-
-        recognized_staff = []
-        unknown_faces = []
-
-        for idx, face in enumerate(faces):
-            bbox = face.bbox.astype(int).tolist()
-            dist_row = distances[idx]
-            idx_row = indices[idx]
-            similarity = float(1.0 - dist_row[0])
-            best_proto_i = int(idx_row[0])
-            staff_best = row_owners[best_proto_i]
-            if k_nn >= 2:
-                second_proto_i = int(idx_row[1])
-                sim_second = float(1.0 - dist_row[1])
-                if row_owners[second_proto_i].pk == staff_best.pk:
-                    gap = 1.0
-                else:
-                    gap = similarity - sim_second
-            else:
-                gap = 1.0
-
-            accept = similarity >= thr_main or (
-                similarity >= thr_relax and gap >= gap_min
-            )
-
-            if accept:
-                recognized_staff.append(
-                    {
-                        "pin": staff_best.pin,
-                        "name": staff_best.name,
-                        "surname": staff_best.surname,
-                        "department": (
-                            staff_best.department.name
-                            if staff_best.department
-                            else None
-                        ),
-                        "similarity": similarity,
-                        "bbox": bbox,
-                    }
-                )
-            else:
-                unknown_faces.append(
-                    {
-                        "status": "unknown",
-                        "bbox": bbox,
-                    }
-                )
 
         logger.info(
             "Recognition completed (runtime gallery). Recognized: %s, Unknown: %s",

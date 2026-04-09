@@ -45,6 +45,17 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _jwt_lifetime_minutes(env_name: str, debug_minutes: int, prod_minutes: int) -> int:
+    """JWT lifetime in minutes; env override for long-lived browser sessions (security tradeoff)."""
+    raw = os.getenv(env_name)
+    if raw is None or not str(raw).strip():
+        return debug_minutes if DEBUG else prod_minutes
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return debug_minutes if DEBUG else prod_minutes
+
+
 # Custom settings
 DAYS = 1
 # Серийные номера устройств выхода из здания (devSn из API СКУД)
@@ -583,21 +594,15 @@ SIMPLE_JWT = {
     "JTI_CLAIM": "jti",
 }
 
-# Token lifetimes based on DEBUG
+_JWT_ACCESS_MINUTES = _jwt_lifetime_minutes("JWT_ACCESS_LIFETIME_MINUTES", 10, 30)
+_JWT_REFRESH_MINUTES = _jwt_lifetime_minutes("JWT_REFRESH_LIFETIME_MINUTES", 30, 120)
+
 SIMPLE_JWT.update(
     {
-        "ACCESS_TOKEN_LIFETIME": (
-            timedelta(minutes=10) if DEBUG else timedelta(minutes=30)
-        ),
-        "REFRESH_TOKEN_LIFETIME": (
-            timedelta(minutes=30) if DEBUG else timedelta(hours=2)
-        ),
-        "SLIDING_TOKEN_LIFETIME": (
-            timedelta(minutes=10) if DEBUG else timedelta(minutes=30)
-        ),
-        "SLIDING_TOKEN_REFRESH_LIFETIME": (
-            timedelta(minutes=30) if DEBUG else timedelta(hours=2)
-        ),
+        "ACCESS_TOKEN_LIFETIME": timedelta(minutes=_JWT_ACCESS_MINUTES),
+        "REFRESH_TOKEN_LIFETIME": timedelta(minutes=_JWT_REFRESH_MINUTES),
+        "SLIDING_TOKEN_LIFETIME": timedelta(minutes=_JWT_ACCESS_MINUTES),
+        "SLIDING_TOKEN_REFRESH_LIFETIME": timedelta(minutes=_JWT_REFRESH_MINUTES),
     }
 )
 
@@ -634,7 +639,6 @@ CELERY_BROKER_URL = "redis://localhost:6379/0"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 
-# ----------------------------
 # Photo PAD (anti-spoof) config
 # ----------------------------
 PHOTO_PAD_DEVICE = os.getenv("PHOTO_PAD_DEVICE", "auto")
@@ -642,10 +646,12 @@ PHOTO_PAD_GLASSES_REFLECTION_ENABLE = os.getenv(
     "PHOTO_PAD_GLASSES_REFLECTION_ENABLE", "1"
 ).strip().lower() in ("1", "true", "yes")
 
+# Hourly batch PAD scan (Celery beat)
 PHOTO_PAD_HOURLY_BATCH_SIZE = max(1, _int_env("PHOTO_PAD_HOURLY_BATCH_SIZE", 100))
 PHOTO_PAD_HOURLY_MAX_RECORDS = max(1, _int_env("PHOTO_PAD_HOURLY_MAX_RECORDS", 200))
 PHOTO_PAD_HOURLY_MINUTE = min(max(0, _int_env("PHOTO_PAD_HOURLY_MINUTE", 20)), 59)
 
+# WebSocket-triggered PAD flush
 PHOTO_PAD_WS_SCAN_ENABLED = os.getenv("PHOTO_PAD_WS_SCAN_ENABLED", "true").lower() in {
     "1",
     "true",
@@ -665,28 +671,28 @@ PHOTO_PAD_WS_SCAN_MAX_ITEMS = max(1, _int_env("PHOTO_PAD_WS_SCAN_MAX_ITEMS", 60)
 PHOTO_PAD_WS_SCAN_LOCK_TTL = max(10, _int_env("PHOTO_PAD_WS_SCAN_LOCK_TTL", 180))
 
 PHOTO_PAD_NUMBERS = {
-    # Детектор устройств (телефон/ноутбук/экран)
-    "device_min_conf": _float_env("PHOTO_PAD_DEVICE_MIN_CONF", 0.20),
-    "device_min_area_ratio": _float_env("PHOTO_PAD_DEVICE_MIN_AREA_RATIO", 0.02),
+    # --- Presentation detectors (device / screen frame heuristics) ---
+    "device_min_conf": _float_env("PHOTO_PAD_DEVICE_MIN_CONF", 0.16),
+    "device_min_area_ratio": _float_env("PHOTO_PAD_DEVICE_MIN_AREA_RATIO", 0.015),
     "device_ratio_ref": _float_env("PHOTO_PAD_DEVICE_RATIO_REF", 0.25),
     "device_score_conf_weight": _float_env("PHOTO_PAD_DEVICE_SCORE_CONF_WEIGHT", 0.60),
     "device_score_ratio_weight": _float_env(
         "PHOTO_PAD_DEVICE_SCORE_RATIO_WEIGHT", 0.40
     ),
     # Поиск прямоугольной рамки экрана
-    "frame_canny_low": _int_env("PHOTO_PAD_FRAME_CANNY_LOW", 60),
+    "frame_canny_low": _int_env("PHOTO_PAD_FRAME_CANNY_LOW", 50),
     "frame_canny_high": _int_env("PHOTO_PAD_FRAME_CANNY_HIGH", 160),
     "frame_gaussian_kernel": _int_env("PHOTO_PAD_FRAME_GAUSSIAN_KERNEL", 5),
     "frame_dilate_kernel": _int_env("PHOTO_PAD_FRAME_DILATE_KERNEL", 3),
-    "frame_min_area_ratio": _float_env("PHOTO_PAD_FRAME_MIN_AREA_RATIO", 0.12),
+    "frame_min_area_ratio": _float_env("PHOTO_PAD_FRAME_MIN_AREA_RATIO", 0.10),
     "frame_poly_epsilon": _float_env("PHOTO_PAD_FRAME_POLY_EPSILON", 0.02),
     "frame_min_solidity": _float_env("PHOTO_PAD_FRAME_MIN_SOLIDITY", 0.80),
     "frame_ratio_ref": _float_env("PHOTO_PAD_FRAME_RATIO_REF", 0.55),
     "frame_face_bonus": _float_env("PHOTO_PAD_FRAME_FACE_BONUS", 0.15),
     "frame_border_bonus": _float_env("PHOTO_PAD_FRAME_BORDER_BONUS", 0.08),
     "frame_border_margin_px": _int_env("PHOTO_PAD_FRAME_BORDER_MARGIN_PX", 8),
-    "frame_tag_threshold": _float_env("PHOTO_PAD_FRAME_TAG_THRESHOLD", 0.35),
-    # Quality gate (не путать плохой свет с обманом)
+    "frame_tag_threshold": _float_env("PHOTO_PAD_FRAME_TAG_THRESHOLD", 0.30),
+    # --- Quality axis (authenticity vs exposure/blur/small face) ---
     "quality_blur_min": _float_env("PHOTO_PAD_QUALITY_BLUR_MIN", 45.0),
     "quality_brightness_min": _float_env("PHOTO_PAD_QUALITY_BRIGHTNESS_MIN", 35.0),
     "quality_brightness_max": _float_env("PHOTO_PAD_QUALITY_BRIGHTNESS_MAX", 225.0),
@@ -699,31 +705,22 @@ PHOTO_PAD_NUMBERS = {
         "PHOTO_PAD_QUALITY_PENALTY_SMALL_FACE", 0.25
     ),
     "quality_poor_threshold": _float_env("PHOTO_PAD_QUALITY_POOR_THRESHOLD", 0.45),
-    # Интегральный риск
-    "risk_weight_deepface": _float_env("PHOTO_PAD_RISK_WEIGHT_DEEPFACE", 0.50),
-    "risk_weight_device": _float_env("PHOTO_PAD_RISK_WEIGHT_DEVICE", 0.30),
-    "risk_weight_frame": _float_env("PHOTO_PAD_RISK_WEIGHT_FRAME", 0.20),
-    "risk_quality_discount_max": _float_env(
-        "PHOTO_PAD_RISK_QUALITY_DISCOUNT_MAX", 0.18
-    ),
-    "risk_quality_discount_scale": _float_env(
-        "PHOTO_PAD_RISK_QUALITY_DISCOUNT_SCALE", 0.25
-    ),
-    # Decision thresholds
+    # --- Fused spoof risk weights (face ROI; quality not mixed into decision branches) ---
+    "risk_weight_deepface": _float_env("PHOTO_PAD_RISK_WEIGHT_DEEPFACE", 0.46),
+    "risk_weight_device": _float_env("PHOTO_PAD_RISK_WEIGHT_DEVICE", 0.22),
+    "risk_weight_frame": _float_env("PHOTO_PAD_RISK_WEIGHT_FRAME", 0.12),
+    # --- Rule engine: FasNet + geometry + recapture + shield ---
     "decision_device_present_min": _float_env(
-        "PHOTO_PAD_DECISION_DEVICE_PRESENT_MIN", 0.25
+        "PHOTO_PAD_DECISION_DEVICE_PRESENT_MIN", 0.24
     ),
     "decision_frame_present_min": _float_env(
-        "PHOTO_PAD_DECISION_FRAME_PRESENT_MIN", 0.40
+        "PHOTO_PAD_DECISION_FRAME_PRESENT_MIN", 0.34
     ),
     "decision_strong_device_min": _float_env(
-        "PHOTO_PAD_DECISION_STRONG_DEVICE_MIN", 0.35
+        "PHOTO_PAD_DECISION_STRONG_DEVICE_MIN", 0.40
     ),
     "decision_strong_frame_min": _float_env(
-        "PHOTO_PAD_DECISION_STRONG_FRAME_MIN", 0.30
-    ),
-    "decision_very_strong_device_min": _float_env(
-        "PHOTO_PAD_DECISION_VERY_STRONG_DEVICE_MIN", 0.55
+        "PHOTO_PAD_DECISION_STRONG_FRAME_MIN", 0.34
     ),
     "decision_quality_poor_min": _float_env(
         "PHOTO_PAD_DECISION_QUALITY_POOR_MIN", 0.45
@@ -732,10 +729,10 @@ PHOTO_PAD_NUMBERS = {
         "PHOTO_PAD_DECISION_DEEPFAKE_REVIEW_MIN", 0.65
     ),
     "decision_deepfake_device_min": _float_env(
-        "PHOTO_PAD_DECISION_DEEPFAKE_DEVICE_MIN", 0.90
+        "PHOTO_PAD_DECISION_DEEPFAKE_DEVICE_MIN", 0.92
     ),
     "decision_deepfake_very_high": _float_env(
-        "PHOTO_PAD_DECISION_DEEPFAKE_VERY_HIGH", 0.96
+        "PHOTO_PAD_DECISION_DEEPFAKE_VERY_HIGH", 0.985
     ),
     "decision_deepfake_mid_suspicious_min": _float_env(
         "PHOTO_PAD_DECISION_DEEPFAKE_MID_SUSPICIOUS_MIN", 0.82
@@ -743,7 +740,7 @@ PHOTO_PAD_NUMBERS = {
     "decision_mid_device_min": _float_env("PHOTO_PAD_DECISION_MID_DEVICE_MIN", 0.20),
     "decision_mid_frame_min": _float_env("PHOTO_PAD_DECISION_MID_FRAME_MIN", 0.24),
     "decision_quality_combined_review_sum_min": _float_env(
-        "PHOTO_PAD_DECISION_QUALITY_COMBINED_REVIEW_SUM_MIN", 0.46
+        "PHOTO_PAD_DECISION_QUALITY_COMBINED_REVIEW_SUM_MIN", 0.54
     ),
     "decision_quality_device_review_min": _float_env(
         "PHOTO_PAD_DECISION_QUALITY_DEVICE_REVIEW_MIN", 0.20
@@ -752,16 +749,17 @@ PHOTO_PAD_NUMBERS = {
         "PHOTO_PAD_DECISION_QUALITY_FRAME_REVIEW_MIN", 0.24
     ),
     "decision_suspicious_device_min": _float_env(
-        "PHOTO_PAD_DECISION_SUSPICIOUS_DEVICE_MIN", 0.25
+        "PHOTO_PAD_DECISION_SUSPICIOUS_DEVICE_MIN", 0.34
     ),
     "decision_suspicious_frame_min": _float_env(
-        "PHOTO_PAD_DECISION_SUSPICIOUS_FRAME_MIN", 0.45
+        "PHOTO_PAD_DECISION_SUSPICIOUS_FRAME_MIN", 0.42
     ),
-    "decision_weak_device_min": _float_env("PHOTO_PAD_DECISION_WEAK_DEVICE_MIN", 0.12),
-    "decision_weak_frame_min": _float_env("PHOTO_PAD_DECISION_WEAK_FRAME_MIN", 0.18),
+    "decision_weak_device_min": _float_env("PHOTO_PAD_DECISION_WEAK_DEVICE_MIN", 0.16),
+    "decision_weak_frame_min": _float_env("PHOTO_PAD_DECISION_WEAK_FRAME_MIN", 0.20),
     "decision_weak_combined_sum_min": _float_env(
-        "PHOTO_PAD_DECISION_WEAK_COMBINED_SUM_MIN", 0.22
+        "PHOTO_PAD_DECISION_WEAK_COMBINED_SUM_MIN", 0.24
     ),
+    # --- Glasses reflection guard (soften false device hits on lenses) ---
     "glasses_mask_min_pixels": _int_env("PHOTO_PAD_GLASSES_MASK_MIN_PIXELS", 24),
     "glasses_mask_dilate": _int_env("PHOTO_PAD_GLASSES_MASK_DILATE", 11),
     "glasses_device_overlap_skip": _float_env(
@@ -769,6 +767,78 @@ PHOTO_PAD_NUMBERS = {
     ),
     "glasses_device_overlap_soft": _float_env(
         "PHOTO_PAD_GLASSES_DEVICE_OVERLAP_SOFT", 0.14
+    ),
+    # Face-centric gating (PAD v4)
+    "device_face_expand_scale": _float_env("PHOTO_PAD_DEVICE_FACE_EXPAND_SCALE", 1.38),
+    "device_face_iou_min": _float_env("PHOTO_PAD_DEVICE_FACE_IOU_MIN", 0.04),
+    "device_face_cover_ratio_min": _float_env(
+        "PHOTO_PAD_DEVICE_FACE_COVER_RATIO_MIN", 0.14
+    ),
+    "frame_face_expand_scale": _float_env("PHOTO_PAD_FRAME_FACE_EXPAND_SCALE", 1.42),
+    "frame_face_iou_min": _float_env("PHOTO_PAD_FRAME_FACE_IOU_MIN", 0.08),
+    "frame_face_max_quad_area_ratio": _float_env(
+        "PHOTO_PAD_FRAME_FACE_MAX_QUAD_AREA_RATIO", 0.48
+    ),
+    "frame_face_min_cover_when_large_quad": _float_env(
+        "PHOTO_PAD_FRAME_FACE_MIN_COVER_WHEN_LARGE_QUAD", 0.40
+    ),
+    # --- Inner-face recapture (FFT ring + Sobel anisotropy) ---
+    "recapture_fft_ring_inner": _int_env("PHOTO_PAD_RECAPTURE_FFT_RING_INNER", 8),
+    "recapture_fft_ring_outer": _int_env("PHOTO_PAD_RECAPTURE_FFT_RING_OUTER", 42),
+    "recapture_fft_baseline": _float_env("PHOTO_PAD_RECAPTURE_FFT_BASELINE", 0.42),
+    "recapture_fft_scale": _float_env("PHOTO_PAD_RECAPTURE_FFT_SCALE", 0.24),
+    "recapture_sobel_aniso_min": _float_env(
+        "PHOTO_PAD_RECAPTURE_SOBEL_ANISO_MIN", 2.05
+    ),
+    "recapture_sobel_aniso_scale": _float_env(
+        "PHOTO_PAD_RECAPTURE_SOBEL_ANISO_SCALE", 0.35
+    ),
+    "recapture_mid": _float_env("PHOTO_PAD_RECAPTURE_MID", 0.22),
+    "recapture_strong": _float_env("PHOTO_PAD_RECAPTURE_STRONG", 0.38),
+    "recapture_isolated_extreme_single_channel_min": _float_env(
+        "PHOTO_PAD_RECAPTURE_ISOLATED_EXTREME_REVIEW_MIN", 0.90
+    ),
+    "recapture_isolated_moire_forgive_min_rec": _float_env(
+        "PHOTO_PAD_RECAPTURE_ISOLATED_MOIRE_FORGIVE_MIN_REC", 0.84
+    ),
+    "recapture_isolated_moire_max_quality_penalty": _float_env(
+        "PHOTO_PAD_RECAPTURE_ISOLATED_MOIRE_MAX_QUALITY_PENALTY", 0.10
+    ),
+    "risk_weight_recapture": _float_env("PHOTO_PAD_RISK_WEIGHT_RECAPTURE", 0.20),
+    "decision_recapture_review_min": _float_env(
+        "PHOTO_PAD_DECISION_RECAPTURE_REVIEW_MIN", 0.18
+    ),
+    "decision_recapture_corroboration_min": _float_env(
+        "PHOTO_PAD_DECISION_RECAPTURE_CORROBORATION_MIN", 0.26
+    ),
+    "recapture_inner_face_scale": _float_env(
+        "PHOTO_PAD_RECAPTURE_INNER_FACE_SCALE", 0.62
+    ),
+    "recapture_min_laplacian_var": _float_env(
+        "PHOTO_PAD_RECAPTURE_MIN_LAPLACIAN_VAR", 18.0
+    ),
+    "recapture_blur_dampen_factor": _float_env(
+        "PHOTO_PAD_RECAPTURE_BLUR_DAMPEN_FACTOR", 0.38
+    ),
+    # --- Normal-live shield (blocks weak-geometry → review when other cues are calm) ---
+    "shield_max_device_face": _float_env("PHOTO_PAD_SHIELD_MAX_DEVICE_FACE", 0.175),
+    "shield_max_frame_face": _float_env("PHOTO_PAD_SHIELD_MAX_FRAME_FACE", 0.205),
+    "shield_max_recapture": _float_env("PHOTO_PAD_SHIELD_MAX_RECAPTURE", 0.18),
+    "shield_max_quality_penalty": _float_env(
+        "PHOTO_PAD_SHIELD_MAX_QUALITY_PENALTY", 0.38
+    ),
+    "no_fake_susp_min_face_area_ratio": _float_env(
+        "PHOTO_PAD_NO_FAKE_SUSP_MIN_FACE_AREA_RATIO", 0.034
+    ),
+    "quality_degraded_force_review_penalty_min": _float_env(
+        "PHOTO_PAD_QUALITY_DEGRADED_FORCE_REVIEW_PENALTY_MIN", 0.55
+    ),
+    # Texture/recapture spoof conclusions require adequate ROI (face size, sharpness)
+    "presentation_texture_min_face_area_ratio": _float_env(
+        "PHOTO_PAD_PRESENTATION_TEXTURE_MIN_FACE_AREA_RATIO", 0.042
+    ),
+    "presentation_texture_max_quality_penalty": _float_env(
+        "PHOTO_PAD_PRESENTATION_TEXTURE_MAX_QUALITY_PENALTY", 0.30
     ),
 }
 
@@ -827,6 +897,15 @@ CELERY_BEAT_SCHEDULE = (
                 "max_records": PHOTO_PAD_HOURLY_MAX_RECORDS,
                 "device": PHOTO_PAD_DEVICE,
                 "only_today": True,
+            },
+        },
+        "scan-lesson-attendance-photos-backlog-hourly": {
+            "task": "monitoring_app.tasks.scan_lesson_attendance_photos_backlog",
+            "schedule": crontab(minute=str((PHOTO_PAD_HOURLY_MINUTE + 30) % 60)),
+            "kwargs": {
+                "batch_size": min(PHOTO_PAD_HOURLY_BATCH_SIZE, 50),
+                "max_records": max(50, min(PHOTO_PAD_HOURLY_MAX_RECORDS // 4, 100)),
+                "device": PHOTO_PAD_DEVICE,
             },
         },
         "clean-old-attendance-photos-daily": {
