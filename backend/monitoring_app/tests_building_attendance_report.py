@@ -25,6 +25,9 @@ from rest_framework.test import APITestCase
 
 ABILAI_ADDRESS = "Проспект Абылай хана, 51/53"
 TOREKULOVA_ADDRESS = "Улица Торекулова, 71"
+FACEID_FILL_RGB = "DC2626"
+GPS_SPOOF_FILL_RGB = "1D4ED8"
+FACEID_GPS_FILL_RGB = "7E22CE"
 
 
 def _aware_dt(day: datetime.date, hour: int, minute: int = 0) -> datetime.datetime:
@@ -44,13 +47,13 @@ def _workbook_snapshot(raw_bytes: bytes) -> dict[str, list[tuple[object, ...]]]:
     return snapshot
 
 
-def _get_attendance_cell_value(
+def _find_attendance_cell(
     raw_bytes: bytes,
     *,
     staff_fio: str,
     target_day: datetime.date,
-) -> object:
-    workbook = load_workbook(BytesIO(raw_bytes), data_only=True)
+):
+    workbook = load_workbook(BytesIO(raw_bytes))
     worksheet = workbook["Отчет посещаемости"]
     target_header = target_day.strftime("%d.%m.%Y")
 
@@ -70,9 +73,40 @@ def _get_attendance_cell_value(
     for row_idx in range(header_row_idx + 1, worksheet.max_row + 1):
         if worksheet.cell(row=row_idx, column=1).value != staff_fio:
             continue
-        return worksheet.cell(row=row_idx, column=target_col_idx).value
+        return worksheet.cell(row=row_idx, column=target_col_idx)
 
     raise AssertionError(f"Staff row {staff_fio} not found in workbook")
+
+
+def _get_attendance_cell_value(
+    raw_bytes: bytes,
+    *,
+    staff_fio: str,
+    target_day: datetime.date,
+) -> object:
+    return _find_attendance_cell(
+        raw_bytes,
+        staff_fio=staff_fio,
+        target_day=target_day,
+    ).value
+
+
+def _get_attendance_cell_fill_rgb(
+    raw_bytes: bytes,
+    *,
+    staff_fio: str,
+    target_day: datetime.date,
+) -> str:
+    cell = _find_attendance_cell(
+        raw_bytes,
+        staff_fio=staff_fio,
+        target_day=target_day,
+    )
+    start_color = getattr(cell.fill, "start_color", None)
+    rgb = ""
+    if start_color is not None:
+        rgb = str(getattr(start_color, "rgb", "") or getattr(start_color, "index", ""))
+    return rgb.upper()
 
 
 class BuildingAttendanceReportServiceTests(TestCase):
@@ -80,7 +114,7 @@ class BuildingAttendanceReportServiceTests(TestCase):
         self.student_position = Position.objects.create(name="Студент")
         self.dept_a = ChildDepartment.objects.create(id="D-A", name="Кафедра А")
         self.dept_b = ChildDepartment.objects.create(id="D-B", name="Кафедра Б")
-        ClassLocation.objects.create(
+        self.class_location = ClassLocation.objects.create(
             name="Абылай",
             address=ABILAI_ADDRESS,
             latitude=43.2389,
@@ -431,7 +465,7 @@ class BuildingAttendanceReportApiAndCommandTests(APITestCase):
             department=self.department,
         )
         self.staff.positions.add(self.student_position)
-        ClassLocation.objects.create(
+        self.class_location = ClassLocation.objects.create(
             name="Абылай",
             address=ABILAI_ADDRESS,
             latitude=43.2389,
@@ -547,7 +581,7 @@ class DepartmentAttendanceExcelTests(APITestCase):
             department=self.department,
         )
         self.staff.positions.add(self.student_position)
-        ClassLocation.objects.create(
+        self.class_location = ClassLocation.objects.create(
             name="Абылай",
             address=ABILAI_ADDRESS,
             latitude=43.2389,
@@ -570,22 +604,38 @@ class DepartmentAttendanceExcelTests(APITestCase):
         self,
         *,
         hour: int,
+        event_day: datetime.date | None = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        staff: Staff | None = None,
         auto_status: str = LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
         manual_verdict: str = LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
     ) -> None:
+        lesson_day = event_day or self.target_day
+        lesson_staff = staff or self.staff
         LessonAttendance.objects.create(
-            staff=self.staff,
+            staff=lesson_staff,
             subject_name="Math",
             tutor_id=1,
             tutor="Tutor",
-            first_in=_aware_dt(self.target_day, hour, 0),
-            last_out=_aware_dt(self.target_day, hour + 1, 0),
-            latitude=43.2389,
-            longitude=76.8897,
-            date_at=self.target_day,
+            first_in=_aware_dt(lesson_day, hour, 0),
+            last_out=_aware_dt(lesson_day, hour + 1, 0),
+            latitude=self.class_location.latitude if latitude is None else latitude,
+            longitude=self.class_location.longitude if longitude is None else longitude,
+            date_at=lesson_day,
             photo_spoof_status=auto_status,
             photo_manual_verdict=manual_verdict,
         )
+
+    def _create_staff_member(self, *, pin: str, name: str, surname: str) -> Staff:
+        staff = Staff.objects.create(
+            pin=pin,
+            name=name,
+            surname=surname,
+            department=self.department,
+        )
+        staff.positions.add(self.student_position)
+        return staff
 
     def _create_sa(self) -> None:
         StaffAttendance.objects.create(
@@ -597,12 +647,19 @@ class DepartmentAttendanceExcelTests(APITestCase):
             area_name_out="цос",
         )
 
-    def _download_excel(self):
+    def _download_excel(
+        self,
+        *,
+        start_day: datetime.date | None = None,
+        end_day: datetime.date | None = None,
+    ):
+        range_start = start_day or self.target_day
+        range_end = end_day or self.target_day
         response = self.client.get(
             reverse("sent_excel", kwargs={"department_id": self.department.id}),
             {
-                "startDate": self.target_day.isoformat(),
-                "endDate": self.target_day.isoformat(),
+                "startDate": range_start.isoformat(),
+                "endDate": range_end.isoformat(),
             },
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -622,7 +679,15 @@ class DepartmentAttendanceExcelTests(APITestCase):
             target_day=self.target_day,
         )
 
-        self.assertEqual(attendance_value, "Отсутствие")
+        self.assertIn("Отсутствие", str(attendance_value))
+        self.assertIn("Подозрение на обман FaceID", str(attendance_value))
+        self.assertTrue(
+            _get_attendance_cell_fill_rgb(
+                excel_bytes,
+                staff_fio="Student Api",
+                target_day=self.target_day,
+            ).endswith(FACEID_FILL_RGB)
+        )
 
     def test_department_excel_keeps_staff_attendance_when_lesson_day_is_suspicious(
         self,
@@ -641,6 +706,320 @@ class DepartmentAttendanceExcelTests(APITestCase):
         )
 
         self.assertIn("08:30:00 - 14:30:00", str(attendance_value))
+        self.assertIn("Подозрение на обман FaceID", str(attendance_value))
+        self.assertTrue(
+            _get_attendance_cell_fill_rgb(
+                excel_bytes,
+                staff_fio="Student Api",
+                target_day=self.target_day,
+            ).endswith(FACEID_FILL_RGB)
+        )
+
+    def test_department_excel_manual_clean_override_removes_faceid_flag(self):
+        self._create_lesson(
+            hour=9,
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+            manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN,
+        )
+
+        excel_bytes = self._download_excel()
+        attendance_value = _get_attendance_cell_value(
+            excel_bytes,
+            staff_fio="Student Api",
+            target_day=self.target_day,
+        )
+
+        self.assertIn("10:00:00 - 11:00:00", str(attendance_value))
+        self.assertNotIn("Подозрение на обман FaceID", str(attendance_value))
+        self.assertFalse(
+            _get_attendance_cell_fill_rgb(
+                excel_bytes,
+                staff_fio="Student Api",
+                target_day=self.target_day,
+            ).endswith(FACEID_FILL_RGB)
+        )
+
+    def test_department_excel_marks_gps_spoof_when_same_micro_point_repeats(self):
+        start_day = datetime.date(2026, 3, 10)
+        end_day = datetime.date(2026, 3, 12)
+        repeated_points = [
+            (43.2389050, 76.8897050),
+            (43.2389054, 76.8897055),
+            (43.2389058, 76.8897060),
+        ]
+        for index, point in enumerate(repeated_points):
+            self._create_lesson(
+                hour=9,
+                event_day=start_day + datetime.timedelta(days=index),
+                latitude=point[0],
+                longitude=point[1],
+            )
+
+        excel_bytes = self._download_excel(start_day=start_day, end_day=end_day)
+
+        for offset in range(3):
+            current_day = start_day + datetime.timedelta(days=offset)
+            attendance_value = _get_attendance_cell_value(
+                excel_bytes,
+                staff_fio="Student Api",
+                target_day=current_day,
+            )
+            self.assertIn("Подозрение на подмену локации", str(attendance_value))
+            self.assertTrue(
+                _get_attendance_cell_fill_rgb(
+                    excel_bytes,
+                    staff_fio="Student Api",
+                    target_day=current_day,
+                ).endswith(GPS_SPOOF_FILL_RGB)
+            )
+
+    def test_department_excel_does_not_mark_gps_spoof_below_share_threshold(self):
+        start_day = datetime.date(2026, 3, 10)
+        end_day = datetime.date(2026, 3, 16)
+        repeated_points = [
+            (43.2389050, 76.8897050),
+            (43.2389054, 76.8897055),
+            (43.2389058, 76.8897060),
+        ]
+        for index, point in enumerate(repeated_points):
+            self._create_lesson(
+                hour=9,
+                event_day=start_day + datetime.timedelta(days=index),
+                latitude=point[0],
+                longitude=point[1],
+            )
+
+        unique_points = [
+            (43.2389400, 76.8897400),
+            (43.2389850, 76.8897850),
+            (43.2390300, 76.8898300),
+            (43.2390750, 76.8898750),
+        ]
+        for index, point in enumerate(unique_points, start=3):
+            self._create_lesson(
+                hour=9,
+                event_day=start_day + datetime.timedelta(days=index),
+                latitude=point[0],
+                longitude=point[1],
+            )
+
+        excel_bytes = self._download_excel(start_day=start_day, end_day=end_day)
+
+        self.assertFalse(
+            _get_attendance_cell_fill_rgb(
+                excel_bytes,
+                staff_fio="Student Api",
+                target_day=start_day,
+            ).endswith(GPS_SPOOF_FILL_RGB)
+        )
+
+    def test_department_excel_does_not_mark_gps_spoof_for_only_two_days(self):
+        start_day = datetime.date(2026, 3, 10)
+        end_day = datetime.date(2026, 3, 11)
+        for offset, point in enumerate(
+            [
+                (43.2389050, 76.8897050),
+                (43.2389054, 76.8897055),
+            ]
+        ):
+            self._create_lesson(
+                hour=9,
+                event_day=start_day + datetime.timedelta(days=offset),
+                latitude=point[0],
+                longitude=point[1],
+            )
+
+        excel_bytes = self._download_excel(start_day=start_day, end_day=end_day)
+
+        self.assertFalse(
+            _get_attendance_cell_fill_rgb(
+                excel_bytes,
+                staff_fio="Student Api",
+                target_day=start_day,
+            ).endswith(GPS_SPOOF_FILL_RGB)
+        )
+
+    def test_department_excel_marks_shared_micro_point_per_staff_independently(self):
+        start_day = datetime.date(2026, 3, 10)
+        end_day = datetime.date(2026, 3, 12)
+        repeated_points = [
+            (43.2389050, 76.8897050),
+            (43.2389054, 76.8897055),
+            (43.2389058, 76.8897060),
+        ]
+        peer_staff = [
+            self._create_staff_member(
+                pin="S301S",
+                name="PeerOne",
+                surname="Student",
+            )
+        ]
+
+        for staff in [self.staff, *peer_staff]:
+            for index, point in enumerate(repeated_points):
+                self._create_lesson(
+                    hour=9,
+                    event_day=start_day + datetime.timedelta(days=index),
+                    latitude=point[0],
+                    longitude=point[1],
+                    staff=staff,
+                )
+
+        excel_bytes = self._download_excel(start_day=start_day, end_day=end_day)
+
+        for staff_fio in ["Student Api", "Student PeerOne"]:
+            for offset in range(3):
+                current_day = start_day + datetime.timedelta(days=offset)
+                attendance_value = _get_attendance_cell_value(
+                    excel_bytes,
+                    staff_fio=staff_fio,
+                    target_day=current_day,
+                )
+                self.assertIn(
+                    "Подозрение на подмену локации",
+                    str(attendance_value),
+                )
+                self.assertTrue(
+                    _get_attendance_cell_fill_rgb(
+                        excel_bytes,
+                        staff_fio=staff_fio,
+                        target_day=current_day,
+                    ).endswith(GPS_SPOOF_FILL_RGB)
+                )
+
+    def test_department_excel_combines_faceid_and_gps_spoof(self):
+        start_day = datetime.date(2026, 3, 10)
+        end_day = datetime.date(2026, 3, 12)
+        repeated_points = [
+            (43.2389050, 76.8897050),
+            (43.2389054, 76.8897055),
+            (43.2389058, 76.8897060),
+        ]
+        for index, point in enumerate(repeated_points):
+            lesson_kwargs = {}
+            if index == 1:
+                lesson_kwargs["auto_status"] = (
+                    LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS
+                )
+            self._create_lesson(
+                hour=9,
+                event_day=start_day + datetime.timedelta(days=index),
+                latitude=point[0],
+                longitude=point[1],
+                **lesson_kwargs,
+            )
+
+        excel_bytes = self._download_excel(start_day=start_day, end_day=end_day)
+
+        attendance_value = _get_attendance_cell_value(
+            excel_bytes,
+            staff_fio="Student Api",
+            target_day=start_day + datetime.timedelta(days=1),
+        )
+        self.assertIn(
+            "Подозрение на обман FaceID и подмену локации",
+            str(attendance_value),
+        )
+        self.assertTrue(
+            _get_attendance_cell_fill_rgb(
+                excel_bytes,
+                staff_fio="Student Api",
+                target_day=start_day + datetime.timedelta(days=1),
+            ).endswith(FACEID_GPS_FILL_RGB)
+        )
+
+    def test_department_excel_legend_uses_neutral_labels(self):
+        excel_bytes = self._download_excel()
+        snapshot = _workbook_snapshot(excel_bytes)["Отчет посещаемости"]
+        legend_labels = {
+            row[1]
+            for row in snapshot[4:13]
+            if len(row) > 1 and isinstance(row[1], str) and row[1]
+        }
+
+        self.assertIn("Активность в выходной день", legend_labels)
+        self.assertIn("Удаленный формат", legend_labels)
+        self.assertIn("Согласованная причина отсутствия", legend_labels)
+        self.assertIn("Несогласованное отсутствие / отсутствие", legend_labels)
+        self.assertIn("Только событие лифта", legend_labels)
+        self.assertIn("Попытка обмана FaceID", legend_labels)
+        self.assertIn("Подозрение на подмену локации", legend_labels)
+        self.assertIn("FaceID + подмена локации", legend_labels)
+
+    def test_department_excel_cache_refreshes_after_verdict_change(self):
+        lesson = LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Math",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=_aware_dt(self.target_day, 9, 0),
+            last_out=_aware_dt(self.target_day, 10, 0),
+            latitude=self.class_location.latitude,
+            longitude=self.class_location.longitude,
+            date_at=self.target_day,
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+        )
+
+        initial_excel = self._download_excel()
+        self.assertFalse(
+            _get_attendance_cell_fill_rgb(
+                initial_excel,
+                staff_fio="Student Api",
+                target_day=self.target_day,
+            ).endswith(FACEID_FILL_RGB)
+        )
+
+        lesson.photo_manual_verdict = LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS
+        lesson.save(update_fields=["photo_manual_verdict"])
+
+        refreshed_excel = self._download_excel()
+        self.assertTrue(
+            _get_attendance_cell_fill_rgb(
+                refreshed_excel,
+                staff_fio="Student Api",
+                target_day=self.target_day,
+            ).endswith(FACEID_FILL_RGB)
+        )
+
+    def test_department_excel_cache_refreshes_after_classlocation_change(self):
+        start_day = datetime.date(2026, 3, 10)
+        end_day = datetime.date(2026, 3, 12)
+        for offset, point in enumerate(
+            [
+                (43.2389050, 76.8897050),
+                (43.2389054, 76.8897055),
+                (43.2389058, 76.8897060),
+            ]
+        ):
+            self._create_lesson(
+                hour=9,
+                event_day=start_day + datetime.timedelta(days=offset),
+                latitude=point[0],
+                longitude=point[1],
+            )
+
+        initial_excel = self._download_excel(start_day=start_day, end_day=end_day)
+        self.assertTrue(
+            _get_attendance_cell_fill_rgb(
+                initial_excel,
+                staff_fio="Student Api",
+                target_day=start_day,
+            ).endswith(GPS_SPOOF_FILL_RGB)
+        )
+
+        self.class_location.latitude = 43.1000
+        self.class_location.longitude = 76.7000
+        self.class_location.save(update_fields=["latitude", "longitude"])
+
+        refreshed_excel = self._download_excel(start_day=start_day, end_day=end_day)
+        self.assertFalse(
+            _get_attendance_cell_fill_rgb(
+                refreshed_excel,
+                staff_fio="Student Api",
+                target_day=start_day,
+            ).endswith(GPS_SPOOF_FILL_RGB)
+        )
 
 
 class SuspiciousLessonAttendanceExportCommandTests(TestCase):

@@ -28,9 +28,7 @@ STATE_CREATED_NO_PHOTO = "CREATED_NO_PHOTO"
 STATE_PHOTO_ATTACHED = "PHOTO_ATTACHED"
 STATE_UPDATED_META = "UPDATED_META"
 STATE_DELETED = "DELETED"
-SUSPICIOUS_LOCATION_PATTERNS_EPOCH_CACHE_KEY = (
-    "suspicious_location_patterns_epoch"
-)
+SUSPICIOUS_LOCATION_PATTERNS_EPOCH_CACHE_KEY = "suspicious_location_patterns_epoch"
 SUSPICIOUS_LOCATION_PATTERNS_EPOCH_TTL = 365 * 24 * 60 * 60
 
 
@@ -73,9 +71,17 @@ def bump_suspicious_location_patterns_epoch() -> str:
     return epoch_value
 
 
+def _invalidate_excel_attendance_cache() -> None:
+    invalidate_cache_pattern("attendance_data_*")
+
+
 def _resolve_state_code(instance, *, created, update_fields):
     if created:
-        return STATE_PHOTO_ATTACHED if instance.staff_image_path else STATE_CREATED_NO_PHOTO
+        return (
+            STATE_PHOTO_ATTACHED
+            if instance.staff_image_path
+            else STATE_CREATED_NO_PHOTO
+        )
     if update_fields and "staff_image_path" in update_fields:
         return STATE_PHOTO_ATTACHED if instance.staff_image_path else STATE_UPDATED_META
     return STATE_UPDATED_META
@@ -85,6 +91,7 @@ def _invalidate_lesson_attendance_cache(instance):
     from django.core.cache import cache
 
     cache.delete(f"photos_for_{instance.date_at}")
+    _invalidate_excel_attendance_cache()
     invalidate_cache_pattern(f"map_location_{instance.date_at}*")
     invalidate_cache_pattern(f"staff_attendance_stats_{instance.date_at}*")
     invalidate_cache_pattern("department_confirmation_pins_*")
@@ -132,6 +139,9 @@ def send_deleted_photo(sender, instance, **kwargs):
 @receiver([post_save, post_delete], sender=StaffAttendance)
 def invalidate_attendance_cache(sender, instance, **kwargs):
     """Инвалидирует кэш при изменении посещаемости сотрудников (в т.ч. после fetcher)."""
+    _ = sender
+    _ = kwargs
+    _invalidate_excel_attendance_cache()
     invalidate_cache_pattern("staffatt_count_*")
     if hasattr(instance, "date_at") and instance.date_at:
         work_day = instance.date_at - timedelta(days=1)
@@ -154,7 +164,9 @@ def invalidate_attendance_cache(sender, instance, **kwargs):
 def invalidate_staff_cache_on_save(sender, instance, created, **kwargs):
     _ = sender
     _ = created
+    _ = kwargs
     if hasattr(instance, "pin") and instance.pin:
+        _invalidate_excel_attendance_cache()
         invalidate_cache(f"staff_{instance.pin}")
         invalidate_cache_pattern(f"staff_detail_{instance.pin}*")
         if hasattr(instance, "department") and instance.department:
@@ -165,7 +177,10 @@ def invalidate_staff_cache_on_save(sender, instance, created, **kwargs):
 
 @receiver(post_delete, sender=Staff)
 def invalidate_staff_cache_on_delete(sender, instance, **kwargs):
+    _ = sender
+    _ = kwargs
     if hasattr(instance, "pin") and instance.pin:
+        _invalidate_excel_attendance_cache()
         invalidate_cache(f"staff_{instance.pin}")
         invalidate_cache_pattern(f"staff_detail_{instance.pin}*")
         if hasattr(instance, "department") and instance.department:
@@ -178,6 +193,7 @@ def invalidate_staff_cache_on_delete(sender, instance, **kwargs):
 @receiver([post_save, post_delete], sender=ChildDepartment)
 def invalidate_department_cache(sender, instance, **kwargs):
     """Инвалидирует кэш при изменении департаментов."""
+    sender_name = getattr(sender, "__name__", str(sender))
     dept_id = str(instance.id)
     invalidate_cache(f"department_summary_v2_{dept_id}")
     invalidate_cache(f"child_department_detail_v2_{dept_id}")
@@ -188,13 +204,16 @@ def invalidate_department_cache(sender, instance, **kwargs):
     invalidate_cache("hierarchical_dept_filter_lookups")
     invalidate_cache_pattern("department_descendants_*")
     invalidate_cache_pattern("dept_descendants_*")
-    logger.info(f"Invalidated department cache for ID: {dept_id}")
+    logger.info(
+        "Invalidated department cache for sender=%s id=%s",
+        sender_name,
+        dept_id,
+    )
 
 
 def invalidate_class_location_cache_impl():
     """Инвалидирует кэш ClassLocation, сразу прогревает список и шлёт задачу прогрева радиусов. TTL списка 1 ч."""
-    from monitoring_app.cache_conf import Cache
-
+    _invalidate_excel_attendance_cache()
     invalidate_cache(CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY)
     invalidate_cache("lesson_admin_closest_locations")
     invalidate_cache(CLASS_LOCATION_LIST_CACHE_KEY)
@@ -237,4 +256,7 @@ def invalidate_class_location_cache_impl():
 @receiver([post_save, post_delete], sender=ClassLocation)
 def invalidate_class_location_cache(sender, instance, **kwargs):
     """Сигнал: инвалидирует кэш при изменении ClassLocation."""
+    _ = sender
+    _ = instance
+    _ = kwargs
     invalidate_class_location_cache_impl()

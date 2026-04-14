@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import logging
 import math
@@ -7,7 +8,18 @@ import re
 from collections import Counter, defaultdict
 from difflib import get_close_matches
 from functools import lru_cache
-from typing import Any, Dict, List, Tuple, cast
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Sequence,
+    Set,
+    Tuple,
+    TypedDict,
+    cast,
+)
 
 import numpy as np
 import pandas as pd
@@ -25,7 +37,7 @@ from monitoring_app import models
 from monitoring_app.cache_conf import get_cache
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from sklearn.neighbors import KDTree
+from sklearn.neighbors import BallTree, KDTree
 
 DAYS = settings.DAYS
 
@@ -472,36 +484,82 @@ def send_password_reset_email(user, request):
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <title>Сброс пароля</title>
             </head>
-            <body style="margin: 0; padding: 0; font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', sans-serif; background-color: #f7f9fc; color: #333333;">
-                <div style="max-width: 600px; margin: 20px auto; padding: 30px; border-radius: 12px; background-color: #ffffff; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);">
+            <body
+                style="
+                    margin: 0;
+                    padding: 0;
+                    font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', sans-serif;
+                    background-color: #f7f9fc;
+                    color: #333333;
+                "
+            >
+                <div
+                    style="
+                        max-width: 600px;
+                        margin: 20px auto;
+                        padding: 30px;
+                        border-radius: 12px;
+                        background-color: #ffffff;
+                        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+                    "
+                >
                     <div style="text-align: center; margin-bottom: 30px;">
                         <h1 style="color: #2563EB; font-size: 24px; margin: 0 0 5px 0;">Сброс пароля</h1>
                         <p style="color: #6B7280; font-size: 16px; margin: 0;">Инструкция по восстановлению доступа</p>
                     </div>
 
-                    <div style="padding: 20px; background-color: #F3F4F6; border-radius: 8px; margin-bottom: 25px;">
+                    <div
+                        style="padding: 20px; background-color: #F3F4F6; border-radius: 8px; margin-bottom: 25px;"
+                    >
                         <p style="color: #4B5563; line-height: 1.6; margin: 0 0 15px 0;">
                             Здравствуйте, <strong>{user_name}</strong>!
                         </p>
                         <p style="color: #4B5563; line-height: 1.6; margin: 0 0 15px 0;">
-                            Мы получили запрос на сброс пароля для вашего аккаунта. Если это были вы, используйте кнопку ниже для создания нового пароля.
+                            Мы получили запрос на сброс пароля для вашего аккаунта.
+                            Если это были вы, используйте кнопку ниже для
+                            создания нового пароля.
                         </p>
                     </div>
 
                     <div style="text-align: center; margin-bottom: 30px;">
-                        <a href="{reset_link}" style="display: inline-block; padding: 14px 32px; color: #ffffff; background-color: #2563EB; text-decoration: none; border-radius: 6px; font-size: 16px; font-weight: 600; transition: background-color 0.2s ease;">
+                        <a
+                            href="{reset_link}"
+                            style="
+                                display: inline-block;
+                                padding: 14px 32px;
+                                color: #ffffff;
+                                background-color: #2563EB;
+                                text-decoration: none;
+                                border-radius: 6px;
+                                font-size: 16px;
+                                font-weight: 600;
+                                transition: background-color 0.2s ease;
+                            "
+                        >
                             Сбросить пароль
                         </a>
                     </div>
 
-                    <div style="border-left: 4px solid #FCD34D; padding: 12px 15px; background-color: #FFFBEB; margin-bottom: 25px; border-radius: 0 6px 6px 0;">
+                    <div
+                        style="
+                            border-left: 4px solid #FCD34D;
+                            padding: 12px 15px;
+                            background-color: #FFFBEB;
+                            margin-bottom: 25px;
+                            border-radius: 0 6px 6px 0;
+                        "
+                    >
                         <p style="color: #92400E; font-size: 14px; line-height: 1.5; margin: 0;">
                             <strong>Важно:</strong> Ссылка действительна до <strong>{expiry_time}</strong>.<br>
-                            Если вы не запрашивали сброс пароля, пожалуйста, игнорируйте это письмо или обратитесь в службу поддержки.
+                            Если вы не запрашивали сброс пароля, пожалуйста,
+                            игнорируйте это письмо или обратитесь в службу
+                            поддержки.
                         </p>
                     </div>
 
-                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #E5E7EB; text-align: center;">
+                    <div
+                        style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #E5E7EB; text-align: center;"
+                    >
                         <div style="display: inline-block; margin: 0 15px 15px 0;">
                             <a href="{site_url}" style="color: #4B5563; text-decoration: none; font-size: 14px;">
                                 Home
@@ -513,7 +571,10 @@ def send_password_reset_email(user, request):
                             </a>
                         </div>
                         <div style="display: inline-block; margin: 0 0 15px 0;">
-                            <a href="https://new.krmu.edu.kz/О_нас/Об_университете/" style="color: #4B5563; text-decoration: none; font-size: 14px;">
+                            <a
+                                href="https://new.krmu.edu.kz/О_нас/Об_университете/"
+                                style="color: #4B5563; text-decoration: none; font-size: 14px;"
+                            >
                                 About Us
                             </a>
                         </div>
@@ -943,11 +1004,75 @@ class LocationSearcher:
             locations (list): Список словарей с ключами `latitude`, `longitude`, `name`.
         """
         self.locations = locations
-        self.kd_tree = KDTree(
-            np.array([(loc["latitude"], loc["longitude"]) for loc in locations]),
-            metric="euclidean",
+        self.location_coords = np.asarray(
+            [(float(loc["latitude"]), float(loc["longitude"])) for loc in locations],
+            dtype=float,
         )
+        self.kd_tree = KDTree(self.location_coords, metric="euclidean")
         self.names = [loc["name"] for loc in locations]
+
+    def _pick_nearest_candidate(
+        self,
+        lat: float,
+        lon: float,
+        candidate_indices,
+        *,
+        radius: float = 200,
+    ):
+        """Возвращает ближайшую локацию по индексам кандидатов.
+
+        Args:
+            lat: Широта искомой точки.
+            lon: Долгота искомой точки.
+            candidate_indices: Индексы кандидатов из KDTree.
+            radius: Радиус поиска в метрах.
+
+        Returns:
+            dict | None: Payload ближайшей локации.
+
+        Notes:
+            Complexity: O(k), где ``k`` — число кандидатов в радиусе KDTree.
+        """
+        nearest_candidate = None
+        min_distance = float("inf")
+
+        for idx in candidate_indices:
+            idx_int = int(idx)
+            if 0 <= idx_int < len(self.locations):
+                candidate = self.locations[idx_int]
+                distance = calculate_distance_haversine(
+                    lat,
+                    lon,
+                    float(candidate["latitude"]),
+                    float(candidate["longitude"]),
+                )
+                if distance < min_distance and distance <= radius:
+                    min_distance = distance
+                    nearest_candidate = candidate
+
+        return nearest_candidate
+
+    def _find_nearest_candidate(self, lat, lon, radius=200):
+        """Возвращает ближайшую локацию payload в заданном радиусе."""
+        if lat is None or lon is None:
+            return None
+        if not self.locations:
+            return None
+
+        meters_to_degrees = radius / 111000
+        candidate_indices = self.kd_tree.query_radius(
+            [[lat, lon]], r=meters_to_degrees
+        )[0]
+
+        if len(candidate_indices) == 0:
+            return None
+
+        return self._pick_nearest_candidate(
+            float(lat),
+            float(lon),
+            candidate_indices,
+            radius=radius,
+        )
 
     def find_nearest(self, lat, lon, radius=200):
         """Находит ближайшую локацию в заданном радиусе с точным расчетом расстояния.
@@ -963,28 +1088,56 @@ class LocationSearcher:
         Returns:
             str: Название ближайшей локации или "Unknown Area".
         """
-        meters_to_degrees = radius / 111000
-        candidate_indices = self.kd_tree.query_radius(
-            [[lat, lon]], r=meters_to_degrees
-        )[0]
-
-        if len(candidate_indices) == 0:
+        nearest_candidate = self._find_nearest_candidate(lat, lon, radius=radius)
+        if nearest_candidate is None:
             return "Unknown Area"
+        return str(nearest_candidate.get("name") or "Unknown Area")
 
-        nearest_name = None
-        min_distance = float("inf")
+    def find_nearest_location(self, lat, lon, radius=200):
+        """Возвращает payload ближайшей локации или None."""
+        return self._find_nearest_candidate(lat, lon, radius=radius)
 
-        for idx in candidate_indices:
-            if 0 <= idx < len(self.locations):
-                candidate = self.locations[idx]
-                distance = calculate_distance_haversine(
-                    lat, lon, candidate["latitude"], candidate["longitude"]
-                )
-                if distance < min_distance and distance <= radius:
-                    min_distance = distance
-                    nearest_name = candidate["name"]
+    def find_nearest_locations_bulk(
+        self,
+        coordinates: Sequence[tuple[float, float]],
+        *,
+        radius: float = 200,
+    ) -> list[dict[str, Any] | None]:
+        """Находит ближайшие локации сразу для набора координат.
 
-        return nearest_name if nearest_name else "Unknown Area"
+        Args:
+            coordinates: Список координат ``(lat, lon)``.
+            radius: Радиус поиска в метрах.
+
+        Returns:
+            Список payload-локаций в том же порядке, что и ``coordinates``.
+
+        Notes:
+            Complexity: O(n log L + e), где ``n`` — число точек,
+            ``L`` — число локаций, ``e`` — число candidate edges.
+        """
+        if not coordinates or not self.locations:
+            return []
+
+        meters_to_degrees = radius / 111000
+        coords_array = np.asarray(coordinates, dtype=float)
+        candidate_indices_list = self.kd_tree.query_radius(
+            coords_array,
+            r=meters_to_degrees,
+        )
+
+        return [
+            self._pick_nearest_candidate(
+                float(lat),
+                float(lon),
+                candidate_indices,
+                radius=radius,
+            )
+            for (lat, lon), candidate_indices in zip(
+                coordinates,
+                candidate_indices_list,
+            )
+        ]
 
 
 R_EARTH_M = 6_371_000
@@ -1014,6 +1167,30 @@ def calculate_distance_haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     distance = earth_radius_m * c
     return distance
+
+
+def _convert_to_local_with_tz(
+    dt: datetime.date | datetime.datetime | None,
+    local_tz: datetime.tzinfo,
+) -> datetime.datetime | None:
+    """Convert date/datetime into local timezone using a pre-fetched tz.
+
+    Args:
+        dt: Source date or datetime.
+        local_tz: Target timezone object.
+
+    Returns:
+        Localized datetime or ``None`` when input is ``None``.
+
+    Notes:
+        Complexity: O(1).
+    """
+    if dt is None:
+        return None
+    if isinstance(dt, datetime.date) and not isinstance(dt, datetime.datetime):
+        dt = datetime.datetime.combine(dt, datetime.time(0, 0, 0))
+        dt = timezone.make_aware(dt, local_tz)
+    return timezone.localtime(dt, local_tz)
 
 
 def compute_class_location_acceptance_radii(
@@ -1138,6 +1315,597 @@ def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
     return distance <= radius
 
 
+EXCEL_ATTENDANCE_CACHE_VERSION = "excel_alerts_v3"
+EXCEL_CLASS_LOCATION_RESOLVE_RADIUS_M = 200
+EXCEL_GPS_SPOOF_RADIUS_M = 2
+EXCEL_GPS_SPOOF_MIN_DAYS = 3
+EXCEL_GPS_SPOOF_MIN_SHARE = 0.5
+
+EXCEL_ALERT_FACEID = "faceid"
+EXCEL_ALERT_GPS_SPOOF = "gps_spoof"
+EXCEL_ALERT_FACEID_GPS = "faceid_gps"
+EXCEL_ALERT_NOTE_TEXT = {
+    EXCEL_ALERT_FACEID: "Подозрение на обман FaceID",
+    EXCEL_ALERT_GPS_SPOOF: "Подозрение на подмену локации",
+    EXCEL_ALERT_FACEID_GPS: "Подозрение на обман FaceID и подмену локации",
+}
+
+ExcelAlertKey = tuple[int, str]
+ExcelInvalidLessonDayKey = tuple[int, datetime.date]
+ExcelLocationPayload = dict[str, object]
+ExcelResolutionCache = dict[tuple[float, float], ExcelLocationPayload | None]
+
+
+class ExcelGeoCluster(TypedDict):
+    items: list[Mapping[str, Any]]
+    center_lat: float
+    center_lon: float
+
+
+class ExcelDayAnchor(TypedDict):
+    staff_id: int
+    class_location_id: int
+    date: datetime.date
+    center_lat: float
+    center_lon: float
+
+
+class ExcelNormalizedLessonRow(TypedDict):
+    id: int
+    staff_id: int
+    date_at: datetime.date
+    date_key: str
+    first_in: datetime.datetime | None
+    last_out: datetime.datetime | None
+    first_in_local: datetime.datetime | None
+    last_out_local: datetime.datetime | None
+    latitude: float | None
+    longitude: float | None
+    photo_spoof_status: str | None
+    photo_manual_verdict: str | None
+    class_location_id: int | None
+    location_name: str
+
+
+def _coerce_int_or_none(value: object) -> int | None:
+    """Convert a loosely typed value into ``int`` when possible.
+
+    Args:
+        value: Source value that may represent an integer.
+
+    Returns:
+        Parsed integer or ``None`` when conversion is not possible.
+
+    Notes:
+        Complexity: O(1).
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _excel_sort_token(value: object | None) -> tuple[bool, str]:
+    """Build a stable sortable token for optional values.
+
+    Args:
+        value: Any sortable-like value or ``None``.
+
+    Returns:
+        Tuple where ``None`` values are always sorted last.
+
+    Notes:
+        Complexity: O(1).
+    """
+    return (value is None, str(value))
+
+
+def _cluster_geo_items_for_excel(
+    items: Sequence[Mapping[str, Any]],
+    *,
+    radius_m: float,
+    lat_key: str = "latitude",
+    lon_key: str = "longitude",
+) -> list[ExcelGeoCluster]:
+    """Cluster geo items by radius using BallTree and connected components.
+
+    Args:
+        items: Sequence of mapping-like geo records.
+        radius_m: Clustering radius in meters.
+        lat_key: Key used to read latitude from each item.
+        lon_key: Key used to read longitude from each item.
+
+    Returns:
+        List of clusters with original items and centroid coordinates.
+
+    Notes:
+        Complexity: O(n^2) for very small buckets (``n <= 8``) to avoid tree
+        overhead; otherwise O(n log n + e), where ``e`` is the number of
+        candidate neighbor edges returned by BallTree within the radius.
+    """
+    if not items:
+        return []
+    if len(items) == 1:
+        item = items[0]
+        return [
+            {
+                "items": [item],
+                "center_lat": float(item[lat_key]),
+                "center_lon": float(item[lon_key]),
+            }
+        ]
+
+    coords_deg = np.array(
+        [[float(item[lat_key]), float(item[lon_key])] for item in items],
+        dtype=float,
+    )
+    if len(items) <= 8:
+        clusters = []
+        visited = set()
+        for start_idx in range(len(items)):
+            if start_idx in visited:
+                continue
+            queue = [start_idx]
+            component_indices = []
+            while queue:
+                idx = queue.pop()
+                if idx in visited:
+                    continue
+                visited.add(idx)
+                component_indices.append(idx)
+                base_lat = coords_deg[idx][0]
+                base_lon = coords_deg[idx][1]
+                for other_idx in range(len(items)):
+                    if other_idx == idx or other_idx in visited:
+                        continue
+                    distance = calculate_distance_haversine(
+                        base_lat,
+                        base_lon,
+                        float(coords_deg[other_idx][0]),
+                        float(coords_deg[other_idx][1]),
+                    )
+                    if distance <= radius_m:
+                        queue.append(other_idx)
+
+            cluster_items = [items[idx] for idx in component_indices]
+            cluster_coords = coords_deg[component_indices]
+            clusters.append(
+                {
+                    "items": cluster_items,
+                    "center_lat": float(cluster_coords[:, 0].mean()),
+                    "center_lon": float(cluster_coords[:, 1].mean()),
+                }
+            )
+        return clusters
+
+    coords_rad = np.radians(coords_deg)
+    tree = BallTree(coords_rad, metric="haversine")
+    radius_rad = radius_m / R_EARTH_M
+    neighbor_indices = tree.query_radius(coords_rad, r=radius_rad)
+
+    clusters = []
+    visited = set()
+    for start_idx in range(len(items)):
+        if start_idx in visited:
+            continue
+        queue = [start_idx]
+        component_indices = []
+        while queue:
+            idx = queue.pop()
+            if idx in visited:
+                continue
+            visited.add(idx)
+            component_indices.append(idx)
+            base_lat = coords_deg[idx][0]
+            base_lon = coords_deg[idx][1]
+            for other_idx in neighbor_indices[idx]:
+                other_idx = int(other_idx)
+                if other_idx == idx or other_idx in visited:
+                    continue
+                distance = calculate_distance_haversine(
+                    base_lat,
+                    base_lon,
+                    float(coords_deg[other_idx][0]),
+                    float(coords_deg[other_idx][1]),
+                )
+                if distance <= radius_m:
+                    queue.append(other_idx)
+
+        cluster_items = [items[idx] for idx in component_indices]
+        cluster_coords = coords_deg[component_indices]
+        clusters.append(
+            {
+                "items": cluster_items,
+                "center_lat": float(cluster_coords[:, 0].mean()),
+                "center_lon": float(cluster_coords[:, 1].mean()),
+            }
+        )
+    return clusters
+
+
+def _pick_excel_dominant_cluster(
+    items: Sequence[Mapping[str, Any]],
+    *,
+    radius_m: float,
+    lat_key: str = "latitude",
+    lon_key: str = "longitude",
+) -> ExcelGeoCluster | None:
+    """Pick the densest geo cluster for one day.
+
+    Args:
+        items: Sequence of geo items for one day.
+        radius_m: Clustering radius in meters.
+        lat_key: Key used to read latitude.
+        lon_key: Key used to read longitude.
+
+    Returns:
+        Most representative cluster or ``None`` when input is empty.
+
+    Notes:
+        Complexity: O(n log n + e) for clustering plus O(c log c) for sorting
+        ``c`` produced clusters.
+    """
+    clusters = _cluster_geo_items_for_excel(
+        items,
+        radius_m=radius_m,
+        lat_key=lat_key,
+        lon_key=lon_key,
+    )
+    if not clusters:
+        return None
+    return sorted(
+        clusters,
+        key=lambda cluster: (
+            -len(cluster["items"]),
+            min(_excel_sort_token(item.get("sort_time")) for item in cluster["items"]),
+            min(int(item.get("sort_id", 0)) for item in cluster["items"]),
+        ),
+    )[0]
+
+
+def _build_excel_day_anchor(
+    day_records: Sequence[ExcelNormalizedLessonRow],
+) -> ExcelDayAnchor | None:
+    """Build one daily anchor point for a staff/location/day bucket.
+
+    Args:
+        day_records: Normalized lesson rows for one
+            ``(staff_id, class_location_id, date)`` bucket.
+
+    Returns:
+        Daily anchor with centroid coordinates or ``None`` when there is no
+        usable geo data.
+
+    Notes:
+        Complexity: O(m log m + e), where ``m`` is the number of rows in the
+        day bucket.
+    """
+    if not day_records:
+        return None
+
+    items = []
+    for record in day_records:
+        latitude = record.get("latitude")
+        longitude = record.get("longitude")
+        record_id = record.get("id")
+        if latitude is None or longitude is None or record_id is None:
+            continue
+        items.append(
+            {
+                "latitude": float(latitude),
+                "longitude": float(longitude),
+                "sort_time": record.get("first_in"),
+                "sort_id": int(record_id),
+                "record": record,
+            }
+        )
+    if not items:
+        return None
+
+    dominant_cluster = _pick_excel_dominant_cluster(
+        items,
+        radius_m=EXCEL_GPS_SPOOF_RADIUS_M,
+    )
+    if dominant_cluster is None:
+        return None
+
+    base_record = dominant_cluster["items"][0]["record"]
+    class_location_id = base_record.get("class_location_id")
+    if class_location_id is None:
+        return None
+    return {
+        "staff_id": int(base_record["staff_id"]),
+        "class_location_id": int(class_location_id),
+        "date": base_record["date_at"],
+        "center_lat": dominant_cluster["center_lat"],
+        "center_lon": dominant_cluster["center_lon"],
+    }
+
+
+def _is_faceid_suspicious_for_excel(
+    photo_spoof_status: str | None,
+    photo_manual_verdict: str | None,
+) -> bool:
+    """Resolve whether FaceID should be marked suspicious in Excel.
+
+    Args:
+        photo_spoof_status: Automatic spoof status from ``LessonAttendance``.
+        photo_manual_verdict: Manual override verdict from ``LessonAttendance``.
+
+    Returns:
+        ``True`` when the effective verdict is suspicious.
+
+    Notes:
+        Complexity: O(1).
+    """
+    if photo_manual_verdict == models.LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS:
+        return True
+    if photo_manual_verdict == models.LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN:
+        return False
+    return photo_spoof_status == models.LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS
+
+
+def _build_excel_alert_code(*, has_faceid: bool, has_gps_spoof: bool) -> str:
+    """Build the final Excel alert code for one cell.
+
+    Args:
+        has_faceid: Whether FaceID alert is active for the day.
+        has_gps_spoof: Whether GPS spoof alert is active for the day.
+
+    Returns:
+        Alert code string used by the Excel renderer.
+
+    Notes:
+        Complexity: O(1).
+    """
+    if has_faceid and has_gps_spoof:
+        return EXCEL_ALERT_FACEID_GPS
+    if has_faceid:
+        return EXCEL_ALERT_FACEID
+    if has_gps_spoof:
+        return EXCEL_ALERT_GPS_SPOOF
+    return ""
+
+
+def _append_excel_alert_note(status_info: str | None, alert_code: str) -> str:
+    """Append a readable alert note to the attendance cell text.
+
+    Args:
+        status_info: Existing attendance text for the cell.
+        alert_code: Alert code produced for the day.
+
+    Returns:
+        Human-readable cell text with alert note appended once.
+
+    Notes:
+        Complexity: O(len(status_info)).
+    """
+    note_text = EXCEL_ALERT_NOTE_TEXT.get(alert_code)
+    if not note_text:
+        return status_info or ""
+    if not status_info:
+        return f"({note_text})"
+    if note_text in status_info:
+        return status_info
+    return f"{status_info}\n({note_text})"
+
+
+def _normalize_excel_lesson_rows(
+    raw_lesson_rows: Sequence[Mapping[str, Any]],
+    location_searcher: "LocationSearcher | None",
+    *,
+    local_tz: datetime.tzinfo,
+) -> list[ExcelNormalizedLessonRow]:
+    """Normalize raw lesson rows for Excel processing.
+
+    Args:
+        raw_lesson_rows: Raw DB rows fetched via ``values(...)``.
+        location_searcher: Initialized location resolver or ``None``.
+        local_tz: Timezone object reused for local datetime conversion.
+
+    Returns:
+        Normalized lesson rows enriched with local datetimes and resolved class
+        location metadata.
+
+    Notes:
+        Complexity: O(n + u log L + e), where ``u`` is the number of unique
+        rounded coordinate pairs and ``L`` is the number of class locations.
+    """
+    resolution_cache: ExcelResolutionCache = {}
+    normalized_rows: list[ExcelNormalizedLessonRow] = []
+    coordinates_to_resolve: list[tuple[float, float]] = []
+
+    if location_searcher is not None:
+        for row in raw_lesson_rows:
+            latitude = row.get("latitude")
+            longitude = row.get("longitude")
+            if latitude is None or longitude is None:
+                continue
+            cache_key = (round(float(latitude), 7), round(float(longitude), 7))
+            if cache_key in resolution_cache:
+                continue
+            resolution_cache[cache_key] = None
+            coordinates_to_resolve.append(cache_key)
+
+        bulk_locations = location_searcher.find_nearest_locations_bulk(
+            coordinates_to_resolve,
+            radius=EXCEL_CLASS_LOCATION_RESOLVE_RADIUS_M,
+        )
+        for cache_key, location_payload in zip(coordinates_to_resolve, bulk_locations):
+            resolution_cache[cache_key] = location_payload
+
+    for row in raw_lesson_rows:
+        staff_id = int(row["staff_id"])
+        date_at = row["date_at"]
+        first_in = row.get("first_in")
+        last_out = row.get("last_out")
+        latitude = row.get("latitude")
+        longitude = row.get("longitude")
+        location_payload = None
+        if latitude is not None and longitude is not None:
+            cache_key = (round(float(latitude), 7), round(float(longitude), 7))
+            location_payload = resolution_cache.get(cache_key)
+
+        class_location_id = None
+        location_name = "Неизвестная локация"
+        location_id_raw = location_payload.get("id") if location_payload else None
+        class_location_id = _coerce_int_or_none(location_id_raw)
+        if class_location_id is not None:
+            location_name = str(location_payload.get("name") or location_name)
+
+        normalized_rows.append(
+            {
+                "id": int(row["id"]),
+                "staff_id": staff_id,
+                "date_at": date_at,
+                "date_key": date_at.isoformat(),
+                "first_in": first_in,
+                "last_out": last_out,
+                "first_in_local": (
+                    _convert_to_local_with_tz(first_in, local_tz) if first_in else None
+                ),
+                "last_out_local": (
+                    _convert_to_local_with_tz(last_out, local_tz) if last_out else None
+                ),
+                "latitude": float(latitude) if latitude is not None else None,
+                "longitude": float(longitude) if longitude is not None else None,
+                "photo_spoof_status": row.get("photo_spoof_status"),
+                "photo_manual_verdict": row.get("photo_manual_verdict"),
+                "class_location_id": class_location_id,
+                "location_name": location_name,
+            }
+        )
+
+    return normalized_rows
+
+
+def _detect_excel_faceid_alerts(
+    raw_lesson_rows: Sequence[Mapping[str, Any]],
+) -> tuple[Set[ExcelAlertKey], Set[ExcelInvalidLessonDayKey]]:
+    """Detect FaceID alerts and report-invalid lesson days.
+
+    Args:
+        raw_lesson_rows: Normalized lesson rows for the selected period.
+
+    Returns:
+        Tuple of:
+        - alert keys ``(staff_id, iso_date)`` used by Excel coloring;
+        - invalid day keys ``(staff_id, date)`` used to exclude lesson-based
+          attendance for days rejected by FaceID.
+
+    Notes:
+        Complexity: O(n), where ``n`` is the number of normalized lesson rows.
+    """
+    flagged_dates: Set[ExcelAlertKey] = set()
+    flagged_days: Set[ExcelInvalidLessonDayKey] = set()
+    for row in raw_lesson_rows:
+        if _is_faceid_suspicious_for_excel(
+            row.get("photo_spoof_status"),
+            row.get("photo_manual_verdict"),
+        ):
+            staff_id = int(row["staff_id"])
+            date_at = row["date_at"]
+            flagged_dates.add((staff_id, row.get("date_key") or date_at.isoformat()))
+            flagged_days.add((staff_id, date_at))
+    return flagged_dates, flagged_days
+
+
+def _detect_excel_gps_spoof_alerts(
+    normalized_lesson_rows: Sequence[ExcelNormalizedLessonRow],
+) -> Set[ExcelAlertKey]:
+    """Detect repeated micro-point usage for each staff independently.
+
+    GPS spoof detection is intentionally scoped only to one staff member inside
+    one ``ClassLocation``. Other staff members using the same point do not
+    affect the decision.
+
+    Args:
+        normalized_lesson_rows: Normalized lesson rows for the selected period.
+
+    Returns:
+        Set of alert keys ``(staff_id, iso_date)`` to color in Excel.
+
+    Notes:
+        Complexity: O(r + sum(m_i log m_i + e_i) + sum(a_j log a_j + g_j)),
+        where ``r`` is the number of rows, ``m_i`` is the size of each
+        staff/location/day bucket, ``a_j`` is the number of day anchors in each
+        staff/location bucket, and ``e_i``/``g_j`` are the BallTree neighbor
+        edge counts for those buckets.
+    """
+    if not normalized_lesson_rows:
+        return set()
+
+    rows_by_staff_location_day: dict[
+        tuple[int, int, datetime.date],
+        list[ExcelNormalizedLessonRow],
+    ] = defaultdict(list)
+    for row in normalized_lesson_rows:
+        class_location_id = row.get("class_location_id")
+        if class_location_id is None:
+            continue
+
+        key = (
+            int(row["staff_id"]),
+            int(class_location_id),
+            row["date_at"],
+        )
+        rows_by_staff_location_day[key].append(row)
+
+    anchors_by_staff_location: dict[
+        tuple[int, int],
+        list[ExcelDayAnchor],
+    ] = defaultdict(list)
+    for (
+        staff_id,
+        class_location_id,
+        _date_at,
+    ), day_records in rows_by_staff_location_day.items():
+        day_anchor = _build_excel_day_anchor(day_records)
+        if day_anchor is None:
+            continue
+        anchors_by_staff_location[(staff_id, class_location_id)].append(day_anchor)
+
+    flagged_dates: Set[ExcelAlertKey] = set()
+    for (staff_id, _class_location_id), anchors in anchors_by_staff_location.items():
+        active_days = len({anchor["date"] for anchor in anchors})
+        if active_days < EXCEL_GPS_SPOOF_MIN_DAYS:
+            continue
+
+        anchor_items = [
+            {
+                "latitude": float(anchor["center_lat"]),
+                "longitude": float(anchor["center_lon"]),
+                "sort_time": anchor["date"],
+                "sort_id": index,
+                "date": anchor["date"],
+            }
+            for index, anchor in enumerate(anchors)
+        ]
+        clusters = _cluster_geo_items_for_excel(
+            anchor_items,
+            radius_m=EXCEL_GPS_SPOOF_RADIUS_M,
+        )
+        for cluster in clusters:
+            repeat_dates = {item["date"] for item in cluster["items"]}
+            repeat_days = len(repeat_dates)
+            if repeat_days < EXCEL_GPS_SPOOF_MIN_DAYS:
+                continue
+            if (repeat_days / active_days) < EXCEL_GPS_SPOOF_MIN_SHARE:
+                continue
+            for date_value in repeat_dates:
+                flagged_dates.add((staff_id, date_value.isoformat()))
+
+    return flagged_dates
+
+
 def extract_coordinates(geo_data):
     """
     Extracts latitude and longitude from a geo data string.
@@ -1252,21 +2020,35 @@ def get_all_child_departments(department):
     return result
 
 
-def collect_attendance_data(staff_list, start_date, end_date):
-    """
-    Collect attendance data for staff within the date range.
-    Data is cached for 6 hours.
+def collect_attendance_data(
+    staff_list: Iterable[models.Staff],
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> list[list[str]]:
+    """Collect attendance data for the Excel export.
 
     Args:
-        staff_list: QuerySet of Staff objects
-        start_date: Start date for attendance data
-        end_date: End date for attendance data
+        staff_list: Iterable of ``Staff`` objects or a queryset.
+        start_date: Start date for attendance data.
+        end_date: End date for attendance data.
 
     Returns:
-        List of attendance data organized by date and staff
-    """
+        Flat list of Excel-ready rows:
+        ``[fio, department, date_display, status_info, meta, alert_code]``.
 
-    def generate_cache_key():
+    Notes:
+        Complexity: Dominated by ``_collect_attendance_data_impl`` on a cold
+        cache; O(1) on a warm cache aside from cache backend overhead.
+    """
+    if hasattr(staff_list, "select_related"):
+        staff_list = list(staff_list.select_related("department"))
+    else:
+        staff_list = list(staff_list)
+
+    if not staff_list:
+        return []
+
+    def generate_cache_key() -> str:
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = end_date.strftime("%Y-%m-%d")
 
@@ -1277,15 +2059,20 @@ def collect_attendance_data(staff_list, start_date, end_date):
                 if staff.department_id is not None
             )
         )
-        dept_str = f"dept_{'_'.join(map(str, dept_ids))}" if dept_ids else "no_dept"
+        if dept_ids:
+            dept_str = hashlib.sha1(
+                "|".join(map(str, dept_ids)).encode("utf-8")
+            ).hexdigest()[:16]
+        else:
+            dept_str = "no_dept"
 
-        staff_ids = sorted(staff_list.values_list("id", flat=True))
-        staff_count = len(staff_ids)
+        staff_count = len(staff_list)
 
         cache_version = models.LessonAttendance.REPORT_FILTER_CACHE_VERSION
         return (
-            f"attendance_data_{cache_version}_{start_str}_to_{end_str}_"
-            f"{dept_str}_staff_count_{staff_count}"
+            f"attendance_data_{EXCEL_ATTENDANCE_CACHE_VERSION}_{cache_version}_"
+            f"{start_str}_to_{end_str}_"
+            f"dept_{dept_str}_staff_count_{staff_count}"
         )
 
     cache_key = generate_cache_key()
@@ -1295,13 +2082,32 @@ def collect_attendance_data(staff_list, start_date, end_date):
         timeout=6 * 60 * 60,
     )
 
-    return cached_results
+    return cached_results or []
 
 
-def _collect_attendance_data_impl(staff_list, start_date, end_date):
-    """
-    Implementation of attendance data collection combining StaffAttendance and LessonAttendance.
-    Handles the difference in date_at fields between models and merges data properly.
+def _collect_attendance_data_impl(
+    staff_list: Sequence[models.Staff],
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> list[list[str]]:
+    """Build Excel attendance rows from StaffAttendance and LessonAttendance.
+
+    Args:
+        staff_list: Materialized staff sequence with department relation loaded.
+        start_date: Start date of the requested period.
+        end_date: End date of the requested period.
+
+    Returns:
+        Flat list of Excel-ready rows:
+        ``[fio, department, date_display, status_info, meta, alert_code]``.
+
+    Notes:
+        Complexity: O(s * d + sa + la + rw + ar + gps), where ``s`` is staff
+        count, ``d`` is number of calendar days in the period, ``sa`` is the
+        number of ``StaffAttendance`` rows, ``la`` is the number of
+        ``LessonAttendance`` rows, ``rw`` is the number of remote-work spans,
+        ``ar`` is the number of absence spans, and ``gps`` is the clustering
+        work described in ``_detect_excel_gps_spoof_alerts``.
     """
     from django.db.models import Q
 
@@ -1310,8 +2116,9 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         for i in range((end_date - start_date).days + 1)
     ]
 
-    staff_list = list(staff_list.select_related("department"))
+    staff_list = list(staff_list)
     staff_ids = [s.id for s in staff_list]
+    local_tz = timezone.get_current_timezone()
     logger.info(
         f"Collecting attendance data from {start_date} to {end_date} for {len(staff_list)} staff members"
     )
@@ -1330,19 +2137,15 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         or {}
     )
 
-    class_locations = list(
-        models.ClassLocation.objects.only("id", "name", "latitude", "longitude")
+    location_data = list(
+        models.ClassLocation.objects.filter(
+            latitude__isnull=False,
+            longitude__isnull=False,
+        ).values("id", "name", "address", "latitude", "longitude")
     )
-    location_searcher = None
-    if class_locations:
-        location_data = [
-            {"latitude": loc.latitude, "longitude": loc.longitude, "name": loc.name}
-            for loc in class_locations
-        ]
-        location_searcher = LocationSearcher(location_data)
-        logger.info(
-            f"LocationSearcher initialized with {len(class_locations)} locations"
-        )
+    location_searcher = LocationSearcher(location_data) if location_data else None
+    if location_searcher is not None:
+        logger.info(f"LocationSearcher initialized with {len(location_data)} locations")
 
     attendance_qs = models.StaffAttendance.objects.filter(
         staff_id__in=staff_ids,
@@ -1350,7 +2153,7 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             start_date + datetime.timedelta(days=1),
             end_date + datetime.timedelta(days=1),
         ],
-    ).only(
+    ).values(
         "staff_id",
         "date_at",
         "first_in",
@@ -1361,20 +2164,34 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         "effective_work_intervals",
     )
 
-    lesson_attendance_qs = models.LessonAttendance.exclude_report_invalid_days(
+    raw_lesson_rows = list(
         models.LessonAttendance.objects.filter(
             staff_id__in=staff_ids,
             date_at__range=[start_date, end_date],
         )
-    ).only(
-        "staff_id",
-        "first_in",
-        "date_at",
-        "last_out",
-        "latitude",
-        "longitude",
-        "duration_seconds",
+        .values(
+            "id",
+            "staff_id",
+            "date_at",
+            "first_in",
+            "last_out",
+            "latitude",
+            "longitude",
+            "photo_spoof_status",
+            "photo_manual_verdict",
+        )
+        .order_by("date_at", "staff_id", "first_in", "id")
+        .iterator(chunk_size=2000)
     )
+    normalized_lesson_rows = _normalize_excel_lesson_rows(
+        raw_lesson_rows,
+        location_searcher,
+        local_tz=local_tz,
+    )
+    faceid_alert_dates, invalid_lesson_days = _detect_excel_faceid_alerts(
+        normalized_lesson_rows
+    )
+    gps_spoof_alert_dates = _detect_excel_gps_spoof_alerts(normalized_lesson_rows)
 
     remote_work_qs = models.RemoteWork.objects.filter(
         Q(staff_id__in=staff_ids)
@@ -1382,45 +2199,53 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             Q(start_date__lte=end_date, end_date__gte=start_date)
             | Q(permanent_remote=True)
         )
-    ).only("staff_id", "permanent_remote", "start_date", "end_date")
+    ).values("id", "staff_id", "permanent_remote", "start_date", "end_date")
 
     absence_qs = models.AbsentReason.objects.filter(
         staff_id__in=staff_ids, start_date__lte=end_date, end_date__gte=start_date
-    ).only("staff_id", "start_date", "end_date", "reason", "approved")
+    ).values("staff_id", "start_date", "end_date", "reason", "approved")
 
     attendance_map = defaultdict(lambda: defaultdict(dict))
 
-    for att in attendance_qs:
-        if att.first_in:
-            local_date = convert_to_local(att.first_in)
+    for att in attendance_qs.iterator(chunk_size=2000):
+        first_in = att.get("first_in")
+        last_out = att.get("last_out")
+        date_at = att.get("date_at")
+        area_name_in = att.get("area_name_in")
+        area_name_out = att.get("area_name_out")
+        first_in_local_full = (
+            _convert_to_local_with_tz(first_in, local_tz) if first_in else None
+        )
+        last_out_local_full = (
+            _convert_to_local_with_tz(last_out, local_tz) if last_out else None
+        )
+
+        if first_in_local_full:
+            local_date = first_in_local_full
         else:
-            local_date = convert_to_local(att.date_at)
+            local_date = _convert_to_local_with_tz(date_at, local_tz)
             if local_date is not None:
                 local_date = local_date - datetime.timedelta(days=1)
         if local_date is None:
             continue
         date_key = local_date.strftime("%Y-%m-%d")
-        staff_id = att.staff_id
+        staff_id = int(att["staff_id"])
 
-        use_first_in = att.first_in and not is_lift_terminal(att.area_name_in)
-        use_last_out = att.last_out and not is_lift_terminal(att.area_name_out)
-        first_in_local = convert_to_local(att.first_in) if use_first_in else None
-        last_out_local = convert_to_local(att.last_out) if use_last_out else None
+        use_first_in = first_in_local_full and not is_lift_terminal(area_name_in)
+        use_last_out = last_out_local_full and not is_lift_terminal(area_name_out)
+        first_in_local = first_in_local_full if use_first_in else None
+        last_out_local = last_out_local_full if use_last_out else None
         elevator_first_in = (
-            convert_to_local(att.first_in)
-            if att.first_in and not use_first_in
-            else None
+            first_in_local_full if first_in_local_full and not use_first_in else None
         )
         elevator_last_out = (
-            convert_to_local(att.last_out)
-            if att.last_out and not use_last_out
-            else None
+            last_out_local_full if last_out_local_full and not use_last_out else None
         )
 
         if staff_id not in attendance_map[date_key]:
             area_name = (
-                (att.area_name_in if (att.area_name_in and use_first_in) else None)
-                or (att.area_name_out if (att.area_name_out and use_last_out) else None)
+                (area_name_in if (area_name_in and use_first_in) else None)
+                or (area_name_out if (area_name_out and use_last_out) else None)
                 or "Неизвестная локация"
             )
             rec = {
@@ -1430,10 +2255,8 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                 "source": "staff_attendance",
                 "first_in_source": "staff_attendance",
                 "last_out_source": "staff_attendance",
-                "effective_work_seconds": getattr(att, "effective_work_seconds", None),
-                "effective_work_intervals": getattr(
-                    att, "effective_work_intervals", None
-                ),
+                "effective_work_seconds": att.get("effective_work_seconds"),
+                "effective_work_intervals": att.get("effective_work_intervals"),
                 "la_intervals": [],
             }
             if elevator_first_in is not None or elevator_last_out is not None:
@@ -1444,76 +2267,55 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             current_rec = attendance_map[date_key][staff_id]
             if use_first_in and (
                 not current_rec["first_in"]
-                or convert_to_local(att.first_in) < current_rec["first_in"]
+                or first_in_local_full < current_rec["first_in"]
             ):
-                current_rec["first_in"] = convert_to_local(att.first_in)
+                current_rec["first_in"] = first_in_local_full
                 current_rec["source"] = (
                     "staff_attendance"
                     if current_rec.get("source") == "lesson_attendance"
                     else "mixed"
                 )
                 current_rec["first_in_source"] = "staff_attendance"
-                if att.area_name_in:
-                    current_rec["area_name"] = att.area_name_in
+                if area_name_in:
+                    current_rec["area_name"] = area_name_in
 
             if use_last_out and (
                 not current_rec["last_out"]
-                or convert_to_local(att.last_out) > current_rec["last_out"]
+                or last_out_local_full > current_rec["last_out"]
             ):
-                current_rec["last_out"] = convert_to_local(att.last_out)
+                current_rec["last_out"] = last_out_local_full
                 current_rec["source"] = (
                     "staff_attendance"
                     if current_rec.get("source") == "lesson_attendance"
                     else "mixed"
                 )
                 current_rec["last_out_source"] = "staff_attendance"
-                if att.area_name_out:
-                    current_rec["area_name"] = att.area_name_out
+                if area_name_out:
+                    current_rec["area_name"] = area_name_out
             if elevator_first_in is not None or elevator_last_out is not None:
                 current_rec["elevator_first_in"] = elevator_first_in
                 current_rec["elevator_last_out"] = elevator_last_out
-            if getattr(att, "effective_work_seconds", None) is not None:
-                current_rec["effective_work_seconds"] = att.effective_work_seconds
+            if att.get("effective_work_seconds") is not None:
+                current_rec["effective_work_seconds"] = att["effective_work_seconds"]
             if "la_intervals" not in current_rec:
                 current_rec["la_intervals"] = []
 
-    for lesson_att in lesson_attendance_qs:
-        local_date = (
-            convert_to_local(lesson_att.first_in)
-            if lesson_att.first_in
-            else convert_to_local(lesson_att.date_at)
+    for lesson_att in normalized_lesson_rows:
+        if (lesson_att["staff_id"], lesson_att["date_at"]) in invalid_lesson_days:
+            continue
+
+        local_date = lesson_att["first_in_local"] or _convert_to_local_with_tz(
+            lesson_att["date_at"],
+            local_tz,
         )
+        if local_date is None:
+            continue
         date_key = local_date.strftime("%Y-%m-%d")
-        staff_id = lesson_att.staff_id
+        staff_id = lesson_att["staff_id"]
 
-        first_in_local = (
-            convert_to_local(lesson_att.first_in) if lesson_att.first_in else None
-        )
-        last_out_local = (
-            convert_to_local(lesson_att.last_out) if lesson_att.last_out else None
-        )
-
-        location_name = "Неизвестная локация"
-        try:
-            if location_searcher:
-                location_name = location_searcher.find_nearest(
-                    lesson_att.latitude, lesson_att.longitude, radius=200
-                )
-            else:
-                for loc in class_locations:
-                    if is_within_radius(
-                        lesson_att.latitude,
-                        lesson_att.longitude,
-                        loc.latitude,
-                        loc.longitude,
-                        radius=200,
-                    ):
-                        location_name = loc.name
-                        break
-        except Exception as e:
-            logger.warning(
-                f"Error finding location for LessonAttendance {lesson_att.id}: {e}"
-            )
+        first_in_local = lesson_att["first_in_local"]
+        last_out_local = lesson_att["last_out_local"]
+        location_name = lesson_att["location_name"]
 
         if staff_id not in attendance_map[date_key]:
             la_intervals = []
@@ -1537,11 +2339,10 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             if first_in_local and last_out_local and last_out_local > first_in_local:
                 current_rec["la_intervals"].append((first_in_local, last_out_local))
 
-            if lesson_att.first_in and (
-                not current_rec["first_in"]
-                or convert_to_local(lesson_att.first_in) < current_rec["first_in"]
+            if first_in_local and (
+                not current_rec["first_in"] or first_in_local < current_rec["first_in"]
             ):
-                current_rec["first_in"] = convert_to_local(lesson_att.first_in)
+                current_rec["first_in"] = first_in_local
                 current_rec["source"] = (
                     "lesson_attendance"
                     if current_rec.get("source") == "staff_attendance"
@@ -1551,11 +2352,10 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                 if current_rec.get("source") == "lesson_attendance":
                     current_rec["area_name"] = location_name
 
-            if lesson_att.last_out and (
-                not current_rec["last_out"]
-                or convert_to_local(lesson_att.last_out) > current_rec["last_out"]
+            if last_out_local and (
+                not current_rec["last_out"] or last_out_local > current_rec["last_out"]
             ):
-                current_rec["last_out"] = convert_to_local(lesson_att.last_out)
+                current_rec["last_out"] = last_out_local
                 current_rec["source"] = (
                     "lesson_attendance"
                     if current_rec.get("source") == "staff_attendance"
@@ -1590,22 +2390,24 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             rec.pop("effective_work_intervals", None)
 
     remote_work_map = defaultdict(set)
-    for rw in remote_work_qs:
-        staff_id = rw.staff_id
+    for rw in remote_work_qs.iterator(chunk_size=1000):
+        staff_id = int(rw["staff_id"])
 
-        if rw.permanent_remote:
+        if rw["permanent_remote"]:
             rw_start = start_date
             rw_end = end_date
         else:
-            if rw.start_date is None or rw.end_date is None:
+            rw_start_raw = rw.get("start_date")
+            rw_end_raw = rw.get("end_date")
+            if rw_start_raw is None or rw_end_raw is None:
                 logger.warning(
                     "RemoteWork id=%s for staff_id=%s skipped because start/end dates are missing",
-                    rw.id,
+                    rw.get("id"),
                     staff_id,
                 )
                 continue
-            rw_start = max(rw.start_date, start_date)
-            rw_end = min(rw.end_date, end_date)
+            rw_start = max(rw_start_raw, start_date)
+            rw_end = min(rw_end_raw, end_date)
 
         if rw_start > rw_end:
             continue
@@ -1619,25 +2421,35 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
             remote_work_map[date_key].add(staff_id)
 
     absence_map = defaultdict(lambda: defaultdict(list))
-    for absence in absence_qs:
-        staff_id = absence.staff_id
-        abs_start = max(absence.start_date, start_date)
-        abs_end = min(absence.end_date, end_date)
+    absence_reason_display_map = {
+        value: label for value, label in models.AbsentReason.ABSENT_REASON_CHOICES
+    }
+    for absence in absence_qs.iterator(chunk_size=1000):
+        staff_id = int(absence["staff_id"])
+        abs_start = max(absence["start_date"], start_date)
+        abs_end = min(absence["end_date"], end_date)
 
         for i in range((abs_end - abs_start).days + 1):
             current = abs_start + datetime.timedelta(days=i)
             date_key = current.strftime("%Y-%m-%d")
             absence_map[date_key][staff_id].append(
-                {"reason": absence.get_reason_display(), "approved": absence.approved}
+                {
+                    "reason": absence_reason_display_map.get(
+                        absence["reason"],
+                        str(absence["reason"]),
+                    ),
+                    "approved": bool(absence["approved"]),
+                }
             )
     results = []
-    staff_data_cache = {
-        staff.id: (
+    staff_entries = [
+        (
+            staff.id,
             f"{staff.surname} {staff.name}",
             staff.department.name if staff.department else "N/A",
         )
         for staff in staff_list
-    }
+    ]
 
     date_info = [
         (
@@ -1653,9 +2465,12 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
         date_remote = remote_work_map.get(date_str, set())
         date_absence = absence_map.get(date_str, {})
 
-        for staff in staff_list:
-            staff_id = staff.id
-            staff_fio, department_name = staff_data_cache[staff_id]
+        for staff_id, staff_fio, department_name in staff_entries:
+            alert_key = (staff_id, date_str)
+            alert_code = _build_excel_alert_code(
+                has_faceid=alert_key in faceid_alert_dates,
+                has_gps_spoof=alert_key in gps_spoof_alert_dates,
+            )
 
             att_data = date_attendance.get(staff_id)
             has_attendance = att_data is not None
@@ -1768,8 +2583,16 @@ def _collect_attendance_data_impl(staff_list, start_date, end_date):
                     status_info = "Отсутствие"
                     meta = "absence"
 
+            status_info = _append_excel_alert_note(status_info, alert_code)
             results.append(
-                [staff_fio, department_name, date_display, status_info, meta]
+                [
+                    staff_fio,
+                    department_name,
+                    date_display,
+                    status_info,
+                    meta,
+                    alert_code,
+                ]
             )
 
     logger.info(
@@ -1786,7 +2609,7 @@ def generate_excel_file(
 
     Args:
         attendance_data: List of attendance records
-            [ФИО, Отдел, 'DD.MM.YYYY', Посещаемость, meta].
+            [ФИО, Отдел, 'DD.MM.YYYY', Посещаемость, meta, alert_code].
             The data has been obtained from the DB and may be for only a subset of the
             user-requested period.
         department_name: Name of the department (str).
@@ -1834,6 +2657,15 @@ def generate_excel_file(
     fill_elevator = PatternFill(
         start_color="9CA3AF", end_color="9CA3AF", fill_type="solid"
     )
+    fill_faceid = PatternFill(
+        start_color="DC2626", end_color="DC2626", fill_type="solid"
+    )
+    fill_gps_spoof = PatternFill(
+        start_color="1D4ED8", end_color="1D4ED8", fill_type="solid"
+    )
+    fill_faceid_gps = PatternFill(
+        start_color="7E22CE", end_color="7E22CE", fill_type="solid"
+    )
     thin_border = Border(
         left=Side(style="thin"),
         right=Side(style="thin"),
@@ -1864,11 +2696,14 @@ def generate_excel_file(
 
     legends = [
         ("Выходной день", fill_holiday),
-        ("Работа в выходной", fill_holiday_work),
-        ("Удаленная работа", fill_remote),
-        ("Одобрено", fill_approved),
-        ("Не одобрено", fill_not_approved),
-        ("ЛИФТ", fill_elevator),
+        ("Активность в выходной день", fill_holiday_work),
+        ("Удаленный формат", fill_remote),
+        ("Согласованная причина отсутствия", fill_approved),
+        ("Несогласованное отсутствие / отсутствие", fill_not_approved),
+        ("Только событие лифта", fill_elevator),
+        ("Попытка обмана FaceID", fill_faceid),
+        ("Подозрение на подмену локации", fill_gps_spoof),
+        ("FaceID + подмена локации", fill_faceid_gps),
     ]
     for i, (legend_text, legend_fill) in enumerate(legends, start=1):
         row_idx = legend_row + i
@@ -1884,7 +2719,8 @@ def generate_excel_file(
     data_start_row = legend_row + len(legends) + 2
 
     columns_index = pd.Index(
-        ["ФИО", "Отдел", "Дата", "Посещаемость", "meta"], dtype="object"
+        ["ФИО", "Отдел", "Дата", "Посещаемость", "meta", "alert_code"],
+        dtype="object",
     )
     df = pd.DataFrame(attendance_data, columns=columns_index)
     df = cast(pd.DataFrame, df)
@@ -1918,10 +2754,12 @@ def generate_excel_file(
 
     attendance_lookup = {}
     meta_lookup = {}
+    alert_lookup = {}
     for row in df.itertuples(index=False):
         key = (row.ФИО, row.Отдел, row.Дата)
         attendance_lookup[key] = row.Посещаемость
         meta_lookup[key] = row.meta
+        alert_lookup[key] = row.alert_code
 
     public_holidays = (
         get_cache(
@@ -1958,6 +2796,7 @@ def generate_excel_file(
             key = (fio, dept, date_str)
             value = attendance_lookup.get(key, "")
             meta = meta_lookup.get(key, "")
+            alert_code = alert_lookup.get(key, "")
             data_cell = ws.cell(row=row_idx, column=col_offset, value=value)
             data_cell.font = data_font
             data_cell.alignment = center_wrap
@@ -1967,7 +2806,16 @@ def generate_excel_file(
                 date_str in public_holidays and public_holidays[date_str]
             )
 
-            if meta == "holiday":
+            if alert_code == EXCEL_ALERT_FACEID_GPS:
+                data_cell.fill = fill_faceid_gps
+                data_cell.font = Font(name="Arial", size=10, color="FFFFFF")
+            elif alert_code == EXCEL_ALERT_FACEID:
+                data_cell.fill = fill_faceid
+                data_cell.font = Font(name="Arial", size=10, color="FFFFFF")
+            elif alert_code == EXCEL_ALERT_GPS_SPOOF:
+                data_cell.fill = fill_gps_spoof
+                data_cell.font = Font(name="Arial", size=10, color="FFFFFF")
+            elif meta == "holiday":
                 if not is_working_holiday:
                     data_cell.fill = fill_holiday
             elif meta == "holiday_with_attendance":
