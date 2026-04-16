@@ -1353,9 +1353,14 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             branch = "spoof_model_uncertain_recapture_uncertain_clean"
             _append_trace(branch)
     elif credible_display_context and not has_device and not has_frame:
-        status = STATUS_REVIEW
-        trust = None
-        branch = "background_screen_context_review"
+        if not deepfake and not spoof_model_uncertain and rec < rec_review_min:
+            status = STATUS_CLEAN
+            trust = None
+            branch = "background_screen_context_uncertain_clean"
+        else:
+            status = STATUS_REVIEW
+            trust = None
+            branch = "background_screen_context_review"
         _append_trace(branch)
     elif quality_poor and quality_review_signal:
         status = STATUS_REVIEW
@@ -1373,18 +1378,44 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         or inputs.quality_penalty
         >= _pad_float("quality_degraded_force_review_penalty_min")
     ):
-        status = STATUS_REVIEW
-        trust = None
-        branch = (
-            "presentation_insufficient_input_review"
-            if insufficient_input
-            else "image_quality_degraded_review"
-        )
+        weak_dev = _pad_float("decision_weak_device_min")
+        weak_frm = _pad_float("decision_weak_frame_min")
+        if (
+            not deepfake
+            and not spoof_model_uncertain
+            and inputs.device_score < weak_dev
+            and inputs.frame_score < weak_frm
+            and rec < rec_review_min
+            and not credible_display_context
+        ):
+            status = STATUS_CLEAN
+            trust = None
+            branch = "image_quality_uncertain_clean"
+        else:
+            status = STATUS_REVIEW
+            trust = None
+            branch = (
+                "presentation_insufficient_input_review"
+                if insufficient_input
+                else "image_quality_degraded_review"
+            )
         _append_trace(branch)
     elif insufficient_input:
-        status = STATUS_REVIEW
-        trust = None
-        branch = "presentation_insufficient_input_review"
+        if (
+            not deepfake
+            and not spoof_model_uncertain
+            and not has_device
+            and not has_frame
+            and rec < rec_review_min
+            and not credible_display_context
+        ):
+            status = STATUS_CLEAN
+            trust = None
+            branch = "presentation_insufficient_input_uncertain_clean"
+        else:
+            status = STATUS_REVIEW
+            trust = None
+            branch = "presentation_insufficient_input_review"
         _append_trace(branch)
     elif (
         inputs.quality_penalty > 0.0

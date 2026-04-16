@@ -98,7 +98,7 @@ class PadDecisionTests(SimpleTestCase):
             "pad_rule:fake_mid_plus_background_display_suspicious", result.tags
         )
 
-    def test_background_display_context_without_fake_goes_review_not_default_clean(
+    def test_background_display_context_without_fake_weak_context_uses_uncertain_clean(
         self,
     ):
         result = _decide(
@@ -113,8 +113,44 @@ class PadDecisionTests(SimpleTestCase):
                 frame_global_score=0.31,
             )
         )
-        self.assertEqual(result.status, STATUS_REVIEW)
-        self.assertIn("pad_rule:background_screen_context_review", result.tags)
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn("pad_rule:background_screen_context_uncertain_clean", result.tags)
+
+    def test_background_display_context_strong_context_uses_uncertain_clean(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=["screen_bezel_context"],
+                frame_global_score=0.45,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn("pad_rule:background_screen_context_uncertain_clean", result.tags)
+
+    def test_background_device_only_context_without_fake_uses_uncertain_clean(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=["device_background:tv"],
+                device_bg_score=0.69,
+                frame_global_score=0.0,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn("pad_rule:background_screen_context_uncertain_clean", result.tags)
 
     def test_fake_with_only_one_mid_geometry_stays_review(self):
         """One geometry shoulder is no longer enough for hard suspicious."""
@@ -393,8 +429,8 @@ class PadDecisionTests(SimpleTestCase):
         )
         self.assertAlmostEqual(r_clean_qp.risk_score, r_poor_qp.risk_score, places=4)
 
-    def test_image_quality_degraded_without_spoof_goes_to_review(self):
-        """Severe quality degradation routes to review, not suspicious (quality ≠ spoof)."""
+    def test_image_quality_degraded_without_spoof_uses_uncertain_clean(self):
+        """Severe quality degradation alone should not create manual queue work."""
         result = _decide(
             DecisionInputs(
                 decode_error=False,
@@ -407,8 +443,9 @@ class PadDecisionTests(SimpleTestCase):
                 recapture_score=0.0,
             )
         )
-        self.assertEqual(result.status, STATUS_REVIEW)
-        self.assertIn("pad_rule:presentation_insufficient_input_review", result.tags)
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn("pad_rule:image_quality_uncertain_clean", result.tags)
 
     def test_mild_quality_poor_alone_uncertain_clean_not_review_queue(self):
         """Borderline poor quality without presentation hints → clean, trust None (review-rate cap)."""
@@ -427,6 +464,49 @@ class PadDecisionTests(SimpleTestCase):
         self.assertEqual(result.status, STATUS_CLEAN)
         self.assertIsNone(result.trust_confirmed)
         self.assertIn("pad_rule:image_quality_uncertain_clean", result.tags)
+
+    def test_insufficient_input_without_spoof_signals_uses_uncertain_clean(self):
+        """Quality-limited ROI alone should not create operator work when spoof signals are absent."""
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.48,
+                tags=["quality_blur", "quality_face_edge_crop", "quality_poor"],
+                recapture_score=0.0,
+                face_area_ratio=0.17,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn(
+            "pad_rule:presentation_insufficient_input_uncertain_clean",
+            result.tags,
+        )
+        self.assertNotIn("pad_rule:presentation_insufficient_input_review", result.tags)
+
+    def test_severe_quality_poor_without_spoof_signals_uses_uncertain_clean(self):
+        """Even strong quality degradation should avoid review when no presentation hints exist."""
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.55,
+                tags=["quality_blur", "quality_low_contrast", "quality_poor"],
+                recapture_score=0.0,
+                face_area_ratio=0.15,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn("pad_rule:image_quality_uncertain_clean", result.tags)
+        self.assertNotIn("pad_rule:presentation_insufficient_input_review", result.tags)
 
     def test_blur_only_without_spoof_signals_uses_uncertain_clean(self):
         result = _decide(
