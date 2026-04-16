@@ -5,6 +5,7 @@ from typing import Any, cast
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.db import transaction
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django.utils import timezone
@@ -39,19 +40,37 @@ def sanitize_group_name(name):
 def _send_photo_event(instance, *, op, state_code):
     """Шлёт событие по LessonAttendance в группу по дате записи."""
     channel_layer = get_channel_layer()
+    if channel_layer is None:
+        logger.warning(
+            "Skipping photo event for attendance_id=%s op=%s state=%s: no channel layer",
+            instance.id,
+            op,
+            state_code,
+        )
+        return
     group_name = sanitize_group_name(f"photos_{instance.date_at.isoformat()}")
     event_type = "attendance_deleted" if op == "deleted" else "new_photo"
-    async_to_sync(channel_layer.group_send)(
-        group_name,
-        {
-            "type": event_type,
-            "attendance_id": instance.id,
-            "attendance_ids": [instance.id],
-            "op": op,
-            "stateCode": state_code,
-            "versionTs": timezone.now().isoformat(),
-        },
-    )
+    try:
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": event_type,
+                "attendance_id": instance.id,
+                "attendance_ids": [instance.id],
+                "op": op,
+                "stateCode": state_code,
+                "versionTs": timezone.now().isoformat(),
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to send photo event attendance_id=%s op=%s state=%s error=%s",
+            instance.id,
+            op,
+            state_code,
+            exc,
+        )
+        return
     logger.info(
         "Sent photo event to group %s for attendance_id %s op=%s state=%s",
         group_name,
@@ -85,6 +104,30 @@ def _resolve_state_code(instance, *, created, update_fields):
     if update_fields and "staff_image_path" in update_fields:
         return STATE_PHOTO_ATTACHED if instance.staff_image_path else STATE_UPDATED_META
     return STATE_UPDATED_META
+
+
+def _enqueue_immediate_photo_pad_scan(instance: LessonAttendance) -> None:
+    if not instance.id or not instance.staff_image_path:
+        return
+
+    def _enqueue() -> None:
+        from monitoring_app.tasks import rescan_lesson_attendance_photo_ids
+
+        rescan_task = cast(Any, rescan_lesson_attendance_photo_ids)
+        rescan_task.apply_async(
+            kwargs={
+                "attendance_ids": [int(instance.id)],
+                "force_manual": False,
+                "batch_size": 1,
+                "auto_eligible_only": True,
+            }
+        )
+        logger.info(
+            "Queued immediate PAD scan for attendance_id=%s after photo attach",
+            instance.id,
+        )
+
+    transaction.on_commit(_enqueue)
 
 
 def _invalidate_lesson_attendance_cache(instance):
@@ -124,6 +167,8 @@ def send_new_photo(sender, instance, created, **kwargs):
     op = "created" if created else "updated"
     _invalidate_lesson_attendance_cache(instance)
     _send_photo_event(instance, op=op, state_code=state_code)
+    if state_code == STATE_PHOTO_ATTACHED:
+        _enqueue_immediate_photo_pad_scan(instance)
     _invalidate_lesson_staff_cache(instance)
 
 

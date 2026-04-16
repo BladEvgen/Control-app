@@ -6,6 +6,7 @@ from typing import Any, Optional, Union, cast
 
 from celery import shared_task
 from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 from monitoring_app import models, utils
@@ -16,18 +17,56 @@ from monitoring_app.photo_ws_broadcast import (
 logger = logging.getLogger(__name__)
 DEPARTMENT_CONFIRMATION_EPOCH_CACHE_KEY = "department_confirmation_epoch_hour"
 DEPARTMENT_CONFIRMATION_EPOCH_TTL = 5 * 60 * 60
+PAD_SCAN_EXCEPTION_TAG = "scan_exception"
+PAD_SCAN_LOCK_KEY_PREFIX = "photo_pad_scan_lock"
+
+
+def _get_lesson_attendance_pad_lock_ttl() -> int:
+    return max(10, int(getattr(settings, "PHOTO_PAD_WS_SCAN_LOCK_TTL", 180)))
+
+
+def lesson_attendance_pad_lock_key(attendance_id: int) -> str:
+    return f"{PAD_SCAN_LOCK_KEY_PREFIX}:{int(attendance_id)}"
+
+
+def acquire_lesson_attendance_pad_lock(
+    attendance_id: int, *, ttl: Optional[int] = None
+) -> bool:
+    timeout = _get_lesson_attendance_pad_lock_ttl() if ttl is None else max(10, ttl)
+    return bool(
+        cache.add(
+            lesson_attendance_pad_lock_key(attendance_id),
+            timezone.now().isoformat(),
+            timeout=timeout,
+        )
+    )
+
+
+def release_lesson_attendance_pad_lock(attendance_id: int) -> None:
+    cache.delete(lesson_attendance_pad_lock_key(attendance_id))
+
+
+def build_pad_scan_exception_update_kwargs(
+    *, pad_model_version: str, exception_tag: str = PAD_SCAN_EXCEPTION_TAG
+) -> dict[str, Any]:
+    return {
+        "photo_trust_confirmed": None,
+        "photo_spoof_status": models.LessonAttendance.PHOTO_SPOOF_STATUS_ERROR,
+        "photo_spoof_score": None,
+        "photo_spoof_tags": [exception_tag],
+        "photo_spoof_checked_at": timezone.now(),
+        "photo_spoof_model_version": pad_model_version,
+    }
 
 
 def _lesson_attendance_pad_candidate_queryset(
     *,
-    pad_model_version: str,
     only_today: bool,
     backlog_only: bool = False,
 ):
     """Build the PAD candidate queryset for hourly or backlog scans.
 
     Args:
-        pad_model_version: Active PAD model version.
         only_today: Whether to keep only rows for the local current date.
         backlog_only: Whether to keep only rows older than the local current date.
 
@@ -37,7 +76,6 @@ def _lesson_attendance_pad_candidate_queryset(
     from monitoring_app.photo_pad import MANUAL_NONE
 
     q_checked_null = cast(Q, Q(photo_spoof_checked_at__isnull=True))
-    q_version_old = cast(Q, ~Q(photo_spoof_model_version=pad_model_version))
     q_pending = cast(
         Q,
         Q(photo_spoof_status=models.LessonAttendance.PHOTO_SPOOF_STATUS_PENDING),
@@ -46,9 +84,7 @@ def _lesson_attendance_pad_candidate_queryset(
         Q,
         Q(photo_spoof_status=models.LessonAttendance.PHOTO_SPOOF_STATUS_ERROR),
     )
-    q_needs_scan = cast(
-        Q, cast(Q, cast(Q, q_checked_null | q_version_old) | q_pending) | q_error
-    )
+    q_needs_scan = cast(Q, cast(Q, q_checked_null | q_pending) | q_error)
     q_has_path = cast(Q, Q(staff_image_path__isnull=False))
     q_non_empty = cast(Q, ~Q(staff_image_path=""))
     q_manual_none = cast(Q, Q(photo_manual_verdict=MANUAL_NONE))
@@ -80,6 +116,7 @@ def _run_lesson_attendance_pad_scan(
     batch_size: int,
     log_prefix: str,
     mode: str,
+    pad_model_version: str,
 ) -> dict[str, Union[int, float, str]]:
     """Run PAD on the provided rows and persist results.
 
@@ -93,7 +130,7 @@ def _run_lesson_attendance_pad_scan(
     Returns:
         Scan stats with counts and average latency.
     """
-    from monitoring_app.photo_pad import check_photo, normalize_device
+    from monitoring_app.photo_pad import MANUAL_NONE, check_photo, normalize_device
 
     resolved_device = normalize_device(device)
     total = len(records)
@@ -124,32 +161,74 @@ def _run_lesson_attendance_pad_scan(
             image_path = record.staff_image_path
             if not image_path:
                 logger.warning("%s skip_empty_path pk=%s", log_prefix, record.pk)
+                updated_rows = models.LessonAttendance.objects.filter(
+                    pk=record.pk,
+                    photo_manual_verdict=MANUAL_NONE,
+                ).update(
+                    **build_pad_scan_exception_update_kwargs(
+                        pad_model_version=pad_model_version,
+                    )
+                )
+                if updated_rows:
+                    updated_records_by_date.setdefault(record.date_at, []).append(
+                        record.id
+                    )
                 status_counts["error"] += 1
                 checked_count += 1
                 continue
+            if not acquire_lesson_attendance_pad_lock(record.id):
+                logger.info("%s skip_locked mode=%s pk=%s", log_prefix, mode, record.pk)
+                continue
             try:
-                result = check_photo(image_path=image_path, device=resolved_device)
+                try:
+                    result = check_photo(image_path=image_path, device=resolved_device)
+                except Exception as exc:
+                    logger.exception(
+                        "%s scan_exception mode=%s pk=%s path=%s error=%s",
+                        log_prefix,
+                        mode,
+                        record.pk,
+                        image_path,
+                        exc,
+                    )
+                    update_kwargs = build_pad_scan_exception_update_kwargs(
+                        pad_model_version=pad_model_version,
+                    )
+                    status_key = models.LessonAttendance.PHOTO_SPOOF_STATUS_ERROR
+                else:
+                    elapsed_sum_ms += result.elapsed_ms
+                    update_kwargs = result.to_update_kwargs()
+                    status_key = result.status
+
+                checked_count += 1
+                status_counts[status_key] = status_counts.get(status_key, 0) + 1
+                updated_rows = models.LessonAttendance.objects.filter(
+                    pk=record.pk,
+                    photo_manual_verdict=MANUAL_NONE,
+                ).update(**update_kwargs)
+                if updated_rows:
+                    updated_records_by_date.setdefault(record.date_at, []).append(
+                        record.id
+                    )
+                else:
+                    logger.warning(
+                        "%s pad_update_no_rows mode=%s pk=%s path=%s",
+                        log_prefix,
+                        mode,
+                        record.pk,
+                        image_path,
+                    )
             except Exception as exc:
                 logger.exception(
-                    "%s scan_exception mode=%s pk=%s path=%s error=%s",
+                    "%s record_exception mode=%s pk=%s path=%s error=%s",
                     log_prefix,
                     mode,
                     record.pk,
                     image_path,
                     exc,
                 )
-                status_counts["error"] += 1
-                checked_count += 1
-                continue
-
-            elapsed_sum_ms += result.elapsed_ms
-            checked_count += 1
-            status_counts[result.status] = status_counts.get(result.status, 0) + 1
-            updated_rows = models.LessonAttendance.objects.filter(pk=record.pk).update(
-                **result.to_update_kwargs()
-            )
-            if updated_rows:
-                updated_records_by_date.setdefault(record.date_at, []).append(record.id)
+            finally:
+                release_lesson_attendance_pad_lock(record.id)
 
         if total > batch_size:
             logger.info(
@@ -228,8 +307,8 @@ def lesson_attendance_pad_rescan_eligible(
         pending = record.photo_spoof_status == la.PHOTO_SPOOF_STATUS_PENDING
         error_status = record.photo_spoof_status == la.PHOTO_SPOOF_STATUS_ERROR
         never_checked = record.photo_spoof_checked_at is None
-        version_stale = (record.photo_spoof_model_version or "") != pad_model_version
-        if not (never_checked or pending or error_status or version_stale):
+        _ = pad_model_version
+        if not (never_checked or pending or error_status):
             return False, "auto_ineligible"
     return True, None
 
@@ -280,6 +359,7 @@ def get_all_attendance_task(days=None):
             logger.warning("get_all_attendance_task: warmup_cache failed: %s", e)
     return summary
 
+
 @shared_task(name="monitoring_app.tasks.backup_db_task")
 def backup_db_task(
     backup_format: str = "both",
@@ -299,7 +379,6 @@ def backup_db_task(
     call_command("backup_db", **options)
     logger.info("backup_db_task completed: %s", options)
     return options
-
 
 
 @shared_task(name="monitoring_app.tasks.sync_staff_from_api_task")
@@ -625,9 +704,9 @@ def scan_lesson_attendance_photos_hourly(
     и ограничивает объём одним запуском (max_records), чтобы остаток шёл в
     следующий час без перегруза.
 
-    PAD: записи со старым ``photo_spoof_model_version`` (не совпадает с текущим
-    ``PAD_MODEL_VERSION`` в ``photo_pad``) попадают в очередь перескана
-    автоматически.
+    Исторические записи, уже обработанные старой версией PAD, автоматически
+    не пересканируются: hourly берёт только реально незавершённые строки
+    (pending/error/never checked).
     """
     from monitoring_app.photo_pad import PAD_MODEL_VERSION
 
@@ -641,7 +720,6 @@ def scan_lesson_attendance_photos_hourly(
         int(max_records or getattr(settings, "PHOTO_PAD_HOURLY_MAX_RECORDS", 200)),
     )
     qs = _lesson_attendance_pad_candidate_queryset(
-        pad_model_version=PAD_MODEL_VERSION,
         only_today=only_today,
         backlog_only=False,
     )
@@ -652,6 +730,7 @@ def scan_lesson_attendance_photos_hourly(
         batch_size=batch_size,
         log_prefix=log_prefix,
         mode=("today" if only_today else "all"),
+        pad_model_version=PAD_MODEL_VERSION,
     )
 
 
@@ -682,7 +761,6 @@ def scan_lesson_attendance_photos_backlog(
     batch_size = max(1, int(batch_size or min(hourly_batch, 50)))
     max_records = max(1, int(max_records or max(50, min(hourly_max // 4, 100))))
     qs = _lesson_attendance_pad_candidate_queryset(
-        pad_model_version=PAD_MODEL_VERSION,
         only_today=False,
         backlog_only=True,
     )
@@ -693,6 +771,7 @@ def scan_lesson_attendance_photos_backlog(
         batch_size=batch_size,
         log_prefix=log_prefix,
         mode="backlog",
+        pad_model_version=PAD_MODEL_VERSION,
     )
 
 
@@ -801,9 +880,10 @@ def rescan_lesson_attendance_photo_ids(
         force_manual: Если True — записывать результат PAD даже при ненулевом
             ручном вердикте (по умолчанию админ сбрасывает ручной вердикт заранее).
         batch_size: Размер чанка при обходе записей.
-        auto_eligible_only: Если True — пропускать записи, у которых уже актуальная
-            версия PAD и статус не ``pending`` (для узких фоновых сценариев; админ
-            передаёт ``False`` после полного сброса).
+        auto_eligible_only: Если True — обрабатывать только реально незавершённые
+            записи (never checked / ``pending`` / ``error``), без автоперескана
+            старых уже обработанных строк. Админ обычно передаёт ``False`` после
+            полного сброса.
 
     Returns:
         Счётчики обработанных, пропущенных и ошибок.
@@ -899,50 +979,60 @@ def rescan_lesson_attendance_photo_ids(
                 elif skip_reason == "auto_ineligible":
                     stats["skipped_auto_ineligible"] += 1
                 continue
+            if not acquire_lesson_attendance_pad_lock(record.id):
+                logger.info("%s skip_locked lesson_id=%s", log_prefix, record.id)
+                continue
             image_path = record.staff_image_path
             try:
-                result = check_photo(image_path=image_path, device=resolved_device)
-            except Exception as exc:
-                logger.exception(
-                    "%s scan_exception lesson_id=%s path=%s error=%s",
-                    log_prefix,
-                    record.id,
-                    image_path,
-                    exc,
-                )
-                stats["error"] += 1
-                stats["checked"] += 1
-                continue
+                try:
+                    result = check_photo(image_path=image_path, device=resolved_device)
+                except Exception as exc:
+                    logger.exception(
+                        "%s scan_exception lesson_id=%s path=%s error=%s",
+                        log_prefix,
+                        record.id,
+                        image_path,
+                        exc,
+                    )
+                    update_kwargs = build_pad_scan_exception_update_kwargs(
+                        pad_model_version=PAD_MODEL_VERSION,
+                    )
+                    status_key = models.LessonAttendance.PHOTO_SPOOF_STATUS_ERROR
+                else:
+                    update_kwargs = result.to_update_kwargs()
+                    status_key = result.status
 
-            try:
-                update_qs = models.LessonAttendance.objects.filter(pk=record.pk)
-                if not force_manual:
-                    update_qs = update_qs.filter(photo_manual_verdict=MANUAL_NONE)
-                updated_rows = update_qs.update(**result.to_update_kwargs())
-            except Exception as exc:
-                logger.exception(
-                    "%s db_update_exception lesson_id=%s path=%s error=%s",
-                    log_prefix,
-                    record.id,
-                    image_path,
-                    exc,
-                )
-                stats["error"] += 1
-                stats["checked"] += 1
-                continue
+                try:
+                    update_qs = models.LessonAttendance.objects.filter(pk=record.pk)
+                    if not force_manual:
+                        update_qs = update_qs.filter(photo_manual_verdict=MANUAL_NONE)
+                    updated_rows = update_qs.update(**update_kwargs)
+                except Exception as exc:
+                    logger.exception(
+                        "%s db_update_exception lesson_id=%s path=%s error=%s",
+                        log_prefix,
+                        record.id,
+                        image_path,
+                        exc,
+                    )
+                    stats["error"] += 1
+                    stats["checked"] += 1
+                    continue
 
-            if not updated_rows:
-                logger.warning(
-                    "%s pad_update_no_rows lesson_id=%s force_manual=%s path=%s",
-                    log_prefix,
-                    record.id,
-                    force_manual,
-                    image_path,
-                )
-                continue
-            stats["checked"] += 1
-            stats[result.status] = int(stats.get(result.status, 0)) + 1
-            updated_records_by_date.setdefault(record.date_at, []).append(record.id)
+                if not updated_rows:
+                    logger.warning(
+                        "%s pad_update_no_rows lesson_id=%s force_manual=%s path=%s",
+                        log_prefix,
+                        record.id,
+                        force_manual,
+                        image_path,
+                    )
+                    continue
+                stats["checked"] += 1
+                stats[status_key] = int(stats.get(status_key, 0)) + 1
+                updated_records_by_date.setdefault(record.date_at, []).append(record.id)
+            finally:
+                release_lesson_attendance_pad_lock(record.id)
 
     broadcast_lesson_attendance_photo_meta_updates(
         updated_records_by_date,

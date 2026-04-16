@@ -271,6 +271,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             "tutorInfo": record.tutor_info,
             "photoSpoofStatus": record.photo_spoof_status,
             "photoManualVerdict": record.photo_manual_verdict,
+            "photoEffectiveStatus": record.photo_effective_status,
             "photoCanSetManualVerdict": record.photo_can_set_manual_verdict,
         }
 
@@ -771,6 +772,10 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             return []
 
         from monitoring_app.photo_pad import MANUAL_NONE, PAD_MODEL_VERSION, check_photo
+        from monitoring_app.tasks import (
+            acquire_lesson_attendance_pad_lock,
+            release_lesson_attendance_pad_lock,
+        )
 
         id_order = {
             attendance_id: idx for idx, attendance_id in enumerate(attendance_ids)
@@ -802,11 +807,9 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             ):
                 continue
 
-            lock_key = f"photo_pad_scan_lock:{record.id}"
-            acquired = cache.add(
-                lock_key,
-                timezone.now().isoformat(),
-                timeout=self._pad_scan_lock_ttl,
+            acquired = acquire_lesson_attendance_pad_lock(
+                record.id,
+                ttl=self._pad_scan_lock_ttl,
             )
             if not acquired:
                 continue
@@ -825,7 +828,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                 )
                 continue
             finally:
-                cache.delete(lock_key)
+                release_lesson_attendance_pad_lock(record.id)
 
             update_kwargs = result.to_update_kwargs()
             updated_rows = models.LessonAttendance.objects.filter(

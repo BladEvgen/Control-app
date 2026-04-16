@@ -211,6 +211,7 @@ const canInsertCanonicalPhoto = (event: CanonicalPhotoEvent): boolean => {
 const resolvePhotoEffectiveStatus = (
   photo: Partial<PhotoData>,
 ): PhotoSpoofStatus => {
+  if (photo.photoEffectiveStatus != null) return photo.photoEffectiveStatus;
   if (photo.photoManualVerdict === "clean") return "clean";
   if (photo.photoManualVerdict === "suspicious") return "suspicious";
   return photo.photoSpoofStatus ?? "pending";
@@ -257,7 +258,7 @@ const isRiskPhotoCandidate = (photo: Partial<PhotoData>): boolean => {
   // 3) фото, требующие ручной проверки (pending/review/error без manual verdict).
   if (manualVerdict === "suspicious") return true;
   if (manualVerdict === "clean") return false;
-  const status = photo.photoSpoofStatus ?? "pending";
+  const status = resolvePhotoEffectiveStatus(photo);
   return (
     status === "pending" ||
     status === "review" ||
@@ -276,9 +277,10 @@ const buildVerdictSkipFallbackPatch = (
   next.photoCanSetManualVerdict =
     reasonFromServer === "no_photo" ? false : canPhotoSetManualVerdict(next);
   if (reasonFromServer === "status_not_reviewable") {
-    const st = photo.photoSpoofStatus ?? "pending";
+    const st = resolvePhotoEffectiveStatus(photo);
     if (st === "pending" || st === "review" || st === "error") {
       next.photoSpoofStatus = "clean";
+      next.photoEffectiveStatus = "clean";
     }
   }
   return next;
@@ -1487,6 +1489,12 @@ const PhotoDashboard: React.FC = () => {
           eventData.photoSpoofStatus ?? "pending";
         normalizedEvent.photoManualVerdict =
           eventData.photoManualVerdict ?? "none";
+        normalizedEvent.photoEffectiveStatus =
+          eventData.photoEffectiveStatus ??
+          resolvePhotoEffectiveStatus({
+            photoManualVerdict: normalizedEvent.photoManualVerdict,
+            photoSpoofStatus: normalizedEvent.photoSpoofStatus,
+          });
       } else {
         assignPhotoFieldIfDefined(
           normalizedEvent,
@@ -1528,6 +1536,11 @@ const PhotoDashboard: React.FC = () => {
           "photoManualVerdict",
           eventData.photoManualVerdict,
         );
+        assignPhotoFieldIfDefined(
+          normalizedEvent,
+          "photoEffectiveStatus",
+          eventData.photoEffectiveStatus,
+        );
       }
 
       if (typeof eventData.photoCanSetManualVerdict === "boolean") {
@@ -1547,6 +1560,12 @@ const PhotoDashboard: React.FC = () => {
         : { ...eventData };
       const normalizedManualVerdict = merged.photoManualVerdict ?? "none";
       const normalizedSpoofStatus = merged.photoSpoofStatus ?? "pending";
+      const normalizedEffectiveStatus =
+        merged.photoEffectiveStatus ??
+        resolvePhotoEffectiveStatus({
+          photoManualVerdict: normalizedManualVerdict,
+          photoSpoofStatus: normalizedSpoofStatus,
+        });
 
       return {
         id: merged.id,
@@ -1559,10 +1578,12 @@ const PhotoDashboard: React.FC = () => {
         tutorInfo: merged.tutorInfo ?? "",
         photoSpoofStatus: normalizedSpoofStatus,
         photoManualVerdict: normalizedManualVerdict,
+        photoEffectiveStatus: normalizedEffectiveStatus,
         photoCanSetManualVerdict:
           typeof merged.photoCanSetManualVerdict === "boolean"
             ? merged.photoCanSetManualVerdict
             : canPhotoSetManualVerdict({
+                photoEffectiveStatus: normalizedEffectiveStatus,
                 photoManualVerdict: normalizedManualVerdict,
                 photoSpoofStatus: normalizedSpoofStatus,
                 hasPhoto: merged.hasPhoto,

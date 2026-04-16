@@ -151,6 +151,8 @@ export interface PhotoData {
   tutorInfo: string;
   photoSpoofStatus?: PhotoSpoofStatus;
   photoManualVerdict?: PhotoManualVerdict;
+  photoEffectiveStatus?: PhotoSpoofStatus;
+  photoEffectiveTrustConfirmed?: boolean | null;
   photoCanSetManualVerdict?: boolean;
   stateCode?: PhotoStateCode;
   versionTs?: string;
