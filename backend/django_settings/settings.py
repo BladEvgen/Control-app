@@ -851,10 +851,42 @@ CELERY_TASK_ROUTES = {
     },
 }
 
-CELERY_BEAT_SCHEDULE = (
-    {}
-    if DEBUG
-    else {
+BACKUP_DB_WEEKLY_DAY_OF_WEEK = (
+    os.getenv("BACKUP_DB_WEEKLY_DAY_OF_WEEK", "1").strip() or "1"
+)
+BACKUP_DB_WEEKLY_HOUR = min(max(0, _int_env("BACKUP_DB_WEEKLY_HOUR", 3)), 23)
+BACKUP_DB_WEEKLY_MINUTE = min(max(0, _int_env("BACKUP_DB_WEEKLY_MINUTE", 30)), 59)
+BACKUP_DB_WEEKLY_KEEP_DAYS = max(1, _int_env("BACKUP_DB_WEEKLY_KEEP_DAYS", 30))
+BACKUP_DB_WEEKLY_OUTPUT_DIR = (
+    os.getenv("BACKUP_DB_WEEKLY_OUTPUT_DIR", "DB").strip() or "DB"
+)
+BACKUP_DB_WEEKLY_COMPRESS = os.getenv(
+    "BACKUP_DB_WEEKLY_COMPRESS", "1"
+).strip().lower() in ("1", "true", "yes", "on")
+BACKUP_DB_WEEKLY_FORMAT = os.getenv("BACKUP_DB_WEEKLY_FORMAT", "both").strip().lower()
+if BACKUP_DB_WEEKLY_FORMAT not in {"json", "sql", "both"}:
+    BACKUP_DB_WEEKLY_FORMAT = "both"
+
+
+def build_celery_beat_schedule(debug: bool) -> dict[str, dict[str, object]]:
+    if debug:
+        return {}
+    return {
+        # Weekly snapshot before the first Monday API_URL attendance pull at 04:00.
+        "backup-db-weekly-before-api-attendance-sync": {
+            "task": "monitoring_app.tasks.backup_db_task",
+            "schedule": crontab(
+                day_of_week=BACKUP_DB_WEEKLY_DAY_OF_WEEK,
+                hour=str(BACKUP_DB_WEEKLY_HOUR),
+                minute=str(BACKUP_DB_WEEKLY_MINUTE),
+            ),
+            "kwargs": {
+                "backup_format": BACKUP_DB_WEEKLY_FORMAT,
+                "compress": BACKUP_DB_WEEKLY_COMPRESS,
+                "output_dir": BACKUP_DB_WEEKLY_OUTPUT_DIR,
+                "keep_days": BACKUP_DB_WEEKLY_KEEP_DAYS,
+            },
+        },
         "get-attendance-every-day-4am": {
             "task": "monitoring_app.tasks.get_all_attendance_task",
             "schedule": crontab(hour="4", minute="0"),
@@ -918,7 +950,9 @@ CELERY_BEAT_SCHEDULE = (
         #     "schedule": crontab(day_of_month="*/3", hour=1, minute=0), #! Disabled no CUDA driver
         # },
     }
-)
+
+
+CELERY_BEAT_SCHEDULE = build_celery_beat_schedule(DEBUG)
 
 # Logging configurations
 LOG_DIR = BASE_DIR / "logs"

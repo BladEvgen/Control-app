@@ -280,6 +280,27 @@ def get_all_attendance_task(days=None):
             logger.warning("get_all_attendance_task: warmup_cache failed: %s", e)
     return summary
 
+@shared_task(name="monitoring_app.tasks.backup_db_task")
+def backup_db_task(
+    backup_format: str = "both",
+    compress: bool = True,
+    output_dir: str = "DB",
+    keep_days: int = 30,
+) -> dict[str, Any]:
+    """Запускает management-команду ``backup_db`` из Celery/beat."""
+    from django.core.management import call_command
+
+    options = {
+        "format": backup_format,
+        "compress": compress,
+        "output_dir": output_dir,
+        "keep_days": keep_days,
+    }
+    call_command("backup_db", **options)
+    logger.info("backup_db_task completed: %s", options)
+    return options
+
+
 
 @shared_task(name="monitoring_app.tasks.sync_staff_from_api_task")
 def sync_staff_from_api_task(dry_run: bool = False):

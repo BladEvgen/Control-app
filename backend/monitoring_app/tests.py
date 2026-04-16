@@ -2413,6 +2413,59 @@ class DepartmentConfirmationCacheRotationTaskTest(SimpleTestCase):
         mock_invalidate_pattern.assert_called_once_with("department_confirmation_*")
 
 
+class BackupDbTaskTest(SimpleTestCase):
+    @patch("django.core.management.call_command")
+    def test_backup_db_task_runs_management_command_with_expected_defaults(
+        self, mock_call_command
+    ):
+        result = monitoring_tasks.backup_db_task()
+
+        self.assertEqual(
+            result,
+            {
+                "format": "both",
+                "compress": True,
+                "output_dir": "DB",
+                "keep_days": 30,
+            },
+        )
+        mock_call_command.assert_called_once_with(
+            "backup_db",
+            format="both",
+            compress=True,
+            output_dir="DB",
+            keep_days=30,
+        )
+
+
+class CeleryBeatScheduleTest(SimpleTestCase):
+    def test_build_celery_beat_schedule_includes_weekly_backup_entry(self):
+        from celery.schedules import crontab
+        from django_settings import settings as project_settings
+
+        schedule = project_settings.build_celery_beat_schedule(debug=False)
+        weekly_backup = schedule["backup-db-weekly-before-api-attendance-sync"]
+
+        self.assertEqual(weekly_backup["task"], "monitoring_app.tasks.backup_db_task")
+        self.assertEqual(
+            weekly_backup["schedule"],
+            crontab(
+                day_of_week=project_settings.BACKUP_DB_WEEKLY_DAY_OF_WEEK,
+                hour=str(project_settings.BACKUP_DB_WEEKLY_HOUR),
+                minute=str(project_settings.BACKUP_DB_WEEKLY_MINUTE),
+            ),
+        )
+        self.assertEqual(
+            weekly_backup["kwargs"],
+            {
+                "backup_format": project_settings.BACKUP_DB_WEEKLY_FORMAT,
+                "compress": project_settings.BACKUP_DB_WEEKLY_COMPRESS,
+                "output_dir": project_settings.BACKUP_DB_WEEKLY_OUTPUT_DIR,
+                "keep_days": project_settings.BACKUP_DB_WEEKLY_KEEP_DAYS,
+            },
+        )
+
+
 class LessonAttendanceMediaAccessTest(SimpleTestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
