@@ -34,6 +34,7 @@ from django.utils.html import escape, format_html, format_html_join
 from django.utils.safestring import mark_safe
 from django_admin_geomap import ModelAdmin
 from monitoring_app import utils as monitoring_utils
+from monitoring_app.group_match import childdepartment_pks_for_group_style_search
 from monitoring_app.lesson_locations_conf import (
     ACCEPTANCE_R_CLUSTER,
     ACCEPTANCE_R_SAME_POINT,
@@ -844,6 +845,12 @@ class PasswordResetTokenAdmin(admin.ModelAdmin):
         ),
     )
 
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 @admin.register(PasswordResetRequestLog, site=admin_site)
 class PasswordResetRequestLogAdmin(admin.ModelAdmin):
@@ -905,6 +912,12 @@ class PasswordResetRequestLogAdmin(admin.ModelAdmin):
         ),
     )
 
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 @admin.register(APIKey, site=admin_site)
 class APIKeyAdmin(admin.ModelAdmin):
@@ -919,11 +932,7 @@ class APIKeyAdmin(admin.ModelAdmin):
     list_editable = ("is_active",)
     search_fields = ("key_name", "created_by__username")
     ordering = ("-created_at", "key_name")
-    readonly_fields = (
-        "key",
-        "created_at",
-        "created_by",
-    )
+    readonly_fields = ("key", "created_at", "created_by")
     actions = ["deactivate_keys", "reactivate_keys", "generate_new_keys"]
 
     fieldsets = (
@@ -993,8 +1002,10 @@ class UserProfileAdmin(admin.ModelAdmin):
     list_filter = ("is_banned",)
     search_fields = ("user__username", "user__email", "phonenumber", "last_login_ip")
     ordering = ("user__username",)
+    list_display_links = ("user",)
     list_editable = ("is_banned",)
     actions = ["ban_users", "unban_users"]
+    readonly_fields = ("last_login_ip",)
 
     fieldsets = (
         (
@@ -1042,6 +1053,10 @@ class UserProfileAdmin(admin.ModelAdmin):
 
     unban_users.short_description = "Разблокировать выбранных пользователей"
 
+    def has_delete_permission(self, request, obj=None):
+        """Удаление профиля каскадно удаляет User — в админке отключено."""
+        return False
+
 
 # ===== STAFF AND DEPARTMENT MODELS =====
 
@@ -1052,11 +1067,10 @@ class FileCategoryAdmin(admin.ModelAdmin):
         "name",
         "slug",
     )
-    search_fields = ("name",)
+    search_fields = ("name", "slug")
     prepopulated_fields = {"slug": ("name",)}
     ordering = ("name",)
-    list_display_links = None
-    readonly_fields = ("slug", "name")
+    list_display_links = ("name",)
 
 
 @admin.register(ParentDepartment, site=admin_site)
@@ -1066,10 +1080,10 @@ class ParentDepartmentAdmin(admin.ModelAdmin):
         "name",
         "date_of_creation",
     )
-    search_fields = ("name",)
+    search_fields = ("name", "id")
     ordering = ("name",)
-    readonly_fields = ("date_of_creation", "name")
-    list_display_links = None
+    readonly_fields = ("date_of_creation",)
+    list_display_links = ("id", "name")
 
     fieldsets = (
         (
@@ -1080,6 +1094,22 @@ class ParentDepartmentAdmin(admin.ModelAdmin):
             },
         ),
     )
+
+    def get_readonly_fields(self, request, obj=None):
+        ro = list(self.readonly_fields)
+        if obj is not None:
+            ro.extend(["id", "name"])
+        return ro
+
+    def get_fieldsets(self, request, obj=None):
+        if obj is None:
+            return (
+                (
+                    "Информация об отделе",
+                    {"fields": ("id", "name"), "classes": ("wide",)},
+                ),
+            )
+        return self.fieldsets
 
 
 @admin.register(ChildDepartment, site=admin_site)
@@ -1095,15 +1125,8 @@ class ChildDepartmentAdmin(admin.ModelAdmin):
     search_fields = ("name", "parent__name")
     ordering = ("name",)
     list_filter = ("parent",)
-    readonly_fields = (
-        "date_of_creation",
-        "staff_count",
-        "avg_salary",
-        "parent",
-        "name",
-        "id",
-    )
-    list_display_links = None
+    readonly_fields = ("date_of_creation", "staff_count", "avg_salary")
+    list_display_links = ("id", "name")
 
     fieldsets = (
         (
@@ -1121,6 +1144,26 @@ class ChildDepartmentAdmin(admin.ModelAdmin):
             },
         ),
     )
+
+    def get_readonly_fields(self, request, obj=None):
+        """При создании записи можно задать id, name и parent; после сохранения — только чтение."""
+        ro = list(self.readonly_fields)
+        if obj is not None:
+            ro.extend(["parent", "name", "id"])
+        return ro
+
+    def get_fieldsets(self, request, obj=None):
+        """На форме добавления скрыта пустая статистика и авто-поле даты."""
+        info = (
+            "Информация об отделе",
+            {
+                "fields": ("id", "name", "parent"),
+                "classes": ("wide",),
+            },
+        )
+        if obj is None:
+            return (info,)
+        return self.fieldsets
 
     def staff_count(self, obj):
         return getattr(obj, "_staff_count", 0)
@@ -1141,6 +1184,24 @@ class ChildDepartmentAdmin(admin.ModelAdmin):
         )
         return qs
 
+    def get_search_results(self, request, queryset, search_term):
+        """Дополняет icontains поиск совпадением по ``compact_group_match_key`` (Nitro ↔ control).
+
+        Логика ключей и префиксов — в :mod:`monitoring_app.group_match` (doctest там же).
+        """
+        qs, use_distinct = super().get_search_results(request, queryset, search_term)
+        term = (search_term or "").strip()
+        if not term:
+            return qs, use_distinct
+        pks = childdepartment_pks_for_group_style_search(queryset, term)
+        if not pks:
+            return qs, use_distinct
+        key_qs = queryset.filter(pk__in=pks)
+        combined = qs | key_qs
+        return combined, True
+
+    save_on_top = True
+
 
 @admin.register(Position, site=admin_site)
 class PositionAdmin(admin.ModelAdmin):
@@ -1148,6 +1209,8 @@ class PositionAdmin(admin.ModelAdmin):
     search_fields = ("name",)
     ordering = ("-rate", "name")
     list_editable = ("rate",)
+    list_display_links = ("name",)
+    save_on_top = True
 
     fieldsets = (
         (
@@ -1219,6 +1282,7 @@ class StaffAdmin(admin.ModelAdmin):
         "export_staff_data",
     ]
     ordering = ("-pin", "-department", "surname", "name")
+    save_on_top = True
     inlines = [SalaryInline, AbsentReasonInline, RemoteWorkInline]
     readonly_fields = (
         "pin",
@@ -2115,9 +2179,10 @@ class StaffFaceSampleAdmin(admin.ModelAdmin):
     )
     list_filter = ("source", "angle", "is_active", "is_trusted", "with_glasses")
     search_fields = ("staff__pin", "staff__name", "staff__surname")
-    raw_id_fields = ("staff",)
+    autocomplete_fields = ("staff",)
     readonly_fields = ("created_at", "updated_at")
     ordering = ("-created_at",)
+    save_on_top = True
 
 
 @admin.register(StaffFaceMask, site=admin_site)
@@ -2341,6 +2406,10 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
         "Запустить аугментацию для выбранных сотрудников"
     )
 
+    def has_add_permission(self, request):
+        """Маска одна на сотрудника; создаётся пайплайном Face-ML, не вручную."""
+        return False
+
 
 # ===== ATTENDANCE MODELS =====
 
@@ -2461,6 +2530,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
     actions_on_top = False
     actions_on_bottom = True
     list_max_show_all = 400
+    save_on_top = True
 
     readonly_fields = (
         "staff",
@@ -3753,6 +3823,10 @@ class LessonAttendanceAdmin(ModelAdmin):
 
     cleanup_old_photos.short_description = "Удалить старые фотографии"
 
+    def has_add_permission(self, request):
+        """Строки создаёт учёт посещаемости, не ручной ввод в админке."""
+        return False
+
     def save_model(self, request, obj, form, change):
         if change and "photo_manual_verdict" in form.changed_data:
             if obj.photo_manual_verdict == LessonAttendance.PHOTO_MANUAL_VERDICT_NONE:
@@ -3786,6 +3860,7 @@ class ClassLocationAdmin(ModelAdmin):
     geomap_autozoom = "15.9"
 
     readonly_fields = ("created_at", "updated_at", "attendance_stats")
+    save_on_top = True
 
     class AttendancePeriodFilter(SimpleListFilter):
         title = "Период посещаемости"
@@ -4418,9 +4493,11 @@ class SalaryAdmin(admin.ModelAdmin):
         "contract_type",
         "tax_amount",
     )
-    search_fields = ("staff__surname", "staff__name")
+    search_fields = ("staff__surname", "staff__name", "staff__pin")
     list_filter = ("staff__department", "contract_type")
+    autocomplete_fields = ("staff",)
     readonly_fields = ("total_salary", "tax_amount")
+    save_on_top = True
     actions = ["calculate_bonuses", "export_salary_report"]
 
     fieldsets = (
@@ -4703,7 +4780,9 @@ class AbsentReasonAdmin(admin.ModelAdmin):
         "staff__department__name",
         "reason",
     )
+    autocomplete_fields = ("staff",)
     readonly_fields = ("duration_days",)
+    save_on_top = True
     actions = ["approve_selected", "reject_selected"]
 
     fieldsets = (
@@ -4793,8 +4872,10 @@ class RemoteWorkAdmin(admin.ModelAdmin):
         "get_remote_status",
     )
     list_filter = ("permanent_remote", "start_date", "end_date")
-    search_fields = ("staff__surname", "staff__name")
+    search_fields = ("staff__surname", "staff__name", "staff__pin")
+    autocomplete_fields = ("staff",)
     actions = ["extend_remote_work", "terminate_remote_work"]
+    save_on_top = True
 
     fieldsets = (
         (
@@ -4884,6 +4965,7 @@ class PerformanceBonusRuleAdmin(admin.ModelAdmin):
     )
     search_fields = ("bonus_percentage", "min_days", "max_days")
     ordering = ("min_days", "max_days", "min_attendance_percent")
+    save_on_top = True
 
     fieldsets = (
         (
