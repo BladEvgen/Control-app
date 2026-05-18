@@ -1,5 +1,12 @@
 import ExcelJS from "exceljs";
-import { StaffData, AttendanceData } from "../schemas/IData";
+import { StaffData } from "../schemas/IData";
+import {
+  attendanceDataRowLegendArgb,
+  collectStaffAttendanceLegendChips,
+  STAFF_ATTENDANCE_LEGEND_TONE_ARGB,
+  hasMeaningfulInOut,
+  STAFF_ABSENCE_WITHOUT_REASON_ROW_LABEL,
+} from "./attendanceDayPresentation";
 import { formatDepartmentName, formatTimeRange, formatMinutes } from "./utils";
 
 export const generateAndDownloadExcel = async (
@@ -104,26 +111,11 @@ export const generateAndDownloadExcel = async (
     right: { style: "thin" },
   };
 
-  const colorMap: Record<string, string> = {
-    "Выходной день": "F59E0B",
-    "Работа в выходной": "34D399",
-    "Удаленная работа + явка": "38BDF8",
-    "Удаленная работа": "38BDF8",
-    Одобрено: "A78BFA",
-    "Не одобрено": "FB7185",
-  };
-  const legendItems = generateLegendItems(staffData.attendance);
+  const legendChips = collectStaffAttendanceLegendChips(staffData.attendance);
 
-  legendItems.forEach((item) => {
-    let fillColor = "";
-    for (const key in colorMap) {
-      if (item.startsWith(key)) {
-        fillColor = colorMap[key];
-        break;
-      }
-    }
-
-    const row = worksheet.addRow([fillColor ? "" : "", item]);
+  legendChips.forEach((chip) => {
+    const fillColor = STAFF_ATTENDANCE_LEGEND_TONE_ARGB[chip.tone];
+    const row = worksheet.addRow([fillColor ? "" : "", chip.label]);
     row.font = textFont;
 
     const colorCell = row.getCell(1);
@@ -201,25 +193,40 @@ export const generateAndDownloadExcel = async (
     const formattedDate = `${day}.${month}.${year}`;
 
     let attendanceInfo: string;
-    const hasInOut = record.first_in && record.last_out;
-    if (record.is_weekend) {
-      attendanceInfo = "Выходной";
-    } else if (record.is_remote_work) {
-      if (hasInOut) {
+    const hasInOut = hasMeaningfulInOut(record);
+    const reason = (record.absent_reason ?? "").trim();
+
+    if (record.is_remote_work) {
+      if (hasInOut && record.first_in && record.last_out) {
         attendanceInfo = `Удаленная работа, явка ${formatTimeRange(record.first_in, record.last_out)} (${formatMinutes(record.total_minutes)})`;
       } else {
         attendanceInfo = "Удаленная работа";
       }
-    } else if (hasInOut) {
+    } else if (reason !== "") {
+      attendanceInfo = record.is_absent_approved
+        ? reason || "Одобрено (Без причины)"
+        : `Не одобрено: ${reason || "Без причины"}`;
+    } else if (record.lesson_attendance_day?.lesson_day_status === "rejected_fraud") {
+      attendanceInfo =
+        record.lesson_attendance_day.summary_ru?.trim() ||
+        "Подозрительное фото — день не в сводке.";
+    } else if (
+      record.lesson_attendance_day?.lesson_day_status === "pending_manual_review"
+    ) {
+      attendanceInfo =
+        record.lesson_attendance_day.summary_ru?.trim() || "Фото на проверке.";
+    } else if (record.is_weekend) {
+      const fi = record.first_in;
+      const lo = record.last_out;
+      if (hasInOut && fi && lo) {
+        attendanceInfo = `Работа в выходной: ${formatTimeRange(fi, lo)} (${formatMinutes(record.total_minutes)})`;
+      } else {
+        attendanceInfo = "Выходной день";
+      }
+    } else if (hasInOut && record.first_in && record.last_out) {
       attendanceInfo = formatTimeRange(record.first_in, record.last_out);
     } else {
-      if (record.is_absent_approved) {
-        attendanceInfo = record.absent_reason || "Одобрено (Без причины)";
-      } else {
-        attendanceInfo = `Не одобрено: ${
-          record.absent_reason || "Без причины"
-        }`;
-      }
+      attendanceInfo = STAFF_ABSENCE_WITHOUT_REASON_ROW_LABEL;
     }
 
     const totalTimeStr =
@@ -239,7 +246,7 @@ export const generateAndDownloadExcel = async (
     row.eachCell((cell, colNumber) => {
       let fillColor = "";
       if (colNumber === 2) {
-        fillColor = getAttendanceColor(record);
+        fillColor = attendanceDataRowLegendArgb(record);
       }
 
       if (fillColor) {
@@ -276,47 +283,4 @@ export const generateAndDownloadExcel = async (
   anchor.download = fileName;
   anchor.click();
   window.URL.revokeObjectURL(url);
-};
-
-const getAttendanceColor = (record: AttendanceData): string => {
-  if (record.is_weekend) {
-    if (record.first_in && record.last_out) {
-      return "34D399";
-    } else {
-      return "F59E0B";
-    }
-  } else if (record.is_remote_work) {
-    return "38BDF8";
-  } else if (record.is_absent_approved) {
-    return "A78BFA";
-  } else if (!record.first_in && !record.last_out) {
-    return "FB7185";
-  }
-  return "";
-};
-
-const generateLegendItems = (
-  attendance: Record<string, AttendanceData>,
-): string[] => {
-  const legend = new Set<string>();
-  Object.values(attendance).forEach((data) => {
-    if (data.is_weekend) {
-      if (data.first_in && data.last_out) {
-        legend.add("Работа в выходной");
-      } else {
-        legend.add("Выходной день");
-      }
-    } else if (data.is_remote_work) {
-      if (data.first_in && data.last_out) {
-        legend.add("Удаленная работа + явка");
-      } else {
-        legend.add("Удаленная работа");
-      }
-    } else if (data.is_absent_approved) {
-      legend.add(`Одобрено: ${data.absent_reason || "Без причины"}`);
-    } else if (!data.first_in && !data.last_out) {
-      legend.add(`Не одобрено: ${data.absent_reason || "Без причины"}`);
-    }
-  });
-  return Array.from(legend);
 };

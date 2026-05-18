@@ -19,6 +19,7 @@ import Notification from "../../components/Notification";
 import LoaderComponent from "../../components/LoaderComponent";
 import Breadcrumbs, { BreadcrumbItem } from "../../components/Breadcrumbs";
 import { formatDepartmentName } from "../../utils/utils";
+import { collectStaffAttendanceLegendChips } from "../../utils/attendanceDayPresentation";
 
 import MobileActionButtons from "./MobileActionButtons";
 import StaffHeader from "./StaffHeader";
@@ -162,49 +163,9 @@ const StaffDetail: React.FC = () => {
     }
   };
 
-  const generateLegendItems = useCallback(
-    (attendanceData: Record<string, AttendanceData>) => {
-      const legend = new Set<string>();
-      const defaultText = "Отсутствует (Не одобрено)";
-
-      Object.values(attendanceData).forEach((data) => {
-        if (data.is_remote_work) {
-          legend.add("Удаленная работа");
-        } else if (data.absent_reason && data.absent_reason.trim() !== "") {
-          legend.add(
-            data.is_absent_approved
-              ? `Одобрено: ${data.absent_reason}`
-              : `Не одобрено: ${data.absent_reason}`,
-          );
-        } else if (data.is_weekend) {
-          if (
-            data.first_in &&
-            data.first_in.trim() !== "" &&
-            data.last_out &&
-            data.last_out.trim() !== ""
-          ) {
-            legend.add("Работа в выходной");
-          } else {
-            legend.add("Выходной день");
-          }
-        } else if (
-          !data.first_in ||
-          data.first_in.trim() === "" ||
-          !data.last_out ||
-          data.last_out.trim() === ""
-        ) {
-          legend.add(defaultText);
-        }
-      });
-
-      return Array.from(legend);
-    },
-    [],
-  );
-
-  const legendItems = useMemo(
-    () => generateLegendItems(attendance),
-    [attendance, generateLegendItems],
+  const attendanceLegendChips = useMemo(
+    () => collectStaffAttendanceLegendChips(attendance),
+    [attendance],
   );
 
   const handleDownloadExcel = async () => {
@@ -437,7 +398,7 @@ const StaffDetail: React.FC = () => {
                   endDate={endDate}
                   handleStartDateChange={handleStartDateChange}
                   handleEndDateChange={handleEndDateChange}
-                  legendItems={legendItems}
+                  attendanceLegendChips={attendanceLegendChips}
                 />
               </div>
             </div>

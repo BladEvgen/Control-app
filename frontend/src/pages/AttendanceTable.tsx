@@ -1,5 +1,6 @@
 import React, { Fragment } from "react";
 import { AttendanceData } from "../schemas/IData";
+import { resolveStaffAttendanceDayVisual } from "../utils/attendanceDayPresentation";
 import { formatDate, formatMinutes, formatDateFromKeyRu } from "../utils/utils";
 import { motion } from "framer-motion";
 import AttendanceAreaSequenceMap from "./StaffDetail/AttendanceAreaSequenceMap";
@@ -38,94 +39,6 @@ const cardVariants = {
 };
 
 const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
-  const defaultText = "";
-
-  const getStatusStyle = (data: AttendanceData) => {
-    const hasInOut = data.first_in && data.last_out;
-    const base = {
-      bg: "bg-white dark:bg-gray-950",
-      border: "border-gray-200 dark:border-gray-800",
-      hoverBg: "hover:bg-gray-50/80 dark:hover:bg-gray-900/60",
-    };
-
-    if (data.is_remote_work) {
-      return {
-        ...base,
-        text: "text-sky-800 dark:text-sky-300",
-        borderLeft: "border-l-[3px] border-sky-400/70 dark:border-sky-500/55",
-      };
-    } else if (data.absent_reason && data.absent_reason.trim() !== "") {
-      return data.is_absent_approved
-        ? {
-            ...base,
-            text: "text-violet-800 dark:text-violet-300",
-            borderLeft:
-              "border-l-[3px] border-violet-400/70 dark:border-violet-500/55",
-          }
-        : {
-            ...base,
-            text: "text-rose-800 dark:text-rose-300",
-            borderLeft:
-              "border-l-[3px] border-rose-500/75 dark:border-rose-500/50",
-          };
-    } else if (data.is_weekend) {
-      return hasInOut
-        ? {
-            ...base,
-            text: "text-emerald-800 dark:text-emerald-300",
-            borderLeft:
-              "border-l-[3px] border-emerald-500/65 dark:border-emerald-500/45",
-          }
-        : {
-            ...base,
-            text: "text-amber-900/90 dark:text-amber-300/90",
-            borderLeft:
-              "border-l-[3px] border-amber-400/80 dark:border-amber-500/50",
-          };
-    } else if (!hasInOut) {
-      return {
-        ...base,
-        text: "text-rose-800 dark:text-rose-300",
-        borderLeft: "border-l-[3px] border-rose-500/75 dark:border-rose-500/50",
-      };
-    }
-    return {
-      ...base,
-      text: "text-gray-700 dark:text-gray-200",
-      borderLeft: "border-l-[3px] border-l-transparent",
-    };
-  };
-
-  const getStatusText = (data: AttendanceData) => {
-    const {
-      first_in,
-      last_out,
-      is_weekend,
-      is_remote_work,
-      is_absent_approved,
-      absent_reason,
-    } = data;
-    const hasInOut = first_in && last_out;
-
-    if (is_remote_work) {
-      return hasInOut
-        ? "Дистанционная работа, явка в здании"
-        : "Дистанционная работа";
-    }
-    if (absent_reason && absent_reason.trim() !== "") {
-      return (
-        "Отсутствует (" +
-        (is_absent_approved ? "Одобрено" : "Не одобрено") +
-        ")"
-      );
-    }
-    if (is_weekend) {
-      return hasInOut ? "Работа в выходной" : "Выходной день";
-    }
-    if (!hasInOut) return defaultText;
-    return "Рабочий день";
-  };
-
   const renderTime = (time: string | undefined) => {
     return time ? formatDate(time) : "";
   };
@@ -181,8 +94,9 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
             {Object.entries(attendance)
               .reverse()
               .map(([date, data], idx) => {
-                const status = getStatusStyle(data);
-                const statusText = getStatusText(data);
+                const visual = resolveStaffAttendanceDayVisual(data);
+                const status = visual.rowStyle;
+                const statusText = visual.rowStatusText;
                 const lessonDay = data.lesson_attendance_day;
                 const hasZones =
                   Array.isArray(data.area_sequence) &&
@@ -273,8 +187,9 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
     data: AttendanceData,
     idx: number,
   ) => {
-    const status = getStatusStyle(data);
-    const statusText = getStatusText(data);
+    const visual = resolveStaffAttendanceDayVisual(data);
+    const status = visual.rowStyle;
+    const statusText = visual.rowStatusText;
     const lessonDay = data.lesson_attendance_day;
     const hasZones =
       Array.isArray(data.area_sequence) && data.area_sequence.length > 0;

@@ -13,6 +13,10 @@ import {
   AttendanceData,
   LessonAttendanceDayAudit,
 } from "../../schemas/IData";
+import {
+  legendToneClass,
+  type StaffAttendanceLegendChip,
+} from "../../utils/attendanceDayPresentation";
 import LessonAttendanceDayPanel from "./LessonAttendanceDayPanel";
 
 interface AttendanceSectionProps {
@@ -23,7 +27,7 @@ interface AttendanceSectionProps {
   endDate: string;
   handleStartDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleEndDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  legendItems: string[];
+  attendanceLegendChips: StaffAttendanceLegendChip[];
 }
 
 const AttendanceSection: React.FC<AttendanceSectionProps> = ({
@@ -34,7 +38,7 @@ const AttendanceSection: React.FC<AttendanceSectionProps> = ({
   endDate,
   handleStartDateChange,
   handleEndDateChange,
-  legendItems,
+  attendanceLegendChips,
 }) => {
   const auditOnlyDates = Object.keys(lessonAttendanceAudit).filter(
     (dk) => !attendance[dk],
@@ -63,33 +67,18 @@ const AttendanceSection: React.FC<AttendanceSectionProps> = ({
         </div>
       </div>
       <div className="flex flex-wrap gap-2 mb-6">
-        {legendItems.map((item, index) => {
-          let colorClass: string;
-          if (item === "Выходной день") {
-            colorClass = "bg-amber-400 dark:bg-amber-500";
-          } else if (item.includes("Работа в выходной")) {
-            colorClass = "bg-green-400 dark:bg-green-500";
-          } else if (item.includes("Удаленная работа")) {
-            colorClass = "bg-sky-400 dark:bg-sky-500";
-          } else if (item.includes("Одобрено")) {
-            colorClass = "bg-violet-400 dark:bg-violet-500";
-          } else if (item.includes("Не одобрено")) {
-            colorClass = "bg-rose-400 dark:bg-rose-500";
-          } else if (item === "Нет данных") {
-            colorClass = "bg-red-400 dark:bg-red-500";
-          } else {
-            colorClass = "bg-gray-400 dark:bg-gray-500";
-          }
+        {attendanceLegendChips.map((chip, index) => {
+          const colorClass = legendToneClass(chip.tone);
           return (
             <motion.div
-              key={index}
+              key={chip.id}
               className={`flex items-center space-x-2 px-4 py-1 rounded-full text-white text-sm ${colorClass}`}
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: index * 0.05, duration: 0.3 }}
             >
               <div className="w-2 h-2 rounded-full bg-white"></div>
-              <span>{item}</span>
+              <span>{chip.label}</span>
             </motion.div>
           );
         })}
