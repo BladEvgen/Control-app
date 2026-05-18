@@ -49,6 +49,8 @@ from monitoring_app.cache_conf import (
     get_cache,
     invalidate_cache,
     invalidate_cache_pattern,
+    invalidate_lesson_attendance_derived_caches,
+    invalidate_staff_detail_for_pin,
 )
 from monitoring_app.lesson_locations_conf import (
     ACCEPTANCE_R_CLUSTER,
@@ -240,7 +242,7 @@ def _invalidate_staff_face_caches(staff_pin: str) -> None:
     if not pin:
         return
     invalidate_cache(f"staff_{pin}")
-    invalidate_cache_pattern(f"staff_detail_{LESSON_REPORT_CACHE_VERSION}_{pin}_")
+    invalidate_staff_detail_for_pin(pin)
     invalidate_cache("face_lab_staff_options_v2")
     ml.invalidate_runtime_gallery_caches(pin)
 
@@ -4429,8 +4431,10 @@ def child_department_detail(request, child_department_id):
     operation_description=(
         "Возвращает подробную информацию о сотруднике за период: посещаемость по датам "
         "(first_in, last_out, effective_work_seconds — время в здании с учётом выходов, "
-        "area_sequence — цепочка зон для карты перемещений), процент присутствия, бонус, "
-        "тип контракта и зарплату. Данные кэшируются на 5 минут."
+        "area_sequence — цепочка зон для карты перемещений), опционально lesson_attendance_day "
+        "в каждой дате — проверка по журналу занятий (подделка фото / на проверке). "
+        "Ключ lesson_attendance_audit — все занятия за запрошенный период, в том числе дни, "
+        "исключённые из сводной посещаемости из‑за подозрительного фото. Данные кэшируются на 5 минут."
     ),
     tags=["Staff"],
     manual_parameters=[
@@ -4567,9 +4571,24 @@ def child_department_detail(request, child_department_id):
                                                 type=openapi.TYPE_STRING,
                                                 description="Название зоны",
                                             ),
+                                            "devSn": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                description="Серийник устройства СКУД (см. ATTENDANCE_EXIT_DEVICE_SNS в settings)",
+                                            ),
+                                            "is_exit": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                description="'1' если событие закрыло интервал «в здании»",
+                                            ),
+                                            "exit_candidate": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                            ),
+                                            "exit_resolution": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                description="exit | bridge_transfer",
+                                            ),
                                         },
                                     ),
-                                    description="Цепочка зон по времени для карты перемещений (только при границах из StaffAttendance)",
+                                    description="Цепочка зон (StaffAttendance): для UI доступны devSn, is_exit, exit_resolution",
                                 ),
                                 "is_weekend": openapi.Schema(
                                     type=openapi.TYPE_BOOLEAN,
@@ -4588,7 +4607,95 @@ def child_department_detail(request, child_department_id):
                                     nullable=True,
                                     description="Причина отсутствия (если применимо)",
                                 ),
+                                "lesson_attendance_day": openapi.Schema(
+                                    type=openapi.TYPE_OBJECT,
+                                    nullable=True,
+                                    description=(
+                                        "Сводка по LessonAttendance за этот календарный день "
+                                        "(антифрод фото). Дублирует запись из lesson_attendance_audit."
+                                    ),
+                                    properties={
+                                        "has_lessons": openapi.Schema(
+                                            type=openapi.TYPE_BOOLEAN
+                                        ),
+                                        "lesson_day_status": openapi.Schema(
+                                            type=openapi.TYPE_STRING,
+                                            description=(
+                                                "ok — день без отклонённых занятий; "
+                                                "pending_manual_review — есть «на проверку»; "
+                                                "rejected_fraud — попытка обмана (подозрительно)."
+                                            ),
+                                        ),
+                                        "day_confirmed_for_accounting": openapi.Schema(
+                                            type=openapi.TYPE_BOOLEAN,
+                                            description="False если занятия с подделкой исключены из сводки.",
+                                        ),
+                                        "fraud_attempted": openapi.Schema(
+                                            type=openapi.TYPE_BOOLEAN,
+                                        ),
+                                        "awaiting_manual_review": openapi.Schema(
+                                            type=openapi.TYPE_BOOLEAN,
+                                        ),
+                                        "lessons": openapi.Schema(
+                                            type=openapi.TYPE_ARRAY,
+                                            items=openapi.Schema(
+                                                type=openapi.TYPE_OBJECT,
+                                                properties={
+                                                    "lesson_attendance_id": openapi.Schema(
+                                                        type=openapi.TYPE_INTEGER
+                                                    ),
+                                                    "subject_name": openapi.Schema(
+                                                        type=openapi.TYPE_STRING
+                                                    ),
+                                                    "first_in": openapi.Schema(
+                                                        type=openapi.TYPE_STRING,
+                                                        nullable=True,
+                                                    ),
+                                                    "last_out": openapi.Schema(
+                                                        type=openapi.TYPE_STRING,
+                                                        nullable=True,
+                                                    ),
+                                                    "photo_spoof_status": openapi.Schema(
+                                                        type=openapi.TYPE_STRING,
+                                                        description="pending|clean|review|suspicious|error",
+                                                    ),
+                                                    "photo_manual_verdict": openapi.Schema(
+                                                        type=openapi.TYPE_STRING,
+                                                        description="none|clean|suspicious",
+                                                    ),
+                                                    "rejected_in_merged_attendance_report": openapi.Schema(
+                                                        type=openapi.TYPE_BOOLEAN,
+                                                    ),
+                                                    "treated_as_confirmed_for_display": openapi.Schema(
+                                                        type=openapi.TYPE_BOOLEAN,
+                                                    ),
+                                                    "awaits_manual_review": openapi.Schema(
+                                                        type=openapi.TYPE_BOOLEAN,
+                                                    ),
+                                                    "fraud_attempt": openapi.Schema(
+                                                        type=openapi.TYPE_BOOLEAN,
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        "summary_ru": openapi.Schema(
+                                            type=openapi.TYPE_STRING,
+                                            description="Кратко: фрод / проверка фото; пусто если всё ок.",
+                                        ),
+                                    },
+                                ),
                             },
+                        ),
+                    ),
+                    "lesson_attendance_audit": openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        description=(
+                            "Все дни с занятиями за запрошенный период (ключ DD-MM-YYYY). "
+                            "Включает дни, отсутствующие в attendance, если занятия исключены из-за антифрода."
+                        ),
+                        additional_properties=openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            description="Та же структура, что lesson_attendance_day",
                         ),
                     ),
                     "percent_for_period": openapi.Schema(
@@ -4623,7 +4730,9 @@ def staff_detail(request, staff_pin):
     """Возвращает детальную информацию о сотруднике за указанный период.
 
     Включает посещаемость (first_in, last_out, effective_work_seconds, area_sequence),
-    процент присутствия, бонус, тип контракта и зарплату. Данные кэшируются.
+    lesson_attendance_audit (антифрод по всем занятиям за период), вложенный
+    lesson_attendance_day в каждой дате attendance при наличии занятий, процент
+    присутствия, бонус, тип контракта и зарплату. Данные кэшируются.
 
     Args:
         request: HttpRequest с query-параметрами start_date, end_date (YYYY-MM-DD).
@@ -4729,6 +4838,114 @@ def get_date_range(request):
     return start_date, end_date
 
 
+def _lesson_row_rejects_merged_attendance_report(
+    manual_verdict: str, spoof_status: str
+) -> bool:
+    """Совпадает с LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q по одной строке."""
+    la = models.LessonAttendance
+    if manual_verdict == la.PHOTO_MANUAL_VERDICT_SUSPICIOUS:
+        return True
+    return bool(
+        manual_verdict == la.PHOTO_MANUAL_VERDICT_NONE
+        and spoof_status == la.PHOTO_SPOOF_STATUS_SUSPICIOUS
+    )
+
+
+def _staff_api_format_datetime(dt: Optional[datetime.datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    return timezone.localtime(dt, timezone.get_current_timezone()).isoformat()
+
+
+def _lesson_day_summary_ru(
+    *, fraud_attempted: bool, awaiting_manual_review: bool
+) -> str:
+    if fraud_attempted:
+        return "Подозрительное фото — день не в сводке."
+    if awaiting_manual_review:
+        return "Фото на проверке."
+    return ""
+
+
+def build_lesson_attendance_audit_for_staff(
+    staff_id: int, range_start: datetime.date, range_end: datetime.date
+) -> dict[str, dict[str, Any]]:
+    """Все LessonAttendance за период (включая исключённые из merge exclude_report_invalid_days).
+
+    Ключи дат — DD-MM-YYYY как в attendance. Используется API /api/staff/{pin}/ и Swagger.
+    """
+    la = models.LessonAttendance
+    rows = list(
+        la.objects.filter(
+            staff_id=staff_id,
+            date_at__gte=range_start,
+            date_at__lte=range_end,
+        )
+        .order_by("date_at", "first_in")
+        .values(
+            "id",
+            "subject_name",
+            "first_in",
+            "last_out",
+            "photo_spoof_status",
+            "photo_manual_verdict",
+            "date_at",
+        )
+    )
+    by_dd_mm: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        date_key = row["date_at"].strftime("%d-%m-%Y")
+        mv = str(row["photo_manual_verdict"] or la.PHOTO_MANUAL_VERDICT_NONE)
+        ss = str(row["photo_spoof_status"] or la.PHOTO_SPOOF_STATUS_PENDING)
+        rejects = _lesson_row_rejects_merged_attendance_report(mv, ss)
+        fraud_attempt = rejects
+        awaits_manual_review = (
+            mv == la.PHOTO_MANUAL_VERDICT_NONE and ss == la.PHOTO_SPOOF_STATUS_REVIEW
+        )
+        by_dd_mm[date_key].append(
+            {
+                "lesson_attendance_id": row["id"],
+                "subject_name": row["subject_name"] or "",
+                "first_in": _staff_api_format_datetime(row["first_in"]),
+                "last_out": _staff_api_format_datetime(row["last_out"]),
+                "photo_spoof_status": ss,
+                "photo_manual_verdict": mv,
+                "rejected_in_merged_attendance_report": rejects,
+                "treated_as_confirmed_for_display": not fraud_attempt,
+                "awaits_manual_review": awaits_manual_review,
+                "fraud_attempt": fraud_attempt,
+            }
+        )
+
+    out: dict[str, dict[str, Any]] = {}
+    for date_key, lessons in by_dd_mm.items():
+        fraud_attempted = any(
+            lesson["rejected_in_merged_attendance_report"] for lesson in lessons
+        )
+        awaiting_manual_review = any(
+            lesson["awaits_manual_review"] for lesson in lessons
+        )
+        if fraud_attempted:
+            lesson_day_status = "rejected_fraud"
+        elif awaiting_manual_review:
+            lesson_day_status = "pending_manual_review"
+        else:
+            lesson_day_status = "ok"
+        out[date_key] = {
+            "has_lessons": True,
+            "lesson_day_status": lesson_day_status,
+            "day_confirmed_for_accounting": not fraud_attempted,
+            "fraud_attempted": fraud_attempted,
+            "awaiting_manual_review": awaiting_manual_review,
+            "lessons": lessons,
+            "summary_ru": _lesson_day_summary_ru(
+                fraud_attempted=fraud_attempted,
+                awaiting_manual_review=awaiting_manual_review,
+            ),
+        }
+    return out
+
+
 def get_staff_detail(staff, start_date, end_date):
     """Формирует полный словарь данных сотрудника за период для API.
 
@@ -4743,8 +4960,14 @@ def get_staff_detail(staff, start_date, end_date):
 
     Returns:
         Словарь с ключами name, surname, positions, avatar, department, department_id,
-        attendance (по датам), percent_for_period, bonus_percentage, contract_type, salary.
+        attendance (по датам), lesson_attendance_audit (антифрод по всем занятиям за
+        запрошенный период), percent_for_period, bonus_percentage, contract_type, salary.
     """
+    requested_start, requested_end = start_date, end_date
+    lesson_attendance_audit = build_lesson_attendance_audit_for_staff(
+        staff.id, requested_start, requested_end
+    )
+
     logger.info(f"Получение деталей сотрудника {staff.name} (PIN: {staff.pin})")
     logger.debug(f"Запрошенный диапазон дат: {start_date} до {end_date}")
 
@@ -4857,6 +5080,7 @@ def get_staff_detail(staff, start_date, end_date):
             "department": staff.department.name if staff.department else "N/A",
             "department_id": staff.department.id if staff.department else "N/A",
             "attendance": {},
+            "lesson_attendance_audit": lesson_attendance_audit,
             "percent_for_period": 0.0,
             "contract_type": None,
             "salary": None,
@@ -4929,7 +5153,13 @@ def get_staff_detail(staff, start_date, end_date):
         )
 
         if attendance_record:
-            attendance_data[event_date.strftime("%d-%m-%Y")] = attendance_record
+            date_key = event_date.strftime("%d-%m-%Y")
+            if date_key in lesson_attendance_audit:
+                attendance_record = {
+                    **attendance_record,
+                    "lesson_attendance_day": lesson_attendance_audit[date_key],
+                }
+            attendance_data[date_key] = attendance_record
             logger.debug(
                 f"Добавлена запись посещаемости для {event_date}: {attendance_record}"
             )
@@ -4959,6 +5189,7 @@ def get_staff_detail(staff, start_date, end_date):
         "department": staff.department.name if staff.department else "N/A",
         "department_id": staff.department.id if staff.department else "N/A",
         "attendance": attendance_data,
+        "lesson_attendance_audit": lesson_attendance_audit,
         "percent_for_period": round(percent_for_period, 2),
         "bonus_percentage": bonus_percentage,
         "contract_type": salary_qs.contract_type if salary_qs else None,
@@ -6450,9 +6681,10 @@ def _effective_status_filter(status_value: str) -> Q:
 def _invalidate_photo_cache_for_records(records: List[models.LessonAttendance]) -> None:
     if not records:
         return
-    unique_dates = {record.date_at for record in records}
-    for lesson_date in unique_dates:
-        cache.delete(f"photos_for_{lesson_date}")
+    invalidate_lesson_attendance_derived_caches(
+        staff_ids=[record.staff_id for record in records],
+        lesson_dates=[record.date_at for record in records],
+    )
 
 
 def _broadcast_photo_updates(records: List[models.LessonAttendance]) -> None:

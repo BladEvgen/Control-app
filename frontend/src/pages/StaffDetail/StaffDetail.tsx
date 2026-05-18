@@ -430,6 +430,9 @@ const StaffDetail: React.FC = () => {
                 <AttendanceSection
                   staffData={staffData}
                   attendance={attendance}
+                  lessonAttendanceAudit={
+                    staffData.lesson_attendance_audit ?? {}
+                  }
                   startDate={startDate}
                   endDate={endDate}
                   handleStartDateChange={handleStartDateChange}

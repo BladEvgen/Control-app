@@ -8,7 +8,6 @@ from typing import Any
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
@@ -133,8 +132,24 @@ def broadcast_lesson_attendance_photo_meta_updates(
     if not updated_ids_by_date:
         return
 
-    for lesson_date in updated_ids_by_date:
-        cache.delete(f"photos_for_{lesson_date}")
+    from monitoring_app.cache_conf import invalidate_lesson_attendance_derived_caches
+    from monitoring_app.models import LessonAttendance
+
+    all_ids = [
+        attendance_id
+        for ids in updated_ids_by_date.values()
+        for attendance_id in ids
+        if attendance_id
+    ]
+    staff_ids = list(
+        LessonAttendance.objects.filter(id__in=all_ids)
+        .values_list("staff_id", flat=True)
+        .distinct()
+    )
+    invalidate_lesson_attendance_derived_caches(
+        staff_ids=staff_ids,
+        lesson_dates=list(updated_ids_by_date.keys()),
+    )
 
     snapshot: dict[date, list[int]] = {
         d: list(dict.fromkeys(ids)) for d, ids in updated_ids_by_date.items() if ids

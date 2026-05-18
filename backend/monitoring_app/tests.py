@@ -107,6 +107,8 @@ class StaffDetailTest(TestCase):
         detail = get_staff_detail(self.staff, start_date, end_date)
         self.assertIn("contract_type", detail)
         self.assertIn("salary", detail)
+        self.assertIn("lesson_attendance_audit", detail)
+        self.assertIsInstance(detail["lesson_attendance_audit"], dict)
 
     def test_get_staff_detail_includes_review_but_excludes_suspicious_lesson(self):
         review_day = timezone.make_aware(datetime(2023, 1, 10, 9, 0))
@@ -132,6 +134,11 @@ class StaffDetailTest(TestCase):
         self.assertIn("10-01-2023", detail["attendance"])  # review
         self.assertIn("12-01-2023", detail["attendance"])  # clean
         self.assertNotIn("11-01-2023", detail["attendance"])  # suspicious
+        self.assertIn("10-01-2023", detail["lesson_attendance_audit"])
+        day = detail["lesson_attendance_audit"]["10-01-2023"]
+        self.assertEqual(day["lesson_day_status"], "pending_manual_review")
+        self.assertTrue(day["awaiting_manual_review"])
+        self.assertIn("lesson_attendance_day", detail["attendance"]["10-01-2023"])
 
     def test_get_staff_detail_excludes_entire_lesson_day_when_any_lesson_is_suspicious(
         self,
@@ -151,6 +158,10 @@ class StaffDetailTest(TestCase):
         )
 
         self.assertNotIn("13-01-2023", detail["attendance"])
+        self.assertIn("13-01-2023", detail["lesson_attendance_audit"])
+        fraud_day = detail["lesson_attendance_audit"]["13-01-2023"]
+        self.assertTrue(fraud_day["fraud_attempted"])
+        self.assertEqual(fraud_day["lesson_day_status"], "rejected_fraud")
 
     def test_get_staff_detail_excludes_entire_day_for_manual_suspicious_lesson(self):
         mixed_day = timezone.make_aware(datetime(2023, 1, 14, 9, 0))
@@ -2212,7 +2223,9 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
         channel_layer.group_send.assert_awaited_once()
 
         group_name, payload = channel_layer.group_send.await_args.args
-        self.assertEqual(group_name, f"photos_{lesson.date_at.isoformat()}".replace("-", "_"))
+        self.assertEqual(
+            group_name, f"photos_{lesson.date_at.isoformat()}".replace("-", "_")
+        )
         self.assertEqual(payload["type"], "new_photo")
         self.assertEqual(payload["op"], "updated")
         self.assertEqual(payload["stateCode"], "UPDATED_META")
@@ -2548,18 +2561,15 @@ class LessonAttendanceImmediatePadEnqueueTest(TestCase):
 
 class LessonAttendanceSignalStateTest(SimpleTestCase):
     @patch("monitoring_app.signals._enqueue_immediate_photo_pad_scan")
-    @patch("monitoring_app.signals._invalidate_lesson_staff_cache")
     @patch("monitoring_app.signals._invalidate_lesson_attendance_cache")
     @patch("monitoring_app.signals._send_photo_event")
     def test_send_new_photo_created_without_image_emits_created_no_photo(
         self,
         mock_send_photo_event,
         mock_invalidate_attendance_cache,
-        mock_invalidate_staff_cache,
         mock_enqueue_immediate_pad_scan,
     ):
         _ = mock_invalidate_attendance_cache
-        _ = mock_invalidate_staff_cache
 
         class DummyLesson:
             def __init__(self, lesson_id, staff_image_path=None):
@@ -2583,18 +2593,15 @@ class LessonAttendanceSignalStateTest(SimpleTestCase):
         mock_enqueue_immediate_pad_scan.assert_not_called()
 
     @patch("monitoring_app.signals._enqueue_immediate_photo_pad_scan")
-    @patch("monitoring_app.signals._invalidate_lesson_staff_cache")
     @patch("monitoring_app.signals._invalidate_lesson_attendance_cache")
     @patch("monitoring_app.signals._send_photo_event")
     def test_send_new_photo_with_image_update_emits_photo_attached(
         self,
         mock_send_photo_event,
         mock_invalidate_attendance_cache,
-        mock_invalidate_staff_cache,
         mock_enqueue_immediate_pad_scan,
     ):
         _ = mock_invalidate_attendance_cache
-        _ = mock_invalidate_staff_cache
 
         class DummyLesson:
             def __init__(self, lesson_id, staff_image_path=None):
@@ -2618,18 +2625,15 @@ class LessonAttendanceSignalStateTest(SimpleTestCase):
         mock_enqueue_immediate_pad_scan.assert_called_once_with(updated_lesson)
 
     @patch("monitoring_app.signals._enqueue_immediate_photo_pad_scan")
-    @patch("monitoring_app.signals._invalidate_lesson_staff_cache")
     @patch("monitoring_app.signals._invalidate_lesson_attendance_cache")
     @patch("monitoring_app.signals._send_photo_event")
     def test_send_new_photo_created_with_photo_enqueues_immediate_pad_scan(
         self,
         mock_send_photo_event,
         mock_invalidate_attendance_cache,
-        mock_invalidate_staff_cache,
         mock_enqueue_immediate_pad_scan,
     ):
         _ = mock_invalidate_attendance_cache
-        _ = mock_invalidate_staff_cache
 
         class DummyLesson:
             def __init__(self, lesson_id, staff_image_path=None):
@@ -2655,17 +2659,14 @@ class LessonAttendanceSignalStateTest(SimpleTestCase):
         )
         mock_enqueue_immediate_pad_scan.assert_called_once_with(created_lesson)
 
-    @patch("monitoring_app.signals._invalidate_lesson_staff_cache")
     @patch("monitoring_app.signals._invalidate_lesson_attendance_cache")
     @patch("monitoring_app.signals._send_photo_event")
     def test_send_deleted_photo_emits_deleted_state(
         self,
         mock_send_photo_event,
         mock_invalidate_attendance_cache,
-        mock_invalidate_staff_cache,
     ):
         _ = mock_invalidate_attendance_cache
-        _ = mock_invalidate_staff_cache
 
         class DummyLesson:
             def __init__(self, lesson_id, staff_image_path=None):
@@ -2686,18 +2687,15 @@ class LessonAttendanceSignalStateTest(SimpleTestCase):
         )
 
     @patch("monitoring_app.signals._enqueue_immediate_photo_pad_scan")
-    @patch("monitoring_app.signals._invalidate_lesson_staff_cache")
     @patch("monitoring_app.signals._invalidate_lesson_attendance_cache")
     @patch("monitoring_app.signals._send_photo_event")
     def test_send_new_photo_meta_update_without_image_emits_updated_meta(
         self,
         mock_send_photo_event,
         mock_invalidate_attendance_cache,
-        mock_invalidate_staff_cache,
         mock_enqueue_immediate_pad_scan,
     ):
         _ = mock_invalidate_attendance_cache
-        _ = mock_invalidate_staff_cache
 
         class DummyLesson:
             def __init__(self, lesson_id, staff_image_path=None):

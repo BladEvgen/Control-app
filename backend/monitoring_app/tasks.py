@@ -528,6 +528,14 @@ def update_lesson_attendance_last_out():
                     updates, ["last_out"], batch_size=100
                 )
                 total_updated += len(updates)
+                from monitoring_app.cache_conf import (
+                    invalidate_lesson_attendance_derived_caches,
+                )
+
+                invalidate_lesson_attendance_derived_caches(
+                    staff_ids=[lesson.staff_id for lesson in updates],
+                    lesson_dates=[lesson.date_at for lesson in updates],
+                )
 
             if total_records > batch_size:
                 logger.info(

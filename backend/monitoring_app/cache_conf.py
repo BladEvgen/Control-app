@@ -215,3 +215,95 @@ def invalidate_cache_pattern(pattern: str, cache: BaseCache = Cache) -> int:
     except Exception as e:
         logger.error("Error invalidating cache pattern %s: %s", pattern, e)
         return 0
+
+
+def staff_detail_cache_version() -> str:
+    from monitoring_app.models import LessonAttendance
+
+    return LessonAttendance.REPORT_FILTER_CACHE_VERSION
+
+
+def invalidate_staff_detail_for_pin(staff_pin: str, cache: BaseCache = Cache) -> int:
+    """Удаляет все staff_detail_* ключи для PIN (все диапазоны дат)."""
+    pin = (staff_pin or "").strip()
+    if not pin:
+        return 0
+    version = staff_detail_cache_version()
+    return invalidate_cache_pattern(f"staff_detail_{version}_{pin}_", cache=cache)
+
+
+def invalidate_staff_detail_for_staff_id(
+    staff_id: int, cache: BaseCache = Cache
+) -> int:
+    from monitoring_app.models import Staff
+
+    pin = Staff.objects.filter(pk=staff_id).values_list("pin", flat=True).first() or ""
+    return invalidate_staff_detail_for_pin(pin, cache=cache)
+
+
+def invalidate_staff_detail_for_department(
+    department_id: int, cache: BaseCache = Cache
+) -> int:
+    version = staff_detail_cache_version()
+    return invalidate_cache_pattern(
+        f"staff_detail_{version}_{department_id}_", cache=cache
+    )
+
+
+def invalidate_lesson_attendance_derived_caches(
+    *,
+    staff_pins: Optional[List[str]] = None,
+    staff_ids: Optional[List[int]] = None,
+    department_ids: Optional[List[int]] = None,
+    lesson_dates: Optional[List[Any]] = None,
+    cache: BaseCache = Cache,
+) -> None:
+    """Инвалидирует кэши, зависящие от LessonAttendance (staff detail, stats, карта)."""
+    from django.core.cache import cache as django_cache
+    from monitoring_app.models import Staff
+
+    _invalidate_excel_attendance_cache(cache=cache)
+
+    version = staff_detail_cache_version()
+    invalidate_cache_pattern(f"staff_attendance_stats_{version}_*", cache=cache)
+    invalidate_cache_pattern(f"map_location_{version}_*", cache=cache)
+    invalidate_cache_pattern("department_confirmation_pins_*", cache=cache)
+
+    for lesson_date in lesson_dates or []:
+        django_cache.delete(f"photos_for_{lesson_date}")
+
+    resolved_pins: set[str] = set()
+    for pin in staff_pins or []:
+        pin_value = (pin or "").strip()
+        if pin_value:
+            resolved_pins.add(pin_value)
+
+    id_list = [int(sid) for sid in (staff_ids or []) if sid]
+    if id_list:
+        for pin in Staff.objects.filter(id__in=id_list).values_list("pin", flat=True):
+            pin_value = (pin or "").strip()
+            if pin_value:
+                resolved_pins.add(pin_value)
+
+    for pin in resolved_pins:
+        invalidate_staff_detail_for_pin(pin, cache=cache)
+
+    resolved_dept_ids: set[int] = set()
+    for dept_id in department_ids or []:
+        if dept_id is not None:
+            resolved_dept_ids.add(int(dept_id))
+
+    if id_list:
+        for dept_id in Staff.objects.filter(id__in=id_list).values_list(
+            "department_id", flat=True
+        ):
+            if dept_id is not None:
+                resolved_dept_ids.add(int(dept_id))
+
+    for dept_id in resolved_dept_ids:
+        invalidate_cache_pattern(f"department_confirmation_{dept_id}_*", cache=cache)
+        invalidate_staff_detail_for_department(dept_id, cache=cache)
+
+
+def _invalidate_excel_attendance_cache(cache: BaseCache = Cache) -> None:
+    invalidate_cache_pattern("attendance_data_*", cache=cache)

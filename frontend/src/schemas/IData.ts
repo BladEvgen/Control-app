@@ -95,10 +95,45 @@ export interface StaffData {
   department: string;
   department_id: number;
   attendance: Record<string, AttendanceData>;
+  lesson_attendance_audit?: Record<string, LessonAttendanceDayAudit>;
   percent_for_period: number;
   bonus_percentage: number;
   contract_type: string | null;
   salary: number | null;
+}
+
+export type LessonDayStatus = "ok" | "pending_manual_review" | "rejected_fraud";
+
+export interface LessonAttendanceAuditLesson {
+  lesson_attendance_id: number;
+  subject_name: string;
+  first_in: string | null;
+  last_out: string | null;
+  photo_spoof_status: string;
+  photo_manual_verdict: string;
+  rejected_in_merged_attendance_report: boolean;
+  treated_as_confirmed_for_display: boolean;
+  awaits_manual_review: boolean;
+  fraud_attempt: boolean;
+}
+
+export interface LessonAttendanceDayAudit {
+  has_lessons: boolean;
+  lesson_day_status: LessonDayStatus;
+  day_confirmed_for_accounting: boolean;
+  fraud_attempted: boolean;
+  awaiting_manual_review: boolean;
+  lessons: LessonAttendanceAuditLesson[];
+  summary_ru: string;
+}
+
+export interface AreaSequencePoint {
+  t: string;
+  area: string;
+  devSn?: string;
+  is_exit?: string;
+  exit_candidate?: string;
+  exit_resolution?: string;
 }
 
 export interface AttendanceData {
@@ -107,11 +142,12 @@ export interface AttendanceData {
   percent_day: number;
   total_minutes: number;
   effective_work_seconds?: number | null;
-  area_sequence?: Array<{ t: string; area: string }> | null;
+  area_sequence?: AreaSequencePoint[] | null;
   is_weekend: boolean;
   is_remote_work: boolean;
   is_absent_approved: boolean;
   absent_reason: string | null;
+  lesson_attendance_day?: LessonAttendanceDayAudit | null;
 }
 
 export interface AttendanceStatsPresentItem {

@@ -10,7 +10,14 @@ from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django.utils import timezone
 
-from .cache_conf import Cache, invalidate_cache, invalidate_cache_pattern
+from .cache_conf import (
+    Cache,
+    invalidate_cache,
+    invalidate_cache_pattern,
+    invalidate_lesson_attendance_derived_caches,
+    invalidate_staff_detail_for_department,
+    invalidate_staff_detail_for_pin,
+)
 from .lesson_locations_conf import (
     CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
     CLASS_LOCATION_LIST_CACHE_KEY,
@@ -90,10 +97,6 @@ def bump_suspicious_location_patterns_epoch() -> str:
     return epoch_value
 
 
-def _invalidate_excel_attendance_cache() -> None:
-    invalidate_cache_pattern("attendance_data_*")
-
-
 def _resolve_state_code(instance, *, created, update_fields):
     if created:
         return (
@@ -131,28 +134,11 @@ def _enqueue_immediate_photo_pad_scan(instance: LessonAttendance) -> None:
 
 
 def _invalidate_lesson_attendance_cache(instance):
-    from django.core.cache import cache
-
-    cache.delete(f"photos_for_{instance.date_at}")
-    _invalidate_excel_attendance_cache()
-    invalidate_cache_pattern(f"map_location_{instance.date_at}*")
-    invalidate_cache_pattern(f"staff_attendance_stats_{instance.date_at}*")
-    invalidate_cache_pattern("department_confirmation_pins_*")
-    bump_suspicious_location_patterns_epoch()
-
-
-def _invalidate_lesson_staff_cache(instance):
-    row = (
-        Staff.objects.filter(pk=instance.staff_id)
-        .values_list("department_id", "pin")
-        .first()
+    invalidate_lesson_attendance_derived_caches(
+        staff_ids=[instance.staff_id],
+        lesson_dates=[instance.date_at],
     )
-    if row:
-        dept_id, pin = row
-        if dept_id is not None:
-            invalidate_cache_pattern(f"department_confirmation_{dept_id}_*")
-        if pin:
-            invalidate_cache_pattern(f"staff_detail_{pin}*")
+    bump_suspicious_location_patterns_epoch()
 
 
 @receiver(post_save, sender=LessonAttendance)
@@ -169,7 +155,6 @@ def send_new_photo(sender, instance, created, **kwargs):
     _send_photo_event(instance, op=op, state_code=state_code)
     if state_code == STATE_PHOTO_ATTACHED:
         _enqueue_immediate_photo_pad_scan(instance)
-    _invalidate_lesson_staff_cache(instance)
 
 
 @receiver(post_delete, sender=LessonAttendance)
@@ -178,7 +163,6 @@ def send_deleted_photo(sender, instance, **kwargs):
     _ = kwargs
     _invalidate_lesson_attendance_cache(instance)
     _send_photo_event(instance, op="deleted", state_code=STATE_DELETED)
-    _invalidate_lesson_staff_cache(instance)
 
 
 @receiver([post_save, post_delete], sender=StaffAttendance)
@@ -186,15 +170,18 @@ def invalidate_attendance_cache(sender, instance, **kwargs):
     """Инвалидирует кэш при изменении посещаемости сотрудников (в т.ч. после fetcher)."""
     _ = sender
     _ = kwargs
-    _invalidate_excel_attendance_cache()
+    from .cache_conf import staff_detail_cache_version
+
+    invalidate_cache_pattern("attendance_data_*")
     invalidate_cache_pattern("staffatt_count_*")
+    version = staff_detail_cache_version()
     if hasattr(instance, "date_at") and instance.date_at:
         work_day = instance.date_at - timedelta(days=1)
         work_day_str = work_day.strftime("%Y-%m-%d")
-        invalidate_cache_pattern(f"staff_attendance_stats_{work_day_str}*")
-        if hasattr(instance, "staff") and instance.staff:
-            invalidate_cache_pattern(f"staff_detail_{instance.staff.pin}*")
-        invalidate_cache_pattern(f"map_location_{work_day_str}*")
+        invalidate_cache_pattern(f"staff_attendance_stats_{version}_*")
+        invalidate_cache_pattern(f"map_location_{version}_*")
+        if hasattr(instance, "staff") and instance.staff and instance.staff.pin:
+            invalidate_staff_detail_for_pin(instance.staff.pin)
         logger.info(f"Invalidated attendance cache for work_day: {work_day_str}")
     dept_id = (
         Staff.objects.filter(pk=instance.staff_id)
@@ -211,9 +198,9 @@ def invalidate_staff_cache_on_save(sender, instance, created, **kwargs):
     _ = created
     _ = kwargs
     if hasattr(instance, "pin") and instance.pin:
-        _invalidate_excel_attendance_cache()
+        invalidate_cache_pattern("attendance_data_*")
         invalidate_cache(f"staff_{instance.pin}")
-        invalidate_cache_pattern(f"staff_detail_{instance.pin}*")
+        invalidate_staff_detail_for_pin(instance.pin)
         if hasattr(instance, "department") and instance.department:
             invalidate_cache(f"child_department_detail_v2_{instance.department.id}")
         bump_suspicious_location_patterns_epoch()
@@ -225,9 +212,9 @@ def invalidate_staff_cache_on_delete(sender, instance, **kwargs):
     _ = sender
     _ = kwargs
     if hasattr(instance, "pin") and instance.pin:
-        _invalidate_excel_attendance_cache()
+        invalidate_cache_pattern("attendance_data_*")
         invalidate_cache(f"staff_{instance.pin}")
-        invalidate_cache_pattern(f"staff_detail_{instance.pin}*")
+        invalidate_staff_detail_for_pin(instance.pin)
         if hasattr(instance, "department") and instance.department:
             invalidate_cache(f"child_department_detail_v2_{instance.department.id}")
         invalidate_cache_pattern("staff_attendance_stats_*")
@@ -242,7 +229,7 @@ def invalidate_department_cache(sender, instance, **kwargs):
     dept_id = str(instance.id)
     invalidate_cache(f"department_summary_v2_{dept_id}")
     invalidate_cache(f"child_department_detail_v2_{dept_id}")
-    invalidate_cache_pattern(f"staff_detail_{dept_id}*")
+    invalidate_staff_detail_for_department(int(instance.id))
     invalidate_cache("parent_department_ids")
     invalidate_cache("root_departments_batch")
     invalidate_cache("department_hierarchy_lookups")
@@ -258,7 +245,7 @@ def invalidate_department_cache(sender, instance, **kwargs):
 
 def invalidate_class_location_cache_impl():
     """Инвалидирует кэш ClassLocation, сразу прогревает список и шлёт задачу прогрева радиусов. TTL списка 1 ч."""
-    _invalidate_excel_attendance_cache()
+    invalidate_cache_pattern("attendance_data_*")
     invalidate_cache(CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY)
     invalidate_cache("lesson_admin_closest_locations")
     invalidate_cache(CLASS_LOCATION_LIST_CACHE_KEY)

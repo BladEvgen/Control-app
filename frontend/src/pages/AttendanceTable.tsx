@@ -1,7 +1,9 @@
-import React from "react";
+import React, { Fragment } from "react";
 import { AttendanceData } from "../schemas/IData";
 import { formatDate, formatMinutes, formatDateFromKeyRu } from "../utils/utils";
 import { motion } from "framer-motion";
+import AttendanceAreaSequenceMap from "./StaffDetail/AttendanceAreaSequenceMap";
+import LessonAttendanceDayPanel from "./StaffDetail/LessonAttendanceDayPanel";
 
 interface AttendanceTableProps {
   attendance: Record<string, AttendanceData>;
@@ -15,7 +17,7 @@ const rowVariants = {
     transition: { delay: i * 0.04, duration: 0.4 },
   }),
   hover: {
-    boxShadow: "0 0 8px rgba(0,0,0,0.7)",
+    boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
     transformOrigin: "center center",
   },
   tap: { scale: 0.995, transformOrigin: "center center" },
@@ -40,55 +42,57 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
 
   const getStatusStyle = (data: AttendanceData) => {
     const hasInOut = data.first_in && data.last_out;
+    const base = {
+      bg: "bg-white dark:bg-gray-950",
+      border: "border-gray-200 dark:border-gray-800",
+      hoverBg: "hover:bg-gray-50/80 dark:hover:bg-gray-900/60",
+    };
 
     if (data.is_remote_work) {
       return {
-        bg: "bg-sky-200 dark:bg-sky-800",
-        text: "text-sky-600 dark:text-sky-300",
-        border: "border-sky-200 dark:border-sky-700",
-        hoverBg: "hover:bg-sky-100 dark:hover:bg-sky-700",
+        ...base,
+        text: "text-sky-800 dark:text-sky-300",
+        borderLeft: "border-l-[3px] border-sky-400/70 dark:border-sky-500/55",
       };
     } else if (data.absent_reason && data.absent_reason.trim() !== "") {
       return data.is_absent_approved
         ? {
-            bg: "bg-violet-200 dark:bg-violet-800",
-            text: "text-violet-600 dark:text-violet-300",
-            border: "border-violet-200 dark:border-violet-700",
-            hoverBg: "hover:bg-violet-300 dark:hover:bg-violet-700",
+            ...base,
+            text: "text-violet-800 dark:text-violet-300",
+            borderLeft:
+              "border-l-[3px] border-violet-400/70 dark:border-violet-500/55",
           }
         : {
-            bg: "bg-rose-200 dark:bg-rose-800",
-            text: "text-rose-600 dark:text-rose-300",
-            border: "border-rose-200 dark:border-rose-700",
-            hoverBg: "hover:bg-rose-300 dark:hover:bg-rose-700",
+            ...base,
+            text: "text-rose-800 dark:text-rose-300",
+            borderLeft:
+              "border-l-[3px] border-rose-500/75 dark:border-rose-500/50",
           };
     } else if (data.is_weekend) {
       return hasInOut
         ? {
-            bg: "bg-green-200 dark:bg-green-800",
-            text: "text-green-600 dark:text-green-300",
-            border: "border-green-200 dark:border-green-700",
-            hoverBg: "hover:bg-green-300 dark:hover:bg-green-700",
+            ...base,
+            text: "text-emerald-800 dark:text-emerald-300",
+            borderLeft:
+              "border-l-[3px] border-emerald-500/65 dark:border-emerald-500/45",
           }
         : {
-            bg: "bg-amber-200 dark:bg-amber-800",
-            text: "text-amber-600 dark:text-amber-300",
-            border: "border-amber-200 dark:border-amber-700",
-            hoverBg: "hover:bg-amber-300 dark:hover:bg-amber-700",
+            ...base,
+            text: "text-amber-900/90 dark:text-amber-300/90",
+            borderLeft:
+              "border-l-[3px] border-amber-400/80 dark:border-amber-500/50",
           };
     } else if (!hasInOut) {
       return {
-        bg: "bg-red-200 dark:bg-red-800",
-        text: "text-red-600 dark:text-red-300",
-        border: "border-red-200 dark:border-red-700",
-        hoverBg: "hover:bg-red-300 dark:hover:bg-red-700",
+        ...base,
+        text: "text-rose-800 dark:text-rose-300",
+        borderLeft: "border-l-[3px] border-rose-500/75 dark:border-rose-500/50",
       };
     }
     return {
-      bg: "bg-white dark:bg-gray-950",
+      ...base,
       text: "text-gray-700 dark:text-gray-200",
-      border: "border-gray-200 dark:border-gray-800",
-      hoverBg: "hover:bg-gray-100 dark:hover:bg-gray-900",
+      borderLeft: "border-l-[3px] border-l-transparent",
     };
   };
 
@@ -179,44 +183,83 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
               .map(([date, data], idx) => {
                 const status = getStatusStyle(data);
                 const statusText = getStatusText(data);
+                const lessonDay = data.lesson_attendance_day;
+                const hasZones =
+                  Array.isArray(data.area_sequence) &&
+                  data.area_sequence.length > 0;
 
                 return (
-                  <motion.tr
-                    key={date}
-                    className={
-                      "transition-colors duration-200 " +
-                      status.bg +
-                      " " +
-                      status.hoverBg
-                    }
-                    variants={rowVariants}
-                    initial="hidden"
-                    animate="visible"
-                    whileHover="hover"
-                    whileTap="tap"
-                    custom={idx}
-                  >
-                    <td className="px-6 py-4">
-                      <div className="flex flex-col">
-                        <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                          {formatDateFromKeyRu(date)}
-                        </span>
-                        <span className={"text-xs mt-1 " + status.text}>
-                          {statusText}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
-                      {renderTime(data.first_in ?? undefined)}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
-                      {renderTime(data.last_out ?? undefined)}
-                    </td>
-                    <td className="px-6 py-4">{renderProgressBar(data)}</td>
-                    <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
-                      {renderTotalTime(data)}
-                    </td>
-                  </motion.tr>
+                  <Fragment key={date}>
+                    <motion.tr
+                      className={
+                        "transition-colors duration-200 " +
+                        status.borderLeft +
+                        " " +
+                        status.bg +
+                        " " +
+                        status.hoverBg
+                      }
+                      variants={rowVariants}
+                      initial="hidden"
+                      animate="visible"
+                      whileHover="hover"
+                      whileTap="tap"
+                      custom={idx}
+                    >
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                            {formatDateFromKeyRu(date)}
+                          </span>
+                          <span className={"text-xs mt-1 " + status.text}>
+                            {statusText}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
+                        {renderTime(data.first_in ?? undefined)}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
+                        {renderTime(data.last_out ?? undefined)}
+                      </td>
+                      <td className="px-6 py-4">{renderProgressBar(data)}</td>
+                      <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
+                        {renderTotalTime(data)}
+                      </td>
+                    </motion.tr>
+                    {lessonDay || hasZones ? (
+                      <tr className="border-t border-gray-100 bg-white dark:border-gray-800 dark:bg-gray-950">
+                        <td
+                          className={"px-6 pb-4 pt-2 " + status.borderLeft}
+                          colSpan={5}
+                        >
+                          <div className="mx-auto max-w-2xl">
+                            <div className="rounded-2xl border border-gray-200/60 bg-gradient-to-b from-gray-50/90 to-white/30 px-3 py-3 shadow-sm dark:border-gray-800/80 dark:from-gray-900/50 dark:to-gray-950/20 sm:px-4">
+                              {lessonDay ? (
+                                <LessonAttendanceDayPanel
+                                  day={lessonDay}
+                                  compact
+                                  embedded
+                                />
+                              ) : null}
+                              {lessonDay && hasZones ? (
+                                <div
+                                  className="my-3 h-px w-full bg-gradient-to-r from-transparent via-gray-200/90 to-transparent dark:via-gray-700/80"
+                                  aria-hidden
+                                />
+                              ) : null}
+                              {hasZones ? (
+                                <AttendanceAreaSequenceMap
+                                  areaSequence={data.area_sequence}
+                                  embedded
+                                />
+                              ) : null}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 );
               })}
           </tbody>
@@ -232,12 +275,20 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
   ) => {
     const status = getStatusStyle(data);
     const statusText = getStatusText(data);
+    const lessonDay = data.lesson_attendance_day;
+    const hasZones =
+      Array.isArray(data.area_sequence) && data.area_sequence.length > 0;
 
     return (
       <motion.div
         key={date}
         className={
-          "rounded-lg shadow-sm " + status.bg + " border " + status.border
+          "rounded-lg border shadow-sm " +
+          status.bg +
+          " " +
+          status.border +
+          " " +
+          status.borderLeft
         }
         variants={cardVariants}
         initial="hidden"
@@ -295,6 +346,27 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
               </span>
             </div>
           </div>
+          {lessonDay || hasZones ? (
+            <div className="mt-4">
+              <div className="mx-auto max-w-2xl rounded-2xl border border-gray-200/60 bg-gradient-to-b from-gray-50/90 to-white/30 px-3 py-3 shadow-sm dark:border-gray-800/80 dark:from-gray-900/50 dark:to-gray-950/20">
+                {lessonDay ? (
+                  <LessonAttendanceDayPanel day={lessonDay} compact embedded />
+                ) : null}
+                {lessonDay && hasZones ? (
+                  <div
+                    className="my-3 h-px w-full bg-gradient-to-r from-transparent via-gray-200/90 to-transparent dark:via-gray-700/80"
+                    aria-hidden
+                  />
+                ) : null}
+                {hasZones ? (
+                  <AttendanceAreaSequenceMap
+                    areaSequence={data.area_sequence}
+                    embedded
+                  />
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       </motion.div>
     );
