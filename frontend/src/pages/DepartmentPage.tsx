@@ -20,6 +20,7 @@ import { runAttendanceExcelDownload } from "../utils/attendanceExcelDownloadHub"
 import { FaBuilding } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 import { cacheManager } from "../utils/cache";
+import { consumeSkipPageMotion, pageMotionInitial } from "../utils/pageMotion";
 
 class BaseAction<T> {
   static SET_LOADING = "SET_LOADING";
@@ -110,7 +111,6 @@ const DepartmentPage: React.FC = () => {
     getFormattedDate(startInitialDate),
   );
   const today = getFormattedDate(todayDate);
-
 
   const canDownload = Boolean(startDate && endDate && departmentId);
 
@@ -279,6 +279,8 @@ const DepartmentPage: React.FC = () => {
     [],
   );
 
+  const skipPageMotion = useMemo(() => consumeSkipPageMotion(), []);
+
   const breadcrumbs = useMemo(() => {
     if (!departmentId) return [];
     const path = data?.breadcrumb_path;
@@ -300,7 +302,7 @@ const DepartmentPage: React.FC = () => {
         key="department-page"
         className="page-shell"
         variants={pageVariants}
-        initial="initial"
+        initial={pageMotionInitial(skipPageMotion) ?? "initial"}
         animate="animate"
         exit="exit"
       >
@@ -338,6 +340,7 @@ const DepartmentPage: React.FC = () => {
                   isDownloadDisabled={!canDownload}
                   excelHoldKey={departmentId}
                   today={today}
+                  idPrefix="department"
                 />
               </motion.div>
             )}

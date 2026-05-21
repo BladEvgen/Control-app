@@ -1,6 +1,5 @@
 import React, { useCallback, useRef } from "react";
 import { FaCalendarAlt } from "react-icons/fa";
-import { motion } from "framer-motion";
 
 interface DateInputProps {
   label: string;
@@ -35,14 +34,10 @@ const DateInput: React.FC<DateInputProps> = ({
   }, []);
 
   return (
-    <motion.div
-      className="relative w-full"
-      whileHover={{ scale: 1.01 }}
-      transition={{ duration: 0.2 }}
-    >
+    <div className="relative">
       <label
         htmlFor={id}
-        className="block mb-2 font-medium text-sm text-gray-800 dark:text-gray-200"
+        className="mb-2 block text-sm font-medium text-gray-800 dark:text-gray-200"
       >
         {label}
       </label>
@@ -62,11 +57,10 @@ const DateInput: React.FC<DateInputProps> = ({
           value={formattedValue}
           onChange={onChange}
           max={max}
-          className="w-full rounded-lg border border-gray-300 bg-white py-2.5 pl-10 pr-11 text-gray-800 shadow-sm transition-all duration-200 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/35 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100 dark:focus:border-primary-500 dark:focus:ring-primary-500/40"
-          style={{ width: "100%", minWidth: "220px" }}
+          className="date-input-control w-full rounded-lg border border-gray-300 bg-white py-2.5 pl-10 pr-3 text-gray-800 shadow-sm transition-all duration-200 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/35 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100 dark:focus:border-primary-500 dark:focus:ring-primary-500/40"
         />
       </div>
-    </motion.div>
+    </div>
   );
 };
 

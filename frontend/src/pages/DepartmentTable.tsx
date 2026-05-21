@@ -150,63 +150,61 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
 
       {/* Mobile card view */}
       <motion.div
-        className="block md:hidden px-6 space-y-4 pb-2"
+        className="block lg:hidden space-y-4 px-4 pb-4 sm:px-6"
         variants={tableVariants}
         initial="hidden"
         animate="visible"
       >
-          {visibleDepartments.length === 0 ? (
-            <motion.div
-              variants={rowVariants}
-              className="text-center p-6 text-gray-500 dark:text-gray-400"
-            >
-              Отделы не найдены
-            </motion.div>
-          ) : (
-            visibleDepartments.map((department) => {
-              const hasChildDepartments = department.has_child_departments;
+        {visibleDepartments.length === 0 ? (
+          <motion.div
+            variants={rowVariants}
+            className="text-center p-6 text-gray-500 dark:text-gray-400"
+          >
+            Отделы не найдены
+          </motion.div>
+        ) : (
+          visibleDepartments.map((department) => {
+            const hasChildDepartments = department.has_child_departments;
 
-              return (
-                <motion.div
-                  key={department.child_id}
-                  variants={cardVariants}
-                  whileHover="hover"
-                  className="card p-5 cursor-pointer motion-safe:transition-shadow motion-safe:duration-300 hover:shadow-card-hover"
-                  onClick={() =>
-                    handleRowClick(
-                      String(department.child_id),
-                      hasChildDepartments,
-                    )
-                  }
-                >
-                  <div className="flex items-start mb-3">
-                    {hasChildDepartments ? (
-                      <FaFolderOpen
-                        className="text-primary-500 dark:text-primary-400 text-xl mt-1 mr-3"
-                        title="Отдел с подразделениями"
-                      />
-                    ) : (
-                      <FaFolder
-                        className="text-primary-500 dark:text-primary-400 text-xl mt-1 mr-3"
-                        title="Конечный отдел (сотрудники)"
-                      />
-                    )}
-                    <h3 className="text-lg font-medium text-primary-700 dark:text-primary-300">
-                      {formatDepartmentName(department.name)}
-                    </h3>
-                  </div>
-                  <div className="flex items-center text-sm text-gray-600 dark:text-gray-400 ml-8">
-                    <FaCalendarAlt className="mr-2 text-gray-500 dark:text-gray-500" />
-                    <span className="font-mono">
-                      {new Date(
-                        department.date_of_creation,
-                      ).toLocaleDateString()}
-                    </span>
-                  </div>
-                </motion.div>
-              );
-            })
-          )}
+            return (
+              <motion.div
+                key={department.child_id}
+                variants={cardVariants}
+                whileHover="hover"
+                className="card p-5 cursor-pointer motion-safe:transition-shadow motion-safe:duration-300 hover:shadow-card-hover"
+                onClick={() =>
+                  handleRowClick(
+                    String(department.child_id),
+                    hasChildDepartments,
+                  )
+                }
+              >
+                <div className="flex items-start mb-3">
+                  {hasChildDepartments ? (
+                    <FaFolderOpen
+                      className="text-primary-500 dark:text-primary-400 text-xl mt-1 mr-3"
+                      title="Отдел с подразделениями"
+                    />
+                  ) : (
+                    <FaFolder
+                      className="text-primary-500 dark:text-primary-400 text-xl mt-1 mr-3"
+                      title="Конечный отдел (сотрудники)"
+                    />
+                  )}
+                  <h3 className="text-lg font-medium text-primary-700 dark:text-primary-300">
+                    {formatDepartmentName(department.name)}
+                  </h3>
+                </div>
+                <div className="flex items-center text-sm text-gray-600 dark:text-gray-400 ml-8">
+                  <FaCalendarAlt className="mr-2 text-gray-500 dark:text-gray-500" />
+                  <span className="font-mono">
+                    {new Date(department.date_of_creation).toLocaleDateString()}
+                  </span>
+                </div>
+              </motion.div>
+            );
+          })
+        )}
       </motion.div>
 
       {/* Desktop table — full width inside card (matches child department table) */}
@@ -216,30 +214,31 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
         initial="hidden"
         animate="visible"
       >
-        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
-          <thead className="bg-primary-50/90 dark:bg-gray-900">
-            <tr>
-              <th
-                scope="col"
-                className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
-              >
-                Название отдела
-              </th>
-              <th
-                scope="col"
-                className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
-              >
-                Дата создания
-              </th>
-              <th
-                scope="col"
-                className="relative px-6 py-3.5 text-left text-sm font-semibold uppercase tracking-wider text-primary-900 dark:text-primary-100"
-              >
-                <span className="sr-only">Действия</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200 bg-white dark:divide-gray-800 dark:bg-gray-950">
+        <div className="data-table-wrap -mx-px">
+          <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
+            <thead className="bg-primary-50/90 dark:bg-gray-900">
+              <tr>
+                <th
+                  scope="col"
+                  className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
+                >
+                  Название отдела
+                </th>
+                <th
+                  scope="col"
+                  className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
+                >
+                  Дата создания
+                </th>
+                <th
+                  scope="col"
+                  className="relative px-6 py-3.5 text-left text-sm font-semibold uppercase tracking-wider text-primary-900 dark:text-primary-100"
+                >
+                  <span className="sr-only">Действия</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200 bg-white dark:divide-gray-800 dark:bg-gray-950">
               {visibleDepartments.length === 0 ? (
                 <tr>
                   <td
@@ -298,103 +297,104 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
                 })
               )}
             </tbody>
-        </table>
+          </table>
+        </div>
       </motion.div>
 
       {totalPages > 1 && (
         <div className="mt-0 flex flex-col gap-4 border-t border-gray-200 bg-primary-50/25 px-6 py-5 transition-colors duration-300 dark:border-gray-800 dark:bg-black/25 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-gray-800 dark:text-gray-200">
-              Показано{" "}
-              <span className="font-medium text-primary-700 dark:text-primary-300">
-                {visibleDepartments.length}
-              </span>{" "}
-              из{" "}
-              <span className="font-medium text-primary-700 dark:text-primary-300">
-                {filteredDepartments.length}
-              </span>{" "}
-              отделов
-            </div>
+          <div className="text-sm text-gray-800 dark:text-gray-200">
+            Показано{" "}
+            <span className="font-medium text-primary-700 dark:text-primary-300">
+              {visibleDepartments.length}
+            </span>{" "}
+            из{" "}
+            <span className="font-medium text-primary-700 dark:text-primary-300">
+              {filteredDepartments.length}
+            </span>{" "}
+            отделов
+          </div>
 
-            <nav
-              className="flex justify-center sm:justify-end space-x-1"
-              aria-label="Pagination"
+          <nav
+            className="flex justify-center sm:justify-end space-x-1"
+            aria-label="Pagination"
+          >
+            <button
+              onClick={() => handleChangePage(0)}
+              disabled={page === 0}
+              className={`p-2 rounded-md transition-colors duration-200 ${
+                page === 0
+                  ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
+                  : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
+              }`}
+              aria-label="Первая страница"
             >
-              <button
-                onClick={() => handleChangePage(0)}
-                disabled={page === 0}
-                className={`p-2 rounded-md transition-colors duration-200 ${
-                  page === 0
-                    ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
-                    : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
-                }`}
-                aria-label="Первая страница"
-              >
-                <FaAngleDoubleLeft size={16} />
-              </button>
+              <FaAngleDoubleLeft size={16} />
+            </button>
 
-              <button
-                onClick={() => handleChangePage(page - 1)}
-                disabled={page === 0}
-                className={`p-2 rounded-md transition-colors duration-200 ${
-                  page === 0
-                    ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
-                    : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
-                }`}
-                aria-label="Предыдущая страница"
-              >
-                <FaChevronLeft size={16} />
-              </button>
+            <button
+              onClick={() => handleChangePage(page - 1)}
+              disabled={page === 0}
+              className={`p-2 rounded-md transition-colors duration-200 ${
+                page === 0
+                  ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
+                  : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
+              }`}
+              aria-label="Предыдущая страница"
+            >
+              <FaChevronLeft size={16} />
+            </button>
 
-              {visiblePages.map((pageNum, idx) =>
-                pageNum < 0 ? (
-                  <span
-                    key={`ellipsis-${idx}`}
-                    className="px-2 py-2 text-gray-700 dark:text-gray-300"
-                  >
-                    ...
-                  </span>
-                ) : (
-                  <button
-                    key={pageNum}
-                    onClick={() => handleChangePage(pageNum)}
-                    className={`px-3 py-1 rounded-md text-sm font-medium transition-colors duration-200 ${
-                      page === pageNum
-                        ? "bg-primary-600 text-white dark:bg-primary-600"
-                        : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
-                    }`}
-                    aria-current={page === pageNum ? "page" : undefined}
-                  >
-                    {pageNum + 1}
-                  </button>
-                ),
-              )}
+            {visiblePages.map((pageNum, idx) =>
+              pageNum < 0 ? (
+                <span
+                  key={`ellipsis-${idx}`}
+                  className="px-2 py-2 text-gray-700 dark:text-gray-300"
+                >
+                  ...
+                </span>
+              ) : (
+                <button
+                  key={pageNum}
+                  onClick={() => handleChangePage(pageNum)}
+                  className={`px-3 py-1 rounded-md text-sm font-medium transition-colors duration-200 ${
+                    page === pageNum
+                      ? "bg-primary-600 text-white dark:bg-primary-600"
+                      : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
+                  }`}
+                  aria-current={page === pageNum ? "page" : undefined}
+                >
+                  {pageNum + 1}
+                </button>
+              ),
+            )}
 
-              <button
-                onClick={() => handleChangePage(page + 1)}
-                disabled={page >= totalPages - 1}
-                className={`p-2 rounded-md transition-colors duration-200 ${
-                  page >= totalPages - 1
-                    ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
-                    : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
-                }`}
-                aria-label="Следующая страница"
-              >
-                <FaChevronRight size={16} />
-              </button>
+            <button
+              onClick={() => handleChangePage(page + 1)}
+              disabled={page >= totalPages - 1}
+              className={`p-2 rounded-md transition-colors duration-200 ${
+                page >= totalPages - 1
+                  ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
+                  : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
+              }`}
+              aria-label="Следующая страница"
+            >
+              <FaChevronRight size={16} />
+            </button>
 
-              <button
-                onClick={() => handleChangePage(totalPages - 1)}
-                disabled={page >= totalPages - 1}
-                className={`p-2 rounded-md transition-colors duration-200 ${
-                  page >= totalPages - 1
-                    ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
-                    : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
-                }`}
-                aria-label="Последняя страница"
-              >
-                <FaAngleDoubleRight size={16} />
-              </button>
-            </nav>
+            <button
+              onClick={() => handleChangePage(totalPages - 1)}
+              disabled={page >= totalPages - 1}
+              className={`p-2 rounded-md transition-colors duration-200 ${
+                page >= totalPages - 1
+                  ? "cursor-not-allowed text-gray-400 dark:text-gray-600"
+                  : "text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900"
+              }`}
+              aria-label="Последняя страница"
+            >
+              <FaAngleDoubleRight size={16} />
+            </button>
+          </nav>
         </div>
       )}
     </div>

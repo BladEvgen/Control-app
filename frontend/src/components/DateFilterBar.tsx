@@ -12,9 +12,9 @@ interface DateFilterBarProps {
   onEndDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onDownload: () => void;
   isDownloadDisabled: boolean;
-  /** Department (or child department) id — button stays disabled until its Excel request finishes. */
   excelHoldKey?: string | null;
   today: string;
+  idPrefix?: string;
 }
 
 const DateFilterBar: React.FC<DateFilterBarProps> = ({
@@ -26,6 +26,7 @@ const DateFilterBar: React.FC<DateFilterBarProps> = ({
   isDownloadDisabled,
   excelHoldKey,
   today,
+  idPrefix = "filter",
 }) => {
   const [holdCounts, setHoldCounts] = useState<Map<string, number>>(
     () => new Map(),
@@ -40,10 +41,10 @@ const DateFilterBar: React.FC<DateFilterBarProps> = ({
   );
 
   const heldHere =
-    excelHoldKey != null && excelHoldKey !== "" &&
+    excelHoldKey != null &&
+    excelHoldKey !== "" &&
     (holdCounts.get(excelHoldKey) ?? 0) > 0;
-  const nHere =
-    excelHoldKey != null ? holdCounts.get(excelHoldKey) ?? 0 : 0;
+  const nHere = excelHoldKey != null ? (holdCounts.get(excelHoldKey) ?? 0) : 0;
 
   const downloadLabel = heldHere
     ? nHere > 1
@@ -51,35 +52,38 @@ const DateFilterBar: React.FC<DateFilterBarProps> = ({
       : "Загрузка…"
     : "Загрузить";
 
+  const startId = `${idPrefix}-startDate`;
+  const endId = `${idPrefix}-endDate`;
+
   return (
     <motion.div
-      className="card p-5 mb-6"
+      className="card mb-6 overflow-x-hidden p-5"
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
     >
-      <div className="flex flex-col md:flex-row items-start md:items-end gap-4">
-        <div className="w-full">
-          <div className="flex items-center mb-3">
-            <FaCalendarWeek className="text-primary-600 dark:text-primary-400 mr-2" />
+      <div className="flex flex-col gap-4 md:flex-row md:items-end md:gap-6">
+        <div className="min-w-0 flex-1">
+          <div className="mb-3 flex items-center">
+            <FaCalendarWeek className="mr-2 shrink-0 text-primary-600 dark:text-primary-400" />
             <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-100">
               Диапазон дат
             </h3>
           </div>
-          <div className="flex flex-col sm:flex-row gap-4">
-            <div className="w-full sm:w-40 lg:w-60">
+          <div className="flex flex-col gap-4 lg:flex-row lg:gap-4">
+            <div className="date-field-slot">
               <DateInput
                 label="Дата начала"
-                id="startDate"
+                id={startId}
                 value={startDate}
                 onChange={onStartDateChange}
                 max={today}
               />
             </div>
-            <div className="w-full sm:w-40 lg:w-60">
+            <div className="date-field-slot">
               <DateInput
                 label="Дата окончания"
-                id="endDate"
+                id={endId}
                 value={endDate}
                 onChange={onEndDateChange}
                 max={today}
@@ -88,14 +92,14 @@ const DateFilterBar: React.FC<DateFilterBarProps> = ({
           </div>
         </div>
 
-        <div className="w-full md:w-auto mt-4 md:mt-0 self-end">
+        <div className="date-filter-action shrink-0">
           <ModernButton
             variant="download"
             icon={<FaDownload />}
             onClick={onDownload}
             disabled={isDownloadDisabled || heldHere}
             loading={heldHere}
-            className="w-full md:w-auto py-2.5"
+            className="w-full py-2.5 md:w-auto"
           >
             {downloadLabel}
           </ModernButton>

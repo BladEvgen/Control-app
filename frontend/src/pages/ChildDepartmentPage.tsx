@@ -14,6 +14,7 @@ import { apiUrl } from "../../apiConfig";
 import { IChildDepartmentData } from "../schemas/IData";
 import { formatDepartmentName } from "../utils/utils";
 import { cacheManager } from "../utils/cache";
+import { consumeSkipPageMotion, pageMotionInitial } from "../utils/pageMotion";
 import {
   FaUserCheck,
   FaUserTimes,
@@ -67,7 +68,6 @@ const ChildDepartmentPage = () => {
 
   const [showDashboard, setShowDashboard] = useState<boolean>(false);
   const navigate = useNavigate();
-
 
   const dispatch = (
     action: BaseAction<boolean | IChildDepartmentData | string | null>,
@@ -209,6 +209,8 @@ const ChildDepartmentPage = () => {
     [data?.staff_data, searchQuery],
   );
 
+  const skipPageMotion = useMemo(() => consumeSkipPageMotion(), []);
+
   const containerVariants = useMemo(
     () => ({
       hidden: { opacity: 0 },
@@ -236,7 +238,7 @@ const ChildDepartmentPage = () => {
       <motion.div
         className="page-shell"
         variants={containerVariants}
-        initial="hidden"
+        initial={pageMotionInitial(skipPageMotion) ?? "hidden"}
         animate="visible"
         exit={{ opacity: 0 }}
       >
@@ -285,6 +287,7 @@ const ChildDepartmentPage = () => {
                 isDownloadDisabled={isDownloadDisabled}
                 excelHoldKey={id ?? null}
                 today={today}
+                idPrefix="child-department"
               />
             </motion.div>
 
@@ -327,8 +330,8 @@ const ChildDepartmentPage = () => {
             </motion.div>
 
             <motion.div variants={itemVariants} className="mb-6 card p-5">
-              <div className="flex flex-col md:flex-row md:items-center gap-4">
-                <div className="flex-1">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center mb-2">
                     <FaUsers className="text-lg text-primary-600 dark:text-primary-400 mr-2" />
                     <h3 className="font-medium text-lg">
@@ -342,7 +345,7 @@ const ChildDepartmentPage = () => {
                     </span>
                   </p>
                 </div>
-                <div className="w-full md:w-1/3">
+                <div className="w-full min-w-0 lg:max-w-sm lg:shrink-0">
                   <SearchInput
                     value={searchQuery}
                     message="Поиск по ФИО"
@@ -354,7 +357,7 @@ const ChildDepartmentPage = () => {
 
             {/* Mobile cards view */}
             <motion.div
-              className="block md:hidden space-y-4"
+              className="block lg:hidden space-y-4"
               variants={containerVariants}
               initial="hidden"
               animate="visible"
@@ -428,103 +431,106 @@ const ChildDepartmentPage = () => {
             {/* Desktop table view */}
             <motion.div
               variants={itemVariants}
-              className="hidden md:block card overflow-hidden p-0"
+              className="hidden lg:block card overflow-hidden p-0"
             >
-              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
-                <thead className="bg-primary-50/90 dark:bg-gray-900">
-                  <tr>
-                    <th
-                      scope="col"
-                      className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
-                    >
-                      ФИО
-                    </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
-                    >
-                      Должность
-                    </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
-                    >
-                      Дата создания
-                    </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
-                    >
-                      Статус
-                    </th>
-                    <th
-                      scope="col"
-                      className="relative px-6 py-3.5 text-left text-sm font-semibold uppercase tracking-wider text-primary-900 dark:text-primary-100"
-                    >
-                      <span className="sr-only">Просмотр</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200 bg-white dark:divide-gray-800 dark:bg-gray-950">
-                  {filteredStaff.length === 0 ? (
+              <div className="data-table-wrap -mx-px">
+                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
+                  <thead className="bg-primary-50/90 dark:bg-gray-900">
                     <tr>
-                      <td
-                        colSpan={5}
-                        className="px-6 py-8 text-center text-gray-500 dark:text-gray-400"
+                      <th
+                        scope="col"
+                        className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
                       >
-                        Сотрудники не найдены
-                      </td>
+                        ФИО
+                      </th>
+                      <th
+                        scope="col"
+                        className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
+                      >
+                        Должность
+                      </th>
+                      <th
+                        scope="col"
+                        className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
+                      >
+                        Дата создания
+                      </th>
+                      <th
+                        scope="col"
+                        className="px-6 py-3.5 text-left text-sm font-semibold text-primary-900 dark:text-primary-100 uppercase tracking-wider"
+                      >
+                        Статус
+                      </th>
+                      <th
+                        scope="col"
+                        className="relative px-6 py-3.5 text-left text-sm font-semibold uppercase tracking-wider text-primary-900 dark:text-primary-100"
+                      >
+                        <span className="sr-only">Просмотр</span>
+                      </th>
                     </tr>
-                  ) : (
-                    filteredStaff.map(([pin, staff]) => (
-                      <tr
-                        key={pin}
-                        className="cursor-pointer transition-colors duration-200 hover:bg-primary-50/80 dark:hover:bg-gray-900/85"
-                        onClick={() => handleRowClick(pin)}
-                      >
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span className="text-primary-700 hover:text-primary-900 dark:text-primary-400 dark:hover:text-primary-300 font-medium transition-colors">
-                            {staff.FIO}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          {staff.positions.length > 2 ? (
-                            <span className="inline-flex items-center">
-                              {staff.positions[0]}{" "}
-                              <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300">
-                                +{staff.positions.length - 1}
-                              </span>
-                            </span>
-                          ) : (
-                            staff.positions.join(", ")
-                          )}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400 font-mono">
-                          {new Date(
-                            staff.date_of_creation,
-                          ).toLocaleDateString()}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          {staff.avatar ? (
-                            <span className="badge-success">
-                              <FaUserCheck className="mr-1" /> Верифицирован
-                            </span>
-                          ) : (
-                            <span className="badge-danger">
-                              <FaUserTimes className="mr-1" /> Не верифицирован
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
-                          <span className="badge-primary px-3 py-1.5 rounded-lg">
-                            Показать детали
-                          </span>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 bg-white dark:divide-gray-800 dark:bg-gray-950">
+                    {filteredStaff.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={5}
+                          className="px-6 py-8 text-center text-gray-500 dark:text-gray-400"
+                        >
+                          Сотрудники не найдены
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    ) : (
+                      filteredStaff.map(([pin, staff]) => (
+                        <tr
+                          key={pin}
+                          className="cursor-pointer transition-colors duration-200 hover:bg-primary-50/80 dark:hover:bg-gray-900/85"
+                          onClick={() => handleRowClick(pin)}
+                        >
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className="text-primary-700 hover:text-primary-900 dark:text-primary-400 dark:hover:text-primary-300 font-medium transition-colors">
+                              {staff.FIO}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            {staff.positions.length > 2 ? (
+                              <span className="inline-flex items-center">
+                                {staff.positions[0]}{" "}
+                                <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300">
+                                  +{staff.positions.length - 1}
+                                </span>
+                              </span>
+                            ) : (
+                              staff.positions.join(", ")
+                            )}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400 font-mono">
+                            {new Date(
+                              staff.date_of_creation,
+                            ).toLocaleDateString()}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            {staff.avatar ? (
+                              <span className="badge-success">
+                                <FaUserCheck className="mr-1" /> Верифицирован
+                              </span>
+                            ) : (
+                              <span className="badge-danger">
+                                <FaUserTimes className="mr-1" /> Не
+                                верифицирован
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
+                            <span className="badge-primary px-3 py-1.5 rounded-lg">
+                              Показать детали
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </motion.div>
           </>
         )}

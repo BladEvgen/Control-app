@@ -3,6 +3,7 @@ import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { isAuthenticated } from "./utils/authHelpers";
 import { useAuth } from "./store/hooks";
 import { addPrefix } from "./RouterUtils";
+import LoaderComponent from "./components/LoaderComponent";
 
 const RequireAuth: React.FC = () => {
   const location = useLocation();
@@ -32,7 +33,16 @@ const RequireAuth: React.FC = () => {
   }, [location.pathname, location, navigate]);
 
   if (isLoading) {
-    return null;
+    return (
+      <div className="page-shell min-h-[40vh] flex items-center justify-center py-12">
+        <LoaderComponent
+          fullscreen={false}
+          compact
+          inline
+          message="Проверка доступа…"
+        />
+      </div>
+    );
   }
   if (!isAuthenticated()) {
     return (

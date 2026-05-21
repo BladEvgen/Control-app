@@ -28,6 +28,7 @@ interface AttendanceSectionProps {
   handleStartDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleEndDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   attendanceLegendChips: StaffAttendanceLegendChip[];
+  today?: string;
 }
 
 const AttendanceSection: React.FC<AttendanceSectionProps> = ({
@@ -39,51 +40,60 @@ const AttendanceSection: React.FC<AttendanceSectionProps> = ({
   handleStartDateChange,
   handleEndDateChange,
   attendanceLegendChips,
+  today,
 }) => {
   const auditOnlyDates = Object.keys(lessonAttendanceAudit).filter(
     (dk) => !attendance[dk],
   );
+  const dayCount = Object.keys(staffData.attendance).length;
+
   return (
     <div className="border-t border-gray-200 bg-gray-50/40 px-4 pb-6 dark:border-gray-800 dark:bg-black/15 sm:px-6 sm:pb-8 lg:px-8">
-      <div className="flex flex-col lg:flex-row items-center justify-between mb-4 sm:mb-6 gap-4 sm:gap-6">
-        <div className="w-full max-w-md">
+      <div className="mb-4 flex flex-col gap-5 sm:mb-6 lg:flex-row lg:items-end lg:justify-between lg:gap-8">
+        <div className="min-w-0 w-full lg:flex-1">
           <DateForm
             startDate={startDate}
             endDate={endDate}
             handleStartDateChange={handleStartDateChange}
             handleEndDateChange={handleEndDateChange}
             error=""
+            maxDate={today}
+            idPrefix="staff-attendance"
           />
         </div>
-        <div className="flex flex-col items-center lg:items-end w-full lg:w-auto">
-          <span className="inline-flex items-center text-sm sm:text-lg text-gray-600 dark:text-gray-400">
-            <FiInfo className="mr-2" />
-            {formatDateRu(startDate)} - {formatDateRu(endDate)}
+        <div className="w-full shrink-0 border-t border-gray-200/80 pt-4 dark:border-gray-700/80 max-lg:max-w-[17.5rem] lg:w-auto lg:max-w-xs lg:border-t-0 lg:pt-0 lg:text-right">
+          <span className="inline-flex items-center text-sm text-gray-600 dark:text-gray-400 sm:text-base">
+            <FiInfo className="mr-2 shrink-0" aria-hidden />
+            <span className="break-words">
+              {formatDateRu(startDate)} — {formatDateRu(endDate)}
+            </span>
           </span>
-          <span className="mt-1 text-lg sm:text-xl font-semibold text-gray-800 dark:text-gray-100">
-            Найдено {Object.keys(staffData.attendance).length}{" "}
-            {declensionDays(Object.keys(staffData.attendance).length)}
-          </span>
+          <p className="mt-2 text-lg font-semibold text-gray-800 dark:text-gray-100 sm:text-xl">
+            Найдено {dayCount} {declensionDays(dayCount)}
+          </p>
         </div>
       </div>
-      <div className="flex flex-wrap gap-2 mb-6">
+
+      <div className="mb-6 flex flex-wrap gap-2">
         {attendanceLegendChips.map((chip, index) => {
           const colorClass = legendToneClass(chip.tone);
           return (
             <motion.div
               key={chip.id}
-              className={`flex items-center space-x-2 px-4 py-1 rounded-full text-white text-sm ${colorClass}`}
+              className={`flex items-center space-x-2 rounded-full px-3 py-1.5 text-sm text-white sm:px-4 ${colorClass}`}
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: index * 0.05, duration: 0.3 }}
             >
-              <div className="w-2 h-2 rounded-full bg-white"></div>
+              <div className="h-2 w-2 shrink-0 rounded-full bg-white" />
               <span>{chip.label}</span>
             </motion.div>
           );
         })}
       </div>
+
       <AttendanceTable attendance={attendance} />
+
       {auditOnlyDates.length > 0 ? (
         <div className="mt-6 border-t border-gray-200 pt-4 dark:border-gray-800">
           <h3 className="mb-2 text-xs font-medium text-gray-500 dark:text-gray-400">

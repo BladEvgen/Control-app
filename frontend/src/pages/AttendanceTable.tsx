@@ -68,9 +68,9 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
   };
 
   const renderDesktopTable = () => (
-    <div className="hidden md:block w-full">
-      <div className="overflow-hidden rounded-lg border border-gray-200 shadow-sm dark:border-gray-800">
-        <table className="w-full">
+    <div className="hidden lg:block w-full min-w-0">
+      <div className="data-table-wrap overflow-x-auto rounded-lg border border-gray-200 shadow-sm dark:border-gray-800">
+        <table className="min-w-full w-full">
           <thead>
             <tr className="bg-gray-50 text-black dark:bg-gray-900 dark:text-white">
               {[
@@ -291,7 +291,7 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
     <div className="w-full">
       {renderDesktopTable()}
 
-      <div className="block md:hidden">
+      <div className="block lg:hidden">
         <div className="grid grid-cols-1 gap-4">
           {Object.entries(attendance)
             .reverse()

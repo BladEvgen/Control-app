@@ -108,7 +108,7 @@ const StaffHeader: React.FC<StaffHeaderProps> = ({
   return (
     <div className="border-b border-gray-200 dark:border-gray-800">
       {/* Мобильная версия */}
-      <div className="sm:hidden p-4 space-y-4">
+      <div className="lg:hidden p-4 space-y-4">
         <div className="flex items-start gap-4">
           {showPhotoHub ? (
             <ProfileAvatarWithPhotoMenu
@@ -191,7 +191,7 @@ const StaffHeader: React.FC<StaffHeaderProps> = ({
       </div>
 
       {/* Десктоп */}
-      <div className="hidden sm:block">
+      <div className="hidden lg:block">
         <div className="p-5 lg:p-6">
           <div className="flex items-start justify-between gap-4 lg:gap-6">
             <div className="flex min-w-0 flex-1 items-start gap-4 lg:gap-5">

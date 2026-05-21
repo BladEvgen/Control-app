@@ -1,4 +1,5 @@
 import React from "react";
+import DateInput from "../components/DateInput";
 
 interface DateFormProps {
   startDate: string;
@@ -6,6 +7,8 @@ interface DateFormProps {
   handleStartDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleEndDateChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   error?: string;
+  maxDate?: string;
+  idPrefix?: string;
 }
 
 const DateForm: React.FC<DateFormProps> = ({
@@ -14,44 +17,34 @@ const DateForm: React.FC<DateFormProps> = ({
   handleStartDateChange,
   handleEndDateChange,
   error,
+  maxDate,
+  idPrefix = "attendance",
 }) => {
   return (
-    <div className="w-full">
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <label
-            htmlFor="startDate"
-            className="block text-sm font-medium text-gray-800 dark:text-gray-200"
-          >
-            Начальная дата
-          </label>
-          <input
-            id="startDate"
-            type="date"
+    <div className="min-w-0">
+      <div className="flex flex-col gap-4 lg:flex-row lg:gap-4">
+        <div className="date-field-slot">
+          <DateInput
+            label="Начальная дата"
+            id={`${idPrefix}-startDate`}
             value={startDate}
             onChange={handleStartDateChange}
-            className="mt-1 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100 dark:focus:border-primary-500"
+            max={maxDate}
           />
         </div>
-        <div>
-          <label
-            htmlFor="endDate"
-            className="block text-sm font-medium text-gray-800 dark:text-gray-200"
-          >
-            Конечная дата
-          </label>
-          <input
-            id="endDate"
-            type="date"
+        <div className="date-field-slot">
+          <DateInput
+            label="Конечная дата"
+            id={`${idPrefix}-endDate`}
             value={endDate}
             onChange={handleEndDateChange}
-            className="mt-1 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100 dark:focus:border-primary-500"
+            max={maxDate}
           />
         </div>
       </div>
-      {error && (
-        <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>
-      )}
+      {error ? (
+        <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>
+      ) : null}
     </div>
   );
 };

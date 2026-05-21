@@ -4,6 +4,18 @@ import { isNavigationTransitionPending } from "./pageLifecycle";
 const CHUNK_RETRY_STATE_STORAGE_KEY = "__app_chunk_retry_state__";
 const CHUNK_DUPLICATE_ERROR_WINDOW_MS = 2500;
 const CHUNK_MIN_UPTIME_BEFORE_HARD_RELOAD_MS = 1500;
+const CHUNK_MIN_UPTIME_SAFARI_MS = 3500;
+
+const isSafariBrowser = (): boolean => {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  return /safari/i.test(ua) && !/chrome|chromium|android/i.test(ua);
+};
+
+const chunkMinUptimeBeforeHardReloadMs = (): number =>
+  isSafariBrowser()
+    ? CHUNK_MIN_UPTIME_SAFARI_MS
+    : CHUNK_MIN_UPTIME_BEFORE_HARD_RELOAD_MS;
 
 const CHUNK_ERROR_PATTERNS: RegExp[] = [
   /ChunkLoadError/i,
@@ -79,7 +91,10 @@ const readRetryState = (): ChunkRetryState => {
 
 const writeRetryState = (state: ChunkRetryState): void => {
   try {
-    sessionStorage.setItem(CHUNK_RETRY_STATE_STORAGE_KEY, JSON.stringify(state));
+    sessionStorage.setItem(
+      CHUNK_RETRY_STATE_STORAGE_KEY,
+      JSON.stringify(state),
+    );
   } catch {
     // ignore storage errors
   }
@@ -89,7 +104,10 @@ export const tryRecoverChunkLoadError = (error: unknown): boolean => {
   if (isAbortLikeLoadError(error)) return false;
   if (!isChunkLoadError(error)) return false;
   if (isNavigationTransitionPending()) return false;
-  if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+  if (
+    typeof document !== "undefined" &&
+    document.visibilityState === "hidden"
+  ) {
     return false;
   }
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
@@ -97,7 +115,7 @@ export const tryRecoverChunkLoadError = (error: unknown): boolean => {
   }
   if (
     typeof performance !== "undefined" &&
-    performance.now() < CHUNK_MIN_UPTIME_BEFORE_HARD_RELOAD_MS
+    performance.now() < chunkMinUptimeBeforeHardReloadMs()
   ) {
     return false;
   }

@@ -26,6 +26,10 @@ import StaffHeader from "./StaffHeader";
 import EmployeeInfo from "./EmployeeInfo";
 import AttendanceSection from "./AttendanceSection";
 import { lazyWithRetry } from "../../utils/lazyWithRetry";
+import {
+  consumeSkipPageMotion,
+  pageMotionInitial,
+} from "../../utils/pageMotion";
 import type { FaceCameraOverlayRef } from "../../faceLab/camera/types";
 
 const NewAbsenceModal = lazyWithRetry(
@@ -44,6 +48,8 @@ const containerVariants = {
 const StaffDetail: React.FC = () => {
   const { pin } = useParams<{ pin: string }>();
   const navigate = useNavigate();
+  const skipPageMotion = useMemo(() => consumeSkipPageMotion(), []);
+  const today = useMemo(() => new Date().toISOString().split("T")[0], []);
 
   const [staffData, setStaffData] = useState<StaffData | null>(null);
   const [attendance, setAttendance] = useState<Record<string, AttendanceData>>(
@@ -296,9 +302,9 @@ const StaffDetail: React.FC = () => {
 
   return (
     <motion.div
-      className="min-h-screen py-4 sm:py-8 px-4 sm:px-8 lg:px-24"
+      className="min-h-screen min-w-0 py-4 px-4 sm:py-6 sm:px-6 lg:py-8 lg:px-10 xl:px-16"
       variants={containerVariants}
-      initial="hidden"
+      initial={pageMotionInitial(skipPageMotion) ?? "hidden"}
       animate="visible"
     >
       {loading ? (
@@ -333,7 +339,7 @@ const StaffDetail: React.FC = () => {
           )}
 
           {staffData && (
-            <div className="w-full max-w-7xl lg:max-w-screen-2xl mx-auto">
+            <div className="mx-auto w-full min-w-0 max-w-7xl lg:max-w-screen-2xl">
               {/* Breadcrumbs */}
               <motion.div
                 className="mb-4 sm:mb-6"
@@ -344,7 +350,7 @@ const StaffDetail: React.FC = () => {
                 <Breadcrumbs items={breadcrumbs} />
               </motion.div>
 
-              <div className="overflow-hidden rounded-lg border border-gray-200/90 bg-white shadow-lg sm:rounded-xl sm:shadow-2xl dark:border-gray-800 dark:bg-gray-950">
+              <div className="min-w-0 overflow-hidden rounded-lg border border-gray-200/90 bg-white shadow-lg sm:rounded-xl sm:shadow-2xl dark:border-gray-800 dark:bg-gray-950">
                 {pin ? (
                   <>
                     <input
@@ -399,6 +405,7 @@ const StaffDetail: React.FC = () => {
                   handleStartDateChange={handleStartDateChange}
                   handleEndDateChange={handleEndDateChange}
                   attendanceLegendChips={attendanceLegendChips}
+                  today={today}
                 />
               </div>
             </div>

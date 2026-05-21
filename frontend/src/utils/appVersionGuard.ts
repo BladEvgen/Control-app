@@ -10,6 +10,7 @@ import { guardedAutoReload, reconcilePendingAutoReload } from "./appAutoReload";
 import { tryRecoverChunkLoadError } from "./chunkRecovery";
 
 const VERSION_CHECK_INTERVAL_MS = 60_000;
+const STARTUP_VERSION_CHECK_DELAY_MS = 2500;
 
 let guardStarted = false;
 let inFlightCheck: Promise<void> | null = null;
@@ -32,17 +33,14 @@ const broadcastLatestBuild = (buildMeta: AppBuildMeta): void => {
 
 const fetchLatestBuildMeta = async (): Promise<AppBuildMeta | null> => {
   try {
-    const response = await fetch(
-      `${APP_VERSION_ENDPOINT}?ts=${Date.now()}`,
-      {
-        cache: "no-store",
-        credentials: "same-origin",
-        headers: {
-          Accept: "application/json",
-          "Cache-Control": "no-cache",
-        },
+    const response = await fetch(`${APP_VERSION_ENDPOINT}?ts=${Date.now()}`, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Cache-Control": "no-cache",
       },
-    );
+    });
     if (!response.ok) {
       return null;
     }
@@ -136,9 +134,14 @@ export const startAppVersionGuard = (): void => {
   guardStarted = true;
 
   reconcilePendingAutoReload();
-  void requestAppVersionCheck("startup");
+  window.setTimeout(() => {
+    if (document.visibilityState === "visible") {
+      void requestAppVersionCheck("startup");
+    }
+  }, STARTUP_VERSION_CHECK_DELAY_MS);
 
-  window.addEventListener("pageshow", () => {
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) return;
     if (document.visibilityState === "visible") {
       void requestAppVersionCheck("pageshow");
     }

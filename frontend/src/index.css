@@ -157,7 +157,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
             @apply pointer-events-none absolute inset-0;
             background-image: var(--layout-mesh-light);
         }
-    
+
         .dark .layout-living-mesh {
             background-image: var(--layout-mesh-dark);
         }
@@ -186,7 +186,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     }
 
     .page-shell {
-        @apply max-w-7xl mx-auto pb-10;
+        @apply mx-auto max-w-7xl min-w-0 pb-10 px-1 sm:px-0;
     }
 
     .page-shell-wide {
@@ -201,7 +201,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     }
 
     .data-table-in-card {
-        @apply hidden md:block border-t border-gray-200 dark:border-gray-800;
+        @apply hidden lg:block border-t border-gray-200 dark:border-gray-800;
     }
 
     .panel-toggle {
@@ -213,7 +213,40 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     }
 
     .data-table-wrap {
-        @apply overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700;
+        @apply overflow-x-auto overflow-y-hidden rounded-xl border border-gray-200 dark:border-gray-700;
+    }
+
+    /* Date fields: fixed width on desktop, capped width on tablet (no stretch / overflow) */
+    .date-field-slot {
+        width: 100%;
+        max-width: 17.5rem;
+    }
+
+    @media (min-width: 1024px) {
+        .date-field-slot {
+            width: 15rem;
+            max-width: 15rem;
+            flex-shrink: 0;
+        }
+    }
+
+    .date-filter-action {
+        width: 100%;
+        max-width: 17.5rem;
+    }
+
+    @media (min-width: 768px) {
+        .date-filter-action {
+            width: auto;
+            max-width: none;
+        }
+    }
+
+    .date-input-control {
+        display: block;
+        box-sizing: border-box;
+        min-width: 0;
+        max-width: 100%;
     }
 
     .badge {

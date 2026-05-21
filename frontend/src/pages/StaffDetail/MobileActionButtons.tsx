@@ -51,7 +51,7 @@ const MobileActionButtons: React.FC<MobileActionButtonsProps> = ({
   ];
 
   return createPortal(
-    <div className="fixed bottom-20 md:bottom-24 left-4 md:left-6 z-50 block sm:hidden">
+    <div className="fixed bottom-20 md:bottom-24 left-4 md:left-6 z-50 block lg:hidden">
       <div className="flex flex-col items-center gap-3">
         <AnimatePresence>
           {isExpanded && (
@@ -117,7 +117,7 @@ const MobileActionButtons: React.FC<MobileActionButtonsProps> = ({
         </motion.button>
       </div>
     </div>,
-    document.body
+    document.body,
   );
 };
 

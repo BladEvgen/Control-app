@@ -1,13 +1,10 @@
-import {
-  APP_VERSION_ENDPOINT,
-  CURRENT_APP_BUILD_META,
-} from "./appBuild";
+import { APP_VERSION_ENDPOINT, CURRENT_APP_BUILD_META } from "./appBuild";
 import { isNavigationTransitionPending } from "./pageLifecycle";
+import { markSkipPageMotionOnNextBoot } from "./pageMotion";
 
 const AUTO_RELOAD_STATE_STORAGE_KEY = "__app_auto_reload_state__";
 const HARD_RELOAD_QUERY_PARAM = "__hard_reload";
 const HARD_RELOAD_TARGET_QUERY_PARAM = "__hard_reload_target";
-/** Wait for a real server response before navigating away; cap so we never hang forever. */
 const RELOAD_PREFETCH_TIMEOUT_MS = 12_000;
 
 type AutoReloadState = {
@@ -64,7 +61,10 @@ const readAutoReloadState = (): AutoReloadState | null => {
 const writeAutoReloadState = (state: AutoReloadState): void => {
   if (!isBrowser) return;
   try {
-    sessionStorage.setItem(AUTO_RELOAD_STATE_STORAGE_KEY, JSON.stringify(state));
+    sessionStorage.setItem(
+      AUTO_RELOAD_STATE_STORAGE_KEY,
+      JSON.stringify(state),
+    );
   } catch {
     // ignore storage issues
   }
@@ -141,7 +141,7 @@ const prefetchAppVersionBeforeReload = async (): Promise<void> => {
       },
     });
   } catch {
-    // Still reload: offline, timeout, or non-JSON — hard reload is the recovery path.
+    // ignore fetch issues
   } finally {
     window.clearTimeout(timeoutId);
   }
@@ -149,6 +149,8 @@ const prefetchAppVersionBeforeReload = async (): Promise<void> => {
 
 export const forceHardReload = (targetBuildId?: string): void => {
   if (!isBrowser) return;
+
+  markSkipPageMotionOnNextBoot();
 
   const url = new URL(window.location.href);
   url.searchParams.set(HARD_RELOAD_QUERY_PARAM, String(Date.now()));
