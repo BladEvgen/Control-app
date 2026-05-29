@@ -1,4 +1,6 @@
-export const isDebug = false;
+const debugFlag = import.meta.env.VITE_APP_DEBUG?.trim().toLowerCase();
+export const isDebug =
+  debugFlag === "1" || debugFlag === "true" || debugFlag === "yes";
 
 const localHostname = window.location.hostname;
 export const apiUrl = isDebug
