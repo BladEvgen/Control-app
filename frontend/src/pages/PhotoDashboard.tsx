@@ -89,7 +89,7 @@ const PHOTO_STATUS_STYLE: Record<
   check: {
     cardClass: "card-state-check",
     badgeClass: "bg-amber-500/90 text-amber-50 border border-amber-300/70",
-    label: "Проверить",
+    label: "Проверка",
     showBadgeOnCard: true,
   },
   check_error: {
@@ -227,6 +227,90 @@ const resolvePhotoUiStatus = (photo: Partial<PhotoData>): PhotoUiStatus => {
     return "check";
   }
   return "clean";
+};
+
+const normalizePhotoSpoofTags = (
+  value: PhotoData["photoSpoofTags"] | undefined,
+): string[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((tag): tag is string => typeof tag === "string");
+};
+
+const buildPhotoPadReason = (photo: Partial<PhotoData>): string => {
+  const status = resolvePhotoEffectiveStatus(photo);
+  const tags = normalizePhotoSpoofTags(photo.photoSpoofTags) ?? [];
+  const reasons: string[] = [];
+  const seen = new Set<string>();
+  const add = (reason: string) => {
+    if (seen.has(reason)) return;
+    seen.add(reason);
+    reasons.push(reason);
+  };
+
+  for (const rawTag of tags) {
+    const tag = rawTag.trim().toLowerCase();
+    if (!tag) continue;
+    if (tag.startsWith("pad_struct:") || tag.startsWith("pad_evidence:")) {
+      continue;
+    }
+    if (
+      tag.includes("face_reflection") ||
+      tag.includes("rectangular_reflection") ||
+      tag.includes("colored_screen_reflection") ||
+      tag.includes("specular_reflection")
+    ) {
+      add("блики на лице похожи на отражение экрана");
+      continue;
+    }
+    if (
+      tag.includes("recapture") ||
+      tag.includes("fft_periodicity") ||
+      tag.includes("gradient_aniso")
+    ) {
+      add("текстура лица похожа на пересъёмку с другого экрана");
+      continue;
+    }
+    if (tag.includes("screen_frame") || tag.includes("frame_screen")) {
+      add("рядом с лицом видна экранная рамка");
+      continue;
+    }
+    if (
+      tag.includes("device_present") ||
+      tag.includes("device_on_face") ||
+      tag.includes("deepfake_device")
+    ) {
+      add("устройство находится слишком близко к лицу");
+      continue;
+    }
+    if (tag.includes("fasnet_fake") || tag.includes("deepfake_high")) {
+      add("модель лица видит признаки подмены");
+      continue;
+    }
+    if (tag.includes("quality_") || tag.includes("insufficient")) {
+      add("кадр слабый для окончательного вывода");
+    }
+  }
+
+  if (reasons.length === 0) {
+    if (status === "suspicious") {
+      add("автоанализ видит согласованные признаки подмены");
+    } else if (status === "review") {
+      add("сигналы неоднозначные, нужен новый кадр");
+    } else if (status === "error") {
+      add("проверка фото не завершилась");
+    } else if (status === "pending") {
+      add("проверка фото ещё идёт");
+    }
+  }
+
+  const score =
+    typeof photo.photoSpoofScore === "number" &&
+    Number.isFinite(photo.photoSpoofScore)
+      ? Math.round(Math.max(0, Math.min(1, photo.photoSpoofScore)) * 100)
+      : null;
+  const text = reasons.slice(0, 2).join(", ");
+  if (!text && score == null) return "";
+  return score == null ? text : `${text || "риск подмены"}: ${score}%`;
 };
 
 const canPhotoSetManualVerdict = (photo: Partial<PhotoData>): boolean => {
@@ -1487,6 +1571,15 @@ const PhotoDashboard: React.FC = () => {
         normalizedEvent.tutorInfo = eventData.tutorInfo ?? "";
         normalizedEvent.photoSpoofStatus =
           eventData.photoSpoofStatus ?? "pending";
+        normalizedEvent.photoSpoofScore = eventData.photoSpoofScore ?? null;
+        normalizedEvent.photoSpoofTags =
+          normalizePhotoSpoofTags(eventData.photoSpoofTags) ?? [];
+        normalizedEvent.photoSpoofCheckedAt =
+          eventData.photoSpoofCheckedAt ?? null;
+        normalizedEvent.photoSpoofModelVersion =
+          eventData.photoSpoofModelVersion ?? "";
+        normalizedEvent.photoTrustConfirmed =
+          eventData.photoTrustConfirmed ?? null;
         normalizedEvent.photoManualVerdict =
           eventData.photoManualVerdict ?? "none";
         normalizedEvent.photoEffectiveStatus =
@@ -1495,6 +1588,8 @@ const PhotoDashboard: React.FC = () => {
             photoManualVerdict: normalizedEvent.photoManualVerdict,
             photoSpoofStatus: normalizedEvent.photoSpoofStatus,
           });
+        normalizedEvent.photoEffectiveTrustConfirmed =
+          eventData.photoEffectiveTrustConfirmed ?? null;
       } else {
         assignPhotoFieldIfDefined(
           normalizedEvent,
@@ -1533,6 +1628,31 @@ const PhotoDashboard: React.FC = () => {
         );
         assignPhotoFieldIfDefined(
           normalizedEvent,
+          "photoSpoofScore",
+          eventData.photoSpoofScore,
+        );
+        assignPhotoFieldIfDefined(
+          normalizedEvent,
+          "photoSpoofTags",
+          normalizePhotoSpoofTags(eventData.photoSpoofTags),
+        );
+        assignPhotoFieldIfDefined(
+          normalizedEvent,
+          "photoSpoofCheckedAt",
+          eventData.photoSpoofCheckedAt,
+        );
+        assignPhotoFieldIfDefined(
+          normalizedEvent,
+          "photoSpoofModelVersion",
+          eventData.photoSpoofModelVersion,
+        );
+        assignPhotoFieldIfDefined(
+          normalizedEvent,
+          "photoTrustConfirmed",
+          eventData.photoTrustConfirmed,
+        );
+        assignPhotoFieldIfDefined(
+          normalizedEvent,
           "photoManualVerdict",
           eventData.photoManualVerdict,
         );
@@ -1540,6 +1660,11 @@ const PhotoDashboard: React.FC = () => {
           normalizedEvent,
           "photoEffectiveStatus",
           eventData.photoEffectiveStatus,
+        );
+        assignPhotoFieldIfDefined(
+          normalizedEvent,
+          "photoEffectiveTrustConfirmed",
+          eventData.photoEffectiveTrustConfirmed,
         );
       }
 
@@ -1577,8 +1702,20 @@ const PhotoDashboard: React.FC = () => {
         attendanceTime: merged.attendanceTime ?? timezoneIsoNow(),
         tutorInfo: merged.tutorInfo ?? "",
         photoSpoofStatus: normalizedSpoofStatus,
+        photoSpoofScore: merged.photoSpoofScore ?? null,
+        photoSpoofTags: normalizePhotoSpoofTags(merged.photoSpoofTags) ?? [],
+        photoSpoofCheckedAt: merged.photoSpoofCheckedAt ?? null,
+        photoSpoofModelVersion: merged.photoSpoofModelVersion ?? "",
+        photoTrustConfirmed: merged.photoTrustConfirmed ?? null,
         photoManualVerdict: normalizedManualVerdict,
         photoEffectiveStatus: normalizedEffectiveStatus,
+        photoEffectiveTrustConfirmed:
+          merged.photoEffectiveTrustConfirmed ??
+          (normalizedManualVerdict === "clean"
+            ? true
+            : normalizedManualVerdict === "suspicious"
+              ? false
+              : (merged.photoTrustConfirmed ?? null)),
         photoCanSetManualVerdict:
           typeof merged.photoCanSetManualVerdict === "boolean"
             ? merged.photoCanSetManualVerdict
@@ -2209,9 +2346,9 @@ const PhotoDashboard: React.FC = () => {
       return "Коснитесь фото, чтобы открыть карточку";
     }
     if (hasTouch && hasFinePointer) {
-      return "Клик или касание по фото · Esc — закрыть";
+      return "Клик или касание по фото, Esc закрывает";
     }
-    return "Клик по фото · Esc — закрыть";
+    return "Клик по фото, Esc закрывает";
   }, []);
 
   const [hints, setHints] = useState("");
@@ -3434,6 +3571,7 @@ const PhotoDashboard: React.FC = () => {
                   uiStatus === "suspicious_manual";
                 const showCheckBadge =
                   uiStatus === "check" || uiStatus === "check_error";
+                const padReason = buildPhotoPadReason(p);
                 const canSetManualVerdict = canPhotoSetManualVerdict(p);
                 const verdictButtonsLocked =
                   isSubmittingVerdictForPhoto(p.id) || verdictAutoClosePending;
@@ -3481,13 +3619,18 @@ const PhotoDashboard: React.FC = () => {
                           </span>
                         </p>
                         {(isSuspicious || showCheckBadge) && (
-                          <div className="mt-2 flex items-center gap-2">
+                          <div className="mt-2 flex flex-col items-start gap-2">
                             <span
                               className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${statusMeta.badgeClass}`}
                             >
                               <FaShieldAlt className="h-3.5 w-3.5" />
                               {statusMeta.label}
                             </span>
+                            {padReason ? (
+                              <p className="max-w-full rounded-xl border border-slate-200/80 bg-slate-50/90 px-3 py-2 text-[13px] leading-snug text-slate-700 shadow-sm dark:border-slate-600/60 dark:bg-slate-900/60 dark:text-slate-200">
+                                {padReason}
+                              </p>
+                            ) : null}
                           </div>
                         )}
                         {p.tutorInfo && (

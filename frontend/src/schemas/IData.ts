@@ -186,6 +186,11 @@ export interface PhotoData {
   attendanceTime: string;
   tutorInfo: string;
   photoSpoofStatus?: PhotoSpoofStatus;
+  photoSpoofScore?: number | null;
+  photoSpoofTags?: string[];
+  photoSpoofCheckedAt?: string | null;
+  photoSpoofModelVersion?: string;
+  photoTrustConfirmed?: boolean | null;
   photoManualVerdict?: PhotoManualVerdict;
   photoEffectiveStatus?: PhotoSpoofStatus;
   photoEffectiveTrustConfirmed?: boolean | null;

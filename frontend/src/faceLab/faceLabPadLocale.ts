@@ -3,7 +3,7 @@ import type { PadDiagnosticsPayload } from "./faceLabPadTypes";
 
 const BRANCH_SUMMARY_RU: Record<string, string> = {
   fake_quality_poor_review:
-    "FasNet указывает на подмену, но кадр низкого качества — нужна ручная проверка.",
+    "FasNet указывает на подмену, но кадр низкого качества.",
   fake_extreme_score_suspicious:
     "Очень высокий балл FasNet — сильный признак подмены.",
   fake_plus_face_gated_screen:
@@ -16,8 +16,12 @@ const BRANCH_SUMMARY_RU: Record<string, string> = {
     "FasNet подкреплён сильной периодикой на лице.",
   fake_mid_plus_background_display_suspicious:
     "FasNet и сильный экранный контекст по всему кадру — «подозрительно».",
+  fake_plus_face_reflection_suspicious:
+    "FasNet подкреплён экранными бликами на верхней части лица.",
+  fake_high_confidence_no_geometry_suspicious:
+    "FasNet даёт высокий риск подмены даже без явной рамки у лица.",
   fake_background_display_review:
-    "FasNet и заметный экранный контекст по всему кадру — нужна проверка, но не «норма».",
+    "FasNet и заметный экранный контекст по всему кадру.",
   fake_single_geometry_channel_review:
     "Устаревшая ветка; сейчас: fake_single_mid_geometry_suspicious.",
   fake_single_mid_geometry_suspicious:
@@ -31,13 +35,17 @@ const BRANCH_SUMMARY_RU: Record<string, string> = {
   no_fake_dual_suspicious_geometry:
     "Без FasNet, но сильные устройство и рамка у лица при крупном лице.",
   no_fake_dual_geom_small_face_review:
-    "Сильная геометрия при мелком лице — проверка вместо «подозрительно».",
+    "Сильная геометрия при мелком лице, нужен новый кадр.",
   strong_screen_dual_mid_geometry_suspicious:
     "Сильный экранный паттерн и два умеренных канала у лица — «подозрительно».",
   strong_face_gated_screen_review:
-    "Сильный «экранный» паттерн у лица без однозначного FasNet — проверка.",
+    "Сильный «экранный» паттерн у лица без однозначного FasNet.",
   strong_device_only_face_attack_suspicious:
     "Сильное устройство у лица без рамки — «подозрительно».",
+  face_reflection_display_suspicious:
+    "Экранные блики на лице совпали с другими признаками пересъёмки.",
+  face_reflection_context_review:
+    "Есть блики, похожие на отражение экрана, но контекст недостаточно сильный.",
   recapture_strong_review:
     "Устаревшая ветка; в новых сканах см. изолированные ветки (муар / один канал / двойная текстура).",
   recapture_strong_with_context:
@@ -49,9 +57,9 @@ const BRANCH_SUMMARY_RU: Record<string, string> = {
   recapture_strong_loose_context_suspicious:
     "Устаревшая ветка; сейчас см. recapture_strong_loose_context_ambiguous_review.",
   recapture_strong_loose_context_ambiguous_review:
-    "Сильная периодика при слабом экранном контексте — на проверку (без авто-«подозрительно»).",
+    "Сильная периодика при слабом экранном контексте.",
   recapture_strong_quality_context_review:
-    "Сильная периодика и низкое качество кадра — проверка.",
+    "Сильная периодика и низкое качество кадра.",
   recapture_isolated_fft_aniso_corroborated_review:
     "Устаревшая ветка; см. recapture_isolated_dual_texture_ambiguous_review или муар-«норма».",
   recapture_isolated_dual_texture_uncertain_clean:
@@ -59,7 +67,7 @@ const BRANCH_SUMMARY_RU: Record<string, string> = {
   recapture_isolated_dual_texture_suspicious:
     "Устаревшая ветка; сейчас см. recapture_isolated_dual_texture_ambiguous_review.",
   recapture_isolated_dual_texture_ambiguous_review:
-    "FFT и анизотропия при сильной периодике без FasNet/геометрии — на проверку, не «подозрительно».",
+    "FFT и анизотропия при сильной периодике без FasNet/геометрии.",
   recapture_isolated_extreme_moire_live_uncertain_clean:
     "Очень высокая периодика, два текстурных канала и «чистое» качество — вероятный муар, «норма» без полного подтверждения проверки фото.",
   recapture_isolated_extreme_single_channel_uncertain_clean:
@@ -83,29 +91,29 @@ const BRANCH_SUMMARY_RU: Record<string, string> = {
   spoof_uncertain_strong_recapture_texture_suspicious:
     "Устаревшая ветка; см. spoof_uncertain_texture_ambiguous_review.",
   spoof_uncertain_texture_ambiguous_review:
-    "FasNet недоступен; сильная периодика и текстура — на проверку.",
+    "FasNet недоступен; сильная периодика и текстура.",
   quality_poor_with_face_gated_screen:
-    "Низкое качество и слабые «экранные» признаки у лица — проверка.",
-  image_quality_low_review: "Низкое качество без признаков подмены — проверка.",
+    "Низкое качество и слабые «экранные» признаки у лица.",
+  image_quality_low_review: "Низкое качество без признаков подмены.",
   image_quality_degraded_review:
-    "Сильно снижено качество или слабые признаки презентации — проверка.",
+    "Сильно снижено качество или слабые признаки презентации.",
   image_quality_uncertain_clean:
     "Качество снижено умеренно, признаков подмены по лицу нет — «норма» без полного доверия к проверке фото.",
+  background_screen_context_uncertain_clean:
+    "Экранный контекст найден только в фоне, без достаточной привязки к лицу.",
   no_fake_recapture_strong_corroborated_dual_geometry:
     "Сильная периодика и две подозрительные геометрии у лица — «подозрительно».",
   no_fake_recapture_strong_dual_geometry_small_face_review:
-    "Сильная периодика и геометрия при мелком лице — проверка.",
-  spoof_model_uncertain_weak_face_geometry:
-    "Нет FasNet; слабая геометрия — проверка.",
+    "Сильная периодика и геометрия при мелком лице.",
+  spoof_model_uncertain_weak_face_geometry: "Нет FasNet; слабая геометрия.",
   spoof_model_uncertain_clean_fallback:
     "Нет FasNet; остальные сигналы слабые — осторожный «норма».",
-  weak_face_gated_combined_review:
-    "Слабая комбинация признаков у лица — проверка.",
+  weak_face_gated_combined_review: "Слабая комбинация признаков у лица.",
   shield_weak_geometry_clean:
     "Защита «обычный живой» кадр при слабой геометрии без сильной подмены.",
   default_clean: "Признаков подмены по лицу нет; фон в вердикт не входит.",
   presentation_insufficient_input_review:
-    "Лицо в кадре или качество ROI недостаточны для авто-вердикта по текстуре — нужна ручная проверка.",
+    "Лицо в кадре или качество ROI недостаточны для авто-вердикта по текстуре.",
 };
 
 const INTERPRETABILITY_CODE_RU: Record<string, string> = {
@@ -126,7 +134,7 @@ const INTERPRETABILITY_CODE_RU: Record<string, string> = {
   isolated_dual_texture_auto_cleared_without_geometry:
     "Устаревшее пояснение; см. актуальную ветку решения выше.",
   presentation_roi_unreliable_for_attack_verdict:
-    "ROI лица или качество не позволяют считать текстуру доказательством подмены — нужен осмотр.",
+    "ROI лица или качество не позволяют считать текстуру доказательством подмены — нужен новый кадр.",
 };
 
 const UNCERTAINTY_CODE_RU: Record<string, string> = {
@@ -136,11 +144,11 @@ const UNCERTAINTY_CODE_RU: Record<string, string> = {
     "Снижено качество изображения — это отдельно от оценки атаки презентации.",
   fake_model_unavailable:
     "Модель FasNet недоступна или завершилась ошибкой — снижена уверенность.",
-  outcome_review_recommended: "Рекомендуется ручная проверка.",
+  outcome_review_recommended: "Нужен новый кадр.",
   high_presentation_attack_risk:
     "Высокий риск атаки презентации по согласованным сигналам у лица.",
   presentation_roi_insufficient:
-    "Недостаточно данных по лицу для авто-вердикта — нужен осмотр.",
+    "Недостаточно данных по лицу для авто-вердикта — нужен новый кадр.",
 };
 
 const CONTEXT_CODE_RU: Record<string, string> = {
@@ -153,13 +161,16 @@ const CONTEXT_CODE_RU: Record<string, string> = {
 const SUPPORT_FLAG_RU: Record<string, string> = {
   shield_normal_live_active:
     "Сработала защита от ложных срабатываний на слабой геометрии при живом кадре.",
-  corroboration_fasnet_fake: "В короборации учтён сигнал FasNet о подмене.",
+  corroboration_fasnet_fake:
+    "Согласованность: FasNet тоже указывает на подмену.",
   corroboration_mid_device:
-    "В короборации: средний уровень сигнала «устройство у лица».",
+    "Согласованность: устройство у лица держится на среднем уровне.",
   corroboration_mid_frame:
-    "В короборации: средний уровень сигнала «рамка у лица».",
+    "Согласованность: рамка у лица держится на среднем уровне.",
   corroboration_recapture_threshold:
-    "В короборации: рекапчер на лице достиг порога подтверждения.",
+    "Согласованность: периодика на лице достигла порога подтверждения.",
+  corroboration_face_reflection:
+    "Согласованность: блики на лице похожи на отражение экрана.",
 };
 
 const PRESENTATION_METRIC_LABEL_RU: Record<string, string> = {
@@ -168,6 +179,7 @@ const PRESENTATION_METRIC_LABEL_RU: Record<string, string> = {
   face_device_score: "Устройство у лица",
   face_frame_score: "Рамка у лица",
   recapture_score: "Периодика на лице",
+  face_reflection_score: "Блики на лице",
 };
 
 const QUALITY_METRIC_LABEL_RU: Record<string, string> = {
@@ -209,7 +221,7 @@ function decisionHeadlineRu(d: PadDiagnosticsPayload): string {
     return "Подозрительно: сильные согласованные признаки у лица.";
   }
   if (st === "review") {
-    return "На проверку: автоматического достаточного итога нет.";
+    return "Достаточного итога нет, нужен новый кадр.";
   }
   if (st === "error") {
     return "Ошибка или нет лица для проверки.";
@@ -237,6 +249,7 @@ const PRESENTATION_KEYS: (keyof NonNullable<
   "face_device_score",
   "face_frame_score",
   "recapture_score",
+  "face_reflection_score",
 ];
 
 /**
@@ -328,7 +341,7 @@ export function buildPadDevDetailRows(
     if (parts.length > 0) {
       rows.push({
         label: "Согласованность сигналов",
-        value: parts.join(" · "),
+        value: parts.join(", "),
       });
     }
   }
@@ -336,9 +349,7 @@ export function buildPadDevDetailRows(
   if (ruleCodes.length > 0) {
     rows.push({
       label: "Внутренние пометки правил",
-      value: ruleCodes
-        .map((c) => humanizeApiTokenString(String(c)))
-        .join(" · "),
+      value: ruleCodes.map((c) => humanizeApiTokenString(String(c))).join(", "),
     });
   }
   const evidenceCodes = d.trace?.evidence_codes ?? [];
@@ -347,7 +358,7 @@ export function buildPadDevDetailRows(
       label: "Внутренние пометки доказательств",
       value: evidenceCodes
         .map((c) => humanizeApiTokenString(String(c)))
-        .join(" · "),
+        .join(", "),
     });
   }
   const schema = d.trace?.pad_trace_schema;
@@ -365,6 +376,7 @@ export function buildPadDevDetailRows(
       "face_device_score",
       "face_frame_score",
       "recapture_score",
+      "face_reflection_score",
       "quality_penalty",
     ] as const;
     for (const k of order) {
@@ -378,7 +390,7 @@ export function buildPadDevDetailRows(
       }
     }
     if (bits.length > 0) {
-      rows.push({ label: "Снимок метрик в тегах", value: bits.join(" · ") });
+      rows.push({ label: "Снимок метрик в тегах", value: bits.join(", ") });
     }
   }
   return rows;
@@ -424,7 +436,7 @@ export function padVerdictBadgeLabel(d: PadDiagnosticsPayload): string {
   const map: Record<string, string> = {
     clean: "Норма",
     insufficient_input_review: "Недостаточно данных",
-    review: "На проверку",
+    review: "Новый кадр",
     suspicious: "Подозрительно",
     error: "Ошибка",
     pending: "Ожидание",
@@ -436,8 +448,8 @@ const DECISION_SOURCE_RU: Record<string, string> = {
   auto_pad: "Авто-разбор",
   pad_rule_engine: "Авто-разбор",
   automatic: "Авто-разбор",
-  manual: "Решение оператора",
-  operator: "Решение оператора",
+  manual: "Внешнее решение",
+  operator: "Внешнее решение",
   admin_override: "Исправление в админке",
 };
 
@@ -611,7 +623,7 @@ export function localizePadDiagnostics(d: PadDiagnosticsPayload): {
   (d.uncertainty?.conflicting_signal_codes ?? []).forEach((c) => {
     if (c === "low_quality_but_high_presentation_alert") {
       uncertaintyLines.push(
-        "Сочетание: сниженное качество при высоком риске презентации — проверьте визуально.",
+        "Сочетание: сниженное качество при высоком риске презентации.",
       );
     } else if (c === "low_quality_but_clean_presentation") {
       uncertaintyLines.push(
@@ -619,7 +631,7 @@ export function localizePadDiagnostics(d: PadDiagnosticsPayload): {
       );
     } else {
       uncertaintyLines.push(
-        "Качество и оценка риска расходятся — ориентируйтесь на визуальный осмотр кадра.",
+        "Качество и оценка риска расходятся, нужен новый кадр.",
       );
     }
   });

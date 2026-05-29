@@ -14,6 +14,11 @@ const qualitySchema = z.object({
   passed: z.boolean(),
   det_score: z.number().nullable().optional(),
   face_area_ratio: z.number().nullable().optional(),
+  blur_laplacian_var: z.number().nullable().optional(),
+  brightness_mean: z.number().nullable().optional(),
+  pose_yaw: z.number().nullable().optional(),
+  pose_pitch: z.number().nullable().optional(),
+  pose_roll: z.number().nullable().optional(),
   reason_codes: z.array(z.string()).optional(),
 });
 
@@ -38,6 +43,7 @@ const padLivenessDiagnosticsSchema = z
         face_device_score: z.number().optional(),
         face_frame_score: z.number().optional(),
         recapture_score: z.number().optional(),
+        face_reflection_score: z.number().optional(),
       })
       .passthrough()
       .optional(),
@@ -101,6 +107,7 @@ const livenessSchema = z.object({
   device_bg_score: z.number().optional(),
   frame_global_score: z.number().optional(),
   recapture_score: z.number().optional(),
+  face_reflection_score: z.number().optional(),
   diagnostics: padLivenessDiagnosticsSchema,
   note: z.string().optional(),
 });
@@ -114,6 +121,22 @@ const diagnosticsSchema = z
   .object({
     mode_used: z.string().optional(),
     gallery_breakdown: z.record(z.number()).optional(),
+    threshold_cold_start: z.number().optional(),
+    identity_margin: z
+      .object({
+        impostor_guard_checked: z.boolean().optional(),
+        nearest_impostor_pin: z.string().nullable().optional(),
+        nearest_impostor_similarity: z.number().optional(),
+        impostor_gap: z.number().optional(),
+        impostor_gap_min: z.number().optional(),
+        impostor_min_other_score: z.number().optional(),
+        impostor_ambiguous: z.boolean().optional(),
+        impostor_guard_disabled: z.boolean().optional(),
+        impostor_guard_note: z.string().optional(),
+        impostor_guard_error: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough()
   .optional();

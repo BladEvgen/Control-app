@@ -102,6 +102,109 @@ function galleryStrengthLine(
   return "Галерея небольшая, поэтому порог строже.";
 }
 
+function galleryBreakdownLabel(key: string): string {
+  const labels: Record<string, string> = {
+    mask_prototypes: "Сохранённая маска",
+    avatar_prototypes: "Аватар",
+    augment_prototypes: "Варианты света/очков",
+    centroid_prototypes: "Сводные эталоны",
+    gallery_real_npy_prototypes: "Реальные кадры",
+  };
+  return labels[key] ?? key.replace(/_/g, " ");
+}
+
+function identityMargin(v: FaceVerifyApiResponse) {
+  return v.diagnostics?.identity_margin ?? null;
+}
+
+function identityMarginTone(
+  v: FaceVerifyApiResponse,
+): "success" | "warning" | "danger" | "neutral" {
+  const m = identityMargin(v);
+  if (!m || m.impostor_guard_disabled || !m.impostor_guard_checked) {
+    return "neutral";
+  }
+  if (m.impostor_ambiguous) return "danger";
+  if (
+    typeof m.impostor_gap === "number" &&
+    typeof m.impostor_gap_min === "number" &&
+    m.impostor_gap < m.impostor_gap_min * 1.6
+  ) {
+    return "warning";
+  }
+  return "success";
+}
+
+function identityMarginValue(v: FaceVerifyApiResponse): string {
+  const m = identityMargin(v);
+  if (!m || m.impostor_guard_disabled) return "не проверено";
+  if (m.impostor_guard_error) return "нет данных";
+  if (m.impostor_ambiguous) return "есть похожий";
+  if (m.impostor_guard_checked) return "отделён";
+  return "не проверено";
+}
+
+function identityMarginHint(v: FaceVerifyApiResponse): string {
+  const m = identityMargin(v);
+  if (!m || m.impostor_guard_disabled) {
+    return "Сравнение с похожими сотрудниками отключено или недоступно.";
+  }
+  if (m.impostor_guard_error) {
+    return "Сервер не смог сравнить кадр с остальной галереей.";
+  }
+  if (m.impostor_ambiguous) {
+    const pin = m.nearest_impostor_pin
+      ? ` Ближайший PIN: ${m.nearest_impostor_pin}.`
+      : "";
+    return `Другой сотрудник оказался слишком близко по лицу.${pin}`;
+  }
+  if (
+    typeof m.impostor_gap === "number" &&
+    typeof m.impostor_gap_min === "number"
+  ) {
+    return `Запас до ближайшего похожего: ${pctExact(m.impostor_gap)}% при минимуме ${pctExact(m.impostor_gap_min)}%.`;
+  }
+  if (m.impostor_guard_note) return m.impostor_guard_note;
+  return "Ближайшие похожие сотрудники не мешают решению.";
+}
+
+function qualityHumanHint(v: FaceVerifyApiResponse): string | undefined {
+  const parts: string[] = [];
+  if (typeof v.quality.face_area_ratio === "number") {
+    parts.push(`лицо ${(v.quality.face_area_ratio * 100).toFixed(2)}% кадра`);
+  }
+  if (typeof v.quality.brightness_mean === "number") {
+    parts.push(`свет ${Math.round(v.quality.brightness_mean)}/255`);
+  }
+  if (typeof v.quality.blur_laplacian_var === "number") {
+    parts.push(`резкость ${v.quality.blur_laplacian_var.toFixed(0)}`);
+  }
+  if (typeof v.quality.pose_yaw === "number") {
+    parts.push(`поворот ${Math.abs(v.quality.pose_yaw).toFixed(0)}°`);
+  }
+  return parts.length ? parts.join(", ") : undefined;
+}
+
+function nextStepText(v: FaceVerifyApiResponse): string {
+  const m = identityMargin(v);
+  if (m?.impostor_ambiguous) {
+    return "Повторите кадр лицом прямо и ближе к камере. Если отказ повторяется, обновите эталоны регистрации.";
+  }
+  if (v.status === "LIVENESS_FAIL" || v.status === "PAD_ERROR") {
+    return "Нужен живой кадр с камеры, без экрана и бумажного фото перед объективом.";
+  }
+  if (!v.quality.passed) {
+    return "Нужен новый кадр: лицо крупнее, камера на уровне глаз, без смаза и сильной тени.";
+  }
+  if (v.matched && v.final_decision === "YES") {
+    return "Система уверенно подтвердила лицо.";
+  }
+  if (v.gallery_strength === "weak") {
+    return "Чтобы чаще проходить проверку с первого раза, добавьте эталоны регистрации: прямо, чуть влево, чуть вправо, с очками и без.";
+  }
+  return "Если человек правильный, повторите кадр и проверьте свежесть эталонов регистрации.";
+}
+
 function outcomeBadgeClass(tone: "success" | "warning" | "danger"): string {
   if (tone === "success") {
     return "border-emerald-200/80 bg-emerald-50 text-emerald-800 dark:border-emerald-800/40 dark:bg-emerald-500/15 dark:text-emerald-200";
@@ -128,31 +231,20 @@ function evidenceTileClass(
 }
 
 function verifyVerdictLabel(v: FaceVerifyApiResponse, yes: boolean): string {
-  if (
-    yes &&
-    (v.liveness.status === "insufficient_input_review" ||
-      v.liveness.status === "review")
-  ) {
-    return "Совпало, но кадр слабый";
+  if (yes) return "Лицо подтверждено";
+  if (v.reason_codes.includes("NEAREST_IMPOSTOR_TOO_CLOSE")) {
+    return "Похожий сотрудник";
   }
-  if (yes) return "Совпадение подтверждено";
-  if (v.status === "QUALITY_FAIL") return "Кадр слабый для сравнения";
-  if (v.status === "LIVENESS_FAIL") return "Кадр не прошёл проверку фото";
-  if (v.status === "PAD_ERROR") return "Проверка фото не завершилась";
-  return "Совпадение не подтверждено";
+  if (v.status === "QUALITY_FAIL") return "Нужен новый кадр";
+  if (v.status === "LIVENESS_FAIL") return "Живость не подтверждена";
+  if (v.status === "PAD_ERROR") return "Проверка не завершилась";
+  return "Лицо не подтверждено";
 }
 
 function verifyVerdictTone(
   v: FaceVerifyApiResponse,
   yes: boolean,
 ): "success" | "warning" | "danger" {
-  if (
-    yes &&
-    (v.liveness.status === "insufficient_input_review" ||
-      v.liveness.status === "review")
-  ) {
-    return "warning";
-  }
   if (yes) return "success";
   if (
     v.status === "QUALITY_FAIL" ||
@@ -167,14 +259,11 @@ function verifyVerdictTone(
 function livenessValue(v: FaceVerifyApiResponse): string {
   if (v.status === "PAD_ERROR") return "нет ответа";
   if (
-    v.matched &&
-    v.final_decision === "YES" &&
-    (v.liveness.status === "insufficient_input_review" ||
-      v.liveness.status === "review")
+    v.liveness.status === "insufficient_input_review" ||
+    v.liveness.status === "review"
   ) {
-    return "нужен кадр лучше";
+    return "новый кадр";
   }
-  if (v.liveness.status === "insufficient_input_review") return "мало данных";
   if (
     v.liveness.checked &&
     v.liveness.trust_confirmed === true &&
@@ -197,13 +286,25 @@ function buildVerifyUncertaintyLines(v: FaceVerifyApiResponse): string[] {
   };
 
   if (!v.quality.passed) {
-    push("Кадр слабый для уверенного сравнения.");
+    push("Кадр слабый, система не подтверждает лицо.");
   }
   if (v.liveness.status === "insufficient_input_review") {
-    push("Для проверки фото системе не хватило пригодного изображения.");
+    push(
+      "Для проверки фото системе не хватило пригодного изображения: нужен новый кадр.",
+    );
+  }
+  if (v.liveness.status === "review") {
+    push(
+      "Проверка фото не дала уверенный автоматический ответ: нужен новый кадр.",
+    );
   }
   if (v.gallery_strength === "weak") {
     push("Эталонов мало, поэтому порог сравнения строже.");
+  }
+  if (identityMargin(v)?.impostor_ambiguous) {
+    push(
+      "В галерее есть очень похожий сотрудник, поэтому система не подтверждает лицо.",
+    );
   }
   for (const code of v.reason_codes.slice(0, 3)) {
     push(humanizeVerifyReasonCode(code));
@@ -293,7 +394,7 @@ function VerifyPadLivenessDetails({
             }
           />
           <Bar
-            label="Подлинность лица (FasNet)"
+            label="Сигнал подмены (FasNet)"
             value={liveness.deepface_score}
             tone="slate"
           />
@@ -332,6 +433,13 @@ function VerifyPadLivenessDetails({
               tone="slate"
             />
           ) : null}
+          {typeof liveness.face_reflection_score === "number" ? (
+            <Bar
+              label="Блики на лице"
+              value={liveness.face_reflection_score}
+              tone="slate"
+            />
+          ) : null}
           {typeof liveness.quality_penalty === "number" ? (
             <Bar
               label="Штраф за качество"
@@ -347,7 +455,7 @@ function VerifyPadLivenessDetails({
             Служебные пометки
           </p>
           <div className="flex flex-wrap gap-1">
-            {liveness.tags.map((tag) => (
+            {liveness.tags.map((tag: string) => (
               <span
                 key={tag}
                 className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-600 dark:border-slate-600 dark:bg-slate-950/80 dark:text-slate-300"
@@ -362,8 +470,8 @@ function VerifyPadLivenessDetails({
       typeof liveness.elapsed_ms === "number" &&
       typeof liveness.model_version === "string" ? (
         <p className="mt-2 tabular-nums text-[11px] text-slate-500">
-          {liveness.model_version} · {formatServerElapsed(liveness.elapsed_ms)}{" "}
-          ({liveness.elapsed_ms.toFixed(0)} мс)
+          {liveness.model_version}, {formatServerElapsed(liveness.elapsed_ms)} (
+          {liveness.elapsed_ms.toFixed(0)} мс)
         </p>
       ) : null}
     </>
@@ -373,16 +481,11 @@ function VerifyPadLivenessDetails({
 function livenessSummary(v: FaceVerifyApiResponse): string {
   if (v.status === "PAD_ERROR") return "Проверка фото не завершилась.";
   if (v.status === "LIVENESS_FAIL") return "Проверка фото не подтверждена.";
-  if (
-    v.matched &&
-    v.final_decision === "YES" &&
-    (v.liveness.status === "insufficient_input_review" ||
-      v.liveness.status === "review")
-  ) {
-    return "Сходство посчитано, но для уверенного кадра лучше переснять фото.";
-  }
   if (v.liveness.status === "insufficient_input_review") {
     return "Для проверки фото не хватило качества кадра.";
+  }
+  if (v.liveness.status === "review") {
+    return "Проверка фото не стала уверенной.";
   }
   if (
     v.liveness.checked &&
@@ -408,10 +511,9 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
     humanizeVerifyReasonCode(v.reason_codes[0] ?? "")
   ).trim();
   const uncertaintyLines = buildVerifyUncertaintyLines(v);
-  const qualityHint =
-    typeof v.quality.face_area_ratio === "number"
-      ? `Лицо занимает ${(v.quality.face_area_ratio * 100).toFixed(2)}% кадра.`
-      : undefined;
+  const qualityHint = qualityHumanHint(v);
+  const identityTone = identityMarginTone(v);
+  const nextStep = nextStepText(v);
 
   return (
     <motion.div
@@ -445,11 +547,15 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
         </p>
       </div>
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <EvidenceTile
           label="Сходство"
           value={`${pctExact(displayScore)}%`}
-          hint={`Порог для этого кадра: ${pctExact(v.threshold_applied)}%`}
+          hint={
+            v.threshold_applied > 0
+              ? `Порог для этого кадра: ${pctExact(v.threshold_applied)}%`
+              : "Порог лица не применялся: сначала нужен пригодный живой кадр."
+          }
           tone={yes ? "success" : "neutral"}
         />
         <EvidenceTile
@@ -457,7 +563,8 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
           value={livenessValue(v)}
           hint={livenessSummary(v)}
           tone={
-            v.liveness.status === "insufficient_input_review"
+            v.liveness.status === "insufficient_input_review" ||
+            v.liveness.status === "review"
               ? "warning"
               : yes
                 ? "success"
@@ -469,8 +576,14 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
         <EvidenceTile
           label="Галерея"
           value={v.gallery_strength === "strong" ? "надёжная" : "строгий режим"}
-          hint={`${galleryStrengthLine(v.gallery_strength)} ${v.gallery_size} эталонов · ${v.gallery.distinct_enrollment_sources} источника`}
+          hint={`${galleryStrengthLine(v.gallery_strength)} ${v.gallery_size} эталонов, ${v.gallery.distinct_enrollment_sources} источника`}
           tone={v.gallery_strength === "strong" ? "success" : "warning"}
+        />
+        <EvidenceTile
+          label="Похожие люди"
+          value={identityMarginValue(v)}
+          hint={identityMarginHint(v)}
+          tone={identityTone}
         />
         <EvidenceTile
           label="Качество"
@@ -478,6 +591,15 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
           hint={qualityHint}
           tone={v.quality.passed ? "neutral" : "warning"}
         />
+      </div>
+
+      <div className="mb-4 rounded-2xl border border-blue-200/80 bg-blue-50/80 p-4 shadow-sm dark:border-blue-800/40 dark:bg-blue-500/10">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-900 dark:text-blue-100">
+          Что дальше
+        </p>
+        <p className="mt-1 text-sm leading-relaxed text-blue-950 dark:text-blue-50">
+          {nextStep}
+        </p>
       </div>
 
       {uncertaintyLines.length > 0 ? (
@@ -548,7 +670,62 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
                 Доля лица: {(v.quality.face_area_ratio * 100).toFixed(2)}%
               </p>
             ) : null}
+            {typeof v.quality.blur_laplacian_var === "number" ? (
+              <p className="tabular-nums text-slate-500">
+                Резкость: {v.quality.blur_laplacian_var.toFixed(1)}
+              </p>
+            ) : null}
+            {typeof v.quality.brightness_mean === "number" ? (
+              <p className="tabular-nums text-slate-500">
+                Средний свет: {v.quality.brightness_mean.toFixed(1)} / 255
+              </p>
+            ) : null}
+            {typeof v.quality.pose_yaw === "number" ||
+            typeof v.quality.pose_pitch === "number" ? (
+              <p className="tabular-nums text-slate-500">
+                Поза: yaw{" "}
+                {typeof v.quality.pose_yaw === "number"
+                  ? v.quality.pose_yaw.toFixed(1)
+                  : "—"}
+                °, pitch{" "}
+                {typeof v.quality.pose_pitch === "number"
+                  ? v.quality.pose_pitch.toFixed(1)
+                  : "—"}
+                °
+              </p>
+            ) : null}
           </div>
+
+          {identityMargin(v) ? (
+            <div
+              className={`rounded-lg border p-3 text-xs ${evidenceTileClass(identityTone)}`}
+            >
+              <p className="mb-1.5 font-medium text-slate-700 dark:text-slate-200">
+                Защита от похожих сотрудников
+              </p>
+              <p className="leading-relaxed text-slate-600 dark:text-slate-400">
+                {identityMarginHint(v)}
+              </p>
+              {typeof identityMargin(v)?.nearest_impostor_similarity ===
+              "number" ? (
+                <dl className="mt-2 grid grid-cols-2 gap-2 tabular-nums text-slate-500">
+                  <div>
+                    <dt>Ближайший другой</dt>
+                    <dd>
+                      {pctExact(
+                        identityMargin(v)?.nearest_impostor_similarity ?? 0,
+                      )}
+                      %
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Запас</dt>
+                    <dd>{pctExact(identityMargin(v)?.impostor_gap ?? 0)}%</dd>
+                  </div>
+                </dl>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="rounded-lg border border-slate-200/80 bg-slate-50/60 p-3 text-xs dark:border-slate-600/50 dark:bg-slate-950/30">
             <p className="mb-2 font-medium text-slate-700 dark:text-slate-200">
@@ -622,7 +799,7 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
                       className="flex justify-between gap-2 border-b border-slate-200/60 pb-1 last:border-0 dark:border-slate-700/50"
                     >
                       <dt className="text-slate-500 dark:text-slate-400">
-                        {key.replace(/_/g, " ")}
+                        {galleryBreakdownLabel(key)}
                       </dt>
                       <dd className="tabular-nums font-medium text-slate-800 dark:text-slate-200">
                         {typeof val === "number" ? val : String(val)}
@@ -640,7 +817,7 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
                 Коды решения
               </p>
               <ul className="list-inside list-disc space-y-0.5 text-xs text-slate-600 dark:text-slate-400">
-                {v.reason_codes.map((c) => (
+                {v.reason_codes.map((c: string) => (
                   <li key={c}>{humanizeVerifyReasonCode(c)}</li>
                 ))}
               </ul>

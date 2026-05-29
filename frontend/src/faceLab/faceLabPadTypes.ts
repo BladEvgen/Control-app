@@ -13,6 +13,7 @@ export type PadDiagnosticsPresentation = {
   face_device_score?: number;
   face_frame_score?: number;
   recapture_score?: number;
+  face_reflection_score?: number;
 };
 
 export type PadDiagnosticsQuality = {

@@ -24,6 +24,7 @@ export type PadTestResponse = {
   device_bg_score: number;
   frame_global_score: number;
   recapture_score: number;
+  face_reflection_score: number;
   diagnostics?: PadDiagnosticsPayload | null;
 };
 
@@ -53,6 +54,8 @@ export function livenessToPadTestResponse(
       typeof l.frame_global_score === "number" ? l.frame_global_score : 0,
     recapture_score:
       typeof l.recapture_score === "number" ? l.recapture_score : 0,
+    face_reflection_score:
+      typeof l.face_reflection_score === "number" ? l.face_reflection_score : 0,
     ...(diag ? { diagnostics: diag } : {}),
   };
 }
@@ -63,12 +66,15 @@ export type RecognizedStaffRow = {
   surname?: string;
   department?: string | null;
   similarity: number;
+  neighbor_gap?: number;
   bbox: number[];
 };
 
 export type UnknownFaceRow = {
   status: string;
   bbox: number[];
+  best_similarity?: number;
+  neighbor_gap?: number;
 };
 
 export type RecognizeResponse = {
@@ -99,6 +105,7 @@ export function parsePadResult(data: unknown): PadTestResponse | null {
     "device_bg_score",
     "frame_global_score",
     "recapture_score",
+    "face_reflection_score",
   ] as const;
   for (const k of nums) {
     if (typeof data[k] !== "number") return null;
@@ -136,6 +143,7 @@ export function parsePadResult(data: unknown): PadTestResponse | null {
     device_bg_score: data.device_bg_score as number,
     frame_global_score: data.frame_global_score as number,
     recapture_score: data.recapture_score as number,
+    face_reflection_score: data.face_reflection_score as number,
   };
   if (diagnostics) {
     base.diagnostics = diagnostics;
@@ -174,6 +182,10 @@ export function parseRecognizeResponse(
           ? (row.department as string | null)
           : undefined,
       similarity: normalizeScore01(row.similarity),
+      neighbor_gap:
+        typeof row.neighbor_gap === "number"
+          ? normalizeScore01(row.neighbor_gap)
+          : undefined,
       bbox: row.bbox as number[],
     });
   }
@@ -187,7 +199,18 @@ export function parseRecognizeResponse(
     ) {
       return null;
     }
-    unknown_faces.push({ status: row.status, bbox: row.bbox as number[] });
+    unknown_faces.push({
+      status: row.status,
+      bbox: row.bbox as number[],
+      best_similarity:
+        typeof row.best_similarity === "number"
+          ? normalizeScore01(row.best_similarity)
+          : undefined,
+      neighbor_gap:
+        typeof row.neighbor_gap === "number"
+          ? normalizeScore01(row.neighbor_gap)
+          : undefined,
+    });
   }
   return { recognized_staff, unknown_faces };
 }

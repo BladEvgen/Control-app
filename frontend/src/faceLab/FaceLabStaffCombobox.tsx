@@ -22,10 +22,10 @@ function normalizeSearch(s: string): string {
 function formatLabel(o: StaffPickOption): string {
   const base = `${o.fio} — ${o.deptName}`;
   if (o.faceProfileState === "bootstrap_required") {
-    return `${base} · нужен сбор лиц`;
+    return `${base}, нужен сбор лиц`;
   }
   if (o.faceProfileState === "weak_gallery") {
-    return `${base} · слабая галерея`;
+    return `${base}, слабая галерея`;
   }
   return base;
 }
@@ -243,7 +243,7 @@ export function FaceLabStaffCombobox({
               {selected.fio}
             </p>
             <p className="truncate text-xs text-slate-600 dark:text-slate-400">
-              {selected.deptName} · PIN {selected.pin}
+              {selected.deptName}, PIN {selected.pin}
             </p>
             {faceProfileStateLabel(selected.faceProfileState) ? (
               <span className="mt-2 inline-flex rounded-full border border-emerald-200/80 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-500/10 dark:text-emerald-200">
@@ -279,7 +279,7 @@ export function FaceLabStaffCombobox({
                     {o.fio}
                   </span>
                   <span className="mt-0.5 block text-xs leading-snug text-slate-600 dark:text-slate-400">
-                    {o.deptName} · PIN {o.pin}
+                    {o.deptName}, PIN {o.pin}
                   </span>
                 </div>
                 {faceProfileStateLabel(o.faceProfileState) ? (

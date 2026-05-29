@@ -242,11 +242,7 @@ export function PadResultPanel({ pad }: { pad: PadTestResponse }) {
                   : "emerald"
             }
           />
-          <Bar
-            label="Подлинность лица"
-            value={pad.deepface_score}
-            tone="slate"
-          />
+          <Bar label="Сигнал подмены" value={pad.deepface_score} tone="slate" />
           <Bar
             label="Устройство у лица"
             value={pad.device_score}
@@ -266,6 +262,11 @@ export function PadResultPanel({ pad }: { pad: PadTestResponse }) {
           <Bar
             label="Рекапчер / периодика (лицо)"
             value={pad.recapture_score}
+            tone="slate"
+          />
+          <Bar
+            label="Блики на лице"
+            value={pad.face_reflection_score}
             tone="slate"
           />
           <Bar
@@ -378,8 +379,11 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
           value={hasMatches ? `${pctExact(bestScore)}%` : "—"}
           hint={
             bestMatch
-              ? [bestMatch.surname, bestMatch.name].filter(Boolean).join(" ") ||
-                "Имя не указано"
+              ? `${[bestMatch.surname, bestMatch.name].filter(Boolean).join(" ") || "Имя не указано"}${
+                  typeof bestMatch.neighbor_gap === "number"
+                    ? `, запас ${pctExact(bestMatch.neighbor_gap)}%`
+                    : ""
+                }`
               : "Совпадение не дошло до порога."
           }
           tone={hasMatches ? "success" : "warning"}
@@ -401,7 +405,7 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
           value={hasMatches ? "сработала" : "не подтвердила"}
           hint={
             hasMatches
-              ? "Есть кандидаты для ручной проверки."
+              ? "Есть автоматически найденные совпадения."
               : "Лицо могло не дойти до порога или не иметь эталона."
           }
           tone={hasMatches ? "success" : "warning"}
@@ -482,6 +486,17 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
                     Лучший кандидат
                   </span>
                 ) : null}
+                {typeof row.neighbor_gap === "number" ? (
+                  <span
+                    className={`rounded-full border px-2.5 py-1 ${
+                      row.neighbor_gap >= 0.06
+                        ? "border-emerald-200/80 bg-emerald-50 text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-500/10 dark:text-emerald-200"
+                        : "border-amber-200/80 bg-amber-50 text-amber-800 dark:border-amber-800/40 dark:bg-amber-500/10 dark:text-amber-100"
+                    }`}
+                  >
+                    Запас от похожих: {pctExact(row.neighbor_gap)}%
+                  </span>
+                ) : null}
               </div>
             </motion.li>
           ))}
@@ -509,6 +524,16 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
             {r.unknown_faces.map((uf, i) => (
               <motion.li key={i} variants={fadeItem}>
                 Лицо {i + 1}: {humanizeUnknownFaceStatus(uf.status)}
+                {typeof uf.best_similarity === "number" ? (
+                  <span className="ml-1 tabular-nums">
+                    , лучший шанс {pctExact(uf.best_similarity)}%
+                  </span>
+                ) : null}
+                {typeof uf.neighbor_gap === "number" ? (
+                  <span className="ml-1 tabular-nums">
+                    , запас {pctExact(uf.neighbor_gap)}%
+                  </span>
+                ) : null}
               </motion.li>
             ))}
           </motion.ul>
