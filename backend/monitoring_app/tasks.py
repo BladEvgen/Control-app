@@ -992,6 +992,9 @@ def rescan_lesson_attendance_photo_ids(
                 continue
             image_path = record.staff_image_path
             try:
+                if not image_path:
+                    stats["skipped_no_photo"] += 1
+                    continue
                 try:
                     result = check_photo(image_path=image_path, device=resolved_device)
                 except Exception as exc:

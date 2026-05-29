@@ -441,13 +441,14 @@ def delete_avatar_on_staff_delete(sender, instance, **kwargs):
     print("Аватар отсутствует, ничего не удаляется.")
 
 
-def staff_face_sample_upload_to(instance: "StaffFaceSample", filename: str) -> str:
+def staff_face_sample_upload_to(instance: models.Model, filename: str) -> str:
+    sample = cast("StaffFaceSample", instance)
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
     if ext not in ("jpg", "jpeg", "png"):
         ext = "jpg"
     return (
-        f"user_images/{instance.staff.pin}/face_samples/"
-        f"{instance.staff.pin}_fs_{uuid.uuid4().hex[:12]}.{ext}"
+        f"user_images/{sample.staff.pin}/face_samples/"
+        f"{sample.staff.pin}_fs_{uuid.uuid4().hex[:12]}.{ext}"
     )
 
 

@@ -2057,13 +2057,17 @@ class LessonAttendancePhotoVerdictApiTest(APITestCase):
 
     def test_effective_status_filter_excludes_manual_clean_review_rows(self):
         list_url = reverse("lesson_attendance_photo_verdicts")
+        first_in = self.lesson.first_in
+        last_out = self.lesson.last_out
+        assert first_in is not None
+        assert last_out is not None
         review_manual_clean = LessonAttendance.objects.create(
             staff=self.staff,
             subject_name="Physics",
             tutor_id=2,
             tutor="Tutor 2",
-            first_in=self.lesson.first_in + timedelta(hours=2),
-            last_out=self.lesson.last_out + timedelta(hours=2),
+            first_in=first_in + timedelta(hours=2),
+            last_out=last_out + timedelta(hours=2),
             latitude=43.2389,
             longitude=76.8897,
             date_at=self.lesson.date_at,
@@ -2076,8 +2080,8 @@ class LessonAttendancePhotoVerdictApiTest(APITestCase):
             subject_name="Chemistry",
             tutor_id=3,
             tutor="Tutor 3",
-            first_in=self.lesson.first_in + timedelta(hours=4),
-            last_out=self.lesson.last_out + timedelta(hours=4),
+            first_in=first_in + timedelta(hours=4),
+            last_out=last_out + timedelta(hours=4),
             latitude=43.2389,
             longitude=76.8897,
             date_at=self.lesson.date_at,
@@ -2089,8 +2093,8 @@ class LessonAttendancePhotoVerdictApiTest(APITestCase):
             subject_name="Biology",
             tutor_id=4,
             tutor="Tutor 4",
-            first_in=self.lesson.first_in + timedelta(hours=6),
-            last_out=self.lesson.last_out + timedelta(hours=6),
+            first_in=first_in + timedelta(hours=6),
+            last_out=last_out + timedelta(hours=6),
             latitude=43.2389,
             longitude=76.8897,
             date_at=self.lesson.date_at,
