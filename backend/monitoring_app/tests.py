@@ -7,9 +7,11 @@ import tempfile
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, Mock, patch
 
+import numpy as np
 from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -18,6 +20,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from monitoring_app import ml
 from monitoring_app import signals as lesson_signals
 from monitoring_app import tasks as monitoring_tasks
 from monitoring_app import utils
@@ -54,6 +57,43 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 User = get_user_model()
+
+
+class FaceRecognitionRuntimeScoringTest(SimpleTestCase):
+    @override_settings(
+        FACE_RECOGNITION_THRESHOLD=0.90,
+        FACE_RECOGNITION_THRESHOLD_RELAXED=0.70,
+        FACE_RECOGNITION_MIN_NEIGHBOR_GAP=0.055,
+    )
+    def test_neighbor_gap_uses_nearest_other_staff_not_same_staff_proto(self):
+        staff_a = SimpleNamespace(
+            pk=1, pin="A1", name="Ann", surname="One", department=None
+        )
+        staff_b = SimpleNamespace(
+            pk=2, pin="B1", name="Bob", surname="Two", department=None
+        )
+        face = SimpleNamespace(bbox=np.asarray([0, 0, 10, 10]))
+
+        probe = np.asarray([[1.0, 0.0]], dtype=np.float64)
+        gallery = np.asarray(
+            [
+                [0.810, (1.0 - 0.810**2) ** 0.5],
+                [0.805, (1.0 - 0.805**2) ** 0.5],
+                [0.780, (1.0 - 0.780**2) ** 0.5],
+            ],
+            dtype=np.float64,
+        )
+
+        recognized, unknown = ml._classify_runtime_gallery_matches(
+            [face],
+            probe,
+            gallery,
+            [staff_a, staff_a, staff_b],
+        )
+
+        self.assertEqual(recognized, [])
+        self.assertEqual(len(unknown), 1)
+        self.assertAlmostEqual(unknown[0]["neighbor_gap"], 0.03, places=6)
 
 
 class RemoteWorkAdminTest(TestCase):

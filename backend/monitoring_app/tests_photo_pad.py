@@ -1,5 +1,6 @@
 import datetime
 import json
+from typing import Any, cast
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
@@ -348,11 +349,66 @@ class PadDecisionTests(SimpleTestCase):
                 quality_penalty=0.0,
                 tags=["fasnet_fake", "glasses_reflection_guard"],
                 recapture_score=0.0,
+                face_area_ratio=0.06,
+                face_reflection_score=0.9,
             )
         )
         self.assertEqual(result.status, STATUS_REVIEW)
         self.assertIsNone(result.trust_confirmed)
         self.assertIn("pad_rule:fake_reflection_guard_review", result.tags)
+
+    def test_face_reflection_with_screen_context_goes_suspicious(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.24,
+                frame_score=0.26,
+                quality_penalty=0.05,
+                tags=["face_reflection_screen_like"],
+                face_area_ratio=0.06,
+                face_reflection_score=0.62,
+            )
+        )
+        self.assertEqual(result.status, STATUS_SUSPICIOUS)
+        self.assertFalse(result.trust_confirmed)
+        self.assertIn("pad_rule:face_reflection_display_suspicious", result.tags)
+
+    def test_face_reflection_without_context_does_not_auto_reject(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.05,
+                tags=["face_reflection_screen_like"],
+                face_area_ratio=0.06,
+                face_reflection_score=0.9,
+            )
+        )
+        self.assertNotEqual(result.status, STATUS_SUSPICIOUS)
+        self.assertIn("pad_rule:default_clean", result.tags)
+
+    def test_fake_plus_face_reflection_goes_suspicious(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.84,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.05,
+                tags=["fasnet_fake", "face_reflection_screen_like"],
+                face_area_ratio=0.06,
+                face_reflection_score=0.62,
+            )
+        )
+        self.assertEqual(result.status, STATUS_SUSPICIOUS)
+        self.assertFalse(result.trust_confirmed)
+        self.assertIn("pad_rule:fake_plus_face_reflection_suspicious", result.tags)
 
     def test_pad_struct_tag_present(self):
         result = _decide(
@@ -368,7 +424,7 @@ class PadDecisionTests(SimpleTestCase):
         )
         struct_tags = [t for t in result.tags if t.startswith("pad_struct:")]
         self.assertEqual(len(struct_tags), 1)
-        self.assertIn("pad_trace_v8", struct_tags[0])
+        self.assertIn("pad_trace_v9", struct_tags[0])
         self.assertIn('"product_outcome":"clean"', struct_tags[0])
 
     def test_fake_plus_strong_recapture_without_geometry_stays_review(self):
@@ -922,7 +978,7 @@ class PadDiagnosticsContractTests(SimpleTestCase):
 
     def test_clean_payload_exposes_branch_without_duplicate_reason_lists(self):
         struct = {
-            "schema": "pad_trace_v8",
+            "schema": "pad_trace_v9",
             "branch": "default_clean",
             "product_outcome": "clean",
         }
@@ -954,7 +1010,7 @@ class PadDiagnosticsContractTests(SimpleTestCase):
     def test_suspicious_strong_corroboration_presentation_confidence_high(self):
         """Corroborated ``suspicious`` must not use the old low default confidence floor."""
         struct = {
-            "schema": "pad_trace_v8",
+            "schema": "pad_trace_v9",
             "branch": "no_fake_dual_suspicious_geometry",
             "product_outcome": "suspicious",
         }
@@ -1019,7 +1075,7 @@ class PadReviewRateAuditTests(SimpleTestCase):
 
 class LessonAttendancePhotoResetTests(TestCase):
     def setUp(self):
-        self.staff = Staff.objects.create(
+        self.staff = cast(Any, Staff).objects.create(
             pin="S998877S",
             name="Pad",
             surname="Tester",
@@ -1031,7 +1087,7 @@ class LessonAttendancePhotoResetTests(TestCase):
         )
 
     def test_photo_change_resets_manual_override(self):
-        lesson = LessonAttendance.objects.create(
+        lesson = cast(Any, LessonAttendance).objects.create(
             staff=self.staff,
             subject_name="PAD",
             tutor_id=1,

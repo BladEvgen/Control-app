@@ -4,6 +4,8 @@ from django.test import SimpleTestCase, override_settings
 from monitoring_app.face_verification_contract import (
     R_COLD_START_QUALITY_INSUFFICIENT,
     R_LIVENESS_FAILED,
+    R_LIVENESS_UNCERTAIN,
+    R_NEAREST_IMPOSTOR_TOO_CLOSE,
     R_PAD_PIPELINE_FAILED,
     R_PROBE_QUALITY_LOW,
     R_SCORE_BELOW_COLD_START_THRESHOLD,
@@ -53,6 +55,7 @@ def _call(
     thr_v: float = 0.76,
     thr_w: float = 0.86,
     thr_cold: float = 0.835,
+    identity_ambiguous: bool = False,
 ):
     return decide_face_verify_binary(
         **{
@@ -64,6 +67,7 @@ def _call(
             "threshold_verified": thr_v,
             "threshold_weak_gallery": thr_w,
             "threshold_cold_start": thr_cold,
+            "identity_ambiguous": identity_ambiguous,
         },
     )
 
@@ -158,7 +162,7 @@ class FaceVerifyPolicyPadMappingTests(SimpleTestCase):
         self.assertEqual(st, "VERIFIED")
         self.assertEqual(codes, [])
         self.assertAlmostEqual(thr_applied, 0.835)
-        self.assertEqual(gstr, "weak")
+        self.assertEqual(gstr, "strong")
         self.assertIn("холод", summary.lower())
 
     def test_weak_gallery_mid_score_no_not_review(self) -> None:
@@ -195,6 +199,38 @@ class FaceVerifyPolicyPadMappingTests(SimpleTestCase):
         self.assertEqual(codes, [R_SCORE_BELOW_COLD_START_THRESHOLD])
         self.assertAlmostEqual(thr_applied, 0.835)
         self.assertEqual(gstr, "weak")
+
+    def test_identity_ambiguous_rejects_even_high_score(self) -> None:
+        live: LivenessPayload = {
+            "checked": True,
+            "trust_confirmed": True,
+            "status": "clean",
+            "risk_score": 0.01,
+            "model_version": "pad_v3",
+            "tags": [],
+            "elapsed_ms": 1.0,
+            "deepface_score": 0.0,
+            "device_score": 0.0,
+            "frame_score": 0.0,
+            "quality_penalty": 0.0,
+            "note": "",
+        }
+        matched, fd, summary, st, codes, thr_applied, gstr = _call(
+            quality=_QUALITY_OK,
+            live=live,
+            score=0.94,
+            gallery_templates=3,
+            breakdown=_GALLERY_STRONG_BD,
+            identity_ambiguous=True,
+        )
+
+        self.assertFalse(matched)
+        self.assertEqual(fd, "NO")
+        self.assertEqual(st, "REJECTED")
+        self.assertIn(R_NEAREST_IMPOSTOR_TOO_CLOSE, codes)
+        self.assertEqual(thr_applied, 0.0)
+        self.assertEqual(gstr, "weak")
+        self.assertIn("другому сотруднику", summary)
 
     def test_zero_templates_is_no(self) -> None:
         live: LivenessPayload = {
@@ -475,7 +511,7 @@ class FaceVerifyPolicyPadMappingTests(SimpleTestCase):
         self.assertEqual(st, "QUALITY_FAIL")
         self.assertEqual(codes[0], R_PROBE_QUALITY_LOW)
 
-    def test_insufficient_input_retry_can_still_verify(self) -> None:
+    def test_insufficient_input_returns_no_even_high_score(self) -> None:
         live: LivenessPayload = {
             "checked": True,
             "trust_confirmed": None,
@@ -497,15 +533,15 @@ class FaceVerifyPolicyPadMappingTests(SimpleTestCase):
             gallery_templates=3,
             breakdown=_GALLERY_STRONG_BD,
         )
-        self.assertTrue(matched)
-        self.assertEqual(fd, "YES")
-        self.assertEqual(st, "VERIFIED")
-        self.assertEqual(codes, [])
-        self.assertAlmostEqual(thr_applied, 0.76)
+        self.assertFalse(matched)
+        self.assertEqual(fd, "NO")
+        self.assertEqual(st, "QUALITY_FAIL")
+        self.assertEqual(codes, [R_LIVENESS_UNCERTAIN])
+        self.assertAlmostEqual(thr_applied, 0.0)
         self.assertEqual(gstr, "strong")
-        self.assertIn("пересня", summary.lower())
+        self.assertIn("не дала уверенного", summary.lower())
 
-    def test_review_retry_can_still_verify(self) -> None:
+    def test_review_returns_no_even_high_score(self) -> None:
         live: LivenessPayload = {
             "checked": True,
             "trust_confirmed": None,
@@ -527,15 +563,15 @@ class FaceVerifyPolicyPadMappingTests(SimpleTestCase):
             gallery_templates=3,
             breakdown=_GALLERY_STRONG_BD,
         )
-        self.assertTrue(matched)
-        self.assertEqual(fd, "YES")
-        self.assertEqual(st, "VERIFIED")
-        self.assertEqual(codes, [])
-        self.assertAlmostEqual(thr_applied, 0.76)
+        self.assertFalse(matched)
+        self.assertEqual(fd, "NO")
+        self.assertEqual(st, "QUALITY_FAIL")
+        self.assertEqual(codes, [R_LIVENESS_UNCERTAIN])
+        self.assertAlmostEqual(thr_applied, 0.0)
         self.assertEqual(gstr, "strong")
-        self.assertIn("пересня", summary.lower())
+        self.assertIn("не дала уверенного", summary.lower())
 
-    def test_insufficient_input_retry_below_threshold_is_quality_fail(self) -> None:
+    def test_insufficient_input_below_threshold_is_quality_fail(self) -> None:
         live: LivenessPayload = {
             "checked": True,
             "trust_confirmed": None,
@@ -560,10 +596,10 @@ class FaceVerifyPolicyPadMappingTests(SimpleTestCase):
         self.assertFalse(matched)
         self.assertEqual(fd, "NO")
         self.assertEqual(st, "QUALITY_FAIL")
-        self.assertEqual(codes, [R_PROBE_QUALITY_LOW])
-        self.assertAlmostEqual(thr_applied, 0.76)
+        self.assertEqual(codes, [R_LIVENESS_UNCERTAIN])
+        self.assertAlmostEqual(thr_applied, 0.0)
         self.assertEqual(gstr, "strong")
-        self.assertIn("кадр слабый", summary.lower())
+        self.assertIn("не дала уверенного", summary.lower())
 
 
 class FaceVerifyPadGateTests(SimpleTestCase):

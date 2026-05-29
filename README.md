@@ -184,6 +184,13 @@ curl -fL -o backend/models/face_parsing_resnet18.onnx \
 - `FACE_PARSING_MODEL_PATH` — absolute path to the `.onnx` if not using `GENERAL_MODELS_ROOT/face_parsing_resnet18.onnx`.
 - `FACE_PARSING_GLASSES_FRAC_MIN` — minimum fraction of “glasses” class pixels to treat as wearing glasses (default `0.00035`).
 - `FACE_PARSING_USE_FOR_AUGMENT` / `FACE_PARSING_USE_FOR_API` — turn parsing off for augmentation only or for the verify API only.
+- `FACE_ENCODING_TTA_ENABLE` — `1`/`0` (default `1`): average ArcFace embeddings over mild camera-condition variants (gamma/CLAHE/sharpen/JPEG) when extracting one probe/avatar embedding.
+- `FACE_RUNTIME_INCLUDE_AUGMENTED_GALLERY` — `1`/`0` (default `1`): let runtime verify/recognize use capped validated face-ID augment crops in addition to mask/avatar/`gallery_real.npy`; `FACE_RUNTIME_AUGMENTED_GALLERY_MAX` caps the count (default `24`).
+- `FACE_RUNTIME_ADD_CENTROID_PROTOTYPES` — `1`/`0` (default `1`): add robust centroid templates over available face samples, improving matching when each person has several real/augmented frames.
+- `FACE_VERIFY_PROBE_BLUR_MIN`, `FACE_VERIFY_PROBE_BRIGHTNESS_MIN/MAX`, `FACE_VERIFY_PROBE_MAX_ABS_YAW/PITCH` — conservative quality gates for ordinary phone/laptop camera frames.
+- `FACE_VERIFY_IMPOSTOR_GAP_ENABLE` — `1`/`0` (default `1`): during 1:1 verify, also compare the probe with the nearest other staff member and reject when the gap is too small (`FACE_VERIFY_IMPOSTOR_GAP_MIN`, default `0.035`).
+
+`verify_face` is intentionally binary: uncertain liveness/PAD, weak probe quality, or a nearest-other-staff gap that is too small returns `final_decision: "NO"`, not a manual-review state.
 
 After changing augmentation, rebuild staff gallery embeddings as you usually do in this project.
 

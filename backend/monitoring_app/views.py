@@ -9734,6 +9734,7 @@ def face_lab_pad_test(request):
             "device_bg_score": result.device_bg_score,
             "frame_global_score": result.frame_global_score,
             "recapture_score": result.recapture_score,
+            "face_reflection_score": getattr(result, "face_reflection_score", 0.0),
         },
         status=status.HTTP_200_OK,
     )
@@ -10325,6 +10326,8 @@ def verify_face(request):
             _bk = (
                 "mask_prototypes",
                 "avatar_prototypes",
+                "augment_prototypes",
+                "centroid_prototypes",
                 "gallery_real_npy_prototypes",
             )
             if not isinstance(gb, dict):
@@ -10340,6 +10343,35 @@ def verify_face(request):
                 return float(v)
             return None
 
+        def _quality_payload_from_probe_meta(
+            probe_meta: dict[str, object],
+            *,
+            passed: bool | None = None,
+            reason_codes: list[str] | None = None,
+        ) -> QualityPayload:
+            if reason_codes is None:
+                _qraw = probe_meta.get("quality_reason_codes")
+                reason_codes = (
+                    [str(x) for x in _qraw] if isinstance(_qraw, list) else []
+                )
+            return {
+                "passed": (
+                    bool(probe_meta.get("quality_pass"))
+                    if passed is None
+                    else bool(passed)
+                ),
+                "det_score": _optional_float(probe_meta.get("det_score")),
+                "face_area_ratio": _optional_float(probe_meta.get("face_area_ratio")),
+                "blur_laplacian_var": _optional_float(
+                    probe_meta.get("blur_laplacian_var")
+                ),
+                "brightness_mean": _optional_float(probe_meta.get("brightness_mean")),
+                "pose_yaw": _optional_float(probe_meta.get("pose_yaw")),
+                "pose_pitch": _optional_float(probe_meta.get("pose_pitch")),
+                "pose_roll": _optional_float(probe_meta.get("pose_roll")),
+                "reason_codes": reason_codes,
+            }
+
         def _finalize_verify_body(
             *,
             quality_payload: QualityPayload,
@@ -10347,6 +10379,9 @@ def verify_face(request):
             max_cosine: float,
             gallery_templates: int,
             breakdown_ints: dict[str, int],
+            identity_ambiguous: bool = False,
+            identity_reason_codes: list[str] | None = None,
+            identity_diagnostics: dict[str, object] | None = None,
         ) -> dict[str, object]:
             gallery_info = build_gallery_info(
                 gallery_templates=gallery_templates,
@@ -10362,6 +10397,8 @@ def verify_face(request):
                     threshold_verified=thr_strong,
                     threshold_weak_gallery=thr_weak_gal,
                     threshold_cold_start=thr_cold,
+                    identity_ambiguous=identity_ambiguous,
+                    identity_reason_codes=identity_reason_codes,
                 )
             )
             contract = build_contract_core(
@@ -10382,11 +10419,14 @@ def verify_face(request):
                 gallery=gallery_info,
             )
             body: dict[str, object] = {**contract}
-            body["diagnostics"] = {
+            diagnostics: dict[str, object] = {
                 "mode_used": VERIFY_MODE_1_1,
                 "gallery_breakdown": dict(breakdown_ints),
                 "threshold_cold_start": thr_cold,
             }
+            if identity_diagnostics:
+                diagnostics["identity_margin"] = identity_diagnostics
+            body["diagnostics"] = diagnostics
             parsing_meta = face_parsing.probe_bgr(new_image)
             body["face_parsing_active"] = parsing_meta.get("face_parsing_active", False)
             body["probe_eyeglasses_likely"] = parsing_meta.get("eyeglasses_likely")
@@ -10399,12 +10439,11 @@ def verify_face(request):
 
         if pad_blocks_before_identity(pad_result):
             n_templates, breakdown_ints = _gallery_snapshot()
-            quality_payload_pad: QualityPayload = {
-                "passed": True,
-                "det_score": None,
-                "face_area_ratio": None,
-                "reason_codes": [],
-            }
+            quality_payload_pad = _quality_payload_from_probe_meta(
+                {},
+                passed=True,
+                reason_codes=[],
+            )
             body = _finalize_verify_body(
                 quality_payload=quality_payload_pad,
                 score=0.0,
@@ -10418,16 +10457,7 @@ def verify_face(request):
         if new_embedding is None:
             logger.warning("No face detected in the uploaded image.")
             n_templates, breakdown_ints = _gallery_snapshot()
-            _qraw_nf = probe_meta.get("quality_reason_codes")
-            q_rc_nf: list[str] = (
-                [str(x) for x in _qraw_nf] if isinstance(_qraw_nf, list) else []
-            )
-            quality_payload_nf: QualityPayload = {
-                "passed": bool(probe_meta.get("quality_pass")),
-                "det_score": _optional_float(probe_meta.get("det_score")),
-                "face_area_ratio": _optional_float(probe_meta.get("face_area_ratio")),
-                "reason_codes": q_rc_nf,
-            }
+            quality_payload_nf = _quality_payload_from_probe_meta(probe_meta)
             body = _finalize_verify_body(
                 quality_payload=quality_payload_nf,
                 score=0.0,
@@ -10461,33 +10491,39 @@ def verify_face(request):
             meta.get("gallery_templates"),
             meta.get("max_cosine"),
         )
-        _qraw = probe_meta.get("quality_reason_codes")
-        if isinstance(_qraw, list):
-            q_rc: list[str] = [str(x) for x in _qraw]
-        else:
-            q_rc = []
-
-        quality_payload: QualityPayload = {
-            "passed": bool(probe_meta.get("quality_pass")),
-            "det_score": _optional_float(probe_meta.get("det_score")),
-            "face_area_ratio": _optional_float(probe_meta.get("face_area_ratio")),
-            "reason_codes": q_rc,
-        }
+        quality_payload = _quality_payload_from_probe_meta(probe_meta)
         gb = meta.get("gallery_breakdown") or {}
         if not isinstance(gb, dict):
             gb = {}
         _bk = (
             "mask_prototypes",
             "avatar_prototypes",
+            "augment_prototypes",
+            "centroid_prototypes",
             "gallery_real_npy_prototypes",
         )
         breakdown_ints = {k: int(gb.get(k, 0)) for k in _bk}
+        identity_diag_keys = (
+            "impostor_guard_checked",
+            "nearest_impostor_pin",
+            "nearest_impostor_similarity",
+            "impostor_gap",
+            "impostor_gap_min",
+            "impostor_min_other_score",
+            "impostor_ambiguous",
+            "impostor_guard_disabled",
+            "impostor_guard_note",
+            "impostor_guard_error",
+        )
+        identity_diagnostics = {k: meta[k] for k in identity_diag_keys if k in meta}
         body = _finalize_verify_body(
             quality_payload=quality_payload,
             score=float(score),
             max_cosine=float(meta["max_cosine"]),
             gallery_templates=int(meta["gallery_templates"]),
             breakdown_ints=breakdown_ints,
+            identity_ambiguous=bool(meta.get("impostor_ambiguous")),
+            identity_diagnostics=identity_diagnostics,
         )
         return Response(body, status=status.HTTP_200_OK)
 

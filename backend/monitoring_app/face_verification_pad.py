@@ -86,6 +86,7 @@ def liveness_payload_from_pad_result(pad: PadResult) -> LivenessPayload:
         "device_bg_score": pad.device_bg_score,
         "frame_global_score": pad.frame_global_score,
         "recapture_score": pad.recapture_score,
+        "face_reflection_score": getattr(pad, "face_reflection_score", 0.0),
         "diagnostics": diagnostics_from_pad_result(pad),
         "note": VERIFY_PAD_NOTE_RU,
     }

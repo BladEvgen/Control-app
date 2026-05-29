@@ -7,6 +7,8 @@ from django.conf import settings
 from monitoring_app.face_verification_contract import (
     R_COLD_START_QUALITY_INSUFFICIENT,
     R_LIVENESS_FAILED,
+    R_LIVENESS_UNCERTAIN,
+    R_NEAREST_IMPOSTOR_TOO_CLOSE,
     R_PAD_PIPELINE_FAILED,
     R_PROBE_QUALITY_LOW,
     R_SCORE_BELOW_COLD_START_THRESHOLD,
@@ -79,6 +81,8 @@ def decide_face_verify_binary(
     threshold_verified: float,
     threshold_weak_gallery: float,
     threshold_cold_start: float,
+    identity_ambiguous: bool = False,
+    identity_reason_codes: list[str] | None = None,
 ) -> tuple[
     bool,
     FinalDecision,
@@ -106,7 +110,10 @@ def decide_face_verify_binary(
     """
     st_live = str(liveness.get("status") or "").strip().lower()
     tc = liveness.get("trust_confirmed")
-    soft_input_retry = st_live in {"review", "insufficient_input_review"}
+    liveness_uncertain_retry = st_live in {"review", "insufficient_input_review"}
+    current_gallery_strength: Literal["strong", "weak"] = (
+        "strong" if is_strong_gallery(breakdown, gallery_templates) else "weak"
+    )
 
     if not liveness.get("checked"):
         return (
@@ -138,7 +145,7 @@ def decide_face_verify_binary(
             "LIVENESS_FAIL",
             [R_LIVENESS_FAILED],
             0.0,
-            "weak",
+            current_gallery_strength,
         )
 
     if st_live == "suspicious":
@@ -149,18 +156,30 @@ def decide_face_verify_binary(
             "LIVENESS_FAIL",
             [R_LIVENESS_FAILED],
             0.0,
-            "weak",
+            current_gallery_strength,
         )
 
-    if not soft_input_retry and (tc is not True or st_live != "clean"):
+    if liveness_uncertain_retry:
+        return (
+            False,
+            "NO",
+            "Автоматическая проверка фото не дала уверенного живого кадра: "
+            "совпадение не подтверждено.",
+            "QUALITY_FAIL",
+            [R_LIVENESS_UNCERTAIN],
+            0.0,
+            current_gallery_strength,
+        )
+
+    if tc is not True or st_live != "clean":
         return (
             False,
             "NO",
             "Живость не подтверждена безусловно.",
             "LIVENESS_FAIL",
-            [R_LIVENESS_FAILED],
+            [R_LIVENESS_UNCERTAIN],
             0.0,
-            "weak",
+            current_gallery_strength,
         )
 
     if not quality.get("passed", False):
@@ -191,28 +210,30 @@ def decide_face_verify_binary(
     strong = is_strong_gallery(breakdown, gallery_templates)
     gallery_strength: Literal["strong", "weak"] = "strong" if strong else "weak"
 
+    if identity_ambiguous:
+        rc = [R_NEAREST_IMPOSTOR_TOO_CLOSE]
+        for code in identity_reason_codes or []:
+            if code not in rc:
+                rc.append(code)
+        return (
+            False,
+            "NO",
+            "Лицо слишком близко к другому сотруднику: совпадение не подтверждено.",
+            "REJECTED",
+            rc,
+            0.0,
+            gallery_strength,
+        )
+
     if strong:
         thr = float(threshold_verified)
         if float(score) >= thr:
-            summary = "Совпадение подтверждено."
-            if soft_input_retry:
-                summary = "Совпадение подтверждено, но кадр лучше переснять."
             return (
                 True,
                 "YES",
-                summary,
+                "Совпадение подтверждено.",
                 "VERIFIED",
                 [],
-                thr,
-                gallery_strength,
-            )
-        if soft_input_retry:
-            return (
-                False,
-                "NO",
-                "Кадр слабый: сходство не удалось подтвердить, лучше переснять.",
-                "QUALITY_FAIL",
-                [R_PROBE_QUALITY_LOW],
                 thr,
                 gallery_strength,
             )
@@ -246,24 +267,12 @@ def decide_face_verify_binary(
             summary = (
                 "Совпадение подтверждено (режим холодного старта до сборки галереи)."
             )
-            if soft_input_retry:
-                summary = "Совпадение подтверждено, но кадр лучше переснять."
             return (
                 True,
                 "YES",
                 summary,
                 "VERIFIED",
                 [],
-                thr_c,
-                "weak",
-            )
-        if soft_input_retry:
-            return (
-                False,
-                "NO",
-                "Кадр слабый: сходство не удалось подтвердить, лучше переснять.",
-                "QUALITY_FAIL",
-                [R_PROBE_QUALITY_LOW],
                 thr_c,
                 "weak",
             )
@@ -279,25 +288,12 @@ def decide_face_verify_binary(
 
     thr_w = float(threshold_weak_gallery)
     if float(score) >= thr_w:
-        summary = "Совпадение подтверждено (строгий порог для слабой галереи)."
-        if soft_input_retry:
-            summary = "Совпадение подтверждено, но кадр лучше переснять."
         return (
             True,
             "YES",
-            summary,
+            "Совпадение подтверждено (строгий порог для слабой галереи).",
             "VERIFIED",
             [],
-            thr_w,
-            gallery_strength,
-        )
-    if soft_input_retry:
-        return (
-            False,
-            "NO",
-            "Кадр слабый: сходство не удалось подтвердить, лучше переснять.",
-            "QUALITY_FAIL",
-            [R_PROBE_QUALITY_LOW],
             thr_w,
             gallery_strength,
         )

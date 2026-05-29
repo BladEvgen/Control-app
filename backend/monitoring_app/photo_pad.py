@@ -23,7 +23,7 @@ from monitoring_app.pad_evidence import (
 
 logger = logging.getLogger(__name__)
 
-PAD_MODEL_VERSION = "pad_v7"
+PAD_MODEL_VERSION = "pad_v8"
 
 STATUS_PENDING = "pending"
 STATUS_CLEAN = "clean"
@@ -74,9 +74,13 @@ _CV2_APPROX_POLY_DP = _cv2_get_callable("approxPolyDP")
 _CV2_BOUNDING_RECT = _cv2_get_callable("boundingRect")
 _CV2_LAPLACIAN = _cv2_get_callable("Laplacian")
 _CV2_RESIZE = _cv2_get_callable("resize")
+_CV2_CONNECTED_COMPONENTS_WITH_STATS = _cv2_get_callable(
+    "connectedComponentsWithStats"
+)
 
 _CV2_COLOR_BGR2RGB = int(_cv2_get_attr("COLOR_BGR2RGB"))
 _CV2_COLOR_BGR2GRAY = int(_cv2_get_attr("COLOR_BGR2GRAY"))
+_CV2_COLOR_BGR2HSV = int(_cv2_get_attr("COLOR_BGR2HSV"))
 _CV2_MORPH_RECT = int(_cv2_get_attr("MORPH_RECT"))
 _CV2_MORPH_ELLIPSE = int(_cv2_get_attr("MORPH_ELLIPSE"))
 _CV2_RETR_EXTERNAL = int(_cv2_get_attr("RETR_EXTERNAL"))
@@ -177,6 +181,17 @@ _PAD_DEFAULT_NUMBERS: dict[str, float | int] = {
     "quality_degraded_force_review_penalty_min": 0.55,
     "presentation_texture_min_face_area_ratio": 0.042,
     "presentation_texture_max_quality_penalty": 0.30,
+    "reflection_white_v_min": 218.0,
+    "reflection_white_s_max": 95.0,
+    "reflection_color_v_min": 188.0,
+    "reflection_color_s_min": 90.0,
+    "reflection_component_min_area_ratio": 0.00035,
+    "reflection_component_max_area_ratio": 0.10,
+    "reflection_review_min": 0.24,
+    "reflection_mid": 0.34,
+    "reflection_strong": 0.52,
+    "reflection_suspicious_min_face_area_ratio": 0.034,
+    "risk_weight_reflection": 0.10,
 }
 
 
@@ -216,6 +231,7 @@ class PadResult:
     device_bg_score: float = 0.0
     frame_global_score: float = 0.0
     recapture_score: float = 0.0
+    face_reflection_score: float = 0.0
 
     def to_update_kwargs(self) -> dict[str, Any]:
         from django.utils import timezone
@@ -245,6 +261,7 @@ class DecisionInputs:
     frame_global_score: float = 0.0
     recapture_score: float = 0.0
     face_area_ratio: float = 0.0
+    face_reflection_score: float = 0.0
 
 
 def normalize_device(device: Optional[str] = None) -> str:
@@ -828,6 +845,115 @@ def _signal_recapture(
     )
 
 
+def _signal_face_reflection(
+    img_bgr: np.ndarray,
+    face_bbox: Optional[tuple[int, int, int, int]],
+) -> tuple[float, list[str]]:
+    """Detect screen-like specular patches on the upper face.
+
+    The signal is intentionally corroborative: it finds clipped white/colored
+    highlights and small rectangular glints around the eye band, but the decision
+    engine only treats it as spoof evidence when another PAD channel also agrees.
+    """
+    if face_bbox is None:
+        return 0.0, []
+
+    x, y, fw, fh = face_bbox
+    if fw < 28 or fh < 28:
+        return 0.0, []
+
+    ih, iw = img_bgr.shape[:2]
+    x1 = max(0, int(round(x + 0.10 * fw)))
+    x2 = min(iw, int(round(x + 0.90 * fw)))
+    y1 = max(0, int(round(y + 0.16 * fh)))
+    y2 = min(ih, int(round(y + 0.58 * fh)))
+    if x2 <= x1 + 8 or y2 <= y1 + 8:
+        return 0.0, []
+
+    roi = img_bgr[y1:y2, x1:x2]
+    if roi.size < 240:
+        return 0.0, []
+
+    hsv = _CV2_CVT_COLOR(roi, _CV2_COLOR_BGR2HSV)
+    gray = _CV2_CVT_COLOR(roi, _CV2_COLOR_BGR2GRAY)
+    sat = hsv[:, :, 1].astype(np.float32)
+    val = hsv[:, :, 2].astype(np.float32)
+    v_mean = float(val.mean())
+    v_std = float(val.std())
+
+    white_v_min = max(_pad_float("reflection_white_v_min"), v_mean + 1.15 * v_std)
+    white_mask = (val >= white_v_min) & (sat <= _pad_float("reflection_white_s_max"))
+    color_mask = (val >= _pad_float("reflection_color_v_min")) & (
+        sat >= _pad_float("reflection_color_s_min")
+    )
+    clipped_mask = val >= 248.0
+    mask = white_mask | color_mask | clipped_mask
+
+    area = float(max(1, mask.size))
+    highlight_ratio = float(np.count_nonzero(mask)) / area
+    clipped_ratio = float(np.count_nonzero(clipped_mask)) / area
+    color_ratio = float(np.count_nonzero(color_mask)) / area
+
+    comp_best = 0.0
+    mask_u8 = (mask.astype(np.uint8)) * 255
+    try:
+        n_labels, _labels, stats, _centroids = _CV2_CONNECTED_COMPONENTS_WITH_STATS(
+            mask_u8,
+            8,
+        )
+        min_ar = _pad_float("reflection_component_min_area_ratio")
+        max_ar = _pad_float("reflection_component_max_area_ratio")
+        for label_idx in range(1, int(n_labels)):
+            c_area = float(stats[label_idx, 4])
+            area_ratio = c_area / area
+            if area_ratio < min_ar or area_ratio > max_ar:
+                continue
+            cw = float(max(1, stats[label_idx, 2]))
+            ch = float(max(1, stats[label_idx, 3]))
+            rectness = min(1.0, c_area / max(1.0, cw * ch))
+            aspect = max(cw, ch) / max(1.0, min(cw, ch))
+            aspect_score = min(1.0, max(0.0, (aspect - 1.15) / 2.7))
+            size_score = min(1.0, area_ratio / 0.018)
+            comp_best = max(
+                comp_best,
+                0.42 * size_score + 0.30 * rectness + 0.28 * aspect_score,
+            )
+    except Exception as exc:
+        logger.debug("PAD face reflection connected components skipped: %s", exc)
+
+    edge_density = 0.0
+    if np.count_nonzero(mask_u8) > 0:
+        try:
+            edges = _CV2_CANNY(gray, 60, 170)
+            edge_density = float(np.mean(edges[mask_u8 > 0] > 0))
+        except Exception:
+            edge_density = 0.0
+
+    ratio_score = min(1.0, highlight_ratio / 0.052)
+    clipped_score = min(1.0, clipped_ratio / 0.016)
+    color_score = min(1.0, color_ratio / 0.022)
+    edge_score = min(1.0, edge_density / 0.22) if edge_density > 0.0 else 0.0
+    score = max(
+        comp_best,
+        0.58 * ratio_score + 0.24 * clipped_score + 0.18 * edge_score,
+        0.78 * color_score + 0.22 * edge_score,
+    )
+    score = float(max(0.0, min(1.0, score)))
+
+    tags: list[str] = []
+    if score >= _pad_float("reflection_review_min"):
+        tags.append("face_reflection_elevated")
+    if score >= _pad_float("reflection_mid"):
+        tags.append("face_reflection_screen_like")
+    if comp_best >= 0.35:
+        tags.append("face_rectangular_reflection")
+    if color_score >= 0.35:
+        tags.append("face_colored_screen_reflection")
+    if clipped_score >= 0.35:
+        tags.append("face_clipped_specular_reflection")
+    return score, tags
+
+
 def _face_bbox_is_edge_cropped(
     face_bbox: Optional[tuple[int, int, int, int]],
     img_w: int,
@@ -979,6 +1105,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             device_bg_score=inputs.device_bg_score,
             frame_global_score=inputs.frame_global_score,
             recapture_score=inputs.recapture_score,
+            face_reflection_score=inputs.face_reflection_score,
         )
     if not inputs.has_face or "no_face" in tags:
         return PadResult(
@@ -993,6 +1120,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             device_bg_score=inputs.device_bg_score,
             frame_global_score=inputs.frame_global_score,
             recapture_score=inputs.recapture_score,
+            face_reflection_score=inputs.face_reflection_score,
         )
 
     deepfake = "fasnet_fake" in tags
@@ -1002,10 +1130,14 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         or "pad_spoof_model_missing" in tags
     )
     rec = float(inputs.recapture_score)
+    refl = float(inputs.face_reflection_score)
     rec_mid = _pad_float("recapture_mid")
     rec_strong = _pad_float("recapture_strong")
     rec_review_min = _pad_float("decision_recapture_review_min")
     rec_corr_min = _pad_float("decision_recapture_corroboration_min")
+    refl_review_min = _pad_float("reflection_review_min")
+    refl_mid = _pad_float("reflection_mid")
+    refl_strong = _pad_float("reflection_strong")
 
     has_device = inputs.device_score >= _pad_float("decision_device_present_min")
     has_frame = inputs.frame_score >= _pad_float("decision_frame_present_min")
@@ -1014,6 +1146,10 @@ def _decide(inputs: DecisionInputs) -> PadResult:
     strong_screen = inputs.device_score >= _pad_float(
         "decision_strong_device_min"
     ) and inputs.frame_score >= _pad_float("decision_strong_frame_min")
+    susp_dev = inputs.device_score >= _pad_float("decision_suspicious_device_min")
+    susp_frm = inputs.frame_score >= _pad_float("decision_suspicious_frame_min")
+    dual_mid_geometry = mid_device and mid_frame
+    dual_susp_geometry = susp_dev and susp_frm
     quality_poor = (
         inputs.quality_penalty >= _pad_float("decision_quality_poor_min")
         or "quality_poor" in tags
@@ -1059,23 +1195,47 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         and rec <= _pad_float("shield_max_recapture")
     )
     ch_rec_corr = rec >= rec_corr_min
+    reflection_context = refl >= refl_review_min and (
+        credible_display_context
+        or has_device
+        or has_frame
+        or rec >= rec_review_min
+        or deepfake
+        or spoof_model_uncertain
+    )
+    reflection_suspicious = (
+        refl >= refl_strong
+        and not quality_poor
+        and not insufficient_input
+        and not reflection_guard_fake
+        and inputs.face_area_ratio
+        >= _pad_float("reflection_suspicious_min_face_area_ratio")
+        and (
+            strong_display_context
+            or strong_screen
+            or dual_susp_geometry
+            or dual_mid_geometry
+            or rec >= rec_corr_min
+            or (
+                deepfake
+                and inputs.deepface_score
+                >= _pad_float("decision_deepfake_mid_suspicious_min")
+            )
+        )
+    )
 
     risk = (
         _pad_float("risk_weight_deepface") * inputs.deepface_score
         + _pad_float("risk_weight_device") * inputs.device_score
         + _pad_float("risk_weight_frame") * inputs.frame_score
         + _pad_float("risk_weight_recapture") * rec
+        + _pad_float("risk_weight_reflection") * refl
     )
     risk = max(0.0, min(1.0, risk))
 
     status = STATUS_CLEAN
     trust: Optional[bool] = True
     branch = "default_clean"
-
-    susp_dev = inputs.device_score >= _pad_float("decision_suspicious_device_min")
-    susp_frm = inputs.frame_score >= _pad_float("decision_suspicious_frame_min")
-    dual_mid_geometry = mid_device and mid_frame
-    dual_susp_geometry = susp_dev and susp_frm
 
     if deepfake:
         if strong_screen or (has_device and has_frame):
@@ -1125,6 +1285,11 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             status = STATUS_SUSPICIOUS
             trust = False
             branch = "fake_mid_plus_background_display_suspicious"
+            _append_trace(branch)
+        elif reflection_suspicious:
+            status = STATUS_SUSPICIOUS
+            trust = False
+            branch = "fake_plus_face_reflection_suspicious"
             _append_trace(branch)
         elif high_fake_without_geometry:
             status = STATUS_SUSPICIOUS
@@ -1177,6 +1342,11 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             trust = None
             branch = "fake_default_review_not_clean"
             _append_trace(branch)
+    elif reflection_suspicious:
+        status = STATUS_SUSPICIOUS
+        trust = False
+        branch = "face_reflection_display_suspicious"
+        _append_trace(branch)
     elif (
         strong_screen
         and dual_susp_geometry
@@ -1352,6 +1522,11 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             trust = None
             branch = "spoof_model_uncertain_recapture_uncertain_clean"
             _append_trace(branch)
+    elif reflection_context and refl >= refl_mid:
+        status = STATUS_REVIEW
+        trust = None
+        branch = "face_reflection_context_review"
+        _append_trace(branch)
     elif credible_display_context and not has_device and not has_frame:
         if not deepfake and not spoof_model_uncertain and rec < rec_review_min:
             status = STATUS_CLEAN
@@ -1506,6 +1681,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         "frame_face": round(inputs.frame_score, 4),
         "frame_global_diag": round(inputs.frame_global_score, 4),
         "recapture": round(rec, 4),
+        "face_reflection": round(refl, 4),
         "quality_penalty": round(inputs.quality_penalty, 4),
         "face_area_ratio": round(inputs.face_area_ratio, 5),
         "shield_normal_live": shield,
@@ -1514,6 +1690,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             "mid_device": mid_device,
             "mid_frame": mid_frame,
             "recapture_corr": ch_rec_corr,
+            "face_reflection": refl >= refl_mid,
         },
         "status": status,
     }
@@ -1522,7 +1699,8 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         "pad_evidence:"
         f"df={inputs.deepface_score:.3f},dev_f={inputs.device_score:.3f},"
         f"dev_bg={inputs.device_bg_score:.3f},frm_f={inputs.frame_score:.3f},"
-        f"frm_gl={inputs.frame_global_score:.3f},rec={rec:.3f},qp={inputs.quality_penalty:.3f}"
+        f"frm_gl={inputs.frame_global_score:.3f},rec={rec:.3f},"
+        f"refl={refl:.3f},qp={inputs.quality_penalty:.3f}"
     )
     tags.append(f"pad_struct:{json.dumps(struct, separators=(',', ':'))}")
 
@@ -1538,6 +1716,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         device_bg_score=inputs.device_bg_score,
         frame_global_score=inputs.frame_global_score,
         recapture_score=rec,
+        face_reflection_score=refl,
     )
 
 
@@ -1558,6 +1737,7 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
         img_bgr, face_bbox, glasses_mask=glasses_mask
     )
     recapture_score, recapture_tags = _signal_recapture(img_bgr, face_bbox)
+    reflection_score, reflection_tags = _signal_face_reflection(img_bgr, face_bbox)
     quality_penalty, quality_tags = _signal_quality(img_bgr, face_bbox)
 
     face_area_ratio = 0.0
@@ -1583,6 +1763,7 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
                 + device_tags
                 + frame_tags
                 + recapture_tags
+                + reflection_tags
                 + quality_tags
                 + guard_tags
             ),
@@ -1590,6 +1771,7 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
             frame_global_score=frame_global,
             recapture_score=recapture_score,
             face_area_ratio=face_area_ratio,
+            face_reflection_score=reflection_score,
         )
     )
     result.elapsed_ms = (time.monotonic() - started) * 1000.0

@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 PAD_DIAGNOSTICS_VERSION = "pad_diagnostics_v3"
 
-PAD_TRACE_SCHEMA = "pad_trace_v8"
+PAD_TRACE_SCHEMA = "pad_trace_v9"
 
 
 def _quality_poor_threshold() -> float:
@@ -150,6 +150,7 @@ def _evidence_line_to_english_metrics(
         "frm_f": "face_frame_score",
         "frm_gl": "background_frame_score",
         "rec": "recapture_score",
+        "refl": "face_reflection_score",
         "qp": "quality_penalty",
     }
     out: dict[str, float] = {}
@@ -187,6 +188,7 @@ def _evidence_codes_from_inputs(
     device_score: float,
     frame_score: float,
     recapture_score: float,
+    face_reflection_score: float,
     tags: list[str],
 ) -> list[str]:
     """Derive machine codes for which presentation channels fired (not natural language)."""
@@ -201,6 +203,8 @@ def _evidence_codes_from_inputs(
         codes.append("elevated_face_frame_score")
     if recapture_score >= 0.2:
         codes.append("elevated_recapture_score")
+    if face_reflection_score >= 0.24:
+        codes.append("elevated_face_reflection_score")
     return codes
 
 
@@ -240,6 +244,8 @@ def _presentation_confidence(
             "strong_device_only_face_attack_suspicious",
             "no_fake_recapture_strong_corroborated_dual_geometry",
             "recapture_strong_face_geometry_suspicious",
+            "fake_plus_face_reflection_suspicious",
+            "face_reflection_display_suspicious",
         )
         if branch_str in strong:
             return 0.72
@@ -347,6 +353,7 @@ def build_pad_diagnostic_payload(
     frame_global_score: float,
     recapture_score: float,
     tags: list[str],
+    face_reflection_score: float = 0.0,
 ) -> dict[str, Any]:
     """Build the public, English-keyed diagnostics object for clients.
 
@@ -366,6 +373,7 @@ def build_pad_diagnostic_payload(
         device_bg_score: Background device diagnostic.
         frame_global_score: Global frame diagnostic.
         recapture_score: Face-inner recapture heuristic.
+        face_reflection_score: Screen-like reflections on the upper face.
         tags: Full tag list from the pipeline.
 
     Returns:
@@ -403,6 +411,7 @@ def build_pad_diagnostic_payload(
         device_score=device_score,
         frame_score=frame_score,
         recapture_score=recapture_score,
+        face_reflection_score=face_reflection_score,
         tags=tags,
     )
 
@@ -453,6 +462,7 @@ def build_pad_diagnostic_payload(
         if branch_str in (
             "recapture_strong_loose_context_ambiguous_review",
             "spoof_uncertain_texture_ambiguous_review",
+            "face_reflection_context_review",
         ):
             interpretability_codes.append("review_primarily_face_texture_periodicity")
     if status == "clean":
@@ -500,6 +510,8 @@ def build_pad_diagnostic_payload(
         decision_support_flags.append("corroboration_mid_frame")
     if corr_dict.get("recapture_corr"):
         decision_support_flags.append("corroboration_recapture_threshold")
+    if corr_dict.get("face_reflection"):
+        decision_support_flags.append("corroboration_face_reflection")
 
     return {
         "diagnostics_version": PAD_DIAGNOSTICS_VERSION,
@@ -524,6 +536,7 @@ def build_pad_diagnostic_payload(
             "face_device_score": round(float(device_score), 4),
             "face_frame_score": round(float(frame_score), 4),
             "recapture_score": round(float(recapture_score), 4),
+            "face_reflection_score": round(float(face_reflection_score), 4),
         },
         "quality": {
             "overall_penalty": round(float(quality_penalty), 4),
@@ -595,6 +608,7 @@ def diagnostics_payload_for_lesson_attendance(record: Any) -> dict[str, Any]:
         device_bg_score=float(metrics.get("background_device_score", 0.0)),
         frame_global_score=float(metrics.get("background_frame_score", 0.0)),
         recapture_score=float(metrics.get("recapture_score", 0.0)),
+        face_reflection_score=float(metrics.get("face_reflection_score", 0.0)),
         tags=tags,
     )
 
@@ -622,5 +636,6 @@ def diagnostics_from_pad_result(pad: object) -> dict[str, Any]:
         device_bg_score=float(getattr(pad, "device_bg_score", 0.0)),
         frame_global_score=float(getattr(pad, "frame_global_score", 0.0)),
         recapture_score=float(getattr(pad, "recapture_score", 0.0)),
+        face_reflection_score=float(getattr(pad, "face_reflection_score", 0.0)),
         tags=tags,
     )

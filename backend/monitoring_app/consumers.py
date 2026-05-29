@@ -174,7 +174,8 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
 
         await self._send_initial_snapshot()
 
-    async def disconnect(self, _close_code):
+    async def disconnect(self, code):
+        _ = code
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
             try:
@@ -258,6 +259,11 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
     def _record_to_photo_payload(record):
         """Собирает payload для одной записи (включая записи без фото)."""
         has_photo = bool(record.staff_image_path)
+        checked_at = (
+            timezone.localtime(record.photo_spoof_checked_at).isoformat()
+            if record.photo_spoof_checked_at
+            else None
+        )
         return {
             "id": record.id,
             "hasPhoto": has_photo,
@@ -270,8 +276,18 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             "attendanceTime": timezone.localtime(record.first_in).isoformat(),
             "tutorInfo": record.tutor_info,
             "photoSpoofStatus": record.photo_spoof_status,
+            "photoSpoofScore": record.photo_spoof_score,
+            "photoSpoofTags": (
+                record.photo_spoof_tags
+                if isinstance(record.photo_spoof_tags, list)
+                else []
+            ),
+            "photoSpoofCheckedAt": checked_at,
+            "photoSpoofModelVersion": record.photo_spoof_model_version,
+            "photoTrustConfirmed": record.photo_trust_confirmed,
             "photoManualVerdict": record.photo_manual_verdict,
             "photoEffectiveStatus": record.photo_effective_status,
+            "photoEffectiveTrustConfirmed": record.photo_effective_trust_confirmed,
             "photoCanSetManualVerdict": record.photo_can_set_manual_verdict,
         }
 
@@ -311,6 +327,18 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             "photoUrl": event_payload.get("photoUrl"),
             "attendanceTime": event_payload.get("attendanceTime"),
             "tutorInfo": event_payload.get("tutorInfo"),
+            "photoSpoofStatus": event_payload.get("photoSpoofStatus"),
+            "photoSpoofScore": event_payload.get("photoSpoofScore"),
+            "photoSpoofTags": event_payload.get("photoSpoofTags"),
+            "photoSpoofCheckedAt": event_payload.get("photoSpoofCheckedAt"),
+            "photoSpoofModelVersion": event_payload.get("photoSpoofModelVersion"),
+            "photoTrustConfirmed": event_payload.get("photoTrustConfirmed"),
+            "photoManualVerdict": event_payload.get("photoManualVerdict"),
+            "photoEffectiveStatus": event_payload.get("photoEffectiveStatus"),
+            "photoEffectiveTrustConfirmed": event_payload.get(
+                "photoEffectiveTrustConfirmed"
+            ),
+            "photoCanSetManualVerdict": event_payload.get("photoCanSetManualVerdict"),
         }
 
     def _build_ws_envelope(
@@ -382,9 +410,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         filtered_photos = photos
         if self._risk_only:
             filtered_photos = [
-                photo
-                for photo in photos
-                if self._is_risk_candidate(photo)
+                photo for photo in photos if self._is_risk_candidate(photo)
             ]
             self._visible_ids = {
                 int(photo["id"])
@@ -441,6 +467,11 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                     "tutor_id",
                     "subject_name",
                     "photo_spoof_status",
+                    "photo_spoof_score",
+                    "photo_spoof_tags",
+                    "photo_spoof_checked_at",
+                    "photo_spoof_model_version",
+                    "photo_trust_confirmed",
                     "photo_manual_verdict",
                     "staff__pin",
                     "staff__surname",
@@ -870,6 +901,11 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                     "tutor_id",
                     "subject_name",
                     "photo_spoof_status",
+                    "photo_spoof_score",
+                    "photo_spoof_tags",
+                    "photo_spoof_checked_at",
+                    "photo_spoof_model_version",
+                    "photo_trust_confirmed",
                     "photo_manual_verdict",
                     "staff__pin",
                     "staff__surname",
@@ -899,6 +935,11 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                 "tutor_id",
                 "subject_name",
                 "photo_spoof_status",
+                "photo_spoof_score",
+                "photo_spoof_tags",
+                "photo_spoof_checked_at",
+                "photo_spoof_model_version",
+                "photo_trust_confirmed",
                 "photo_manual_verdict",
                 "staff__pin",
                 "staff__surname",

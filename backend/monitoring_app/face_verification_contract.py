@@ -17,14 +17,18 @@ R_SCORE_BELOW_VERIFIED_THRESHOLD = "SCORE_BELOW_VERIFIED_THRESHOLD"
 R_SCORE_BELOW_WEAK_GALLERY_THRESHOLD = "SCORE_BELOW_WEAK_GALLERY_THRESHOLD"
 R_WEAK_ENROLLMENT = "WEAK_ENROLLMENT"
 R_LIVENESS_FAILED = "LIVENESS_FAILED"
+R_LIVENESS_UNCERTAIN = "LIVENESS_UNCERTAIN"
 R_PAD_PIPELINE_FAILED = "PAD_PIPELINE_FAILED"
 R_SCORE_BELOW_COLD_START_THRESHOLD = "SCORE_BELOW_COLD_START_THRESHOLD"
 R_COLD_START_QUALITY_INSUFFICIENT = "COLD_START_QUALITY_INSUFFICIENT"
+R_NEAREST_IMPOSTOR_TOO_CLOSE = "NEAREST_IMPOSTOR_TOO_CLOSE"
 
 
 class GalleryBreakdownPayload(TypedDict, total=False):
     mask_prototypes: int
     avatar_prototypes: int
+    augment_prototypes: int
+    centroid_prototypes: int
     gallery_real_npy_prototypes: int
 
 
@@ -32,6 +36,11 @@ class QualityPayload(TypedDict, total=False):
     passed: bool
     det_score: float | None
     face_area_ratio: float | None
+    blur_laplacian_var: float | None
+    brightness_mean: float | None
+    pose_yaw: float | None
+    pose_pitch: float | None
+    pose_roll: float | None
     reason_codes: list[str]
 
 
@@ -50,6 +59,7 @@ class LivenessPayload(TypedDict, total=False):
     device_bg_score: float
     frame_global_score: float
     recapture_score: float
+    face_reflection_score: float
     diagnostics: dict[str, object]
     note: str
 
@@ -94,9 +104,11 @@ __all__ = (
     "LivenessPayload",
     "QualityPayload",
     "R_LIVENESS_FAILED",
+    "R_LIVENESS_UNCERTAIN",
     "R_PAD_PIPELINE_FAILED",
     "R_SCORE_BELOW_COLD_START_THRESHOLD",
     "R_COLD_START_QUALITY_INSUFFICIENT",
+    "R_NEAREST_IMPOSTOR_TOO_CLOSE",
     "R_PROBE_QUALITY_LOW",
     "R_SCORE_BELOW_VERIFIED_THRESHOLD",
     "R_SCORE_BELOW_WEAK_GALLERY_THRESHOLD",
