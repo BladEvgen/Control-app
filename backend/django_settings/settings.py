@@ -1,3 +1,4 @@
+import json
 import os
 import socket
 from datetime import datetime, timedelta
@@ -45,6 +46,17 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _json_env_dict(name: str, default: str = "{}") -> dict:
+    raw = os.getenv(name, default)
+    if raw is None or not str(raw).strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _jwt_lifetime_minutes(env_name: str, debug_minutes: int, prod_minutes: int) -> int:
     """JWT lifetime in minutes; env override for long-lived browser sessions (security tradeoff)."""
     raw = os.getenv(env_name)
@@ -74,6 +86,9 @@ ATTENDANCE_REENTRY_DEVICE_SNS = _csv_env_frozenset(
 ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES = int(
     os.getenv("ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES", "45")
 )
+ATTENDANCE_WRITE_HMAC_SECRET = os.getenv("ATTENDANCE_WRITE_HMAC_SECRET", "").strip()
+ATTENDANCE_WRITE_HMAC_TTL_SECONDS = _int_env("ATTENDANCE_WRITE_HMAC_TTL_SECONDS", 300)
+ATTENDANCE_API_TERMINAL_POOLS = _json_env_dict("ATTENDANCE_API_TERMINAL_POOLS")
 FACE_RECOGNITION_THRESHOLD = float(os.getenv("FACE_RECOGNITION_THRESHOLD", "0.76"))
 FACE_RECOGNITION_THRESHOLD_RELAXED = float(
     os.getenv("FACE_RECOGNITION_THRESHOLD_RELAXED", "0.67")
@@ -380,6 +395,9 @@ CORS_ALLOW_HEADERS = [
     "x-requested-with",
     "x-api-key",
     "x-api-token",
+    "x-attendance-timestamp",
+    "x-attendance-nonce",
+    "x-attendance-signature",
 ]
 
 CORS_ALLOW_CREDENTIALS = True

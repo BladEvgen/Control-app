@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import tempfile
 import time
@@ -18,6 +20,7 @@ from django.urls import reverse
 from django.utils import timezone
 from monitoring_app import signals as lesson_signals
 from monitoring_app import tasks as monitoring_tasks
+from monitoring_app import utils
 from monitoring_app.admin import (
     ClassLocationAdmin,
     PublicHolidayAdmin,
@@ -2863,3 +2866,264 @@ class LessonAttendanceMediaAccessTest(SimpleTestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+@override_settings(
+    ATTENDANCE_WRITE_HMAC_SECRET="test-attendance-write-secret",
+    ATTENDANCE_WRITE_HMAC_TTL_SECONDS=300,
+    ATTENDANCE_API_TERMINAL_POOLS={
+        "abilai": {
+            "entry": [
+                {"devSn": "ENTRY-1", "areaName": "Абылайхана турникет"},
+                {"devSn": "ENTRY-2", "areaName": "вход в 8 этаж"},
+            ],
+            "exit": [
+                {"devSn": "EXIT-1", "areaName": "выход ЦОС"},
+                {"devSn": "EXIT-2", "areaName": "Абылайхана турникет"},
+            ],
+        },
+        "broken": {"entry": [{"devSn": "ENTRY-X", "areaName": "Broken entry"}]},
+    },
+)
+class SignedAttendanceWriteApiTest(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(
+            username="attendance-write-user",
+            password="secret123",
+        )
+        self.api_key = APIKey.objects.create(
+            key_name="attendance-write",
+            created_by=self.user,
+        )
+        self.staff = Staff.objects.create(
+            pin="S123S",
+            name="Signed",
+            surname="Attendance",
+        )
+        self.location = ClassLocation.objects.create(
+            name="Test Location",
+            address="Test Address",
+            latitude=43.2389,
+            longitude=76.8897,
+            acceptance_radius_m=50,
+        )
+
+    def _json_body(self, payload: dict[str, Any]) -> bytes:
+        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+
+    def _signed_headers(
+        self,
+        path: str,
+        body: bytes,
+        *,
+        nonce: str,
+        timestamp_value: int | None = None,
+        signature: str | None = None,
+        include_api_key: bool = True,
+    ) -> dict[str, str]:
+        ts = int(time.time()) if timestamp_value is None else timestamp_value
+        if signature is None:
+            body_hash = hashlib.sha256(body).hexdigest()
+            payload = "\n".join(["POST", path, str(ts), nonce, body_hash])
+            signature = hmac.new(
+                settings.ATTENDANCE_WRITE_HMAC_SECRET.encode("utf-8"),
+                payload.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+        headers = {
+            "X-Attendance-Timestamp": str(ts),
+            "X-Attendance-Nonce": nonce,
+            "X-Attendance-Signature": signature,
+        }
+        if include_api_key:
+            headers["X-API-KEY"] = self.api_key.key
+        return headers
+
+    def _post_signed(
+        self,
+        url_name: str,
+        payload: dict[str, Any],
+        *,
+        nonce: str,
+        timestamp_value: int | None = None,
+        signature: str | None = None,
+        include_api_key: bool = True,
+    ):
+        path = reverse(url_name)
+        body = self._json_body(payload)
+        return self.client.post(
+            path,
+            data=body.decode("utf-8"),
+            content_type="application/json",
+            headers=self._signed_headers(
+                path,
+                body,
+                nonce=nonce,
+                timestamp_value=timestamp_value,
+                signature=signature,
+                include_api_key=include_api_key,
+            ),
+        )
+
+    def _lesson_payload(self) -> dict[str, Any]:
+        return {
+            "staff_pin": self.staff.pin,
+            "location_id": self.location.id,
+            "first_in": "2026-05-29T09:00:00+05:00",
+            "last_out": "2026-05-29T10:30:00+05:00",
+            "tutor_id": 123,
+            "tutor": "Иванов И.И.",
+            "subject_name": "Математика",
+        }
+
+    def _staff_payload(self, *, first_in: str = "2026-05-29T09:00:00+05:00"):
+        return {
+            "staff_pin": self.staff.pin,
+            "building": "abilai",
+            "first_in": first_in,
+            "last_out": "2026-05-29T18:00:00+05:00",
+        }
+
+    def test_signed_lesson_rejects_missing_api_key(self):
+        response = self._post_signed(
+            "attendance-write-lesson",
+            self._lesson_payload(),
+            nonce="missing-api-key",
+            include_api_key=False,
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_signed_lesson_rejects_api_key_without_hmac_headers(self):
+        response = self.client.post(
+            reverse("attendance-write-lesson"),
+            data=self._json_body(self._lesson_payload()).decode("utf-8"),
+            content_type="application/json",
+            HTTP_X_API_KEY=self.api_key.key,
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_signed_lesson_rejects_invalid_signature(self):
+        response = self._post_signed(
+            "attendance-write-lesson",
+            self._lesson_payload(),
+            nonce="bad-signature",
+            signature="not-a-valid-signature",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_signed_lesson_rejects_expired_timestamp(self):
+        response = self._post_signed(
+            "attendance-write-lesson",
+            self._lesson_payload(),
+            nonce="expired",
+            timestamp_value=int(time.time()) - 1000,
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_signed_lesson_creates_point_inside_location_radius_and_rejects_nonce_replay(
+        self,
+    ):
+        payload = self._lesson_payload()
+        first_response = self._post_signed(
+            "attendance-write-lesson",
+            payload,
+            nonce="lesson-create",
+        )
+        second_response = self._post_signed(
+            "attendance-write-lesson",
+            payload,
+            nonce="lesson-create",
+        )
+
+        self.assertEqual(first_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second_response.status_code, status.HTTP_403_FORBIDDEN)
+        record = LessonAttendance.objects.get(id=first_response.data["id"])
+        self.assertEqual(record.date_at.isoformat(), "2026-05-29")
+        self.assertEqual(record.duration_seconds, 90 * 60)
+        distance_m = utils.calculate_distance_haversine(
+            self.location.latitude,
+            self.location.longitude,
+            record.latitude,
+            record.longitude,
+        )
+        radius_m = self.location.acceptance_radius_m
+        self.assertIsNotNone(radius_m)
+        assert radius_m is not None
+        self.assertLessEqual(distance_m, radius_m)
+        self.assertGreater(distance_m, 0)
+
+    def test_signed_staff_attendance_upserts_existing_day(self):
+        first_response = self._post_signed(
+            "attendance-write-staff",
+            self._staff_payload(),
+            nonce="staff-create",
+        )
+        second_response = self._post_signed(
+            "attendance-write-staff",
+            self._staff_payload(first_in="2026-05-29T10:00:00+05:00"),
+            nonce="staff-update",
+        )
+
+        self.assertEqual(first_response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(first_response.data["created"])
+        self.assertEqual(second_response.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(second_response.data["created"])
+        self.assertEqual(StaffAttendance.objects.count(), 1)
+        record = StaffAttendance.objects.get()
+        self.assertEqual(record.date_at.isoformat(), "2026-05-30")
+        self.assertEqual(record.effective_work_seconds, 8 * 60 * 60)
+        self.assertIn(
+            record.area_name_in,
+            {"Абылайхана турникет", "вход в 8 этаж"},
+        )
+        self.assertIn(record.area_name_out, {"выход ЦОС", "Абылайхана турникет"})
+        self.assertIsNotNone(record.area_sequence)
+        self.assertIsNotNone(record.effective_work_intervals)
+        assert record.area_sequence is not None
+        assert record.effective_work_intervals is not None
+        self.assertEqual(len(record.area_sequence), 2)
+        self.assertEqual(len(record.effective_work_intervals), 1)
+
+    def test_signed_staff_attendance_rejects_unknown_building(self):
+        payload = self._staff_payload()
+        payload["building"] = "missing"
+
+        response = self._post_signed(
+            "attendance-write-staff",
+            payload,
+            nonce="unknown-building",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_signed_staff_attendance_accepts_russian_building_alias(self):
+        payload = self._staff_payload()
+        payload["building"] = "Абылай-хана"
+
+        response = self._post_signed(
+            "attendance-write-staff",
+            payload,
+            nonce="russian-building",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["building"], "abilai")
+
+    def test_signed_staff_attendance_returns_500_for_empty_terminal_pool(self):
+        payload = self._staff_payload()
+        payload["building"] = "broken"
+
+        response = self._post_signed(
+            "attendance-write-staff",
+            payload,
+            nonce="broken-building",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)

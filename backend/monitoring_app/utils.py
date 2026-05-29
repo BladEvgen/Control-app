@@ -96,6 +96,12 @@ CANONICAL_ADDRESSES: dict[str, str] = {
     "torekulova": "Улица Торекулова, 71",
     "karasai": "Улица Карасай батыра, 75",
 }
+ATTENDANCE_BUILDING_CODES = ("abilai", "karasai", "torekulova")
+ATTENDANCE_BUILDING_LABELS: dict[str, str] = {
+    "abilai": "Абылай-хана",
+    "karasai": "Карасай",
+    "torekulova": "Торекулова",
+}
 
 _PUNCT = re.compile(r"[\"'’`.,:;!?\(\)\[\]{}_/\\]+")
 _WS = re.compile(r"\s+")
@@ -112,24 +118,36 @@ def _norm(s: str) -> str:
 
 
 ALIASES: dict[str, str] = {
+    "abilai": "abilai",
     "абылайхана": "abilai",
+    "абылай хана": "abilai",
+    "абылай-хана": "abilai",
+    "абылай хана турникет": "abilai",
+    "абылай-хана турникет": "abilai",
+    "абылай": "abilai",
     "абылайхана турникет": "abilai",
     "вход абылайхана": "abilai",
     "цос": "abilai",
     "выход цос": "abilai",
     "военные 3 этаж": "abilai",
     "лифтовые с 1 по 7": "abilai",
+    "torekulova": "torekulova",
     "торекулова": "torekulova",
     "торекулова турникет": "torekulova",
+    "торекулов": "torekulova",
+    "торекулва": "torekulova",
     "торекулва турникет": "torekulova",
+    "karasai": "karasai",
     "карасай": "karasai",
     "карасай батыр": "karasai",
     "карасай батыра": "karasai",
+    "карасай-батыра": "karasai",
     "карасай батыра турникет": "karasai",
+    "карасай-батыра турникет": "karasai",
 }
 
 _RX_ABILAI = re.compile(
-    r"(абылай\s*хана|абылайхана|цос|военные|\bвход\b|\bвыход\b|\bлифт\w*)",
+    r"(абылай[\s\-]*хана|абылайхана|цос|военные|\bвход\b|\bвыход\b|\bлифт\w*)",
     re.IGNORECASE,
 )
 
@@ -145,6 +163,27 @@ def is_lift_terminal(area_name: str | None) -> bool:
     if not area_name or not area_name.strip():
         return False
     return bool(_RX_LIFT.search(area_name.strip()))
+
+
+@lru_cache(maxsize=4096)
+def resolve_area_family(area_name: str | None) -> str | None:
+    """Возвращает внутренний ключ корпуса: abilai, torekulova или karasai."""
+    if not area_name:
+        return None
+
+    n = _norm(area_name)
+
+    if n in ALIASES:
+        return ALIASES[n]
+
+    if _RX_TOREKULOVA.search(n):
+        return "torekulova"
+    if _RX_KARASAI.search(n):
+        return "karasai"
+    if _RX_ABILAI.search(n) or _RX_LIFT.search(n):
+        return "abilai"
+
+    return _fuzzy_family(n)
 
 
 @lru_cache(maxsize=8192)
@@ -204,26 +243,8 @@ def resolve_area_address(area_name: str | None) -> str | None:
     Returns:
         str | None: Канонический адрес или None, если распознать нельзя.
     """
-    if not area_name:
-        return None
-
-    n = _norm(area_name)
-
-    if n in ALIASES:
-        return CANONICAL_ADDRESSES[ALIASES[n]]
-
-    if _RX_TOREKULOVA.search(n):
-        return CANONICAL_ADDRESSES["torekulova"]
-    if _RX_KARASAI.search(n):
-        return CANONICAL_ADDRESSES["karasai"]
-    if _RX_ABILAI.search(n) or _RX_LIFT.search(n):
-        return CANONICAL_ADDRESSES["abilai"]
-
-    fam = _fuzzy_family(n)
-    if fam:
-        return CANONICAL_ADDRESSES[fam]
-
-    return None
+    family = resolve_area_family(area_name)
+    return CANONICAL_ADDRESSES[family] if family else None
 
 
 def get_client_ip(request):
@@ -395,7 +416,14 @@ class APIKeyUtility:
         decrypted_data = f.decrypt(encrypted_data.encode())
         data = json.loads(decrypted_data.decode())
 
-        return {field: data.get(field) for field in fields}
+        return {
+            field: (
+                data.get("is_activate")
+                if field == "is_active" and "is_active" not in data
+                else data.get(field)
+            )
+            for field in fields
+        }
 
     @staticmethod
     def generate_api_key(key_name, created_by):
@@ -404,7 +432,7 @@ class APIKeyUtility:
             "key_name": key_name,
             "created_by": created_by.username,
             "created_at": timezone.now().isoformat(),
-            "is_activate": True,
+            "is_active": True,
         }
         encrypted_data = APIKeyUtility.encrypt_data(data, secret_key)
         return encrypted_data, secret_key
@@ -2066,13 +2094,14 @@ def collect_attendance_data(
         else:
             dept_str = "no_dept"
 
-        staff_count = len(staff_list)
+        staff_ids = sorted(str(staff.id) for staff in staff_list)
+        staff_hash = hashlib.sha1("|".join(staff_ids).encode("utf-8")).hexdigest()[:16]
 
         cache_version = models.LessonAttendance.REPORT_FILTER_CACHE_VERSION
         return (
             f"attendance_data_{EXCEL_ATTENDANCE_CACHE_VERSION}_{cache_version}_"
             f"{start_str}_to_{end_str}_"
-            f"dept_{dept_str}_staff_count_{staff_count}"
+            f"dept_{dept_str}_staff_{staff_hash}"
         )
 
     cache_key = generate_cache_key()
@@ -2859,9 +2888,4 @@ def generate_excel_file(
 
 
 def convert_to_local(dt):
-    if dt is None:
-        return None
-    if isinstance(dt, datetime.date) and not isinstance(dt, datetime.datetime):
-        dt = datetime.datetime.combine(dt, datetime.time(0, 0, 0))
-        dt = timezone.make_aware(dt, timezone.get_current_timezone())
-    return timezone.localtime(dt)
+    return _convert_to_local_with_tz(dt, timezone.get_current_timezone())

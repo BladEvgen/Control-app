@@ -1,11 +1,13 @@
 import base64
 import datetime
 import hashlib
+import hmac
 import json
 import logging
 import math
 import mimetypes
 import os
+import random
 import re
 import time
 import uuid
@@ -29,6 +31,7 @@ from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template import TemplateDoesNotExist
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.cache import never_cache
 from django.views.generic import View
 from drf_yasg import openapi
@@ -111,6 +114,161 @@ def _drf_validation_error_text(exc: ValidationError) -> str:
                 parts.append(f"{key}: {val}")
         return "; ".join(parts).strip()
     return str(detail).strip()
+
+
+def _attendance_write_error(message: str, response_status: int) -> Response:
+    return Response({"error": message}, status=response_status)
+
+
+def _attendance_write_auth_failed() -> Response:
+    return _attendance_write_error(
+        "Attendance write authentication failed", status.HTTP_403_FORBIDDEN
+    )
+
+
+def _get_attendance_write_api_key(
+    request,
+) -> tuple[Optional[models.APIKey], Optional[Response]]:
+    api_key = request.headers.get("X-API-KEY") or request.headers.get("x-api-key")
+    if not api_key:
+        return None, _attendance_write_auth_failed()
+    try:
+        key_obj = models.APIKey.objects.get(key=api_key)
+    except models.APIKey.DoesNotExist:
+        return None, _attendance_write_auth_failed()
+    if not key_obj.is_active:
+        return None, _attendance_write_auth_failed()
+    return key_obj, None
+
+
+def _verify_attendance_write_signature(
+    request,
+) -> tuple[Optional[models.APIKey], Optional[Response]]:
+    key_obj, key_error = _get_attendance_write_api_key(request)
+    if key_error is not None:
+        return None, key_error
+    assert key_obj is not None
+
+    secret = str(getattr(settings, "ATTENDANCE_WRITE_HMAC_SECRET", "") or "").strip()
+    if not secret:
+        return None, _attendance_write_error(
+            "Attendance write authentication is unavailable",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    timestamp_header = request.headers.get("X-Attendance-Timestamp")
+    nonce = request.headers.get("X-Attendance-Nonce")
+    signature = request.headers.get("X-Attendance-Signature")
+    if not timestamp_header or not nonce or not signature:
+        return None, _attendance_write_auth_failed()
+
+    try:
+        request_timestamp = int(str(timestamp_header).strip())
+    except (TypeError, ValueError):
+        return None, _attendance_write_auth_failed()
+
+    try:
+        ttl_seconds = max(
+            1, int(getattr(settings, "ATTENDANCE_WRITE_HMAC_TTL_SECONDS", 300))
+        )
+    except (TypeError, ValueError):
+        ttl_seconds = 300
+    if abs(int(time.time()) - request_timestamp) > ttl_seconds:
+        return None, _attendance_write_auth_failed()
+
+    raw_body = request.body
+    body_hash = hashlib.sha256(raw_body).hexdigest()
+    signing_payload = "\n".join(
+        [
+            request.method.upper(),
+            request.path_info,
+            str(request_timestamp),
+            str(nonce),
+            body_hash,
+        ]
+    )
+    expected_signature = hmac.new(
+        secret.encode("utf-8"),
+        signing_payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected_signature, str(signature).strip()):
+        return None, _attendance_write_auth_failed()
+
+    nonce_digest = hashlib.sha256(f"{key_obj.id}:{nonce}".encode("utf-8")).hexdigest()
+    nonce_cache_key = f"attendance_write_nonce:{nonce_digest}"
+    if not cache.add(nonce_cache_key, timezone.now().isoformat(), timeout=ttl_seconds):
+        return None, _attendance_write_auth_failed()
+    return key_obj, None
+
+
+def _parse_attendance_datetime(
+    value: Any, field_name: str
+) -> tuple[Optional[datetime.datetime], Optional[Response]]:
+    if not value:
+        return None, _attendance_write_error(
+            f"{field_name} is required", status.HTTP_400_BAD_REQUEST
+        )
+    parsed = parse_datetime(str(value))
+    if parsed is None:
+        return None, _attendance_write_error(
+            f"{field_name} must be an ISO 8601 datetime",
+            status.HTTP_400_BAD_REQUEST,
+        )
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+    return parsed, None
+
+
+def _random_point_near_location(
+    location: models.ClassLocation, radius_m: int
+) -> tuple[float, float]:
+    rng = random.SystemRandom()
+    safe_radius_m = max(1, int(radius_m or DEFAULT_ACCEPTANCE_RADIUS_M))
+    distance_m = safe_radius_m * (0.08 + 0.72 * (rng.random() ** 2))
+    bearing = rng.random() * 2 * math.pi
+    lat_rad = math.radians(float(location.latitude))
+    meters_per_degree_lat = 111_320.0
+    meters_per_degree_lon = max(1.0, 111_320.0 * math.cos(lat_rad))
+    delta_lat = math.cos(bearing) * distance_m / meters_per_degree_lat
+    delta_lon = math.sin(bearing) * distance_m / meters_per_degree_lon
+    return float(location.latitude) + delta_lat, float(location.longitude) + delta_lon
+
+
+def _attendance_terminal_pools() -> dict[str, Any]:
+    pools = getattr(settings, "ATTENDANCE_API_TERMINAL_POOLS", {})
+    return pools if isinstance(pools, dict) else {}
+
+
+def _pick_attendance_terminal(
+    building_pool: dict[str, Any], direction: str
+) -> tuple[Optional[dict[str, Any]], Optional[Response]]:
+    terminals = building_pool.get(direction)
+    if not isinstance(terminals, list) or not terminals:
+        return None, _attendance_write_error(
+            f"Attendance terminal pool '{direction}' is not configured",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    valid_terminals = [
+        terminal
+        for terminal in terminals
+        if isinstance(terminal, dict) and terminal.get("areaName")
+    ]
+    if not valid_terminals:
+        return None, _attendance_write_error(
+            f"Attendance terminal pool '{direction}' has no valid terminals",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    return random.SystemRandom().choice(valid_terminals), None
+
+
+def _invalidate_attendance_write_caches(work_day: datetime.date) -> None:
+    work_day_str = work_day.strftime("%Y-%m-%d")
+    invalidate_cache_pattern(f"staff_attendance_stats_{work_day_str}*")
+    invalidate_cache_pattern(f"map_location_{work_day_str}*")
+    invalidate_cache("today_attendance_stats")
+    invalidate_cache("map_locations_today")
+    invalidate_cache_pattern("staff_detail_*")
 
 
 def _get_manual_parameters_for_inspector(view, method, overrides):
@@ -5860,6 +6018,420 @@ LESSON_ATTENDANCE_JSON_BODY_EXAMPLE = {
 LESSON_ATTENDANCE_JSON_BODY_EXAMPLE_TEXT = json.dumps(
     LESSON_ATTENDANCE_JSON_BODY_EXAMPLE, ensure_ascii=False, indent=2
 )
+
+ATTENDANCE_WRITE_HMAC_DESCRIPTION = (
+    "Закрытый endpoint для доверенной интеграции. "
+    "Swagger показывает только форму запроса; для реального вызова нужен "
+    "выданный интеграционный ключ и одноразовая подпись запроса. "
+    "Параметры формирования подписи передаются доверенному клиенту отдельно, "
+    "вне публичной документации. Каждый запрос должен использовать новую "
+    "одноразовую строку и актуальную временную метку."
+)
+
+
+def _attendance_write_hmac_parameters() -> list[openapi.Parameter]:
+    return [
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="Выданный интеграционный API key.",
+        ),
+        openapi.Parameter(
+            name="X-Attendance-Timestamp",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="Временная метка подписанного запроса.",
+        ),
+        openapi.Parameter(
+            name="X-Attendance-Nonce",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="Одноразовый идентификатор подписанного запроса.",
+        ),
+        openapi.Parameter(
+            name="X-Attendance-Signature",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=True,
+            description="Подпись запроса, рассчитанная доверенным клиентом.",
+        ),
+    ]
+
+
+ATTENDANCE_WRITE_ERROR_SCHEMA = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    properties={"error": openapi.Schema(type=openapi.TYPE_STRING)},
+)
+
+ATTENDANCE_WRITE_COMMON_RESPONSES = {
+    400: openapi.Response("Ошибка входных данных.", ATTENDANCE_WRITE_ERROR_SCHEMA),
+    403: openapi.Response(
+        "Интеграционная аутентификация не пройдена.",
+        ATTENDANCE_WRITE_ERROR_SCHEMA,
+    ),
+    404: openapi.Response(
+        "Staff или ClassLocation не найдены.", ATTENDANCE_WRITE_ERROR_SCHEMA
+    ),
+    500: openapi.Response(
+        "Ошибка конфигурации терминалов или сервера.", ATTENDANCE_WRITE_ERROR_SCHEMA
+    ),
+    503: openapi.Response(
+        "Подписывание интеграционных запросов временно недоступно.",
+        ATTENDANCE_WRITE_ERROR_SCHEMA,
+    ),
+}
+
+SIGNED_LESSON_ATTENDANCE_BODY_SCHEMA = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=[
+        "staff_pin",
+        "location_id",
+        "first_in",
+        "last_out",
+        "tutor_id",
+        "tutor",
+    ],
+    properties={
+        "staff_pin": openapi.Schema(type=openapi.TYPE_STRING, example="S123S"),
+        "location_id": openapi.Schema(
+            type=openapi.TYPE_INTEGER,
+            example=1,
+            description="ID ClassLocation. Координаты будут сгенерированы внутри её радиуса.",
+        ),
+        "first_in": openapi.Schema(
+            type=openapi.TYPE_STRING,
+            format=openapi.FORMAT_DATETIME,
+            example="2026-05-29T09:00:00+05:00",
+        ),
+        "last_out": openapi.Schema(
+            type=openapi.TYPE_STRING,
+            format=openapi.FORMAT_DATETIME,
+            example="2026-05-29T10:30:00+05:00",
+        ),
+        "tutor_id": openapi.Schema(type=openapi.TYPE_INTEGER, example=123),
+        "tutor": openapi.Schema(type=openapi.TYPE_STRING, example="Иванов И.И."),
+        "subject_name": openapi.Schema(
+            type=openapi.TYPE_STRING,
+            example="Математика",
+            description="Опционально.",
+        ),
+    },
+)
+
+SIGNED_STAFF_ATTENDANCE_BODY_SCHEMA = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=["staff_pin", "building", "first_in", "last_out"],
+    properties={
+        "staff_pin": openapi.Schema(type=openapi.TYPE_STRING, example="S123S"),
+        "building": openapi.Schema(
+            type=openapi.TYPE_STRING,
+            example="abilai",
+            enum=list(utils.ATTENDANCE_BUILDING_CODES),
+            description=(
+                "Стабильный код корпуса. Используйте только: "
+                "`abilai` = Абылай-хана, `karasai` = Карасай, "
+                "`torekulova` = Торекулова. Русские алиасы принимаются "
+                "только для обратной совместимости."
+            ),
+        ),
+        "first_in": openapi.Schema(
+            type=openapi.TYPE_STRING,
+            format=openapi.FORMAT_DATETIME,
+            example="2026-05-29T09:00:00+05:00",
+        ),
+        "last_out": openapi.Schema(
+            type=openapi.TYPE_STRING,
+            format=openapi.FORMAT_DATETIME,
+            example="2026-05-29T18:00:00+05:00",
+        ),
+    },
+)
+
+SIGNED_LESSON_ATTENDANCE_RESPONSE_SCHEMA = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    properties={
+        "id": openapi.Schema(type=openapi.TYPE_INTEGER),
+        "staff_pin": openapi.Schema(type=openapi.TYPE_STRING),
+        "location_id": openapi.Schema(type=openapi.TYPE_INTEGER),
+        "latitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+        "longitude": openapi.Schema(type=openapi.TYPE_NUMBER),
+        "date_at": openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+        "duration_seconds": openapi.Schema(type=openapi.TYPE_INTEGER),
+    },
+)
+
+SIGNED_STAFF_ATTENDANCE_RESPONSE_SCHEMA = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    properties={
+        "id": openapi.Schema(type=openapi.TYPE_INTEGER),
+        "created": openapi.Schema(type=openapi.TYPE_BOOLEAN),
+        "staff_pin": openapi.Schema(type=openapi.TYPE_STRING),
+        "building": openapi.Schema(type=openapi.TYPE_STRING),
+        "date_at": openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
+        "first_in": openapi.Schema(
+            type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME
+        ),
+        "last_out": openapi.Schema(
+            type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME
+        ),
+        "area_name_in": openapi.Schema(type=openapi.TYPE_STRING),
+        "area_name_out": openapi.Schema(type=openapi.TYPE_STRING),
+        "effective_work_seconds": openapi.Schema(type=openapi.TYPE_INTEGER),
+    },
+)
+
+
+@swagger_auto_schema(
+    method="post",
+    operation_summary="Создать LessonAttendance по локации (закрытый API)",
+    operation_description=(
+        "Создаёт одну запись LessonAttendance без фото. "
+        "Клиент передаёт staff, tutor, время и ID ClassLocation; сервер сам выбирает "
+        "координату внутри радиуса локации.\n\n"
+        f"{ATTENDANCE_WRITE_HMAC_DESCRIPTION}"
+    ),
+    tags=["Attendance Write"],
+    manual_parameters=_attendance_write_hmac_parameters(),
+    request_body=SIGNED_LESSON_ATTENDANCE_BODY_SCHEMA,
+    responses={
+        201: openapi.Response(
+            "LessonAttendance создан.",
+            SIGNED_LESSON_ATTENDANCE_RESPONSE_SCHEMA,
+        ),
+        **ATTENDANCE_WRITE_COMMON_RESPONSES,
+    },
+)
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def create_signed_lesson_attendance(request):
+    _key_obj, auth_error = _verify_attendance_write_signature(request)
+    if auth_error is not None:
+        return auth_error
+
+    data = request.data
+    staff_pin = str(data.get("staff_pin") or "").strip()
+    location_id = data.get("location_id")
+    tutor = str(data.get("tutor") or "").strip()
+    subject_name = str(data.get("subject_name") or "").strip()
+    if not staff_pin:
+        return _attendance_write_error(
+            "staff_pin is required", status.HTTP_400_BAD_REQUEST
+        )
+    if location_id in (None, ""):
+        return _attendance_write_error(
+            "location_id is required", status.HTTP_400_BAD_REQUEST
+        )
+    if not tutor:
+        return _attendance_write_error("tutor is required", status.HTTP_400_BAD_REQUEST)
+    try:
+        tutor_id = int(data.get("tutor_id"))
+    except (TypeError, ValueError):
+        return _attendance_write_error(
+            "tutor_id must be an integer", status.HTTP_400_BAD_REQUEST
+        )
+
+    first_in, first_error = _parse_attendance_datetime(data.get("first_in"), "first_in")
+    if first_error is not None:
+        return first_error
+    last_out, last_error = _parse_attendance_datetime(data.get("last_out"), "last_out")
+    if last_error is not None:
+        return last_error
+    if first_in is None or last_out is None:
+        return _attendance_write_error(
+            "first_in and last_out are required", status.HTTP_400_BAD_REQUEST
+        )
+    if last_out <= first_in:
+        return _attendance_write_error(
+            "last_out must be later than first_in", status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        staff = models.Staff.objects.get(pin=staff_pin)
+    except models.Staff.DoesNotExist:
+        return _attendance_write_error("Staff not found", status.HTTP_404_NOT_FOUND)
+    try:
+        location = models.ClassLocation.objects.get(pk=location_id)
+    except (models.ClassLocation.DoesNotExist, ValueError, TypeError):
+        return _attendance_write_error(
+            "ClassLocation not found", status.HTTP_404_NOT_FOUND
+        )
+
+    radii = get_class_location_cache().get("location_acceptance_radius_m", {})
+    radius_m = utils.get_location_radius(location, radii)
+    latitude, longitude = _random_point_near_location(location, radius_m)
+    lesson = models.LessonAttendance.objects.create(
+        staff=staff,
+        subject_name=subject_name,
+        tutor_id=tutor_id,
+        tutor=tutor,
+        first_in=first_in,
+        last_out=last_out,
+        latitude=latitude,
+        longitude=longitude,
+        date_at=timezone.localtime(first_in).date(),
+    )
+    _invalidate_attendance_write_caches(timezone.localtime(first_in).date())
+    return Response(
+        {
+            "id": lesson.id,
+            "staff_pin": staff.pin,
+            "location_id": location.id,
+            "latitude": lesson.latitude,
+            "longitude": lesson.longitude,
+            "date_at": lesson.date_at.isoformat(),
+            "duration_seconds": lesson.duration_seconds,
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@swagger_auto_schema(
+    method="post",
+    operation_summary="Создать/заменить StaffAttendance по корпусу (закрытый API)",
+    operation_description=(
+        "Создаёт или заменяет StaffAttendance за рабочий день. "
+        "`date_at` сохраняется как локальная дата `first_in` + 1 день. "
+        "Терминалы входа/выхода выбираются случайно из настроенного пула корпуса.\n\n"
+        f"{ATTENDANCE_WRITE_HMAC_DESCRIPTION}"
+    ),
+    tags=["Attendance Write"],
+    manual_parameters=_attendance_write_hmac_parameters(),
+    request_body=SIGNED_STAFF_ATTENDANCE_BODY_SCHEMA,
+    responses={
+        201: openapi.Response(
+            "StaffAttendance создан или обновлён.",
+            SIGNED_STAFF_ATTENDANCE_RESPONSE_SCHEMA,
+        ),
+        **ATTENDANCE_WRITE_COMMON_RESPONSES,
+    },
+)
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def upsert_signed_staff_attendance(request):
+    _key_obj, auth_error = _verify_attendance_write_signature(request)
+    if auth_error is not None:
+        return auth_error
+
+    data = request.data
+    staff_pin = str(data.get("staff_pin") or "").strip()
+    building_raw = str(data.get("building") or "")
+    building = utils.resolve_area_family(building_raw) or building_raw.strip().lower()
+    if not staff_pin:
+        return _attendance_write_error(
+            "staff_pin is required", status.HTTP_400_BAD_REQUEST
+        )
+    if not building:
+        return _attendance_write_error(
+            "building is required", status.HTTP_400_BAD_REQUEST
+        )
+
+    first_in, first_error = _parse_attendance_datetime(data.get("first_in"), "first_in")
+    if first_error is not None:
+        return first_error
+    last_out, last_error = _parse_attendance_datetime(data.get("last_out"), "last_out")
+    if last_error is not None:
+        return last_error
+    if first_in is None or last_out is None:
+        return _attendance_write_error(
+            "first_in and last_out are required", status.HTTP_400_BAD_REQUEST
+        )
+    if last_out <= first_in:
+        return _attendance_write_error(
+            "last_out must be later than first_in", status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        staff = models.Staff.objects.get(pin=staff_pin)
+    except models.Staff.DoesNotExist:
+        return _attendance_write_error("Staff not found", status.HTTP_404_NOT_FOUND)
+
+    pools = _attendance_terminal_pools()
+    building_pool = pools.get(building)
+    if not isinstance(building_pool, dict):
+        return Response(
+            {
+                "error": "Unknown attendance building",
+                "allowed_buildings": list(utils.ATTENDANCE_BUILDING_CODES),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    entry_terminal, entry_error = _pick_attendance_terminal(building_pool, "entry")
+    if entry_error is not None:
+        return entry_error
+    exit_terminal, exit_error = _pick_attendance_terminal(building_pool, "exit")
+    if exit_error is not None:
+        return exit_error
+    if entry_terminal is None or exit_terminal is None:
+        return _attendance_write_error(
+            "Attendance terminals are not configured",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    first_in_local = timezone.localtime(first_in)
+    last_out_local = timezone.localtime(last_out)
+    work_day = first_in_local.date()
+    date_at = work_day + datetime.timedelta(days=1)
+    effective_work_seconds = int((last_out - first_in).total_seconds())
+    entry_area = str(entry_terminal["areaName"])
+    exit_area = str(exit_terminal["areaName"])
+    area_sequence = [
+        {
+            "t": first_in_local.strftime("%H:%M"),
+            "area": entry_area,
+            "devSn": str(entry_terminal.get("devSn") or ""),
+        },
+        {
+            "t": last_out_local.strftime("%H:%M"),
+            "area": exit_area,
+            "devSn": str(exit_terminal.get("devSn") or ""),
+            "exit_candidate": "1",
+            "exit_resolution": "exit",
+            "is_exit": "1",
+        },
+    ]
+    effective_work_intervals = [
+        {"start": first_in.isoformat(), "end": last_out.isoformat()}
+    ]
+    with _db_atomic():
+        attendance, created = models.StaffAttendance.objects.update_or_create(
+            staff=staff,
+            date_at=date_at,
+            defaults={
+                "first_in": first_in,
+                "last_out": last_out,
+                "area_name_in": entry_area,
+                "area_name_out": exit_area,
+                "effective_work_seconds": effective_work_seconds,
+                "area_sequence": area_sequence,
+                "effective_work_intervals": effective_work_intervals,
+            },
+        )
+    _invalidate_attendance_write_caches(work_day)
+    return Response(
+        {
+            "id": attendance.id,
+            "created": created,
+            "staff_pin": staff.pin,
+            "building": building,
+            "date_at": attendance.date_at.isoformat(),
+            "first_in": (
+                attendance.first_in.isoformat() if attendance.first_in else None
+            ),
+            "last_out": (
+                attendance.last_out.isoformat() if attendance.last_out else None
+            ),
+            "area_name_in": attendance.area_name_in,
+            "area_name_out": attendance.area_name_out,
+            "effective_work_seconds": attendance.effective_work_seconds,
+        },
+        status=status.HTTP_201_CREATED,
+    )
 
 
 @swagger_auto_schema(

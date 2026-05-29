@@ -26,6 +26,16 @@ urlpatterns = [
         views.suspicious_location_patterns,
         name="suspicious-location-patterns",
     ),
+    path(
+        "api/attendance/write/lesson/",
+        views.create_signed_lesson_attendance,
+        name="attendance-write-lesson",
+    ),
+    path(
+        "api/attendance/write/staff/",
+        views.upsert_signed_staff_attendance,
+        name="attendance-write-staff",
+    ),
     path("api/locations", views.map_location, name="locations"),
     path("api/lesson_locations/", views.lesson_locations, name="lesson_locations"),
     path(
