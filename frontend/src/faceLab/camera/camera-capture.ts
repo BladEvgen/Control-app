@@ -3,13 +3,50 @@ import { camLog } from "./cameraLog";
 
 export type CaptureOptions = {
   video: HTMLVideoElement;
+  track?: MediaStreamTrack | null;
   frame: Frame;
   container: HTMLDivElement;
   shouldMirror: boolean;
   maxWidth?: number;
   maxHeight?: number;
   quality?: number;
+  preferStillCapture?: boolean;
 };
+
+type ImageCaptureLike = {
+  takePhoto?: (settings?: Record<string, unknown>) => Promise<Blob>;
+  grabFrame?: () => Promise<ImageBitmap>;
+  getPhotoCapabilities?: () => Promise<{
+    imageWidth?: { max?: number; min?: number };
+    imageHeight?: { max?: number; min?: number };
+    fillLightMode?: string[];
+  }>;
+};
+
+type ImageCaptureCtor = new (track: MediaStreamTrack) => ImageCaptureLike;
+
+function imageCaptureCtor(): ImageCaptureCtor | null {
+  const win = window as unknown as { ImageCapture?: ImageCaptureCtor };
+  return typeof win.ImageCapture === "function" ? win.ImageCapture : null;
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(null), timeoutMs);
+    promise
+      .then((value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      })
+      .catch(() => {
+        window.clearTimeout(timer);
+        resolve(null);
+      });
+  });
+}
 
 export function waitForVideoPipelineFrames(
   video: HTMLVideoElement,
@@ -31,26 +68,32 @@ export function waitForVideoPipelineFrames(
   return new Promise((r) => void setTimeout(r, Math.max(40, count * 34)));
 }
 
-export async function capturePhoto(
-  options: CaptureOptions,
+type DrawCroppedOptions = {
+  source: CanvasImageSource;
+  sourceWidth: number;
+  sourceHeight: number;
+  video: HTMLVideoElement;
+  frame: Frame;
+  container: HTMLDivElement;
+  shouldMirror: boolean;
+  maxLong: number;
+  quality: number;
+};
+
+async function drawCroppedJpeg(
+  options: DrawCroppedOptions,
 ): Promise<Blob | null> {
   const {
+    source,
+    sourceWidth,
+    sourceHeight,
     video,
     frame,
     container,
     shouldMirror,
-    maxWidth = 1920,
-    maxHeight = 1920,
-    quality = 0.94,
+    maxLong,
+    quality,
   } = options;
-
-  const videoWidth = video.videoWidth;
-  const videoHeight = video.videoHeight;
-
-  if (!videoWidth || !videoHeight) {
-    camLog.info("Video dimensions not available");
-    return null;
-  }
 
   if (!frame.w || !frame.h) {
     camLog.info("Frame not ready");
@@ -58,13 +101,13 @@ export async function capturePhoto(
   }
 
   camLog.info("Capturing", {
-    videoResolution: `${videoWidth}x${videoHeight}`,
+    sourceResolution: `${sourceWidth}x${sourceHeight}`,
   });
 
   const containerRect = container.getBoundingClientRect();
   const videoRect = video.getBoundingClientRect();
 
-  const videoAspect = videoWidth / videoHeight;
+  const videoAspect = sourceWidth / sourceHeight;
   const displayAspect = videoRect.width / videoRect.height;
 
   let actualVideoWidth: number;
@@ -82,8 +125,8 @@ export async function capturePhoto(
     videoOffsetY = (actualVideoHeight - videoRect.height) / 2;
   }
 
-  const scaleX = videoWidth / actualVideoWidth;
-  const scaleY = videoHeight / actualVideoHeight;
+  const scaleX = sourceWidth / actualVideoWidth;
+  const scaleY = sourceHeight / actualVideoHeight;
 
   const frameLeft = frame.left - (videoRect.left - containerRect.left);
   const frameTop = frame.top - (videoRect.top - containerRect.top);
@@ -93,7 +136,6 @@ export async function capturePhoto(
   const cropWidth = frame.w * scaleX;
   const cropHeight = frame.h * scaleY;
 
-  const maxLong = Math.max(maxWidth, maxHeight);
   const cropW = Math.round(cropWidth);
   const cropH = Math.round(cropHeight);
   const longEdge = Math.max(cropW, cropH);
@@ -129,7 +171,7 @@ export async function capturePhoto(
   ctx.imageSmoothingQuality = "high";
 
   ctx.drawImage(
-    video,
+    source,
     Math.max(0, cropX),
     Math.max(0, cropY),
     cropWidth,
@@ -154,6 +196,89 @@ export async function capturePhoto(
       "image/jpeg",
       quality,
     );
+  });
+}
+
+async function captureImageCaptureStill(
+  track: MediaStreamTrack | null | undefined,
+): Promise<{ source: ImageBitmap; sourceName: string } | null> {
+  if (!track) return null;
+  const Ctor = imageCaptureCtor();
+  if (!Ctor) return null;
+
+  try {
+    const ic = new Ctor(track);
+    if (typeof ic.grabFrame === "function") {
+      const bitmap = await withTimeout(ic.grabFrame(), 220);
+      if (!bitmap) return null;
+      return { source: bitmap, sourceName: "ImageCapture.grabFrame" };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+export async function capturePhoto(
+  options: CaptureOptions,
+): Promise<Blob | null> {
+  const {
+    video,
+    track,
+    frame,
+    container,
+    shouldMirror,
+    maxWidth = 2560,
+    maxHeight = 2560,
+    quality = 0.96,
+    preferStillCapture = false,
+  } = options;
+
+  const videoWidth = video.videoWidth;
+  const videoHeight = video.videoHeight;
+
+  if (!videoWidth || !videoHeight) {
+    camLog.info("Video dimensions not available");
+    return null;
+  }
+
+  const maxLong = Math.max(maxWidth, maxHeight);
+  const still = preferStillCapture
+    ? await captureImageCaptureStill(track)
+    : null;
+  if (still) {
+    camLog.info("Using camera still source", {
+      source: still.sourceName,
+      size: `${still.source.width}x${still.source.height}`,
+    });
+    try {
+      return await drawCroppedJpeg({
+        source: still.source,
+        sourceWidth: still.source.width,
+        sourceHeight: still.source.height,
+        video,
+        frame,
+        container,
+        shouldMirror,
+        maxLong,
+        quality,
+      });
+    } finally {
+      still.source.close();
+    }
+  }
+
+  return drawCroppedJpeg({
+    source: video,
+    sourceWidth: videoWidth,
+    sourceHeight: videoHeight,
+    video,
+    frame,
+    container,
+    shouldMirror,
+    maxLong,
+    quality,
   });
 }
 

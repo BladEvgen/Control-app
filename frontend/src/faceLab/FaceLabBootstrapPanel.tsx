@@ -67,7 +67,7 @@ function StepDot({
         done
           ? "bg-emerald-500 text-white shadow-md shadow-emerald-500/30"
           : active
-            ? "bg-primary-600 text-white shadow-md shadow-primary-600/25 ring-4 ring-primary-200/50 dark:ring-primary-900/50"
+            ? "bg-blue-600 text-white shadow-md shadow-blue-600/25 ring-4 ring-blue-200/50 dark:bg-blue-500 dark:ring-blue-500/25"
             : "border-2 border-slate-200 bg-white text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-500"
       }`}
     >
@@ -85,7 +85,6 @@ export function FaceLabBootstrapPanel({
 }: Props) {
   const [status, setStatus] = useState<FaceLabBootstrapStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [glasses, setGlasses] = useState(false);
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(
     null,
@@ -166,7 +165,6 @@ export function FaceLabBootstrapPanel({
       fd.append("pin", pin);
       fd.append("angle", workAngle);
       fd.append("source", "bootstrap_capture");
-      fd.append("with_glasses", glasses ? "true" : "false");
       fd.append("image", file);
       const res = await axiosInstance.post<{
         ok?: boolean;
@@ -194,7 +192,6 @@ export function FaceLabBootstrapPanel({
       });
       onSaved();
       await refreshStatus();
-      setGlasses(false);
     } catch (e: unknown) {
       let raw = "Не удалось сохранить кадр.";
       if (axios.isAxiosError(e) && e.response?.data) {
@@ -308,7 +305,7 @@ export function FaceLabBootstrapPanel({
           </p>
         </div>
         {status && (!allDone || inRetake) ? (
-          <p className="text-xs font-medium text-primary-700 dark:text-primary-300">
+          <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
             {inRetake && retakeAngle
               ? `Пересъёмка: ${ANGLE_SHORT[retakeAngle]}`
               : `Шаг ${Math.min(currentStepIndex + 1, 3)} из 3`}
@@ -346,7 +343,7 @@ export function FaceLabBootstrapPanel({
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
             <div
-              className="h-full rounded-full bg-primary-600 transition-[width] duration-500 ease-out dark:bg-primary-500"
+              className="h-full rounded-full bg-blue-600 transition-[width] duration-500 ease-out dark:bg-blue-500"
               style={{ width: `${progressFraction * 100}%` }}
             />
           </div>
@@ -402,25 +399,6 @@ export function FaceLabBootstrapPanel({
         </div>
       ) : null}
 
-      {showCaptureUi && workAngle ? (
-        <label className="mb-6 flex cursor-pointer gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-600 dark:bg-slate-900/60">
-          <input
-            type="checkbox"
-            checked={glasses}
-            onChange={(e) => setGlasses(e.target.checked)}
-            className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300 text-primary-600 focus:ring-primary-500"
-          />
-          <span className="min-w-0">
-            <span className="block text-sm font-medium text-slate-900 dark:text-slate-100">
-              На фото видны очки
-            </span>
-            <span className="mt-1 block text-xs leading-snug text-slate-600 dark:text-slate-400">
-              Отметьте только если очки видны на этом кадре.
-            </span>
-          </span>
-        </label>
-      ) : null}
-
       {banner ? (
         <div
           className={`mb-5 rounded-xl border px-4 py-3 text-sm ${
@@ -440,7 +418,7 @@ export function FaceLabBootstrapPanel({
             type="button"
             disabled={busy || !file}
             onClick={() => void saveSample()}
-            className="w-full rounded-xl bg-primary-600 py-3.5 text-base font-semibold text-white shadow-lg shadow-primary-600/25 transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-primary-500 dark:hover:bg-primary-600"
+            className="w-full rounded-xl bg-blue-600 py-3.5 text-base font-semibold text-white shadow-lg shadow-blue-600/25 transition hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:cursor-not-allowed disabled:opacity-45 dark:bg-blue-500 dark:hover:bg-blue-600 dark:focus-visible:ring-blue-300/80 dark:focus-visible:ring-offset-slate-950"
           >
             {busy
               ? "Сохраняем…"
@@ -448,7 +426,7 @@ export function FaceLabBootstrapPanel({
                 ? inRetake
                   ? `Сохранить новый «${ANGLE_SHORT[workAngle]}»`
                   : `Сохранить «${ANGLE_SHORT[workAngle]}» и продолжить`
-                : "Сначала сделайте снимок в блоке ниже"}
+                : "Сначала сделайте снимок"}
           </button>
 
           {inRetake ? (
@@ -487,7 +465,7 @@ export function FaceLabBootstrapPanel({
                 type="button"
                 disabled={busy || !lastSampleId}
                 onClick={() => void applyAvatar()}
-                className="w-full rounded-lg py-2.5 text-sm font-medium text-primary-700 hover:underline disabled:opacity-45 dark:text-primary-300"
+                className="w-full rounded-lg py-2.5 text-sm font-medium text-blue-700 transition hover:bg-blue-50 hover:text-blue-800 disabled:opacity-45 dark:text-blue-300 dark:hover:bg-blue-500/10 dark:hover:text-blue-200"
               >
                 Поставить последний кадр в профиль
               </button>
@@ -513,7 +491,7 @@ export function FaceLabBootstrapPanel({
                 type="button"
                 disabled={busy}
                 onClick={() => void applyAvatar()}
-                className="w-full rounded-lg py-2.5 text-sm font-medium text-primary-700 hover:underline dark:text-primary-300"
+                className="w-full rounded-lg py-2.5 text-sm font-medium text-blue-700 transition hover:bg-blue-50 hover:text-blue-800 dark:text-blue-300 dark:hover:bg-blue-500/10 dark:hover:text-blue-200"
               >
                 Взять последний сохранённый кадр для профиля
               </button>

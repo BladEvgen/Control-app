@@ -6,13 +6,13 @@ export function cameraGuidanceMessage(
 ): string {
   switch (ctx) {
     case "profile_photo":
-      return "Смотрите прямо в камеру.";
+      return "Лицо по центру. Смотрите прямо.";
     case "bootstrap_front":
-      return "Шаг 1 из 3. Смотрите прямо.";
+      return "Прямой кадр. Смотрите прямо.";
     case "bootstrap_left":
-      return "Шаг 2 из 3. Поверните голову чуть влево.";
+      return "Голова чуть влево. Не наклоняйтесь.";
     case "bootstrap_right":
-      return "Шаг 3 из 3. Поверните голову чуть вправо.";
+      return "Голова чуть вправо. Не наклоняйтесь.";
     default:
       return requireLiveness
         ? "Держите лицо в рамке."

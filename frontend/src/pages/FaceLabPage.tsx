@@ -25,6 +25,7 @@ import type {
   FaceCameraOverlayRef,
 } from "../faceLab/camera/types";
 import {
+  parsePadResult,
   parseRecognizeResponse,
   parseVerifyPayload,
   type FaceVerifyApiResponse,
@@ -138,11 +139,23 @@ const DEFAULT_OUTCOME_HEADLINE: Record<
 };
 
 function padTrustStrong(pad: PadTestResponse | null): boolean {
-  return pad !== null && pad.trust_confirmed === true;
+  return (
+    pad !== null && (pad.decision === "YES" || pad.trust_confirmed === true)
+  );
 }
 
 function padTrustWeak(pad: PadTestResponse | null): boolean {
-  return pad !== null && pad.trust_confirmed !== true;
+  return pad !== null && pad.decision !== "YES" && pad.trust_confirmed !== true;
+}
+
+function padBlocksBeforeRecognition(pad: PadTestResponse | null): boolean {
+  if (!pad) return false;
+  if (pad.decision === "NO") return true;
+  if (pad.decision === "REVIEW") return false;
+  const status = pad.status.trim().toLowerCase();
+  if (pad.trust_confirmed === false) return true;
+  if (status === "suspicious" || status === "error") return true;
+  return !["clean", "review", "insufficient_input_review"].includes(status);
 }
 
 function compareOutcomeFromContract(
@@ -152,14 +165,14 @@ function compareOutcomeFromContract(
   if (c.matched && c.final_decision === "YES") {
     return {
       outcome: "success",
-      headline: "Совпадение подтверждено",
-      message: summary || "Совпадение подтверждено.",
+      headline: "Да",
+      message: summary || "Совпадение есть.",
     };
   }
   return {
     outcome: "fail",
-    headline: "Совпадение не подтверждено",
-    message: summary || "Совпадение не подтверждено.",
+    headline: "Нет",
+    message: summary || "Совпадения нет.",
   };
 }
 
@@ -267,7 +280,7 @@ function PrimaryStateCard({
           </span>
           <div className="min-w-0">
             <span
-              className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide ${toneBadgeClass(spec.tone)}`}
+              className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase ${toneBadgeClass(spec.tone)}`}
             >
               {spec.badge}
             </span>
@@ -308,28 +321,33 @@ function ModeCard({
     <button
       type="button"
       onClick={onClick}
-      className={`group rounded-2xl border p-3.5 text-left transition-all ${
+      aria-pressed={active}
+      className={`group rounded-xl border p-3 text-left transition-[background-color,border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-blue-300/70 dark:focus-visible:ring-offset-slate-950 ${
         active
-          ? "border-primary-300 bg-primary-50/90 shadow-md shadow-primary-500/10 dark:border-primary-700/50 dark:bg-primary-500/10"
-          : "border-slate-200/90 bg-white/90 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700/70 dark:bg-slate-900/45 dark:hover:border-slate-600 dark:hover:bg-slate-900/70"
+          ? "border-blue-400 bg-blue-50 text-blue-950 shadow-sm shadow-blue-500/15 dark:border-blue-400/70 dark:bg-[#10254a] dark:text-blue-50 dark:shadow-blue-950/40"
+          : "border-slate-200/90 bg-white/85 text-slate-900 hover:border-blue-300 hover:bg-blue-50/70 hover:shadow-sm hover:shadow-blue-500/10 dark:border-slate-700/70 dark:bg-slate-900/55 dark:text-slate-100 dark:hover:border-blue-500/60 dark:hover:bg-blue-500/10 dark:hover:shadow-blue-950/30"
       }`}
     >
       <div className="flex items-start gap-3">
         <span
-          className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+          className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors ${
             active
-              ? "bg-primary-600 text-white shadow-lg shadow-primary-600/20"
-              : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+              ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20 dark:bg-blue-500"
+              : "bg-slate-100 text-slate-600 group-hover:bg-blue-100 group-hover:text-blue-700 dark:bg-slate-800 dark:text-slate-300 dark:group-hover:bg-blue-500/15 dark:group-hover:text-blue-200"
           }`}
         >
           {icon}
         </span>
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-            {title}
-          </p>
+          <p className="text-sm font-semibold">{title}</p>
           {detail ? (
-            <p className="mt-1 text-sm leading-snug text-slate-600 dark:text-slate-400">
+            <p
+              className={`mt-0.5 text-xs leading-relaxed ${
+                active
+                  ? "text-blue-900/75 dark:text-blue-100/75"
+                  : "text-slate-600 group-hover:text-slate-700 dark:text-slate-400 dark:group-hover:text-slate-300"
+              }`}
+            >
               {detail}
             </p>
           ) : null}
@@ -369,8 +387,7 @@ function evaluateFaceLabSession(
     if (!parsed.liveness.checked) {
       return {
         outcome: "fail",
-        message:
-          "В ответе verify нет результата проверки фото — обновите клиент или сервер.",
+        message: "Проверка фото не пришла.",
       };
     }
     return compareOutcomeFromContract(parsed);
@@ -388,9 +405,16 @@ function evaluateFaceLabSession(
   if (pad === null) {
     return {
       outcome: "fail",
-      message:
-        "Проверка фото на сервере не завершилась — переснимите и отправьте снова.",
-      headline: "Проверка фото не завершилась",
+      message: "Проверка не завершилась. Снимите ещё раз.",
+      headline: "Повторите",
+    };
+  }
+
+  if (padBlocksBeforeRecognition(pad)) {
+    return {
+      outcome: "fail",
+      message: "Фото не принято. Снимите ещё раз.",
+      headline: "Новый кадр",
     };
   }
 
@@ -425,16 +449,15 @@ function evaluateFaceLabSession(
   if (hits && padStrong) {
     return {
       outcome: "success",
-      message: `Найдено в галерее: ${rec.recognized_staff.length}. Фото прошло проверку.`,
+      message: `Найдено: ${rec.recognized_staff.length}. Фото принято.`,
     };
   }
 
   if (hits && padWeak) {
     return {
       outcome: "partial",
-      message:
-        "В галерее есть совпадения, но проверка фото без уверенного подтверждения.",
-      headline: "Нужен более уверенный кадр",
+      message: "Совпадение есть, но фото слабое.",
+      headline: "Лучше переснять",
     };
   }
 
@@ -443,15 +466,15 @@ function evaluateFaceLabSession(
       outcome: "partial",
       message:
         unknownN > 0
-          ? "Фото прошло проверку, но в базе нет надёжного совпадения — попробуйте другой ракурс."
-          : "Фото прошло проверку, но надёжного совпадения в галерее нет.",
+          ? "Фото принято, но совпадения нет."
+          : "Фото принято, совпадения нет.",
       headline: "Не нашли",
     };
   }
 
   return {
     outcome: "partial",
-    message: "Нет совпадений, и фото не прошло проверку — переснимите.",
+    message: "Совпадения нет. Снимите ещё раз.",
     headline: "Переснимите",
   };
 }
@@ -676,9 +699,7 @@ const FaceLabPage: React.FC = () => {
       return;
     }
     if (mode === "bootstrap") {
-      setError(
-        "В режиме настройки входа сохраните кадр кнопкой в шагах слева — не через «Отправить на проверку».",
-      );
+      setError("В настройке входа сохраните кадр кнопкой под превью.");
       return;
     }
     if (mode === "compare" && !selectedPin) {
@@ -687,25 +708,40 @@ const FaceLabPage: React.FC = () => {
     }
     setBusy(true);
 
-    const padLocal: PadTestResponse | null = null;
-    const padWarnLocal: string | null = null;
+    let padLocal: PadTestResponse | null = null;
+    let padWarnLocal: string | null = null;
     let verifyLocal: unknown = null;
 
     try {
       setPadResult(null);
       setPadWarning(null);
 
-      const fd = new FormData();
-      fd.append("image", file);
       const headers = authBearerHeaders();
 
       if (mode === "search") {
-        const res = await axios.post(`${apiUrl}/recognize-faces/`, fd, {
-          headers,
+        const padFd = new FormData();
+        padFd.append("image", file);
+        const padRes = await axiosInstance.post("face-lab/pad-test/", padFd, {
           timeout: FACE_LAB_HEAVY_REQUEST_MS,
         });
-        verifyLocal = res.data;
-        setVerifyResult(res.data);
+        padLocal = parsePadResult(padRes.data);
+        if (padLocal) {
+          setPadResult(padLocal);
+        } else {
+          padWarnLocal = "Не удалось разобрать результат проверки фото.";
+          setPadWarning(padWarnLocal);
+        }
+
+        if (padLocal && !padBlocksBeforeRecognition(padLocal)) {
+          const fd = new FormData();
+          fd.append("image", file);
+          const res = await axios.post(`${apiUrl}/recognize-faces/`, fd, {
+            headers,
+            timeout: FACE_LAB_HEAVY_REQUEST_MS,
+          });
+          verifyLocal = res.data;
+          setVerifyResult(res.data);
+        }
       } else {
         const vfd = new FormData();
         vfd.append("image", file);
@@ -792,8 +828,7 @@ const FaceLabPage: React.FC = () => {
           tone: "info",
           badge: "Идёт поиск",
           title: "Ищем человека в базе",
-          detail:
-            "Сравниваем кадр с галереей и готовим понятный итог: найдено, не найдено или нужен новый кадр.",
+          detail: "Сравниваем фото с базой.",
         };
       }
       if (!file) {
@@ -802,26 +837,38 @@ const FaceLabPage: React.FC = () => {
           tone: "neutral",
           badge: "Готово к поиску",
           title: "Сначала нужен кадр",
-          detail:
-            "Сделайте снимок или загрузите фото. После этого можно сразу запускать поиск по базе.",
-          nextStep: "Снимите прямой кадр при хорошем свете.",
+          detail: "Сделайте снимок или загрузите фото.",
+          nextStep: "Лицо по центру, свет ровный.",
         };
       }
       if (recognized) {
         const best = bestRecognizedStaff(recognized);
         if (best) {
-          const hasWeakPad = Boolean(padWarning) || padTrustWeak(padResult);
+          const padAction = padResult?.diagnostics?.decision?.operator_action;
+          const padNeedsHuman =
+            Boolean(padWarning) ||
+            padResult?.trust_confirmed === false ||
+            padAction === "manual_review" ||
+            padAction === "retry_photo" ||
+            padAction === "reject";
+          const padCaution =
+            !padNeedsHuman &&
+            (padAction === "accept_with_caution" || padTrustWeak(padResult));
           return {
             state: "found",
-            tone: hasWeakPad ? "warning" : "success",
-            badge: hasWeakPad ? "Найдено, но кадр слабый" : "Найдено",
+            tone: padNeedsHuman ? "warning" : "success",
+            badge: padNeedsHuman ? "Найдено, нужен новый кадр" : "Найдено",
             title: personLabel(best),
-            detail: hasWeakPad
-              ? `Лучший кандидат ${Math.round(best.similarity * 100)}%. Совпадение есть, но кадр требует осторожной проверки.`
-              : `Лучший кандидат ${Math.round(best.similarity * 100)}%. Поиск уверенно нашёл человека в базе.`,
-            nextStep: hasWeakPad
-              ? "Проверьте кандидата ниже и при необходимости переснимите кадр."
-              : "Проверьте карточку кандидата ниже и переходите к следующему действию.",
+            detail: padNeedsHuman
+              ? `Кандидат ${Math.round(best.similarity * 100)}%. Лучше переснять.`
+              : padCaution
+                ? `Кандидат ${Math.round(best.similarity * 100)}%. Фото принято.`
+                : `Кандидат ${Math.round(best.similarity * 100)}%.`,
+            nextStep: padNeedsHuman
+              ? "Лицо ближе, без бликов."
+              : padCaution
+                ? "Можно продолжать."
+                : "Можно продолжать.",
           };
         }
         const retryNeeded = Boolean(padWarning) || padTrustWeak(padResult);
@@ -833,10 +880,9 @@ const FaceLabPage: React.FC = () => {
             ? "Надёжного совпадения нет"
             : "Поиск никого не подтвердил",
           detail: retryNeeded
-            ? "По этому кадру база не дала уверенный результат. Лицо могло не дойти до порога или кадр слишком слабый."
-            : "По этому кадру база не нашла надёжного совпадения.",
-          nextStep:
-            "Попробуйте новый кадр: лицо ровно по центру, ближе к камере и без сильного размытия.",
+            ? "Кадр слабый или сходство ниже порога."
+            : "Совпадения в базе нет.",
+          nextStep: "Снимите ближе и ровнее.",
         };
       }
       if (verifyPayloadError) {
@@ -849,8 +895,8 @@ const FaceLabPage: React.FC = () => {
           detail: [help.title, help.detail].filter(Boolean).join(". "),
           nextStep:
             help.outcome === "fail"
-              ? "Сделайте новый кадр и попробуйте ещё раз."
-              : "Проверьте соединение или повторите поиск чуть позже.",
+              ? "Сделайте новый кадр."
+              : "Повторите позже.",
         };
       }
       if (errorFriendly) {
@@ -860,7 +906,7 @@ const FaceLabPage: React.FC = () => {
           badge: "Ошибка",
           title: errorFriendly.title,
           detail: errorFriendly.detail ?? "Поиск не завершился.",
-          nextStep: "Повторите попытку или выберите другой кадр.",
+          nextStep: "Повторите попытку.",
         };
       }
       if (fallbackHeadline || fallbackMessage) {
@@ -892,9 +938,8 @@ const FaceLabPage: React.FC = () => {
         tone: "info",
         badge: "Кадр готов",
         title: "Можно запускать поиск",
-        detail:
-          "Фото уже выбрано. Нажмите основную кнопку, чтобы найти человека в базе.",
-        nextStep: "Запустите поиск по базе.",
+        detail: "Фото выбрано.",
+        nextStep: "Запустите поиск.",
       };
     }
 
@@ -905,8 +950,7 @@ const FaceLabPage: React.FC = () => {
           tone: "info",
           badge: "Идёт сверка",
           title: "Сверяем лицо с эталоном",
-          detail:
-            "Проверяем совпадение, качество кадра и проверку фото. Итог появится здесь.",
+          detail: "Проверяем совпадение.",
         };
       }
       if (!selectedPin) {
@@ -915,9 +959,8 @@ const FaceLabPage: React.FC = () => {
           tone: "neutral",
           badge: "Нужен выбор",
           title: "Сначала выберите сотрудника",
-          detail:
-            "Выберите человека, затем сделайте новый кадр и запустите сверку с эталоном.",
-          nextStep: "Начните с поиска сотрудника по ФИО, PIN или отделу.",
+          detail: "Выберите человека для сверки.",
+          nextStep: "Введите ФИО, PIN или отдел.",
         };
       }
       if (!file) {
@@ -926,8 +969,8 @@ const FaceLabPage: React.FC = () => {
           tone: "info",
           badge: "Ждём кадр",
           title: `Выбран: ${selectedName}`,
-          detail: "Теперь нужен новый кадр для сравнения с эталонным профилем.",
-          nextStep: "Откройте камеру или загрузите фото для сверки.",
+          detail: "Теперь нужен снимок.",
+          nextStep: "Откройте камеру или загрузите фото.",
         };
       }
       if (verifyContract) {
@@ -938,34 +981,14 @@ const FaceLabPage: React.FC = () => {
           verifyContract.decision_summary ||
           ""
         ).trim();
-        const softRetryMatch =
-          matched &&
-          (verifyContract.liveness.status === "insufficient_input_review" ||
-            verifyContract.liveness.status === "review");
-        if (softRetryMatch) {
-          return {
-            state: "retry_needed",
-            tone: "warning",
-            badge: "Совпало, но кадр слабый",
-            title: `${selectedName}: совпадение видно`,
-            detail:
-              contractSummary ||
-              "Система видит совпадение, но для уверенного кадра лучше переснять фото.",
-            nextStep:
-              "Если нужен уверенный итог, снимите кадр ещё раз крупнее и ровнее.",
-          };
-        }
         if (matched) {
           return {
             state: "found",
             tone: "success",
             badge: "Подтверждено",
-            title: `${selectedName}: совпадение подтверждено`,
-            detail:
-              contractSummary ||
-              "Система подтвердила совпадение между кадром и выбранным профилем.",
-            nextStep:
-              "Проверьте детали ниже, если нужна дополнительная уверенность.",
+            title: `${selectedName}: да`,
+            detail: contractSummary || "Совпадение есть.",
+            nextStep: "Можно продолжать.",
           };
         }
         if (
@@ -977,12 +1000,9 @@ const FaceLabPage: React.FC = () => {
             state: "retry_needed",
             tone: "warning",
             badge: "Нужен новый кадр",
-            title: "Для уверенной сверки не хватило качества",
-            detail:
-              contractSummary ||
-              "Кадр слишком слабый или системе не хватило пригодного изображения для уверенного ответа.",
-            nextStep:
-              "Сделайте новый кадр крупнее, без поворотов головы и при более стабильном свете.",
+            title: "Кадр слабый",
+            detail: contractSummary || "Нужен новый снимок.",
+            nextStep: "Лицо ближе, свет ровный.",
           };
         }
         if (verifyContract.status === "LIVENESS_FAIL") {
@@ -990,24 +1010,18 @@ const FaceLabPage: React.FC = () => {
             state: "error",
             tone: "danger",
             badge: "Кадр отклонён",
-            title: "Проверка фото не подтвердилась",
-            detail:
-              contractSummary ||
-              "Система не подтвердила, что кадр относится к живому лицу.",
-            nextStep:
-              "Переснимите человека вживую и убедитесь, что лицо хорошо видно в рамке.",
+            title: "Фото не принято",
+            detail: contractSummary || "Снимите ещё раз.",
+            nextStep: "Лицо должно быть в рамке.",
           };
         }
         return {
           state: "not_found",
           tone: "danger",
           badge: "Не подтверждено",
-          title: `${selectedName}: совпадение не подтверждено`,
-          detail:
-            contractSummary ||
-            "Система не подтвердила совпадение между кадром и выбранным профилем.",
-          nextStep:
-            "Проверьте результат ниже и при необходимости сделайте новый кадр.",
+          title: `${selectedName}: нет`,
+          detail: contractSummary || "Совпадения нет.",
+          nextStep: "При необходимости снимите ещё раз.",
         };
       }
       if (verifyPayloadError) {
@@ -1018,7 +1032,7 @@ const FaceLabPage: React.FC = () => {
           badge: "Ошибка",
           title: help.title,
           detail: help.detail ?? "Сверка не завершилась.",
-          nextStep: "Повторите попытку или выберите другой кадр.",
+          nextStep: "Повторите попытку.",
         };
       }
       if (errorFriendly) {
@@ -1060,9 +1074,8 @@ const FaceLabPage: React.FC = () => {
         tone: "info",
         badge: "Всё готово",
         title: `Можно сверять с профилем ${selectedName}`,
-        detail:
-          "Сотрудник выбран и кадр готов. Основная кнопка запустит сверку с эталоном.",
-        nextStep: "Нажмите «Сверить с эталоном».",
+        detail: "Сотрудник и фото выбраны.",
+        nextStep: "Нажмите «Сверить».",
       };
     }
 
@@ -1072,9 +1085,8 @@ const FaceLabPage: React.FC = () => {
         tone: "neutral",
         badge: "Шаг 1",
         title: "Сначала выберите сотрудника",
-        detail:
-          "После выбора откроется пошаговая настройка трёх ракурсов для входа по лицу.",
-        nextStep: "Выберите сотрудника слева и начните с прямого кадра.",
+        detail: "Потом снимем три ракурса.",
+        nextStep: "Начните с прямого кадра.",
       };
     }
     if (file) {
@@ -1083,9 +1095,8 @@ const FaceLabPage: React.FC = () => {
         tone: "success",
         badge: "Снимок готов",
         title: "Кадр уже можно сохранить",
-        detail:
-          "Текущий снимок готов для шага настройки. Сохраните его в блоке выше и переходите к следующему ракурсу.",
-        nextStep: "Нажмите «Сохранить» в пошаговом блоке настройки.",
+        detail: "Сохраните этот ракурс.",
+        nextStep: "Потом перейдите дальше.",
       };
     }
     return {
@@ -1098,9 +1109,8 @@ const FaceLabPage: React.FC = () => {
           : cameraBootstrapAngle === "right"
             ? "Снимите правый ракурс"
             : "Снимите прямой кадр",
-      detail:
-        "Следуйте подсказкам на экране: один чёткий ракурс за раз, затем сохранение в пошаговом блоке.",
-      nextStep: "Откройте камеру или загрузите фото для текущего шага.",
+      detail: "Сделайте один чёткий кадр.",
+      nextStep: "Откройте камеру или загрузите фото.",
     };
   }, [
     mode,
@@ -1120,17 +1130,6 @@ const FaceLabPage: React.FC = () => {
     cameraBootstrapAngle,
   ]);
 
-  const hasWideResults =
-    busy ||
-    file !== null ||
-    (mode !== "search" && Boolean(selectedPin)) ||
-    padResult !== null ||
-    verifyResult !== null ||
-    padWarning !== null ||
-    error !== null ||
-    sessionOutcome !== "idle" ||
-    (mode === "bootstrap" && (!!selectedPin || !!file));
-
   const springLayoutMain = {
     type: "spring" as const,
     stiffness: 260,
@@ -1140,17 +1139,20 @@ const FaceLabPage: React.FC = () => {
 
   return (
     <ThemeProvider theme={muiTheme}>
-      <div className="mx-auto w-full max-w-[88rem] px-3 py-6 text-slate-900 dark:text-slate-100 sm:px-5 sm:py-8 md:px-8 lg:px-10 lg:py-10 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
-        <Breadcrumbs items={[{ label: "Face Lab", path: undefined }]} />
-
-        <header className="mb-6 border-b border-slate-200 pb-5 dark:border-slate-800/90 sm:mb-8 sm:pb-6">
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl md:text-4xl">
-            Face Lab
-          </h1>
-          <p className="mt-2 max-w-xl text-sm text-slate-600 dark:text-slate-400">
-            Поиск по базе, сверка с профилем и простая настройка трёх фото для
-            входа.
-          </p>
+      <div className="mx-auto w-full max-w-[92rem] px-3 py-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-slate-900 dark:text-slate-100 sm:px-5 sm:py-6 md:px-8 lg:px-10">
+        <header className="mb-5 rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-sm shadow-slate-200/40 backdrop-blur dark:border-slate-700/70 dark:bg-slate-950/55 dark:shadow-black/20 sm:p-5">
+          <Breadcrumbs items={[{ label: "Face Lab", path: undefined }]} />
+          <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-semibold tracking-normal sm:text-3xl">
+                Face Lab
+              </h1>
+              <p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-600 dark:text-slate-400">
+                Проверка живости, поиск по базе и сверка с эталоном в одном
+                рабочем экране.
+              </p>
+            </div>
+          </div>
         </header>
 
         <FaceCameraOverlay
@@ -1174,37 +1176,34 @@ const FaceLabPage: React.FC = () => {
           </p>
         </FaceLabConsentDialog>
 
-        <div className="grid grid-cols-1 gap-8 md:gap-10 lg:grid-cols-12 lg:gap-12 lg:items-start">
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 lg:gap-6 lg:items-start">
           <motion.div
             layout
             transition={springLayoutMain}
-            className={
-              hasWideResults
-                ? "min-w-0 space-y-8 sm:space-y-10 lg:col-span-5"
-                : "min-w-0 space-y-8 sm:space-y-10 lg:col-span-12"
-            }
+            className="min-w-0 space-y-5 lg:col-span-5 xl:col-span-4"
           >
             <motion.div
               layout
               transition={springLayoutMain}
-              className={hasWideResults ? "w-full" : "mx-auto w-full max-w-xl"}
+              className="w-full space-y-5"
             >
-              <section className="rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-md shadow-slate-200/30 dark:border-slate-600/80 dark:bg-slate-900/55 dark:shadow-black/25 sm:p-5 md:p-6">
+              <section className="rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-sm shadow-slate-200/30 dark:border-slate-700/80 dark:bg-slate-950/55 dark:shadow-black/25 sm:p-5">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Выберите режим
+                    <h2 className="text-xs font-semibold uppercase text-slate-500">
+                      Режим
                     </h2>
-                    <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600 dark:text-slate-400">
-                      Выберите задачу и сделайте кадр.
+                    <p className="mt-1 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
+                      Что делаем с новым кадром.
                     </p>
                   </div>
                 </div>
 
-                <div className="mt-4 grid gap-3 lg:grid-cols-3">
+                <div className="mt-4 grid gap-2.5">
                   <ModeCard
                     active={mode === "search"}
                     title="Поиск по базе"
+                    detail="Проверка кадра, затем совпадения в галерее."
                     icon={<FaSearch className="h-4 w-4" aria-hidden />}
                     onClick={() => {
                       setMode("search");
@@ -1215,6 +1214,7 @@ const FaceLabPage: React.FC = () => {
                   <ModeCard
                     active={mode === "compare"}
                     title="Сверка с эталоном"
+                    detail="Выбор сотрудника и сравнение с профилем."
                     icon={<FaUserCheck className="h-4 w-4" aria-hidden />}
                     onClick={() => {
                       setMode("compare");
@@ -1225,6 +1225,7 @@ const FaceLabPage: React.FC = () => {
                   <ModeCard
                     active={mode === "bootstrap"}
                     title="Настройка входа"
+                    detail="Три ракурса для будущего входа."
                     icon={<FaUserPlus className="h-4 w-4" aria-hidden />}
                     onClick={() => {
                       setMode("bootstrap");
@@ -1237,15 +1238,15 @@ const FaceLabPage: React.FC = () => {
 
               {(mode === "compare" || mode === "bootstrap") && (
                 <section
-                  className={`rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-md shadow-slate-200/30 dark:border-slate-600/80 dark:bg-slate-900/55 dark:shadow-black/25 sm:p-5 md:p-6 ${
+                  className={`rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-sm shadow-slate-200/30 dark:border-slate-700/80 dark:bg-slate-950/55 dark:shadow-black/25 sm:p-5 ${
                     mode === "bootstrap"
-                      ? "ring-1 ring-primary-500/10 dark:ring-primary-400/10"
+                      ? "ring-1 ring-blue-500/15 dark:ring-blue-400/20"
                       : ""
                   }`}
                 >
                   {mode === "bootstrap" ? (
                     <div className="mb-5 border-b border-slate-200/80 pb-4 dark:border-slate-600/60">
-                      <h2 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-slate-50">
+                      <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">
                         Настройка входа по лицу
                       </h2>
                       <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
@@ -1254,8 +1255,9 @@ const FaceLabPage: React.FC = () => {
                     </div>
                   ) : (
                     <div className="mb-4">
-                      {" "}
-                      0695
+                      <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">
+                        Сверка с выбранным сотрудником
+                      </h2>
                       <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
                         Выберите сотрудника, затем сделайте новый кадр для
                         сравнения.
@@ -1302,23 +1304,13 @@ const FaceLabPage: React.FC = () => {
                       emptyResultText="Ничего не нашли. Попробуйте ФИО, PIN или отдел."
                     />
                   )}
-                  {mode === "bootstrap" ? (
-                    <div className="mt-2">
-                      <FaceLabBootstrapPanel
-                        pin={selectedPin}
-                        file={file}
-                        onSaved={afterBootstrapSave}
-                        onCameraGuidanceAngleChange={setCameraBootstrapAngle}
-                      />
-                    </div>
-                  ) : null}
                 </section>
               )}
 
               <motion.section
                 layout
                 transition={springLayoutMain}
-                className="rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-md shadow-slate-200/30 dark:border-slate-600/80 dark:bg-slate-900/55 dark:shadow-black/25 sm:p-5 md:p-6"
+                className="rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-sm shadow-slate-200/30 dark:border-slate-700/80 dark:bg-slate-950/55 dark:shadow-black/25 sm:p-5"
               >
                 <Stack
                   direction={{ xs: "column", sm: "row" }}
@@ -1328,7 +1320,7 @@ const FaceLabPage: React.FC = () => {
                   className="mb-5"
                 >
                   <div>
-                    <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    <h2 className="text-xs font-semibold uppercase text-slate-500">
                       {mode === "bootstrap"
                         ? "Кадр текущего шага"
                         : mode === "search"
@@ -1348,7 +1340,7 @@ const FaceLabPage: React.FC = () => {
                         ? "Голосовые подсказки для шагов настройки"
                         : "Озвучка подсказок камеры"
                     }
-                    sx={{
+                    sx={(theme) => ({
                       flexWrap: "wrap",
                       gap: 0.5,
                       justifyContent: { xs: "flex-start", sm: "flex-end" },
@@ -1359,15 +1351,57 @@ const FaceLabPage: React.FC = () => {
                         fontWeight: 600,
                         borderRadius: "10px",
                         border: "1px solid",
-                        borderColor: "divider",
+                        borderColor:
+                          theme.palette.mode === "dark"
+                            ? "rgba(148, 163, 184, 0.38)"
+                            : "rgba(148, 163, 184, 0.55)",
+                        color:
+                          theme.palette.mode === "dark"
+                            ? "rgb(203, 213, 225)"
+                            : "rgb(51, 65, 85)",
+                        backgroundColor:
+                          theme.palette.mode === "dark"
+                            ? "rgba(15, 23, 42, 0.62)"
+                            : "rgba(255, 255, 255, 0.82)",
+                        transition:
+                          "background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease",
+                        "&:hover": {
+                          borderColor:
+                            theme.palette.mode === "dark"
+                              ? "rgba(96, 165, 250, 0.7)"
+                              : "rgba(37, 99, 235, 0.55)",
+                          backgroundColor:
+                            theme.palette.mode === "dark"
+                              ? "rgba(37, 99, 235, 0.18)"
+                              : "rgba(239, 246, 255, 0.95)",
+                          color:
+                            theme.palette.mode === "dark"
+                              ? "rgb(219, 234, 254)"
+                              : "rgb(30, 64, 175)",
+                        },
                         "&.Mui-selected": {
-                          bgcolor: "primary.main",
-                          color: "primary.contrastText",
-                          borderColor: "primary.main",
-                          "&:hover": { bgcolor: "primary.dark" },
+                          backgroundColor:
+                            theme.palette.mode === "dark"
+                              ? "rgb(59, 130, 246)"
+                              : "rgb(37, 99, 235)",
+                          color: "#fff",
+                          borderColor:
+                            theme.palette.mode === "dark"
+                              ? "rgb(147, 197, 253)"
+                              : "rgb(37, 99, 235)",
+                          boxShadow:
+                            theme.palette.mode === "dark"
+                              ? "0 0 0 1px rgba(191,219,254,0.22), 0 6px 18px rgba(30,64,175,0.35)"
+                              : "0 0 0 1px rgba(37,99,235,0.16), 0 6px 18px rgba(37,99,235,0.22)",
+                          "&:hover": {
+                            backgroundColor:
+                              theme.palette.mode === "dark"
+                                ? "rgb(37, 99, 235)"
+                                : "rgb(29, 78, 216)",
+                          },
                         },
                       },
-                    }}
+                    })}
                   >
                     <ToggleButton value="off" aria-label="Без звука">
                       <FaVolumeMute className="h-3.5 w-3.5" />
@@ -1389,7 +1423,7 @@ const FaceLabPage: React.FC = () => {
                     startIcon={<FaCamera />}
                     onClick={() => requestOpenCamera()}
                     fullWidth
-                    sx={{
+                    sx={(theme) => ({
                       minHeight: 52,
                       py: 1.35,
                       px: 2,
@@ -1399,14 +1433,36 @@ const FaceLabPage: React.FC = () => {
                       textTransform: "none",
                       fontWeight: 600,
                       fontSize: "0.95rem",
+                      color:
+                        theme.palette.mode === "dark"
+                          ? "rgb(147, 197, 253)"
+                          : "rgb(37, 99, 235)",
+                      borderColor:
+                        theme.palette.mode === "dark"
+                          ? "rgba(96, 165, 250, 0.55)"
+                          : "rgba(37, 99, 235, 0.62)",
+                      backgroundColor:
+                        theme.palette.mode === "dark"
+                          ? "rgba(37, 99, 235, 0.08)"
+                          : "rgba(239, 246, 255, 0.45)",
                       transition:
                         "transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease",
                       "&:hover": {
-                        borderColor: "primary.main",
-                        bgcolor: "action.hover",
-                        boxShadow: "0 2px 14px rgba(37, 99, 235, 0.14)",
+                        borderColor:
+                          theme.palette.mode === "dark"
+                            ? "rgb(147, 197, 253)"
+                            : "rgb(29, 78, 216)",
+                        backgroundColor:
+                          theme.palette.mode === "dark"
+                            ? "rgba(37, 99, 235, 0.18)"
+                            : "rgba(219, 234, 254, 0.9)",
+                        boxShadow:
+                          theme.palette.mode === "dark"
+                            ? "0 2px 16px rgba(37, 99, 235, 0.28)"
+                            : "0 2px 14px rgba(37, 99, 235, 0.16)",
+                        transform: "translateY(-1px)",
                       },
-                    }}
+                    })}
                   >
                     Снять камерой
                   </Button>
@@ -1437,7 +1493,7 @@ const FaceLabPage: React.FC = () => {
                     startIcon={<FaFolderOpen />}
                     onClick={() => requestPickFile()}
                     fullWidth
-                    sx={{
+                    sx={(theme) => ({
                       minHeight: 52,
                       py: 1.35,
                       px: 2,
@@ -1447,14 +1503,36 @@ const FaceLabPage: React.FC = () => {
                       textTransform: "none",
                       fontWeight: 600,
                       fontSize: "0.95rem",
+                      color:
+                        theme.palette.mode === "dark"
+                          ? "rgb(147, 197, 253)"
+                          : "rgb(37, 99, 235)",
+                      borderColor:
+                        theme.palette.mode === "dark"
+                          ? "rgba(96, 165, 250, 0.55)"
+                          : "rgba(37, 99, 235, 0.62)",
+                      backgroundColor:
+                        theme.palette.mode === "dark"
+                          ? "rgba(37, 99, 235, 0.08)"
+                          : "rgba(239, 246, 255, 0.45)",
                       transition:
                         "transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease",
                       "&:hover": {
-                        borderColor: "primary.main",
-                        bgcolor: "action.hover",
-                        boxShadow: "0 2px 14px rgba(37, 99, 235, 0.14)",
+                        borderColor:
+                          theme.palette.mode === "dark"
+                            ? "rgb(147, 197, 253)"
+                            : "rgb(29, 78, 216)",
+                        backgroundColor:
+                          theme.palette.mode === "dark"
+                            ? "rgba(37, 99, 235, 0.18)"
+                            : "rgba(219, 234, 254, 0.9)",
+                        boxShadow:
+                          theme.palette.mode === "dark"
+                            ? "0 2px 16px rgba(37, 99, 235, 0.28)"
+                            : "0 2px 14px rgba(37, 99, 235, 0.16)",
+                        transform: "translateY(-1px)",
                       },
-                    }}
+                    })}
                   >
                     Загрузить фото
                   </Button>
@@ -1472,7 +1550,7 @@ const FaceLabPage: React.FC = () => {
                       <Typography
                         variant="caption"
                         fontWeight={600}
-                        letterSpacing={0.06}
+                        letterSpacing={0}
                         textTransform="uppercase"
                       >
                         Превью
@@ -1491,7 +1569,7 @@ const FaceLabPage: React.FC = () => {
                         className="w-full justify-center rounded-lg border border-slate-200/90 bg-white/80 px-4 py-3 dark:border-slate-600 dark:bg-slate-900/50"
                       >
                         <FaImage
-                          className="h-4 w-4 shrink-0 text-primary-600 dark:text-primary-400"
+                          className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300"
                           aria-hidden
                         />
                         <div className="min-w-0 text-center">
@@ -1522,6 +1600,17 @@ const FaceLabPage: React.FC = () => {
                       : "Камера или файл — кадр появится здесь."}
                   </div>
                 )}
+
+                {mode === "bootstrap" ? (
+                  <div className="mt-5">
+                    <FaceLabBootstrapPanel
+                      pin={selectedPin}
+                      file={file}
+                      onSaved={afterBootstrapSave}
+                      onCameraGuidanceAngleChange={setCameraBootstrapAngle}
+                    />
+                  </div>
+                ) : null}
 
                 <AnimatePresence initial={false} mode="popLayout">
                   {file && mode !== "bootstrap" ? (
@@ -1582,101 +1671,99 @@ const FaceLabPage: React.FC = () => {
           </motion.div>
 
           <AnimatePresence mode="popLayout">
-            {hasWideResults ? (
-              <motion.div
-                key="face-lab-results"
-                layout
-                initial={{ opacity: 0, scale: 0.93, y: 16, x: 12 }}
-                animate={{ opacity: 1, scale: 1, y: 0, x: 0 }}
-                exit={{ opacity: 0, scale: 0.94, y: 10, x: 8 }}
-                transition={springLayoutMain}
-                className="min-w-0 space-y-8 sm:space-y-10 lg:col-span-7"
-              >
-                <PrimaryStateCard spec={primaryStateSpec} busy={busy} />
+            <motion.div
+              key="face-lab-results"
+              layout
+              initial={{ opacity: 0, scale: 0.97, y: 12, x: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0, x: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 8, x: 6 }}
+              transition={springLayoutMain}
+              className="min-w-0 space-y-5 lg:col-span-7 xl:col-span-8"
+            >
+              <PrimaryStateCard spec={primaryStateSpec} busy={busy} />
 
-                {padWarning && padWarningFriendly ? (
-                  <motion.div
-                    className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm dark:border-amber-800/50 dark:bg-amber-950/20"
-                    initial={{ opacity: 0, y: 14, scale: 0.98 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    transition={{ type: "spring", stiffness: 340, damping: 26 }}
-                  >
-                    <p className="font-medium text-amber-900 dark:text-amber-200">
-                      {padWarningFriendly.title}
+              {padWarning && padWarningFriendly ? (
+                <motion.div
+                  className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm dark:border-amber-800/50 dark:bg-amber-950/20"
+                  initial={{ opacity: 0, y: 14, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  transition={{ type: "spring", stiffness: 340, damping: 26 }}
+                >
+                  <p className="font-medium text-amber-900 dark:text-amber-200">
+                    {padWarningFriendly.title}
+                  </p>
+                  {padWarningFriendly.detail ? (
+                    <p className="mt-1 text-amber-800/90 dark:text-amber-200/85">
+                      {padWarningFriendly.detail}
                     </p>
-                    {padWarningFriendly.detail ? (
-                      <p className="mt-1 text-amber-800/90 dark:text-amber-200/85">
-                        {padWarningFriendly.detail}
-                      </p>
-                    ) : null}
-                  </motion.div>
-                ) : null}
+                  ) : null}
+                </motion.div>
+              ) : null}
 
-                {error && errorFriendly ? (
-                  <motion.div
-                    className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-950 dark:border-amber-800/50 dark:bg-amber-950/25 dark:text-amber-100"
-                    initial={{ opacity: 0, y: 14, scale: 0.98 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    transition={{ type: "spring", stiffness: 340, damping: 26 }}
-                  >
-                    <p className="font-medium text-amber-950 dark:text-amber-100">
-                      {errorFriendly.title}
+              {error && errorFriendly ? (
+                <motion.div
+                  className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-950 dark:border-amber-800/50 dark:bg-amber-950/25 dark:text-amber-100"
+                  initial={{ opacity: 0, y: 14, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  transition={{ type: "spring", stiffness: 340, damping: 26 }}
+                >
+                  <p className="font-medium text-amber-950 dark:text-amber-100">
+                    {errorFriendly.title}
+                  </p>
+                  {errorFriendly.detail ? (
+                    <p className="mt-2 text-sm text-amber-800/90 dark:text-amber-200/90">
+                      {errorFriendly.detail}
                     </p>
-                    {errorFriendly.detail ? (
-                      <p className="mt-2 text-sm text-amber-800/90 dark:text-amber-200/90">
-                        {errorFriendly.detail}
-                      </p>
-                    ) : null}
-                  </motion.div>
-                ) : null}
+                  ) : null}
+                </motion.div>
+              ) : null}
 
-                {padResult ? (
-                  <motion.section
-                    className="space-y-3"
-                    initial={{ opacity: 0, y: 16, scale: 0.98 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    transition={{ type: "spring", stiffness: 320, damping: 24 }}
-                  >
-                    <details className="rounded-2xl border border-slate-200/90 bg-slate-50/90 dark:border-slate-700/70 dark:bg-slate-900/40">
-                      <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 [&::-webkit-details-marker]:hidden">
-                        Проверка фото
-                      </summary>
-                      <div className="border-t border-slate-200/80 p-3 dark:border-slate-700/70">
-                        <PadResultPanel pad={padResult} />
-                      </div>
-                    </details>
-                  </motion.section>
-                ) : null}
+              {padResult ? (
+                <motion.section
+                  className="space-y-3"
+                  initial={{ opacity: 0, y: 16, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  transition={{ type: "spring", stiffness: 320, damping: 24 }}
+                >
+                  <details className="rounded-2xl border border-slate-200/90 bg-slate-50/90 dark:border-slate-700/70 dark:bg-slate-900/40">
+                    <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 [&::-webkit-details-marker]:hidden">
+                      Проверка фото
+                    </summary>
+                    <div className="border-t border-slate-200/80 p-3 dark:border-slate-700/70">
+                      <PadResultPanel pad={padResult} />
+                    </div>
+                  </details>
+                </motion.section>
+              ) : null}
 
-                {verifyResult !== null ? (
-                  <motion.section
-                    className="space-y-3 pb-4"
-                    initial={{ opacity: 0, y: 18, scale: 0.97 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    transition={{
-                      type: "spring",
-                      stiffness: 300,
-                      damping: 23,
-                      delay: 0.04,
-                    }}
+              {verifyResult !== null ? (
+                <motion.section
+                  className="space-y-3 pb-4"
+                  initial={{ opacity: 0, y: 18, scale: 0.97 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  transition={{
+                    type: "spring",
+                    stiffness: 300,
+                    damping: 23,
+                    delay: 0.04,
+                  }}
+                >
+                  <motion.h2
+                    className="text-xs font-semibold uppercase text-slate-500"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.08 }}
                   >
-                    <motion.h2
-                      className="text-xs font-semibold uppercase tracking-wider text-slate-500"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ delay: 0.08 }}
-                    >
-                      {mode === "search" ? "Распознавание" : "Сравнение"}
-                    </motion.h2>
-                    {mode === "search" ? (
-                      <RecognizeOrRaw data={verifyResult} />
-                    ) : (
-                      <VerifyOrRaw data={verifyResult} />
-                    )}
-                  </motion.section>
-                ) : null}
-              </motion.div>
-            ) : null}
+                    {mode === "search" ? "Распознавание" : "Сравнение"}
+                  </motion.h2>
+                  {mode === "search" ? (
+                    <RecognizeOrRaw data={verifyResult} />
+                  ) : (
+                    <VerifyOrRaw data={verifyResult} />
+                  )}
+                </motion.section>
+              ) : null}
+            </motion.div>
           </AnimatePresence>
         </div>
       </div>

@@ -36,19 +36,19 @@ export function TopControls({
   aspect,
   onAspectChange,
 }: TopControlsProps) {
-  const handleClose = (e: React.PointerEvent) => {
+  const handleClose = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     onClose();
   };
 
-  const handleToggleGrid = (e: React.PointerEvent) => {
+  const handleToggleGrid = (e: React.MouseEvent) => {
     e.preventDefault();
     onToggleGrid();
     vibrate([8]);
   };
 
-  const handleAspectChange = (a: Aspect) => (e: React.PointerEvent) => {
+  const handleAspectChange = (a: Aspect) => (e: React.MouseEvent) => {
     e.preventDefault();
     onAspectChange(a);
     vibrate([8]);
@@ -63,11 +63,12 @@ export function TopControls({
     >
       <motion.button
         type="button"
-        onPointerDown={handleClose}
-        className="shrink-0 touch-none rounded-full bg-black/40 p-3.5 text-white shadow-[0_0_0_1px_rgba(255,255,255,0.1)_inset,0_2px_8px_rgba(0,0,0,0.3)] backdrop-blur-2xl active:bg-black/50"
+        onClick={handleClose}
+        className="shrink-0 touch-none rounded-full bg-black/40 p-3.5 text-white shadow-[0_0_0_1px_rgba(255,255,255,0.1)_inset,0_2px_8px_rgba(0,0,0,0.3)] backdrop-blur-2xl active:bg-black/50 focus:outline-none focus-visible:ring-4 focus-visible:ring-white/70"
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.96 }}
         title="Закрыть"
+        aria-label="Закрыть камеру"
         style={{ WebkitTapHighlightColor: "transparent" }}
       >
         <FaTimesCircle size={26} />
@@ -77,8 +78,10 @@ export function TopControls({
         <div className="flex max-w-full items-center gap-1.5 overflow-x-auto rounded-[18px] bg-black/40 px-2.5 py-2 shadow-[0_0_0_1px_rgba(255,255,255,0.1)_inset,0_4px_16px_rgba(0,0,0,0.35)] backdrop-blur-2xl [scrollbar-width:none] sm:gap-2 sm:px-3 sm:py-2.5 [&::-webkit-scrollbar]:hidden">
           <motion.button
             type="button"
-            onPointerDown={handleToggleGrid}
-            className={`shrink-0 touch-none rounded-[12px] p-2 transition-all ${
+            onClick={handleToggleGrid}
+            aria-label={gridOn ? "Скрыть сетку" : "Показать сетку"}
+            aria-pressed={gridOn}
+            className={`shrink-0 touch-none rounded-[12px] p-2 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-white ${
               gridOn
                 ? "bg-white/25 text-white shadow-[0_0_0_1px_rgba(255,255,255,0.2)_inset]"
                 : "text-white/70 active:bg-white/10"
@@ -103,12 +106,14 @@ export function TopControls({
               key={a}
               type="button"
               title={title}
-              className={`shrink-0 touch-none rounded-[12px] px-3 py-2 text-[11px] font-semibold transition-all sm:px-3.5 sm:text-xs ${
+              aria-label={`Формат кадра ${label}`}
+              aria-pressed={aspect === a}
+              className={`shrink-0 touch-none rounded-[12px] px-3 py-2 text-[11px] font-semibold transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-white sm:px-3.5 sm:text-xs ${
                 aspect === a
                   ? "bg-white text-black shadow-[0_0_0_1px_rgba(255,255,255,0.15)_inset,0_1px_3px_rgba(0,0,0,0.2)]"
                   : "text-white/75 active:bg-white/10"
               }`}
-              onPointerDown={handleAspectChange(a)}
+              onClick={handleAspectChange(a)}
               whileHover={{ scale: 1.04 }}
               whileTap={{ scale: 0.96 }}
               layout

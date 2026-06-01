@@ -265,7 +265,10 @@ const buildPhotoPadReason = (photo: Partial<PhotoData>): string => {
     if (
       tag.includes("recapture") ||
       tag.includes("fft_periodicity") ||
-      tag.includes("gradient_aniso")
+      tag.includes("gradient_aniso") ||
+      tag.includes("color_histogram") ||
+      tag.includes("ycrcb_luv") ||
+      tag.includes("luma_chroma")
     ) {
       add("текстура лица похожа на пересъёмку с другого экрана");
       continue;
@@ -282,7 +285,11 @@ const buildPhotoPadReason = (photo: Partial<PhotoData>): string => {
       add("устройство находится слишком близко к лицу");
       continue;
     }
-    if (tag.includes("fasnet_fake") || tag.includes("deepfake_high")) {
+    if (
+      tag.includes("fasnet_fake") ||
+      tag.includes("minifasnet_onnx_fake") ||
+      tag.includes("deepfake_high")
+    ) {
       add("модель лица видит признаки подмены");
       continue;
     }

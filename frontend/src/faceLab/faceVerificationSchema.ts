@@ -30,70 +30,19 @@ const padLivenessDiagnosticsSchema = z
         final_decision: z.string().optional(),
         product_outcome: z.string().optional(),
         trust_confirmed: z.boolean().nullable().optional(),
-        decision_branch: z.string().nullable().optional(),
-        decision_source: z.string().optional(),
-        presentation_confidence: z.number().optional(),
+        operator_action: z.string().optional(),
+        operator_action_reason: z.string().optional(),
       })
       .passthrough()
       .optional(),
-    presentation: z
-      .object({
-        spoof_risk: z.number().optional(),
-        fake_signal_score: z.number().optional(),
-        face_device_score: z.number().optional(),
-        face_frame_score: z.number().optional(),
-        recapture_score: z.number().optional(),
-        face_reflection_score: z.number().optional(),
-      })
-      .passthrough()
-      .optional(),
-    quality: z
-      .object({
-        overall_penalty: z.number().optional(),
-        face_area_ratio: z.number().optional(),
-        quality_flags: z.array(z.string()).optional(),
-        is_degraded: z.boolean().optional(),
-      })
-      .passthrough()
-      .optional(),
-    background_context: z
-      .object({
-        background_device_score: z.number().optional(),
-        background_frame_score: z.number().optional(),
-        context_codes: z.array(z.string()).optional(),
-      })
-      .passthrough()
-      .optional(),
-    uncertainty: z
-      .object({
-        uncertainty_codes: z.array(z.string()).optional(),
-        review_reason_codes: z.array(z.string()).optional(),
-        clean_reason_codes: z.array(z.string()).optional(),
-        interpretability_codes: z.array(z.string()).optional(),
-        conflicting_signal_codes: z.array(z.string()).optional(),
-        missing_signal_codes: z.array(z.string()).optional(),
-      })
-      .passthrough()
-      .optional(),
-    trace: z
-      .object({
-        pad_trace_schema: z.string().nullable().optional(),
-        rule_codes: z.array(z.string()).optional(),
-        evidence_codes: z.array(z.string()).optional(),
-        evidence_metrics: z.record(z.string(), z.number()).optional(),
-        decision_support_flags: z.array(z.string()).optional(),
-      })
-      .passthrough()
-      .optional(),
-    operator_tags: z.array(z.string()).optional(),
-    model_version: z.string().optional(),
-    elapsed_ms: z.number().optional(),
   })
   .passthrough()
   .optional();
 
 const livenessSchema = z.object({
   checked: z.boolean(),
+  decision: z.enum(["YES", "NO", "REVIEW"]).optional(),
+  operator_action: z.string().optional(),
   trust_confirmed: z.boolean().nullable().optional(),
   status: z.string().nullable().optional(),
   risk_score: z.number().nullable().optional(),
@@ -108,6 +57,7 @@ const livenessSchema = z.object({
   frame_global_score: z.number().optional(),
   recapture_score: z.number().optional(),
   face_reflection_score: z.number().optional(),
+  color_hist_score: z.number().optional(),
   diagnostics: padLivenessDiagnosticsSchema,
   note: z.string().optional(),
 });

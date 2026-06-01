@@ -224,7 +224,7 @@ export function FaceLabStaffCombobox({
         onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
         autoComplete="off"
-        className={`min-h-[44px] w-full rounded-lg border bg-white px-3 py-2.5 text-base text-slate-900 outline-none placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/30 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-slate-500 sm:text-sm ${
+        className={`min-h-[44px] w-full rounded-lg border bg-white px-3 py-2.5 text-base text-slate-900 outline-none transition-[background-color,border-color,box-shadow] placeholder:text-slate-400 hover:border-blue-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/25 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:hover:border-blue-500/60 dark:focus:border-blue-400 dark:focus:ring-blue-400/20 sm:text-sm ${
           selected && value
             ? "border-emerald-400/80 ring-2 ring-emerald-500/25 dark:border-emerald-600/60 dark:ring-emerald-400/20"
             : "border-slate-300 dark:border-slate-600"
@@ -236,7 +236,7 @@ export function FaceLabStaffCombobox({
             <FaUserCheck className="h-4 w-4" aria-hidden />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-800 dark:text-emerald-300/90">
+            <p className="text-[11px] font-semibold uppercase text-emerald-800 dark:text-emerald-300/90">
               Выбрано
             </p>
             <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -266,8 +266,8 @@ export function FaceLabStaffCombobox({
               aria-selected={idx === highlight}
               className={`cursor-pointer px-3 py-2.5 text-sm transition-colors ${
                 idx === highlight
-                  ? "bg-indigo-50 dark:bg-slate-700/90"
-                  : "hover:bg-slate-100 dark:hover:bg-slate-800"
+                  ? "bg-blue-50 text-blue-950 dark:bg-[#10254a] dark:text-blue-50"
+                  : "hover:bg-blue-50/70 dark:hover:bg-blue-500/10"
               }`}
               onMouseDown={(ev) => ev.preventDefault()}
               onClick={() => pick(o)}
@@ -275,15 +275,27 @@ export function FaceLabStaffCombobox({
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <span className="font-medium text-slate-900 dark:text-slate-100">
+                  <span
+                    className={`font-medium ${
+                      idx === highlight
+                        ? "text-blue-950 dark:text-blue-50"
+                        : "text-slate-900 dark:text-slate-100"
+                    }`}
+                  >
                     {o.fio}
                   </span>
-                  <span className="mt-0.5 block text-xs leading-snug text-slate-600 dark:text-slate-400">
+                  <span
+                    className={`mt-0.5 block text-xs leading-snug ${
+                      idx === highlight
+                        ? "text-blue-900/70 dark:text-blue-100/75"
+                        : "text-slate-600 dark:text-slate-400"
+                    }`}
+                  >
                     {o.deptName}, PIN {o.pin}
                   </span>
                 </div>
                 {faceProfileStateLabel(o.faceProfileState) ? (
-                  <span className="shrink-0 rounded-full border border-slate-200/80 bg-white/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:border-slate-600/60 dark:bg-slate-900/70 dark:text-slate-300">
+                  <span className="shrink-0 rounded-full border border-slate-200/80 bg-white/80 px-2 py-1 text-[10px] font-semibold uppercase text-slate-600 dark:border-slate-600/60 dark:bg-slate-900/70 dark:text-slate-300">
                     {faceProfileStateLabel(o.faceProfileState)}
                   </span>
                 ) : null}

@@ -23,9 +23,10 @@ import {
   listVideoDevices,
   pickPrimaryCamera,
   createHighQualityConstraints,
-  applyMaxVideoResolution,
+  optimizeCameraTrackForFace,
   computeVideoMirror,
   isWebKitCameraConservativeMode,
+  applyCameraPointOfInterest,
 } from "./camera-device";
 import type { FaceLabVoiceLang } from "../faceLabCameraVoice";
 import {
@@ -36,18 +37,13 @@ import {
   isFaceLabSpeechCancelled,
 } from "../faceLabCameraVoice";
 import { faceLabLog } from "../faceLabLog";
-import {
-  capturePhoto,
-  createPreviewUrl,
-  waitForVideoPipelineFrames,
-} from "./camera-capture";
+import { capturePhoto, waitForVideoPipelineFrames } from "./camera-capture";
 import { useCameraFrame } from "./useCameraFrame";
 import {
   VideoFrame,
   AspectMask,
   ViewfinderBootstrapHint,
   GridOverlay,
-  FlashEffect,
   ThumbnailPreview,
   ErrorDisplay,
   FullscreenPreview,
@@ -91,9 +87,9 @@ function overlayPhaseTitle(
   guidanceContext: CameraGuidanceContext,
 ): string {
   if (!requireLiveness) {
-    if (guidanceContext === "bootstrap_front") return "Снимите прямой портрет";
-    if (guidanceContext === "bootstrap_left") return "Поверните лицо влево";
-    if (guidanceContext === "bootstrap_right") return "Поверните лицо вправо";
+    if (guidanceContext === "bootstrap_front") return "Лицо по центру";
+    if (guidanceContext === "bootstrap_left") return "Голова чуть влево";
+    if (guidanceContext === "bootstrap_right") return "Голова чуть вправо";
     if (guidanceContext === "profile_photo") return "Снимите кадр профиля";
     return "Снимите кадр";
   }
@@ -104,8 +100,88 @@ function overlayPhaseTitle(
   if (phase === "yaw") return "Поверните голову";
   if (phase === "smile") return "Посмотрите прямо и слегка улыбнитесь";
   if (phase === "passed") return "Кадр готов";
-  if (phase === "unavailable") return "Проверка недоступна";
+  if (phase === "unavailable") return "Снимок можно сделать вручную";
   return "Держите лицо в рамке";
+}
+
+const LIVENESS_STEPS = ["Лицо", "Моргнуть", "Поворот", "Улыбка"];
+
+function overlayStepIndex(
+  phase: LivenessPhase,
+  requireLiveness: boolean,
+  skipped: boolean,
+): number | null {
+  if (!requireLiveness || skipped || phase === "unavailable") return null;
+  if (phase === "loading" || phase === "face") return 0;
+  if (phase === "blink") return 1;
+  if (phase === "yaw") return 2;
+  if (phase === "smile") return 3;
+  if (phase === "passed") return 4;
+  return null;
+}
+
+function OverlayStepRail({
+  phase,
+  requireLiveness,
+  skipped,
+}: {
+  phase: LivenessPhase;
+  requireLiveness: boolean;
+  skipped: boolean;
+}) {
+  const current = overlayStepIndex(phase, requireLiveness, skipped);
+  if (current === null) return null;
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -4 }}
+      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] as const }}
+      className="mt-3 grid w-full grid-cols-4 gap-1.5"
+      aria-label="Прогресс проверки живости"
+    >
+      {LIVENESS_STEPS.map((label, index) => {
+        const done = current > index;
+        const active = current === index;
+        return (
+          <motion.div
+            key={label}
+            className="min-w-0"
+            initial={false}
+            animate={{ opacity: done || active ? 1 : 0.62 }}
+            transition={{ duration: 0.18 }}
+          >
+            <motion.div
+              layout
+              className={`h-1.5 rounded-full ${
+                done ? "bg-emerald-300" : active ? "bg-white" : "bg-white/22"
+              }`}
+              animate={{
+                scaleX: active ? [1, 0.96, 1] : 1,
+                boxShadow: active
+                  ? "0 0 18px rgba(255,255,255,0.42)"
+                  : "0 0 0 rgba(255,255,255,0)",
+              }}
+              transition={{
+                duration: active ? 1.2 : 0.2,
+                repeat: active ? Infinity : 0,
+                ease: [0.22, 1, 0.36, 1] as const,
+              }}
+            />
+            <span
+              className={`mt-1 block truncate text-[10px] font-medium ${
+                done || active ? "text-white" : "text-white/52"
+              }`}
+            >
+              {label}
+            </span>
+          </motion.div>
+        );
+      })}
+    </motion.div>
+  );
 }
 
 function FaceCameraOverlayInner(
@@ -135,10 +211,12 @@ function FaceCameraOverlayInner(
     aspectUserChosenRef.current = true;
     setAspect(next);
   }, []);
-  const [flash, setFlash] = useState(false);
   const [lastShotUrl, setLastShotUrl] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
+  const [focusPoint, setFocusPoint] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   const [shouldMirror, setShouldMirror] = useState(false);
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [livenessSkipped, setLivenessSkipped] = useState(false);
@@ -151,6 +229,7 @@ function FaceCameraOverlayInner(
   const attachStreamCleanupRef = useRef<(() => void) | null>(null);
   const devicesRef = useRef<MediaDeviceInfo[]>([]);
   const capturingRef = useRef(false);
+  const cameraSessionIdRef = useRef(0);
   const autoCaptureDoneRef = useRef(false);
   const handleCaptureRef = useRef<(fromAuto?: boolean) => Promise<void>>(
     async () => {},
@@ -284,7 +363,7 @@ function FaceCameraOverlayInner(
       return;
     }
     if (liveness.phase === "unavailable") {
-      setShowManualCaptureAction(true);
+      setShowManualCaptureAction(false);
       return;
     }
     const timer = window.setTimeout(() => {
@@ -376,30 +455,30 @@ function FaceCameraOverlayInner(
       };
 
       const handleVideoReady = () => {
-        void (async () => {
-          if (cancelled || !video.videoWidth || !video.videoHeight) return;
-          if (!didLogStreamDims) {
-            didLogStreamDims = true;
-            camLog.info("Camera stream", {
-              beforeMax: `${video.videoWidth}x${video.videoHeight}`,
-            });
-          }
-          const after = await applyMaxVideoResolution(trackRef.current);
-          if (cancelled) return;
+        if (cancelled || !video.videoWidth || !video.videoHeight) return;
+        if (!didLogStreamDims) {
+          didLogStreamDims = true;
+          camLog.info("Camera stream", {
+            size: `${video.videoWidth}x${video.videoHeight}`,
+          });
+        }
+        bumpReady();
+        void optimizeCameraTrackForFace(trackRef.current).then((after) => {
           if (
-            after?.width &&
-            after?.height &&
-            !conservative &&
-            !didLogAfterMaxResolution
+            cancelled ||
+            !after?.width ||
+            !after?.height ||
+            conservative ||
+            didLogAfterMaxResolution
           ) {
-            didLogAfterMaxResolution = true;
-            camLog.info(
-              "Applied max resolution",
-              `${after.width}x${after.height}`,
-            );
+            return;
           }
-          bumpReady();
-        })();
+          didLogAfterMaxResolution = true;
+          camLog.info(
+            "Camera controls applied",
+            `${after.width}x${after.height}`,
+          );
+        });
       };
 
       const kickPlay = () => {
@@ -449,9 +528,7 @@ function FaceCameraOverlayInner(
         () => {
           if (video.videoWidth && video.videoHeight) {
             window.clearTimeout(timer);
-            void applyMaxVideoResolution(trackRef.current).then(() => {
-              if (!cancelled) bumpReady();
-            });
+            bumpReady();
           }
         },
         conservative ? 2400 : 1600,
@@ -485,16 +562,26 @@ function FaceCameraOverlayInner(
       constraints: MediaTrackConstraints,
       mirrorIfUnlabeled: boolean | undefined,
       streamFacing: Facing,
+      sessionId: number,
     ): Promise<"ok" | "denied" | "notfound" | "failed"> => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: constraints,
         });
+        if (cameraSessionIdRef.current !== sessionId || !openRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          return "failed";
+        }
         await attachStream(stream, {
           mirrorIfUnlabeled,
           streamFacing,
         });
+        if (cameraSessionIdRef.current !== sessionId || !openRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          stopStream();
+          return "failed";
+        }
         const video = videoRef.current!;
         return video.srcObject ? "ok" : "failed";
       } catch (e: unknown) {
@@ -511,11 +598,12 @@ function FaceCameraOverlayInner(
         return "failed";
       }
     },
-    [attachStream],
+    [attachStream, stopStream],
   );
 
   const startCamera = useCallback(
     async (side: Facing) => {
+      const sessionId = ++cameraSessionIdRef.current;
       setError(null);
       stopStream();
 
@@ -526,8 +614,19 @@ function FaceCameraOverlayInner(
       const mirrorHint = side === "user";
       const immediateCandidates = createHighQualityConstraints(undefined, side);
       for (const constraints of immediateCandidates) {
-        const result = await tryOpenCamera(constraints, mirrorHint, side);
+        if (cameraSessionIdRef.current !== sessionId || !openRef.current)
+          return;
+        const result = await tryOpenCamera(
+          constraints,
+          mirrorHint,
+          side,
+          sessionId,
+        );
         if (result === "ok") {
+          if (cameraSessionIdRef.current !== sessionId || !openRef.current) {
+            stopStream();
+            return;
+          }
           setFacing(side);
           try {
             devicesRef.current = await listVideoDevices();
@@ -553,6 +652,7 @@ function FaceCameraOverlayInner(
         }
       }
 
+      if (cameraSessionIdRef.current !== sessionId || !openRef.current) return;
       const devices = await listVideoDevices();
       devicesRef.current = devices;
       const primaryDeviceId = pickPrimaryCamera(devices, side);
@@ -562,8 +662,19 @@ function FaceCameraOverlayInner(
       );
 
       for (const constraints of constraintsCandidates) {
-        const result = await tryOpenCamera(constraints, side === "user", side);
+        if (cameraSessionIdRef.current !== sessionId || !openRef.current)
+          return;
+        const result = await tryOpenCamera(
+          constraints,
+          side === "user",
+          side,
+          sessionId,
+        );
         if (result === "ok") {
+          if (cameraSessionIdRef.current !== sessionId || !openRef.current) {
+            stopStream();
+            return;
+          }
           setFacing(side);
           try {
             const tid = trackRef.current?.getSettings().deviceId;
@@ -607,52 +718,17 @@ function FaceCameraOverlayInner(
 
   const toggleFacing = useCallback(async () => {
     const nextFacing: Facing = facing === "user" ? "environment" : "user";
-    const nextDeviceId = pickPrimaryCamera(devicesRef.current, nextFacing);
 
     setIsCameraReady(false);
     vibrate([15]);
-
-    const track = trackRef.current as MediaStreamTrack & {
-      applyConstraints?: (c: MediaTrackConstraints) => Promise<void>;
-    };
-
-    if (track?.applyConstraints && nextDeviceId) {
-      try {
-        await track.applyConstraints({ deviceId: { exact: nextDeviceId } });
-        setFacing(nextFacing);
-
-        const device = devicesRef.current.find(
-          (d) => d.deviceId === nextDeviceId,
-        );
-        if (device) {
-          setShouldMirror(
-            computeVideoMirror({
-              deviceLabel: device.label,
-              mirrorIfUnlabeled: nextFacing === "user",
-              streamFacing: nextFacing,
-            }),
-          );
-        }
-
-        const video = videoRef.current;
-        if (video && video.videoWidth && video.videoHeight) {
-          setTimeout(() => {
-            void applyMaxVideoResolution(trackRef.current).then(() => {
-              setIsCameraReady(true);
-              recomputeFrame();
-            });
-          }, 300);
-        }
-        return;
-      } catch {
-        /* fall through */
-      }
-    }
-
     await startCamera(nextFacing);
-  }, [facing, startCamera, recomputeFrame]);
+  }, [facing, startCamera]);
 
-  const manualShutterLocked = requireLiveness && !livenessSkipped;
+  const manualShutterLocked =
+    requireLiveness &&
+    !livenessSkipped &&
+    liveness.phase !== "unavailable" &&
+    liveness.phase !== "passed";
 
   const handleCapture = useCallback(
     async (fromAuto = false) => {
@@ -678,18 +754,15 @@ function FaceCameraOverlayInner(
 
       setIsCapturing(true);
       capturingRef.current = true;
-      setFlash(true);
 
       window.setTimeout(() => {
         void (async () => {
           let gotBlob: Blob | null = null;
           try {
-            await new Promise<void>((r) => void window.setTimeout(r, 220));
             const v = videoRef.current;
             const c = containerRef.current;
             if (!v || !c) {
               setError("Не удалось сделать снимок");
-              setFlash(false);
               setIsCapturing(false);
               capturingRef.current = false;
               if (fromAuto) {
@@ -697,26 +770,32 @@ function FaceCameraOverlayInner(
               }
               return;
             }
-            await waitForVideoPipelineFrames(v, 5);
+            void applyCameraPointOfInterest(trackRef.current, {
+              x: 0.5,
+              y: 0.48,
+            });
+            await waitForVideoPipelineFrames(v, 1);
             playShutterSound();
-            if (!fromAuto) {
-              const previewUrl = createPreviewUrl(v, frame, c, shouldMirror);
-              if (previewUrl) {
-                setLastShotUrl(previewUrl);
-              }
-            }
 
             gotBlob = await capturePhoto({
               video: v,
+              track: trackRef.current,
               frame,
               container: c,
               shouldMirror,
-              maxWidth: 1600,
-              maxHeight: 1600,
-              quality: 0.92,
+              maxWidth: 1920,
+              maxHeight: 1920,
+              quality: 0.94,
             });
 
             if (gotBlob) {
+              if (!fromAuto) {
+                const previewUrl = URL.createObjectURL(gotBlob);
+                setLastShotUrl((prev) => {
+                  if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+                  return previewUrl;
+                });
+              }
               onShot(gotBlob);
               if (fromAuto) {
                 window.setTimeout(() => handleCloseRef.current(), 320);
@@ -728,7 +807,6 @@ function FaceCameraOverlayInner(
             camLog.info("Capture error:", err);
             setError("Не удалось сделать снимок");
           } finally {
-            setFlash(false);
             setIsCapturing(false);
             capturingRef.current = false;
             if (fromAuto && !gotBlob) {
@@ -779,9 +857,13 @@ function FaceCameraOverlayInner(
   }, [open, requireLiveness, livenessSkipped, liveness.phase, isCameraReady]);
 
   const handleClose = useCallback(() => {
+    cameraSessionIdRef.current += 1;
     cancelFaceLabSpeech();
     stopStream();
-    setLastShotUrl(null);
+    setLastShotUrl((prev) => {
+      if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+      return null;
+    });
     setPreviewOpen(false);
     setOpen(false);
     setLivenessSkipped(false);
@@ -793,39 +875,17 @@ function FaceCameraOverlayInner(
   const handleTapToFocusPointer = useCallback(
     async (event: React.PointerEvent) => {
       const video = videoRef.current;
-      const track = trackRef.current as MediaStreamTrack & {
-        applyConstraints?: (c: MediaTrackConstraints) => Promise<void>;
-        getCapabilities?: () => {
-          focusMode?: string[];
-        };
-      };
+      const track = trackRef.current;
 
       if (!video || !track?.applyConstraints) return;
-
       try {
-        const capabilities = track.getCapabilities?.() as {
-          focusMode?: string[];
-        };
-        if (
-          !capabilities?.focusMode ||
-          !Array.isArray(capabilities.focusMode)
-        ) {
-          return;
-        }
-
         const rect = video.getBoundingClientRect();
         const x = (event.clientX - rect.left) / rect.width;
         const y = (event.clientY - rect.top) / rect.height;
-
-        await track.applyConstraints({
-          advanced: [
-            {
-              pointsOfInterest: [{ x, y }],
-            } as unknown as MediaTrackConstraintSet,
-          ],
-        });
-
+        setFocusPoint({ x: event.clientX, y: event.clientY });
+        await applyCameraPointOfInterest(track, { x, y });
         vibrate([10]);
+        window.setTimeout(() => setFocusPoint(null), 620);
       } catch {
         /* optional */
       }
@@ -862,6 +922,7 @@ function FaceCameraOverlayInner(
 
   useImperativeHandle(ref, () => ({
     open: async (side: Facing = "user") => {
+      cameraSessionIdRef.current += 1;
       setLivenessSkipped(false);
       autoCaptureDoneRef.current = false;
       // Иначе startCamera вызывается до commit: videoRef ещё null — поток не цепляется и запрос камеры ведёт себя странно.
@@ -917,6 +978,23 @@ function FaceCameraOverlayInner(
               <GridOverlay visible={gridOn} frame={frame} aspect={aspect} />
 
               <AnimatePresence>
+                {focusPoint && (
+                  <motion.div
+                    key={`${focusPoint.x}-${focusPoint.y}`}
+                    className="pointer-events-none fixed z-[10010] h-16 w-16 rounded-full border-2 border-white/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.02)]"
+                    style={{
+                      left: focusPoint.x - 32,
+                      top: focusPoint.y - 32,
+                    }}
+                    initial={{ opacity: 0, scale: 1.35 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.78 }}
+                    transition={{ duration: 0.18, ease: "easeOut" }}
+                  />
+                )}
+              </AnimatePresence>
+
+              <AnimatePresence>
                 {lastShotUrl && !previewOpen && (
                   <ThumbnailPreview
                     imageUrl={lastShotUrl}
@@ -929,28 +1007,58 @@ function FaceCameraOverlayInner(
 
               <div className="pointer-events-none absolute left-0 right-0 top-[max(52px,calc(env(safe-area-inset-top,0px)+40px))] z-40 flex flex-col items-center gap-3 px-4 md:top-[60px]">
                 <div className="pointer-events-none flex max-w-xl flex-col items-center gap-2">
-                  <div className="inline-flex rounded-full border border-white/20 bg-black/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/85 shadow-lg backdrop-blur-md">
+                  <motion.div
+                    layout
+                    className="inline-flex rounded-full border border-white/20 bg-black/40 px-3 py-1 text-[11px] font-semibold uppercase text-white/85 shadow-lg backdrop-blur-md"
+                  >
                     {overlayPhaseBadge(
                       liveness.phase,
                       requireLiveness,
                       livenessSkipped,
                     )}
-                  </div>
-                  <div className="pointer-events-none max-w-xl rounded-[1.35rem] border border-white/15 bg-black/45 px-4 py-3 text-center text-white shadow-xl backdrop-blur-md">
-                    <p className="text-sm font-semibold leading-snug sm:text-[0.98rem]">
-                      {overlayPhaseTitle(
-                        liveness.phase,
-                        requireLiveness,
-                        livenessSkipped,
-                        guidanceContext,
-                      )}
-                    </p>
-                    {overlayGuidanceText ? (
-                      <p className="mt-1 text-xs leading-relaxed text-white/82 sm:text-sm">
-                        {overlayGuidanceText}
-                      </p>
-                    ) : null}
-                  </div>
+                  </motion.div>
+                  <motion.div
+                    layout
+                    className="pointer-events-none max-w-xl rounded-[1.35rem] border border-white/15 bg-black/45 px-4 py-3 text-center text-white shadow-xl backdrop-blur-md"
+                    initial={{ opacity: 0, y: 8, filter: "blur(4px)" }}
+                    animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                    transition={{
+                      duration: 0.22,
+                      ease: [0.22, 1, 0.36, 1] as const,
+                    }}
+                  >
+                    <AnimatePresence mode="wait" initial={false}>
+                      <motion.div
+                        key={`${liveness.phase}-${livenessSkipped}-${overlayGuidanceText}`}
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -5 }}
+                        transition={{
+                          duration: 0.16,
+                          ease: [0.22, 1, 0.36, 1] as const,
+                        }}
+                      >
+                        <p className="text-sm font-semibold leading-snug sm:text-[0.98rem]">
+                          {overlayPhaseTitle(
+                            liveness.phase,
+                            requireLiveness,
+                            livenessSkipped,
+                            guidanceContext,
+                          )}
+                        </p>
+                        {overlayGuidanceText ? (
+                          <p className="mt-1 text-xs leading-relaxed text-white/82 sm:text-sm">
+                            {overlayGuidanceText}
+                          </p>
+                        ) : null}
+                      </motion.div>
+                    </AnimatePresence>
+                    <OverlayStepRail
+                      phase={liveness.phase}
+                      requireLiveness={requireLiveness}
+                      skipped={livenessSkipped}
+                    />
+                  </motion.div>
                 </div>
 
                 {requireLiveness &&
@@ -961,7 +1069,7 @@ function FaceCameraOverlayInner(
                   liveness.phase !== "idle" && (
                     <button
                       type="button"
-                      className="pointer-events-auto rounded-full bg-white/15 px-4 py-2 text-sm font-medium text-white ring-1 ring-white/20 backdrop-blur-md hover:bg-white/25"
+                      className="pointer-events-auto rounded-full bg-white/15 px-4 py-2 text-sm font-medium text-white ring-1 ring-white/20 backdrop-blur-md hover:bg-white/25 focus:outline-none focus-visible:ring-4 focus-visible:ring-white/70"
                       onClick={() => setLivenessSkipped(true)}
                     >
                       Снять вручную
@@ -991,9 +1099,13 @@ function FaceCameraOverlayInner(
                     ? liveness.phase === "passed"
                       ? "Сохраняем кадр…"
                       : null
-                    : isCameraReady && !isCapturing
-                      ? "Сделать снимок"
-                      : null
+                    : isCapturing
+                      ? "Снимаем…"
+                      : liveness.phase === "unavailable"
+                        ? "Сделать снимок вручную"
+                        : isCameraReady && !isCapturing
+                          ? "Сделать снимок"
+                          : null
                 }
               />
             </motion.div>
@@ -1001,7 +1113,6 @@ function FaceCameraOverlayInner(
         </AnimatePresence>,
         document.body,
       )}
-      {createPortal(<FlashEffect visible={flash} />, document.body)}
 
       {createPortal(
         <AnimatePresence>

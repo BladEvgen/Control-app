@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { useState } from "react";
 import { motion } from "framer-motion";
 import { FaFolderOpen, FaHashtag, FaListUl, FaTable } from "react-icons/fa";
 import {
@@ -14,12 +13,21 @@ import { formatServerElapsed } from "./faceLabFormat";
 import {
   humanizeApiError,
   humanizeApiTokenString,
-  humanizePadStatus,
-  humanizePadTag,
   humanizeResponseFieldKey,
   humanizeUnknownFaceStatus,
 } from "./faceLabHumanMessages";
-import { PadDiagnosticsReadout } from "./faceLabPadDiagnostics";
+import { PadDecisionCard } from "./faceLabPadDiagnostics";
+import {
+  padUiDecisionFromDiagnostics,
+  padUiDecisionFromRaw,
+} from "./faceLabPadDecision";
+import { FaceLabMetric } from "./faceLabDesign";
+import {
+  faceLabBadgeClass,
+  faceLabFadeContainer,
+  faceLabFadeItem,
+  pctExact,
+} from "./faceLabDesignTokens";
 
 export type {
   PadTestResponse,
@@ -29,138 +37,11 @@ export type {
 } from "./faceLabApi";
 export { VerifyContractPanel } from "./faceLabVerifyComparePanels";
 
-const fadeContainer = {
-  hidden: { opacity: 0 },
-  show: {
-    opacity: 1,
-    transition: { staggerChildren: 0.055, delayChildren: 0.03 },
-  },
-};
-
-const fadeItem = {
-  hidden: { opacity: 0, y: 10 },
-  show: {
-    opacity: 1,
-    y: 0,
-    transition: { type: "spring" as const, stiffness: 380, damping: 28 },
-  },
-};
-
-function clamp01(x: number): number {
-  return Math.min(1, Math.max(0, x));
-}
-
-function pctExact(x: number): string {
-  return (clamp01(x) * 100).toFixed(2);
-}
-
-function pctWidthPercent(x: number): string {
-  return `${(clamp01(x) * 100).toFixed(2)}%`;
-}
-
-const springBar: {
-  type: "spring";
-  stiffness: number;
-  damping: number;
-  mass: number;
-} = {
-  type: "spring",
-  stiffness: 420,
-  damping: 26,
-  mass: 0.78,
-};
-
-function Bar({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone: "emerald" | "amber" | "slate" | "rose";
-}) {
-  const pctStr = pctExact(value);
-  const bg =
-    tone === "emerald"
-      ? "bg-emerald-500/85"
-      : tone === "amber"
-        ? "bg-amber-500/85"
-        : tone === "rose"
-          ? "bg-rose-500/85"
-          : "bg-slate-500/80";
-  return (
-    <motion.div className="space-y-2" variants={fadeItem}>
-      <div className="flex items-end justify-between gap-3">
-        <span className="text-xs font-medium leading-tight text-slate-600 dark:text-slate-400">
-          {label}
-        </span>
-        <div className="flex flex-col items-end gap-0.5">
-          <span className="tabular-nums text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-50 sm:text-2xl">
-            {pctStr}
-            <span className="text-base font-semibold text-slate-500 dark:text-slate-400">
-              %
-            </span>
-          </span>
-        </div>
-      </div>
-      <div className="relative h-2.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-        <motion.div
-          className={`absolute inset-y-0 left-0 rounded-full ${bg}`}
-          initial={{ width: "0%" }}
-          animate={{ width: pctWidthPercent(value) }}
-          transition={springBar}
-        />
-      </div>
-    </motion.div>
-  );
-}
-
-function summaryBadgeClass(
-  tone: "success" | "warning" | "danger" | "neutral",
-): string {
-  if (tone === "success") {
-    return "border-emerald-200/80 bg-emerald-50 text-emerald-800 dark:border-emerald-800/40 dark:bg-emerald-500/15 dark:text-emerald-200";
-  }
-  if (tone === "warning") {
-    return "border-amber-200/80 bg-amber-50 text-amber-900 dark:border-amber-800/40 dark:bg-amber-500/15 dark:text-amber-100";
-  }
-  if (tone === "danger") {
-    return "border-rose-200/80 bg-rose-50 text-rose-800 dark:border-rose-800/40 dark:bg-rose-500/15 dark:text-rose-200";
-  }
-  return "border-slate-200/80 bg-slate-100 text-slate-700 dark:border-slate-700/60 dark:bg-slate-800/80 dark:text-slate-200";
-}
-
-function SummaryTile({
-  label,
-  value,
-  hint,
-  tone = "neutral",
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-  tone?: "success" | "warning" | "danger" | "neutral";
-}) {
-  return (
-    <div
-      className={`rounded-xl border px-3 py-3 shadow-sm transition-colors ${summaryBadgeClass(tone)}`}
-    >
-      <p className="text-[11px] font-semibold uppercase tracking-wide opacity-75">
-        {label}
-      </p>
-      <p className="mt-1 text-base font-semibold leading-snug">{value}</p>
-      {hint ? (
-        <p className="mt-1 text-xs leading-relaxed opacity-85">{hint}</p>
-      ) : null}
-    </div>
-  );
-}
-
 export function PadResultPanel({ pad }: { pad: PadTestResponse }) {
-  const [barsOpen, setBarsOpen] = useState(false);
-  const trustOk = pad.trust_confirmed === true;
-  const trustBad = pad.trust_confirmed === false;
   const diag = pad.diagnostics ?? null;
+  const decision = diag
+    ? padUiDecisionFromDiagnostics(diag)
+    : (pad.decision ?? padUiDecisionFromRaw(pad.status, pad.trust_confirmed));
   return (
     <motion.div
       className="rounded-xl border border-slate-200 bg-white/95 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900/60 sm:p-5"
@@ -177,156 +58,8 @@ export function PadResultPanel({ pad }: { pad: PadTestResponse }) {
         <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
           Проверка фото
         </h3>
-        {!diag ? (
-          <span
-            className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-              trustOk
-                ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300"
-                : trustBad
-                  ? "bg-rose-500/15 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300"
-                  : "bg-slate-200 text-slate-700 dark:bg-slate-600/40 dark:text-slate-300"
-            }`}
-          >
-            {trustOk
-              ? "Кадр принят"
-              : trustBad
-                ? "Подозрение на подмену"
-                : "Нужна осторожность"}
-          </span>
-        ) : null}
       </motion.div>
-      {diag ? (
-        <motion.div
-          className="mb-4"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.06 }}
-        >
-          <PadDiagnosticsReadout diagnostics={diag} />
-        </motion.div>
-      ) : (
-        <motion.p
-          className="mb-4 text-sm text-slate-600 dark:text-slate-400"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.08 }}
-        >
-          {humanizePadStatus(pad.status)}
-        </motion.p>
-      )}
-      <div className="mb-3">
-        <button
-          type="button"
-          className="text-sm font-medium text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
-          aria-expanded={barsOpen}
-          onClick={() => setBarsOpen((x) => !x)}
-        >
-          {barsOpen ? "Скрыть числовые сигналы" : "Числовые сигналы"}
-        </button>
-      </div>
-      {barsOpen ? (
-        <motion.div
-          className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
-          variants={fadeContainer}
-          initial="hidden"
-          animate="show"
-        >
-          <Bar
-            label="Риск подмены"
-            value={pad.risk_score}
-            tone={
-              pad.risk_score > 0.45
-                ? "rose"
-                : pad.risk_score > 0.25
-                  ? "amber"
-                  : "emerald"
-            }
-          />
-          <Bar label="Сигнал подмены" value={pad.deepface_score} tone="slate" />
-          <Bar
-            label="Устройство у лица"
-            value={pad.device_score}
-            tone="slate"
-          />
-          <Bar
-            label="Устройство в кадре (фон)"
-            value={pad.device_bg_score}
-            tone="slate"
-          />
-          <Bar label="Рамка у лица" value={pad.frame_score} tone="slate" />
-          <Bar
-            label="Рамка в кадре (глоб.)"
-            value={pad.frame_global_score}
-            tone="slate"
-          />
-          <Bar
-            label="Рекапчер / периодика (лицо)"
-            value={pad.recapture_score}
-            tone="slate"
-          />
-          <Bar
-            label="Блики на лице"
-            value={pad.face_reflection_score}
-            tone="slate"
-          />
-          <Bar
-            label="Чёткость и размер лица"
-            value={pad.quality_penalty}
-            tone="amber"
-          />
-        </motion.div>
-      ) : null}
-      {!diag && pad.tags.length > 0 ? (
-        <motion.div
-          className="mb-3"
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.15 }}
-        >
-          <p className="mb-1.5 text-xs font-medium text-slate-500">Замечания</p>
-          <motion.div
-            className="flex flex-wrap gap-1.5"
-            variants={fadeContainer}
-            initial="hidden"
-            animate="show"
-          >
-            {pad.tags.map((tag) => (
-              <motion.span
-                key={tag}
-                variants={fadeItem}
-                className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-700 dark:border-slate-600/80 dark:bg-slate-950/80 dark:text-slate-300"
-                title={tag}
-              >
-                {humanizePadTag(tag)}
-              </motion.span>
-            ))}
-          </motion.div>
-        </motion.div>
-      ) : null}
-      {!diag ? (
-        <motion.dl
-          className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-500 sm:grid-cols-3"
-          variants={fadeContainer}
-          initial="hidden"
-          animate="show"
-        >
-          <motion.div variants={fadeItem}>
-            <dt>Версия</dt>
-            <dd className="font-mono text-[11px] text-slate-600 dark:text-slate-400">
-              {pad.model_version}
-            </dd>
-          </motion.div>
-          <motion.div variants={fadeItem}>
-            <dt>Время на сервере</dt>
-            <dd className="text-slate-600 dark:text-slate-400">
-              {formatServerElapsed(pad.elapsed_ms)}
-              <span className="ml-1.5 font-mono text-[10px] text-slate-500 dark:text-slate-600">
-                ({pad.elapsed_ms} мс)
-              </span>
-            </dd>
-          </motion.div>
-        </motion.dl>
-      ) : null}
+      <PadDecisionCard decision={decision} />
     </motion.div>
   );
 }
@@ -363,10 +96,10 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
           </p>
         </div>
         <span
-          className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
+          className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase ${
             hasMatches
-              ? summaryBadgeClass("success")
-              : summaryBadgeClass("warning")
+              ? faceLabBadgeClass("success")
+              : faceLabBadgeClass("warning")
           }`}
         >
           {hasMatches ? "Есть совпадения" : "Совпадений нет"}
@@ -374,7 +107,7 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
       </motion.div>
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <SummaryTile
+        <FaceLabMetric
           label="Лучший результат"
           value={hasMatches ? `${pctExact(bestScore)}%` : "—"}
           hint={
@@ -388,19 +121,19 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
           }
           tone={hasMatches ? "success" : "warning"}
         />
-        <SummaryTile
+        <FaceLabMetric
           label="Совпадений"
           value={String(r.recognized_staff.length)}
           hint="Кандидаты выше текущего порога."
           tone={hasMatches ? "success" : "neutral"}
         />
-        <SummaryTile
+        <FaceLabMetric
           label="Без совпадения"
           value={String(r.unknown_faces.length)}
           hint="Лица, которым галерея не дала уверенный ответ."
           tone={r.unknown_faces.length > 0 ? "warning" : "neutral"}
         />
-        <SummaryTile
+        <FaceLabMetric
           label="Галерея"
           value={hasMatches ? "сработала" : "не подтвердила"}
           hint={
@@ -418,7 +151,7 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
         >
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-100">
+          <p className="text-[11px] font-semibold uppercase text-amber-900 dark:text-amber-100">
             Причина
           </p>
           <p className="mt-1 text-sm font-semibold leading-snug text-amber-950 dark:text-amber-50">
@@ -432,14 +165,14 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
       ) : (
         <motion.ul
           className="grid gap-3 sm:grid-cols-2"
-          variants={fadeContainer}
+          variants={faceLabFadeContainer}
           initial="hidden"
           animate="show"
         >
           {r.recognized_staff.map((row, i) => (
             <motion.li
               key={`${row.pin}-${i}`}
-              variants={fadeItem}
+              variants={faceLabFadeItem}
               className={`rounded-2xl border p-3 shadow-sm transition-transform duration-200 hover:-translate-y-0.5 ${
                 bestMatch?.pin === row.pin &&
                 bestMatch?.similarity === row.similarity
@@ -463,11 +196,11 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
                   className={`rounded-full border px-3 py-1 text-right ${
                     bestMatch?.pin === row.pin &&
                     bestMatch?.similarity === row.similarity
-                      ? summaryBadgeClass("success")
-                      : summaryBadgeClass("neutral")
+                      ? faceLabBadgeClass("success")
+                      : faceLabBadgeClass("neutral")
                   }`}
                 >
-                  <span className="text-[10px] font-medium uppercase tracking-wide">
+                  <span className="text-[10px] font-medium uppercase">
                     Схожесть
                   </span>
                   <span className="block tabular-nums text-xl font-bold leading-none">
@@ -509,7 +242,7 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.12 }}
         >
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-100">
+          <p className="text-[11px] font-semibold uppercase text-amber-900 dark:text-amber-100">
             Неопределённость
           </p>
           <p className="mt-1 text-sm font-semibold text-amber-950 dark:text-amber-50">
@@ -517,12 +250,12 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
           </p>
           <motion.ul
             className="mt-2 space-y-1 text-xs text-amber-900/85 dark:text-amber-100/85"
-            variants={fadeContainer}
+            variants={faceLabFadeContainer}
             initial="hidden"
             animate="show"
           >
             {r.unknown_faces.map((uf, i) => (
-              <motion.li key={i} variants={fadeItem}>
+              <motion.li key={i} variants={faceLabFadeItem}>
                 Лицо {i + 1}: {humanizeUnknownFaceStatus(uf.status)}
                 {typeof uf.best_similarity === "number" ? (
                   <span className="ml-1 tabular-nums">
@@ -604,7 +337,7 @@ function formatUnknownValue(
     if (entries.length === 0) return "—";
     return (
       <div className="mt-1 rounded-lg border border-slate-200/90 bg-gradient-to-b from-slate-50/90 to-white/50 p-2.5 text-xs dark:border-slate-600/55 dark:from-slate-900/45 dark:to-slate-950/30">
-        <div className="mb-2 flex items-center gap-1.5 font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+        <div className="mb-2 flex items-center gap-1.5 font-semibold uppercase text-slate-400 dark:text-slate-500">
           <FaFolderOpen className="h-3.5 w-3.5" aria-hidden />
           Вложенные поля
         </div>
@@ -673,12 +406,12 @@ export function UnexpectedPayloadPanel({ data }: { data: unknown }) {
       </div>
       <motion.dl
         className="grid gap-3 text-sm sm:grid-cols-2"
-        variants={fadeContainer}
+        variants={faceLabFadeContainer}
         initial="hidden"
         animate="show"
       >
         {entries.map(([k, val]) => (
-          <motion.div key={k} variants={fadeItem}>
+          <motion.div key={k} variants={faceLabFadeItem}>
             <dt className="text-xs font-medium text-slate-500">
               {humanizeResponseFieldKey(k)}
             </dt>

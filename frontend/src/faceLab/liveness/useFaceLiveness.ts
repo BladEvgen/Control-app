@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { faceLabLog } from "../faceLabLog";
 
 function mediapipePublicBase(): string {
   const base = import.meta.env.BASE_URL;
@@ -13,6 +14,88 @@ function visionWasmRoot(): string {
 function faceLandmarkerModelPath(): string {
   return `${mediapipePublicBase()}mediapipe-models/face_landmarker.task`;
 }
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function assetCandidates(path: string): string[] {
+  return uniqueStrings([
+    `${mediapipePublicBase()}${path}`,
+    `/${path}`,
+    `/assets/${path}`,
+    `/static/${path}`,
+  ]);
+}
+
+async function isFetchableAsset(url: string): Promise<boolean> {
+  try {
+    const head = await fetch(url, { method: "HEAD", cache: "force-cache" });
+    if (head.ok) return true;
+    if (head.status !== 405) return false;
+  } catch {
+    return false;
+  }
+
+  try {
+    const get = await fetch(url, { method: "GET", cache: "force-cache" });
+    return get.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function firstFetchableAsset(
+  candidates: string[],
+  probe: (candidate: string) => string = (candidate) => candidate,
+): Promise<string> {
+  for (const candidate of candidates) {
+    if (await isFetchableAsset(probe(candidate))) {
+      return candidate;
+    }
+  }
+  return candidates[0] ?? "";
+}
+
+async function resolveMediapipeAssets(): Promise<{
+  wasmRoot: string;
+  modelPath: string;
+}> {
+  const wasmRoots = assetCandidates("mediapipe/tasks-vision/wasm");
+  const modelPaths = assetCandidates("mediapipe-models/face_landmarker.task");
+  const [wasmRoot, modelPath] = await Promise.all([
+    firstFetchableAsset(
+      wasmRoots,
+      (root) => `${root.replace(/\/$/, "")}/vision_wasm_internal.wasm`,
+    ),
+    firstFetchableAsset(modelPaths),
+  ]);
+  return { wasmRoot, modelPath };
+}
+
+function describeLivenessLoadError(error: unknown): string {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  const lower = message.toLowerCase();
+  if (lower.includes("404") || lower.includes("not found")) {
+    return "Не найден локальный файл модели или WASM для проверки движений.";
+  }
+  if (lower.includes("webgl") || lower.includes("gpu")) {
+    return "Браузер не дал запустить ускорение для проверки движений.";
+  }
+  if (lower.includes("wasm")) {
+    return "Браузер не загрузил WASM-модуль проверки движений.";
+  }
+  if (message.trim()) return message.trim();
+  return "Браузер не запустил проверку движений лица.";
+}
+
+const LIVENESS_UNAVAILABLE_HINT =
+  "Браузерная проверка движений не загрузилась. Можно сделать снимок вручную: сервер всё равно проверит фото на подмену после отправки.";
 
 const MEDIAPIPE_NATIVE_LOG_RE =
   /OpenGL error checking is disabled|TensorFlow Lite XNNPACK delegate|Graph successfully started running|Graph finished closing successfully|Successfully destroyed WebGL context|gl_context(?:_webgl)?\.cc:\d+|[WIE]\d{4}\s+\d{1,2}:\d{2}:\d{2}/;
@@ -292,9 +375,7 @@ export function useFaceLiveness({
       setPhase("face");
       setHint(HINT_FACE_IN_OVAL);
     } else if (phase === "unavailable") {
-      setHint(
-        "Проверка здесь недоступна. Можно нажать «Пропустить» и снять кадр вручную.",
-      );
+      setHint(LIVENESS_UNAVAILABLE_HINT);
     }
   }, [active, skipped, phase, resetInternalToFace]);
 
@@ -324,15 +405,15 @@ export function useFaceLiveness({
         setHint("Подождите, загружаем проверку…");
         setModelReady(false);
         try {
-          const fileset =
-            await FilesetResolver.forVisionTasks(visionWasmRoot());
+          const assets = await resolveMediapipeAssets();
+          const fileset = await FilesetResolver.forVisionTasks(assets.wasmRoot);
           if (cancelled) return;
 
           let lm: FaceLandmarker | null = null;
           try {
             lm = await FaceLandmarker.createFromOptions(fileset, {
               baseOptions: {
-                modelAssetPath: faceLandmarkerModelPath(),
+                modelAssetPath: assets.modelPath,
                 delegate: "GPU",
               },
               runningMode: "VIDEO",
@@ -342,7 +423,7 @@ export function useFaceLiveness({
           } catch {
             lm = await FaceLandmarker.createFromOptions(fileset, {
               baseOptions: {
-                modelAssetPath: faceLandmarkerModelPath(),
+                modelAssetPath: assets.modelPath,
               },
               runningMode: "VIDEO",
               numFaces: 1,
@@ -358,13 +439,18 @@ export function useFaceLiveness({
           resetInternalToFace();
           setHint(HINT_FACE_IN_OVAL);
           setModelReady(true);
-        } catch {
+        } catch (error: unknown) {
           if (!cancelled) {
+            const reason = describeLivenessLoadError(error);
+            faceLabLog.warn("Browser liveness unavailable", {
+              reason,
+              defaultWasmRoot: visionWasmRoot(),
+              defaultModelPath: faceLandmarkerModelPath(),
+              error,
+            });
             landmarkerRef.current = null;
             setPhase("unavailable");
-            setHint(
-              "Не получилось загрузить проверку. Нажмите «Пропустить», чтобы снять кадр вручную.",
-            );
+            setHint(LIVENESS_UNAVAILABLE_HINT);
             setModelReady(false);
           }
         }
@@ -572,7 +658,7 @@ export function useFaceLiveness({
     };
   }, []);
 
-  const allowCapture = skipped || phase === "passed";
+  const allowCapture = skipped || phase === "passed" || phase === "unavailable";
 
   const isFallback = phase === "unavailable";
 

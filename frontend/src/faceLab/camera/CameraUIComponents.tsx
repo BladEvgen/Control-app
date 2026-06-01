@@ -3,30 +3,11 @@ import type { CSSProperties } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { FaTimesCircle, FaExclamationTriangle } from "react-icons/fa";
 import type { Aspect, CameraGuidanceContext, Frame } from "./types";
-import { cameraGuidanceMessage } from "./cameraGuidanceMessage";
 import { vibrate } from "./camera-utils";
-
-export function CameraGuidanceBanner({
-  context,
-  requireLiveness,
-}: {
-  context: CameraGuidanceContext;
-  requireLiveness: boolean;
-}) {
-  const text = cameraGuidanceMessage(context, requireLiveness);
-  return (
-    <div
-      className="pointer-events-none max-w-lg rounded-2xl bg-black/45 px-4 py-2.5 text-center text-sm font-medium leading-snug text-white shadow-lg ring-1 ring-white/15 backdrop-blur-md sm:max-w-xl sm:text-[0.95rem] [text-shadow:0_1px_3px_rgba(0,0,0,0.85)]"
-      role="status"
-    >
-      {text}
-    </div>
-  );
-}
 
 type CircleBtnProps = {
   title?: string;
-  onClick?: (e?: React.PointerEvent) => void;
+  onClick?: () => void;
   icon: React.ReactNode;
   size?: number;
   kind?: "neutral" | "primary" | "success";
@@ -48,12 +29,12 @@ export function CircleBtn({
         ? "bg-emerald-500 text-white hover:bg-emerald-400 active:bg-emerald-500 ring-emerald-400/40 shadow-xl shadow-emerald-500/30"
         : "bg-white/15 text-white ring-white/30 backdrop-blur-xl hover:bg-white/25 active:bg-white/15 shadow-lg";
 
-  const handleClick = (e: React.PointerEvent) => {
+  const handleClick = (e: React.MouseEvent) => {
     if (disabled || !onClick) return;
     e.preventDefault();
     e.stopPropagation();
     vibrate([10]);
-    onClick(e);
+    onClick();
   };
 
   return (
@@ -62,10 +43,10 @@ export function CircleBtn({
       title={title}
       aria-label={title}
       disabled={disabled}
-      onPointerDown={handleClick}
+      onClick={handleClick}
       whileHover={{ scale: disabled ? 1 : 1.08 }}
       whileTap={{ scale: disabled ? 1 : 0.92 }}
-      className={`inline-flex items-center justify-center rounded-full ring-2 transition-all duration-200 focus:outline-none focus:ring-4 touch-none ${theme} ${
+      className={`inline-flex items-center justify-center rounded-full ring-2 transition-all duration-200 focus:outline-none focus-visible:ring-4 touch-none ${theme} ${
         disabled ? "opacity-50 cursor-not-allowed" : ""
       }`}
       style={{
@@ -120,32 +101,32 @@ type AspectMaskProps = {
   aspect: Aspect;
 };
 
-function FaceFrontSvg({ className }: { className?: string }) {
+function FacePoseSilhouette({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 88 100" className={className} aria-hidden>
-      <ellipse
-        cx="44"
-        cy="44"
-        rx="28"
-        ry="34"
-        fill="rgba(255,255,255,0.92)"
-        stroke="rgba(30,30,30,0.2)"
-        strokeWidth="1.8"
-      />
-      <circle cx="34" cy="40" r="3.2" fill="rgba(0,0,0,0.35)" />
-      <circle cx="54" cy="40" r="3.2" fill="rgba(0,0,0,0.35)" />
+    <svg viewBox="0 0 120 150" className={className} aria-hidden>
       <path
-        d="M44 50 L38 60 L50 60 Z"
-        fill="rgba(0,0,0,0.22)"
-        stroke="rgba(0,0,0,0.15)"
-        strokeWidth="0.6"
+        d="M60 18c-18.8 0-32 14.7-32 35.7 0 23.8 13 43.5 32 43.5s32-19.7 32-43.5C92 32.7 78.8 18 60 18Z"
+        fill="rgba(230,242,255,0.86)"
+        stroke="rgba(255,255,255,0.96)"
+        strokeWidth="3"
       />
-      <line
-        x1="44"
-        y1="64"
-        x2="44"
-        y2="78"
-        stroke="rgba(0,0,0,0.2)"
+      <path
+        d="M19 137c4.2-24.7 21.5-38 41-38s36.8 13.3 41 38"
+        fill="rgba(255,255,255,0.16)"
+        stroke="rgba(255,255,255,0.78)"
+        strokeWidth="3"
+        strokeLinecap="round"
+      />
+      <path
+        d="M34 55h52"
+        stroke="rgba(16,24,40,0.24)"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+      <path
+        d="M60 23v107"
+        stroke="rgba(16,24,40,0.2)"
+        strokeDasharray="6 7"
         strokeWidth="2"
         strokeLinecap="round"
       />
@@ -155,17 +136,17 @@ function FaceFrontSvg({ className }: { className?: string }) {
 
 function ProfileYawSwing({ direction }: { direction: "left" | "right" }) {
   const shift = direction === "left" ? [0, -10, 0] : [0, 10, 0];
-  const arrow = direction === "left" ? "←" : "→";
   return (
-    <div className="flex items-center gap-2 rounded-full bg-black/25 px-3 py-1.5 text-[11px] font-semibold text-white/80 ring-1 ring-white/15 backdrop-blur-sm">
+    <div className="flex items-center gap-2 rounded-full bg-black/35 px-3 py-1.5 text-[11px] font-semibold text-white/90 ring-1 ring-white/20 backdrop-blur-sm">
       <motion.span
+        className="block h-1.5 w-8 rounded-full bg-white/85"
         animate={{ x: shift }}
         transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
         aria-hidden
-      >
-        {arrow}
-      </motion.span>
-      <span>{direction === "left" ? "Чуть влево" : "Чуть вправо"}</span>
+      />
+      <span>
+        {direction === "left" ? "Голова чуть влево" : "Голова чуть вправо"}
+      </span>
     </div>
   );
 }
@@ -176,30 +157,51 @@ function ViewfinderYawTurnFace3D({
   direction: "left" | "right";
 }) {
   const yDeg = direction === "left" ? -22 : 22;
-  const arrow = direction === "left" ? "←" : "→";
   const directionLabel =
-    direction === "left" ? "Поверните влево" : "Поверните вправо";
+    direction === "left" ? "Поверните голову влево" : "Поверните голову вправо";
   return (
     <div className="flex max-w-[min(92%,240px)] flex-col items-center gap-3">
       <div
-        className="relative flex h-[min(30vw,7rem)] w-[min(30vw,7rem)] min-h-[104px] min-w-[104px] items-center justify-center rounded-[2rem] border border-white/15 bg-black/20 px-2 py-2 sm:h-32 sm:w-32"
+        className="relative flex h-[min(31vw,7.25rem)] w-[min(31vw,7.25rem)] min-h-[108px] min-w-[108px] items-center justify-center rounded-[2rem] border border-white/20 bg-black/28 px-2 py-2 shadow-[0_18px_45px_rgba(0,0,0,0.35)] backdrop-blur-sm sm:h-32 sm:w-32"
         style={{
           perspective: "280px",
           perspectiveOrigin: "50% 42%",
         }}
       >
         <motion.div
-          className={`absolute ${direction === "left" ? "left-[-0.35rem]" : "right-[-0.35rem]"} top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-white/35 bg-black/35 text-sm font-bold text-white shadow-lg backdrop-blur-md`}
-          animate={{ x: direction === "left" ? [0, -10, 0] : [0, 10, 0] }}
-          transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute inset-3 rounded-[1.45rem] border border-white/30"
+          animate={{ opacity: [0.32, 0.75, 0.32], scale: [0.97, 1.04, 0.97] }}
+          transition={{ duration: 1.9, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <motion.div
+          className={`absolute ${direction === "left" ? "left-[-0.75rem]" : "right-[-0.75rem]"} top-1/2 h-11 w-11 -translate-y-1/2`}
+          animate={{
+            x: direction === "left" ? [0, -8, 0] : [0, 8, 0],
+            opacity: [0.72, 1, 0.72],
+          }}
+          transition={{ duration: 1.7, repeat: Infinity, ease: "easeInOut" }}
+          aria-hidden
         >
-          {arrow}
+          <svg viewBox="0 0 44 44" className="h-full w-full drop-shadow-lg">
+            <path
+              d={
+                direction === "left"
+                  ? "M27 10 15 22l12 12M17 22h20"
+                  : "M17 10l12 12-12 12M7 22h20"
+              }
+              fill="none"
+              stroke="rgba(255,255,255,0.96)"
+              strokeWidth="4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </motion.div>
         <div
           className="pointer-events-none absolute inset-0 flex items-center justify-center"
           aria-hidden
         >
-          <FaceFrontSvg className="h-full w-full opacity-[0.2] saturate-0" />
+          <FacePoseSilhouette className="h-full w-full opacity-[0.16] saturate-0" />
         </div>
         <motion.div
           className="relative flex h-full w-full items-center justify-center will-change-transform"
@@ -214,7 +216,7 @@ function ViewfinderYawTurnFace3D({
             backfaceVisibility: "hidden",
           }}
         >
-          <FaceFrontSvg className="h-full w-full drop-shadow-[0_8px_22px_rgba(0,0,0,0.5)]" />
+          <FacePoseSilhouette className="h-full w-full drop-shadow-[0_8px_22px_rgba(0,0,0,0.5)]" />
         </motion.div>
       </div>
 
@@ -227,6 +229,32 @@ function ViewfinderYawTurnFace3D({
         >
           {directionLabel}
         </p>
+      </div>
+    </div>
+  );
+}
+
+function ViewfinderFrontFaceGuide() {
+  return (
+    <div className="flex max-w-[min(92%,240px)] flex-col items-center gap-3">
+      <div className="relative flex h-[min(31vw,7.25rem)] w-[min(31vw,7.25rem)] min-h-[108px] min-w-[108px] items-center justify-center rounded-[2rem] border border-white/22 bg-black/28 px-2 py-2 shadow-[0_18px_45px_rgba(0,0,0,0.35)] backdrop-blur-sm sm:h-32 sm:w-32">
+        <motion.div
+          className="absolute inset-2 rounded-[1.65rem] border border-white/45"
+          animate={{ scale: [0.96, 1.04, 0.96], opacity: [0.45, 0.92, 0.45] }}
+          transition={{ duration: 1.7, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <div className="absolute left-1/2 top-2 h-[calc(100%-1rem)] w-px -translate-x-1/2 bg-white/20" />
+        <div className="absolute left-2 top-1/2 h-px w-[calc(100%-1rem)] -translate-y-1/2 bg-white/16" />
+        <motion.div
+          className="relative flex h-full w-full items-center justify-center"
+          animate={{ y: [0, -3, 0] }}
+          transition={{ duration: 2.1, repeat: Infinity, ease: "easeInOut" }}
+        >
+          <FacePoseSilhouette className="h-full w-full drop-shadow-[0_8px_22px_rgba(0,0,0,0.5)]" />
+        </motion.div>
+      </div>
+      <div className="rounded-full bg-black/35 px-3 py-1.5 text-[11px] font-semibold text-white/90 ring-1 ring-white/20 backdrop-blur-sm">
+        Лицо по центру
       </div>
     </div>
   );
@@ -249,7 +277,17 @@ export function ViewfinderBootstrapHint({
     top: `${frame.top}px`,
   };
 
-  if (context === "bootstrap_front" || context === "profile_photo") return null;
+  if (context === "bootstrap_front") {
+    return (
+      <div className="pointer-events-none absolute z-[26]" style={boxStyle}>
+        <div className="flex h-full w-full flex-col items-center justify-center gap-2 px-2">
+          <ViewfinderFrontFaceGuide />
+        </div>
+      </div>
+    );
+  }
+
+  if (context === "profile_photo") return null;
 
   if (context === "bootstrap_left" || context === "bootstrap_right") {
     const toLeft = context === "bootstrap_left";
@@ -421,7 +459,7 @@ type ThumbnailPreviewProps = {
 export function ThumbnailPreview({ imageUrl, onOpen }: ThumbnailPreviewProps) {
   if (!imageUrl) return null;
 
-  const handleClick = (e: React.PointerEvent) => {
+  const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
     vibrate([10]);
@@ -431,8 +469,9 @@ export function ThumbnailPreview({ imageUrl, onOpen }: ThumbnailPreviewProps) {
   return (
     <motion.button
       type="button"
-      onPointerDown={handleClick}
-      className="pointer-events-auto absolute bottom-28 right-4 z-[10005] h-20 w-20 overflow-hidden rounded-2xl bg-black/40 shadow-2xl ring-[3px] ring-white/60 backdrop-blur-sm transition-all hover:ring-white/80 active:scale-95 touch-none"
+      onClick={handleClick}
+      aria-label="Открыть последнее фото"
+      className="pointer-events-auto absolute bottom-28 right-4 z-[10005] h-20 w-20 overflow-hidden rounded-2xl bg-black/40 shadow-2xl ring-[3px] ring-white/60 backdrop-blur-sm transition-all hover:ring-white/80 focus:outline-none focus-visible:ring-4 focus-visible:ring-white active:scale-95 touch-none"
       initial={{ opacity: 0, y: 20, scale: 0.8 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 20, scale: 0.8 }}
@@ -481,7 +520,7 @@ export function ErrorDisplay({
             <button
               type="button"
               onClick={onClose}
-              className="mt-4 px-5 py-2.5 rounded-[14px] bg-white/20 hover:bg-white/30 active:bg-white/15 transition-colors text-sm font-medium shadow-[0_0_0_1px_rgba(255,255,255,0.15)_inset]"
+              className="mt-4 px-5 py-2.5 rounded-[14px] bg-white/20 hover:bg-white/30 active:bg-white/15 transition-colors text-sm font-medium shadow-[0_0_0_1px_rgba(255,255,255,0.15)_inset] focus:outline-none focus-visible:ring-4 focus-visible:ring-white/70"
             >
               Закрыть
             </button>
@@ -499,7 +538,15 @@ export function FullscreenPreview({
   imageUrl: string;
   onClose: () => void;
 }) {
-  const handleClose = (e: React.MouseEvent | React.PointerEvent) => {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  const handleClose = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     onClose();
@@ -512,7 +559,7 @@ export function FullscreenPreview({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      onPointerDown={handleClose}
+      onClick={handleClose}
       style={{ WebkitTapHighlightColor: "transparent" }}
     >
       <motion.img
@@ -533,11 +580,12 @@ export function FullscreenPreview({
 
       <motion.button
         type="button"
-        onPointerDown={(e) => {
+        onClick={(e) => {
           e.stopPropagation();
           handleClose(e);
         }}
-        className="absolute top-4 right-4 p-2.5 rounded-full bg-black/40 ring-1 ring-white/20 backdrop-blur-xl text-white hover:bg-black/60 active:bg-black/50 transition-all shadow-2xl z-10 touch-none"
+        aria-label="Закрыть предпросмотр"
+        className="absolute top-4 right-4 p-2.5 rounded-full bg-black/40 ring-1 ring-white/20 backdrop-blur-xl text-white hover:bg-black/60 active:bg-black/50 transition-all shadow-2xl z-10 touch-none focus:outline-none focus-visible:ring-4 focus-visible:ring-white/70"
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}

@@ -1,6 +1,28 @@
 import type { Facing } from "./types";
 import { CAMERA_PATTERNS } from "./types";
 
+type ExtendedCapabilities = MediaTrackCapabilities & {
+  width?: { max?: number; min?: number };
+  height?: { max?: number; min?: number };
+  frameRate?: { max?: number; min?: number };
+  focusMode?: string[];
+  exposureMode?: string[];
+  whiteBalanceMode?: string[];
+  torch?: boolean;
+  zoom?: { max?: number; min?: number; step?: number };
+};
+
+type ExtendedConstraintSet = MediaTrackConstraintSet & {
+  focusMode?: string;
+  exposureMode?: string;
+  whiteBalanceMode?: string;
+  torch?: boolean;
+  zoom?: number;
+  pointsOfInterest?: Array<{ x: number; y: number }>;
+};
+
+const TRACK_MAX_LONG_EDGE = 1920;
+
 export function isAppleSystemBrowserOnMobile(): boolean {
   if (typeof navigator === "undefined") return false;
   const ua = navigator.userAgent;
@@ -58,14 +80,27 @@ export function pickPrimaryCamera(
   const pattern =
     facing === "user" ? CAMERA_PATTERNS.FRONT : CAMERA_PATTERNS.BACK;
 
-  const goodCameras = devices.filter(
-    (d) => pattern.test(d.label) && !CAMERA_PATTERNS.AVOID.test(d.label),
-  );
+  const score = (device: MediaDeviceInfo): number => {
+    const label = device.label.toLowerCase();
+    let n = pattern.test(label) ? 100 : 0;
+    if (CAMERA_PATTERNS.AVOID.test(label)) n -= 80;
 
-  if (goodCameras.length > 0) {
-    goodCameras.sort((a, b) => a.label.length - b.label.length);
-    return goodCameras[0].deviceId;
-  }
+    if (facing === "user") {
+      if (/(front|user|selfie|facetime|truedepth)/i.test(label)) n += 30;
+      if (/(back|rear|environment|world)/i.test(label)) n -= 50;
+    } else {
+      if (/(back|rear|environment|world)/i.test(label)) n += 30;
+      if (/(main|wide|standard|camera 0|0,)/i.test(label)) n += 18;
+      if (/(ultra|tele|macro|depth|tof|lidar|ir)/i.test(label)) n -= 55;
+      if (/(front|user|selfie|facetime|truedepth)/i.test(label)) n -= 50;
+    }
+
+    n -= Math.min(label.length, 80) / 80;
+    return n;
+  };
+
+  const ranked = [...devices].sort((a, b) => score(b) - score(a));
+  if (ranked[0] && score(ranked[0]) > 0) return ranked[0].deviceId;
 
   const looseCameras = devices.find((d) => pattern.test(d.label));
   if (looseCameras) return looseCameras.deviceId;
@@ -81,51 +116,38 @@ export function createHighQualityConstraints(
 ): MediaTrackConstraints[] {
   const candidates: MediaTrackConstraints[] = [];
   const conservative = isWebKitCameraConservativeMode();
-  const highResLandscape = {
-    width: { ideal: 2560 },
-    height: { ideal: 1440 },
-    frameRate: { ideal: 30, max: 60 },
+  const mainFace = {
+    width: { ideal: conservative ? 1280 : 1920 },
+    height: { ideal: conservative ? 960 : 1440 },
+    aspectRatio: { ideal: 4 / 3 },
+    frameRate: { ideal: 30, max: 30 },
+  } satisfies MediaTrackConstraints;
+  const fallbackFace = {
+    width: { ideal: 1280 },
+    height: { ideal: 960 },
+    aspectRatio: { ideal: 4 / 3 },
+    frameRate: { ideal: 30, max: 30 },
   } satisfies MediaTrackConstraints;
   const standardLandscape = {
     width: { ideal: 1920 },
     height: { ideal: 1080 },
-    frameRate: { ideal: 30, max: 60 },
-  } satisfies MediaTrackConstraints;
-  const balancedPortraitCrop = {
-    width: { ideal: 1440 },
-    height: { ideal: 1080 },
-    aspectRatio: { ideal: 4 / 3 },
-    frameRate: { ideal: 30, max: 60 },
+    frameRate: { ideal: 30, max: 30 },
   } satisfies MediaTrackConstraints;
 
   if (deviceId) {
-    if (conservative) {
-      candidates.push({
-        deviceId: { exact: deviceId },
-        frameRate: { ideal: 30, max: 60 },
-      });
-    } else {
-      candidates.push(
-        { deviceId: { exact: deviceId }, ...highResLandscape },
-        { deviceId: { exact: deviceId }, ...standardLandscape },
-        { deviceId: { exact: deviceId }, ...balancedPortraitCrop },
-      );
-    }
+    candidates.push(
+      { deviceId: { exact: deviceId }, ...mainFace },
+      { deviceId: { exact: deviceId }, ...fallbackFace },
+      { deviceId: { exact: deviceId }, ...standardLandscape },
+    );
   }
 
   if (facing) {
-    if (conservative) {
-      candidates.push({
-        facingMode: { ideal: facing },
-        frameRate: { ideal: 30, max: 60 },
-      });
-    } else {
-      candidates.push(
-        { facingMode: { ideal: facing }, ...highResLandscape },
-        { facingMode: { ideal: facing }, ...standardLandscape },
-        { facingMode: { ideal: facing }, ...balancedPortraitCrop },
-      );
-    }
+    candidates.push(
+      { facingMode: { ideal: facing }, ...mainFace },
+      { facingMode: { ideal: facing }, ...fallbackFace },
+      { facingMode: { ideal: facing }, ...standardLandscape },
+    );
   }
 
   candidates.push({});
@@ -137,34 +159,97 @@ export async function applyMaxVideoResolution(
   track: MediaStreamTrack | null,
 ): Promise<{ width?: number; height?: number } | null> {
   if (!track?.applyConstraints || !track.getCapabilities) return null;
-  if (isWebKitCameraConservativeMode()) {
-    const s = track.getSettings();
-    return { width: s.width, height: s.height };
-  }
   try {
-    const caps = track.getCapabilities() as MediaTrackCapabilities & {
-      width?: { max?: number; min?: number };
-      height?: { max?: number; min?: number };
-    };
+    const caps = track.getCapabilities() as ExtendedCapabilities;
     const wMax = caps.width?.max;
     const hMax = caps.height?.max;
     if (!wMax || !hMax) return null;
-    const TRACK_MAX_LONG = 2560;
     let tw = wMax;
     let th = hMax;
     const L = Math.max(tw, th);
-    if (L > TRACK_MAX_LONG) {
-      const s = TRACK_MAX_LONG / L;
+    if (L > TRACK_MAX_LONG_EDGE) {
+      const s = TRACK_MAX_LONG_EDGE / L;
       tw = Math.max(1, Math.round(tw * s));
       th = Math.max(1, Math.round(th * s));
     }
     await track.applyConstraints({
       width: { ideal: tw },
       height: { ideal: th },
+      frameRate: { ideal: 30, max: 30 },
     });
     const s = track.getSettings();
     return { width: s.width, height: s.height };
   } catch {
     return null;
+  }
+}
+
+export async function optimizeCameraTrackForFace(
+  track: MediaStreamTrack | null,
+): Promise<{ width?: number; height?: number } | null> {
+  if (!track?.applyConstraints) return null;
+
+  const caps =
+    typeof track.getCapabilities === "function"
+      ? (track.getCapabilities() as ExtendedCapabilities)
+      : null;
+  if (!caps) {
+    const s = track.getSettings();
+    return { width: s.width, height: s.height };
+  }
+
+  const advanced: ExtendedConstraintSet = {};
+  if (caps.focusMode?.includes("continuous")) {
+    advanced.focusMode = "continuous";
+  }
+  if (caps.exposureMode?.includes("continuous")) {
+    advanced.exposureMode = "continuous";
+  }
+  if (caps.whiteBalanceMode?.includes("continuous")) {
+    advanced.whiteBalanceMode = "continuous";
+  }
+  if (caps.torch) {
+    advanced.torch = false;
+  }
+  if (caps.zoom?.min != null && caps.zoom?.max != null) {
+    const min = Number(caps.zoom.min);
+    const max = Number(caps.zoom.max);
+    if (Number.isFinite(min) && Number.isFinite(max)) {
+      advanced.zoom = Math.min(Math.max(1, min), max);
+    }
+  }
+
+  if (Object.keys(advanced).length > 0) {
+    try {
+      await track.applyConstraints({ advanced: [advanced] });
+    } catch {
+      /* Optional camera controls differ widely by browser/device. */
+    }
+  }
+
+  const s = track.getSettings();
+  return { width: s.width, height: s.height };
+}
+
+export async function applyCameraPointOfInterest(
+  track: MediaStreamTrack | null,
+  point: { x: number; y: number },
+): Promise<void> {
+  if (!track?.applyConstraints) return;
+  try {
+    await track.applyConstraints({
+      advanced: [
+        {
+          pointsOfInterest: [
+            {
+              x: Math.max(0, Math.min(1, point.x)),
+              y: Math.max(0, Math.min(1, point.y)),
+            },
+          ],
+        } as ExtendedConstraintSet,
+      ],
+    });
+  } catch {
+    /* Optional on browsers that expose tap-to-focus. */
   }
 }

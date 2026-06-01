@@ -21,75 +21,57 @@ logger = logging.getLogger(__name__)
 
 FACE_LAB_TTS_PHRASES: dict[str, dict[str, str]] = {
     "loading": {
-        "ru": "Пожалуйста, подождите несколько секунд — мы готовим проверку.",
-        "kk": "Өтінеміз, бірнеше секунд күтіңіз — тексеруді дайындаймыз.",
-        "en": "Please wait a moment while we prepare the check for you.",
+        "ru": "Готовим камеру.",
+        "kk": "Камера дайындалып жатыр.",
+        "en": "Preparing camera.",
     },
     "blink": {
-        "ru": "Пожалуйста, один раз моргните.",
-        "kk": "Өтінеміз, көзіңізді бір рет жұмыңыз.",
-        "en": "Please blink once, when you are ready.",
+        "ru": "Моргните один раз.",
+        "kk": "Бір рет жыпылықтаңыз.",
+        "en": "Blink once.",
     },
     "yaw": {
-        "ru": "Пожалуйста, слегка поверните голову влево или вправо.",
-        "kk": "Өтінеміз, басыңызды сәл солға немесе оңға бұраңыз.",
-        "en": "Please turn your head gently to the left or to the right.",
+        "ru": "Поверните голову в сторону.",
+        "kk": "Басыңызды сәл бұрыңыз.",
+        "en": "Turn your head slightly.",
     },
     "smile": {
-        "ru": "Пожалуйста, слегка улыбнитесь.",
-        "kk": "Өтінеміз, жеңіл күлімсіреңіз.",
-        "en": "Please give a slight smile, if you would.",
+        "ru": "Слегка улыбнитесь.",
+        "kk": "Аздап күлімдеңіз.",
+        "en": "Smile slightly.",
     },
     "unavailable": {
-        "ru": "К сожалению, в этом браузере проверка недоступна. "
-        "Вы можете снять кадр вручную — спасибо за понимание.",
-        "kk": "Өкінішке орай, бұл браузерде тексеру қолжетімсіз. "
-        "Суретті қолмен түсіре аласыз — түсінгеніңізге рахмет.",
-        "en": "We are sorry — this check is not available in this browser. "
-        "You may take a photo manually. Thank you for your understanding.",
+        "ru": "Автопроверка недоступна. Снимите вручную.",
+        "kk": "Автотексеру жоқ. Қолмен түсіріңіз.",
+        "en": "Auto check is unavailable. Capture manually.",
     },
     # Ручная съёмка Face Lab / профиль (те же phase, что фронт: setup_<context>).
     "setup_profile_photo": {
-        "ru": "Пожалуйста, смотрите прямо в камеру. В светлой рамке на видео показан "
-        "силуэт головы фронтально; совместите своё лицо с ним и нажмите затвор.",
-        "kk": "Өтінеміз, камераға тік қараңыз. Бейнедегі жарық рамка ішінде беттің алдыңғы "
-        "силуэті көрсетілген; бетіңізді сәйкестендіріп, түсіріңіз батырмасын басыңыз.",
-        "en": "Please look straight at the camera. Inside the bright frame you will see a "
-        "front-facing head silhouette; align your face with it, then tap the shutter.",
+        "ru": "Лицо по центру. Смотрите прямо.",
+        "kk": "Бет ортада. Тік қараңыз.",
+        "en": "Center your face. Look straight.",
     },
     "setup_bootstrap_front": {
-        "ru": "Пожалуйста, встаньте прямо перед камерой.",
-        "kk": "Өтінеміз, камера алдында тік тұрыңыз.",
-        "en": "Please stand squarely in front of the camera.",
+        "ru": "Прямой кадр. Смотрите прямо.",
+        "kk": "Тік кадр. Тік қараңыз.",
+        "en": "Front photo. Look straight.",
     },
     "setup_bootstrap_left": {
-        "ru": "Пожалуйста, слегка поверните голову влево примерно на двадцать градусов — "
-        "разворот лица к камере, не наклон ухом к плечу. В рамке лицо на анимации уходит "
-        "вглубь экрана — повторите такой поворот и снимите.",
-        "kk": "Өтінеміз, басыңызды шамамен жиырма градусқа солға бұраңыз — "
-        "бетті камераға бұраңыз, құлақты иіспей. Рамкадағы анимация бетті экран тереңіне қарай "
-        "бұрады — соған сәйкестендіріп түсіріңіз.",
-        "en": "Please turn your head slightly left, about twenty degrees — swivel your face "
-        "toward the camera, not an ear-to-shoulder tilt. The face in the frame moves into the "
-        "screen in 3D — match that turn, then capture.",
+        "ru": "Голова чуть влево. Не наклоняйтесь.",
+        "kk": "Басыңызды сәл солға бұрыңыз. Еңкеймеңіз.",
+        "en": "Head slightly left. Do not tilt.",
     },
     "setup_bootstrap_right": {
-        "ru": "Пожалуйста, слегка поверните голову вправо примерно на двадцать градусов — "
-        "разворот лица к камере, не наклон ухом к плечу. В рамке лицо на анимации уходит "
-        "вглубь экрана — повторите такой поворот и снимите.",
-        "kk": "Өтінеміз, басыңызды шамамен жиырма градусқа оңға бұраңыз — "
-        "бетті камераға бұраңыз, құлақты иіспей. Рамкадағы анимация бетті экран тереңіне қарай "
-        "бұрады — соған сәйкестендіріп түсіріңіз.",
-        "en": "Please turn your head slightly right, about twenty degrees — swivel your face "
-        "toward the camera, not an ear-to-shoulder tilt. The face in the frame moves into the "
-        "screen in 3D — match that turn, then capture.",
+        "ru": "Голова чуть вправо. Не наклоняйтесь.",
+        "kk": "Басыңызды сәл оңға бұрыңыз. Еңкеймеңіз.",
+        "en": "Head slightly right. Do not tilt.",
     },
 }
 
 _ALLOWED_PHASES = frozenset(FACE_LAB_TTS_PHRASES.keys())
 _ALLOWED_LANGS = frozenset({"ru", "kk", "en"})
 
-_CACHE_PREFIX = "face_lab_tts:v2"
+_CACHE_PREFIX = "face_lab_tts:v3"
 _CACHE_TTL = 60 * 60 * 24 * 30
 
 
