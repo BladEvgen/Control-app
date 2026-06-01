@@ -301,6 +301,8 @@ backend/old_data-12-09-24.json
 /backend/static/media/absence_documents
 /backend/static/media/control_image
 *.pkl
+!backend/models/replay-attack_ycrcb_luv_extraTreesClassifier.pkl
+!backend/models/print-attack_ycrcb_luv_extraTreesClassifier.pkl
 *.db
 backend/monitoring_app/test_face.py
 *.backup
@@ -315,5 +317,6 @@ backend/media/
 DB/
 .cursor/rules/
 backend/models/general_face_model_meta.json
+backend/models/face_verification_calibration*.json
 scripts/augment_clear.sh
 scripts/git-commit-grouped-tracked.sh

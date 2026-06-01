@@ -2,6 +2,7 @@ import datetime
 import json
 from typing import Any, cast
 
+import numpy as np
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
@@ -18,6 +19,11 @@ from monitoring_app.photo_pad import (
     STATUS_SUSPICIOUS,
     DecisionInputs,
     _decide,
+    _guide_color_feature_vector,
+    _minifasnet_onnx_input,
+    _runtime_cache,
+    _score_guide_color_model,
+    _score_minifasnet_onnx,
 )
 
 
@@ -80,6 +86,61 @@ class PadDecisionTests(SimpleTestCase):
             )
         )
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
+
+    def test_minifasnet_fake_tag_counts_as_spoof_model_signal(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.84,
+                device_score=0.24,
+                frame_score=0.26,
+                quality_penalty=0.1,
+                tags=["minifasnet_onnx_fake"],
+            )
+        )
+        self.assertEqual(result.status, STATUS_SUSPICIOUS)
+        self.assertIn("pad_rule:fake_mid_plus_dual_mid_geometry", result.tags)
+
+    def test_model_disagreement_goes_review_not_hard_reject(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.46,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.04,
+                tags=[
+                    "fasnet_real",
+                    "minifasnet_onnx_fake",
+                    "spoof_model_disagreement",
+                ],
+                model_scores={"fasnet": 0.0, "minifasnet_onnx": 0.92},
+            )
+        )
+        self.assertEqual(result.status, STATUS_REVIEW)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn("pad_rule:spoof_model_disagreement_review", result.tags)
+
+    def test_ensemble_consensus_escalates_independent_families(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.04,
+                tags=[],
+                recapture_score=0.6,
+                device_bg_score=0.7,
+                frame_global_score=0.7,
+                face_area_ratio=0.08,
+            )
+        )
+        self.assertEqual(result.status, STATUS_SUSPICIOUS)
+        self.assertIn("pad_rule:ensemble_consensus_suspicious", result.tags)
 
     def test_mid_fake_with_background_display_context_goes_suspicious(self):
         result = _decide(
@@ -390,7 +451,31 @@ class PadDecisionTests(SimpleTestCase):
             )
         )
         self.assertNotEqual(result.status, STATUS_SUSPICIOUS)
-        self.assertIn("pad_rule:default_clean", result.tags)
+        self.assertIn("pad_rule:face_reflection_isolated_uncertain_clean", result.tags)
+
+    def test_isolated_reflection_with_model_disagreement_accepts_cautiously(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.4998,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.35,
+                tags=[
+                    "fasnet_real",
+                    "minifasnet_onnx_fake",
+                    "spoof_model_disagreement",
+                    "face_reflection_screen_like",
+                ],
+                face_area_ratio=0.20,
+                face_reflection_score=0.8227,
+                color_hist_score=0.1162,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn("pad_rule:face_reflection_isolated_uncertain_clean", result.tags)
 
     def test_fake_plus_face_reflection_goes_suspicious(self):
         result = _decide(
@@ -410,6 +495,83 @@ class PadDecisionTests(SimpleTestCase):
         self.assertFalse(result.trust_confirmed)
         self.assertIn("pad_rule:fake_plus_face_reflection_suspicious", result.tags)
 
+    def test_fake_plus_color_histogram_goes_suspicious(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.70,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.05,
+                tags=["fasnet_fake", "face_color_histogram_screen_like"],
+                face_area_ratio=0.06,
+                color_hist_score=0.58,
+            )
+        )
+        self.assertEqual(result.status, STATUS_SUSPICIOUS)
+        self.assertFalse(result.trust_confirmed)
+        self.assertIn("pad_rule:fake_plus_color_histogram_suspicious", result.tags)
+
+    def test_color_histogram_with_recapture_context_goes_suspicious(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.05,
+                tags=["face_color_histogram_screen_like"],
+                recapture_score=0.30,
+                face_area_ratio=0.06,
+                color_hist_score=0.58,
+            )
+        )
+        self.assertEqual(result.status, STATUS_SUSPICIOUS)
+        self.assertFalse(result.trust_confirmed)
+        self.assertIn("pad_rule:color_histogram_display_suspicious", result.tags)
+
+    def test_color_histogram_alone_does_not_auto_reject(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.05,
+                tags=["face_color_histogram_screen_like"],
+                face_area_ratio=0.06,
+                color_hist_score=0.90,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertTrue(result.trust_confirmed)
+        self.assertIn("pad_rule:default_clean", result.tags)
+
+    def test_spoof_uncertain_strong_color_histogram_goes_review(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.05,
+                tags=[
+                    "fasnet_unavailable",
+                    "pad_spoof_model_missing",
+                    "face_color_histogram_screen_like",
+                ],
+                face_area_ratio=0.06,
+                color_hist_score=0.58,
+            )
+        )
+        self.assertEqual(result.status, STATUS_REVIEW)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn("pad_rule:color_histogram_context_review", result.tags)
+
     def test_pad_struct_tag_present(self):
         result = _decide(
             DecisionInputs(
@@ -424,7 +586,7 @@ class PadDecisionTests(SimpleTestCase):
         )
         struct_tags = [t for t in result.tags if t.startswith("pad_struct:")]
         self.assertEqual(len(struct_tags), 1)
-        self.assertIn("pad_trace_v9", struct_tags[0])
+        self.assertIn("pad_trace_v11", struct_tags[0])
         self.assertIn('"product_outcome":"clean"', struct_tags[0])
 
     def test_fake_plus_strong_recapture_without_geometry_stays_review(self):
@@ -934,6 +1096,7 @@ class PadDecisionTests(SimpleTestCase):
                 quality_penalty=0.05,
                 tags=[
                     "fasnet_unavailable",
+                    "pad_spoof_model_missing",
                     "recapture_fft_periodicity",
                     "recapture_gradient_aniso",
                 ],
@@ -942,6 +1105,79 @@ class PadDecisionTests(SimpleTestCase):
         )
         self.assertEqual(result.status, STATUS_REVIEW)
         self.assertIn("pad_rule:spoof_uncertain_texture_ambiguous_review", result.tags)
+
+
+class PadGuideModelFeatureTests(SimpleTestCase):
+    def tearDown(self):
+        for key in (
+            "guide_ycrcb_luv_extra_trees",
+            "guide_ycrcb_luv_model_error",
+            "minifasnet_onnx_session",
+            "minifasnet_onnx_error",
+        ):
+            _runtime_cache.pop(key, None)
+
+    def test_guide_color_feature_vector_matches_article_shape(self):
+        roi = np.zeros((32, 32, 3), dtype=np.uint8)
+        fv = _guide_color_feature_vector(roi)
+        self.assertEqual(fv.shape, (1, 1536))
+
+    def test_guide_color_model_score_uses_fake_class_probability(self):
+        class FakeGuideModel:
+            classes_ = np.array([0, 1])
+
+            def predict_proba(self, x):
+                self.last_shape = x.shape
+                return np.array([[0.2, 0.8]], dtype=np.float64)
+
+        fake = FakeGuideModel()
+        _runtime_cache["guide_ycrcb_luv_extra_trees"] = fake
+        _runtime_cache["guide_ycrcb_luv_model_error"] = ""
+
+        score, tags = _score_guide_color_model(
+            np.zeros((32, 32, 3), dtype=np.uint8)
+        )
+
+        self.assertIsNotNone(score)
+        score_value = cast(float, score)
+        self.assertAlmostEqual(score_value, 0.8)
+        self.assertEqual(fake.last_shape, (1, 1536))
+        self.assertIn("guide_ycrcb_luv_model_used", tags)
+        self.assertIn("guide_ycrcb_luv_model_fake", tags)
+
+    def test_minifasnet_onnx_input_uses_bgr_80x80_nchw(self):
+        img = np.zeros((120, 100, 3), dtype=np.uint8)
+        img[:, :, 0] = 255
+
+        tensor = _minifasnet_onnx_input(img, (25, 25, 40, 50))
+
+        self.assertIsNotNone(tensor)
+        tensor_value = cast(np.ndarray, tensor)
+        self.assertEqual(tensor_value.shape, (1, 3, 80, 80))
+        self.assertEqual(tensor_value.dtype, np.float32)
+        self.assertAlmostEqual(float(tensor_value[0, 0].max()), 1.0)
+
+    def test_minifasnet_onnx_score_sums_print_and_replay_classes(self):
+        class FakeOnnxSession:
+            def run(self, output_names, feed):
+                self.output_names = output_names
+                self.input_shape = feed["input"].shape
+                return [np.array([[-2.0, 3.0, 4.0]], dtype=np.float32)]
+
+        fake = FakeOnnxSession()
+        _runtime_cache["minifasnet_onnx_session"] = (fake, "input", "output")
+        _runtime_cache["minifasnet_onnx_error"] = ""
+        img = np.zeros((120, 100, 3), dtype=np.uint8)
+
+        score, tags = _score_minifasnet_onnx(img, (25, 25, 40, 50))
+
+        self.assertIsNotNone(score)
+        score_value = cast(float, score)
+        self.assertGreater(score_value, 0.98)
+        self.assertEqual(fake.output_names, ["output"])
+        self.assertEqual(fake.input_shape, (1, 3, 80, 80))
+        self.assertIn("minifasnet_onnx_used", tags)
+        self.assertIn("minifasnet_onnx_fake", tags)
 
 
 class PadDiagnosticsContractTests(SimpleTestCase):
@@ -971,6 +1207,7 @@ class PadDiagnosticsContractTests(SimpleTestCase):
         self.assertIn("uncertainty", payload)
         self.assertIn("trace", payload)
         self.assertEqual(payload["decision"]["final_decision"], "review")
+        self.assertEqual(payload["decision"]["operator_action"], "retry_photo")
         self.assertIn("spoof_risk", payload["presentation"])
         self.assertIn("is_degraded", payload["quality"])
         self.assertNotIn("почему", json.dumps(payload))
@@ -978,7 +1215,7 @@ class PadDiagnosticsContractTests(SimpleTestCase):
 
     def test_clean_payload_exposes_branch_without_duplicate_reason_lists(self):
         struct = {
-            "schema": "pad_trace_v9",
+            "schema": "pad_trace_v10",
             "branch": "default_clean",
             "product_outcome": "clean",
         }
@@ -1006,11 +1243,49 @@ class PadDiagnosticsContractTests(SimpleTestCase):
             "default_clean",
         )
         self.assertEqual(payload["decision"]["product_outcome"], "clean")
+        self.assertEqual(payload["decision"]["operator_action"], "accept")
+
+    def test_review_action_distinguishes_retry_from_manual_review(self):
+        retry_payload = build_pad_diagnostic_payload(
+            status="review",
+            trust_confirmed=None,
+            risk_score=0.18,
+            model_version="pad_v6",
+            elapsed_ms=1.0,
+            deepface_score=0.0,
+            device_score=0.0,
+            frame_score=0.0,
+            quality_penalty=0.55,
+            device_bg_score=0.0,
+            frame_global_score=0.0,
+            recapture_score=0.0,
+            tags=["pad_rule:presentation_insufficient_input_review", "quality_poor"],
+        )
+        manual_payload = build_pad_diagnostic_payload(
+            status="review",
+            trust_confirmed=None,
+            risk_score=0.46,
+            model_version="pad_v6",
+            elapsed_ms=1.0,
+            deepface_score=0.46,
+            device_score=0.0,
+            frame_score=0.0,
+            quality_penalty=0.04,
+            device_bg_score=0.0,
+            frame_global_score=0.0,
+            recapture_score=0.0,
+            tags=["pad_rule:spoof_model_disagreement_review"],
+        )
+        self.assertEqual(retry_payload["decision"]["operator_action"], "retry_photo")
+        self.assertEqual(
+            manual_payload["decision"]["operator_action"],
+            "manual_review",
+        )
 
     def test_suspicious_strong_corroboration_presentation_confidence_high(self):
         """Corroborated ``suspicious`` must not use the old low default confidence floor."""
         struct = {
-            "schema": "pad_trace_v9",
+            "schema": "pad_trace_v10",
             "branch": "no_fake_dual_suspicious_geometry",
             "product_outcome": "suspicious",
         }

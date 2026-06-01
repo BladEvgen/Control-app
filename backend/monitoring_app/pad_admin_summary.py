@@ -1,105 +1,121 @@
 from __future__ import annotations
 
-from typing import Optional
+from collections.abc import Iterable
+from typing import Optional, cast
 
 from django.utils.html import format_html, format_html_join
 from django.utils.safestring import SafeString
 from monitoring_app.models import LessonAttendance
 from monitoring_app.pad_diagnostics import diagnostics_payload_for_lesson_attendance
 
+
+def _html(format_string: str, *args: object, **kwargs: object) -> SafeString:
+    return cast(SafeString, format_html(format_string, *args, **kwargs))
+
+
+def _html_join(
+    sep: str,
+    format_string: str,
+    args_generator: Iterable[tuple[object, ...]],
+) -> SafeString:
+    return cast(SafeString, format_html_join(sep, format_string, args_generator))
+
+
 _BRANCH_EXPLANATION_RU: dict[str, str] = {
     "fake_quality_poor_review": (
-        "FasNet указал на подмену, но качество кадра низкое — нужна ручная "
-        "проверка вместо жёсткого автоматического вердикта."
+        "Модель видит риск подмены, но кадр слабый. Нужна ручная проверка."
     ),
-    "fake_extreme_score_suspicious": "Очень высокий балл FasNet — сильный признак атаки презентации.",
+    "fake_extreme_score_suspicious": "Модель почти уверена: кадр похож на подмену.",
     "fake_plus_face_gated_screen": (
-        "Подмена по FasNet и заметные признаки экрана/рамки именно у области лица."
+        "Модель видит подмену, рядом с лицом есть признаки экрана или рамки."
     ),
-    "fake_high_plus_suspicious_device_face": "Высокий сигнал подмены и устройство, пересекающееся с лицом.",
+    "fake_high_plus_suspicious_device_face": "Высокий риск подмены, у лица видно устройство.",
     "fake_mid_plus_dual_mid_geometry": (
-        "Сигнал FasNet при двух умеренных геометрических каналах у лица (устройство и рамка)."
+        "Модель и два признака у лица вместе указывают на подмену."
     ),
     "fake_plus_strong_recapture_corroborated": (
-        "Подмена по FasNet подкреплена сильным признаком рекапчера на ROI лица."
+        "Модель видит подмену, текстура лица похожа на пересъёмку."
     ),
     "fake_mid_plus_background_display_suspicious": (
-        "FasNet и сильный экранный контекст по всему кадру — автоматически «подозрительно»."
+        "Модель видит подмену, а в кадре много признаков экрана."
+    ),
+    "fake_plus_color_histogram_suspicious": (
+        "Модель видит подмену, цвета лица похожи на фото с экрана."
     ),
     "fake_background_display_review": (
-        "FasNet и заметный экранный контекст по всему кадру — требуется проверка, не авто-«норма»."
+        "Модель видит риск, в фоне есть признаки экрана. Нужна проверка."
+    ),
+    "fake_color_histogram_review": (
+        "Модель и цвета лица настораживают, но подтверждений мало. Нужна проверка."
     ),
     "fake_single_geometry_channel_review": (
-        "Устаревшая ветка: раньше «на проверку». Сейчас см. fake_single_mid_geometry_suspicious."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "fake_single_mid_geometry_suspicious": (
-        "FasNet и одно среднее геометрическое плечо у лица — автоматически «подозрительно»."
+        "Модель подмены и одно среднее геометрическое плечо у лица — автоматически «подозрительно»."
     ),
     "fake_low_confidence_no_geometry_clean": (
-        "Сигнал FasNet ниже порога для проверки, геометрия экрана у лица слабая — автоматически «норма»."
+        "Сигнал модели слабый, признаков экрана у лица нет. Кадр принят."
     ),
     "fake_autonomous_high_without_geometry_suspicious": (
-        "Высокий FasNet без средней геометрии у лица — автоматически «подозрительно»."
+        "Модель даёт высокий риск подмены даже без явного экрана у лица."
     ),
     "fake_default_review_not_clean": (
-        "FasNet в сомнительной зоне без подкрепления геометрией — автоматического «норма» нет, "
-        "но это не сильное доказательство подмены; проверка как запасной путь."
+        "Модель сомневается, других сильных признаков нет. Нужна проверка."
     ),
     "no_fake_dual_suspicious_geometry": (
-        "Без FasNet, но сильные признаки устройства и рамки у лица при достаточно крупном лице."
+        "Модель спокойна, но у лица видны сильные признаки экрана."
     ),
     "no_fake_dual_geom_small_face_review": (
         "Сильная геометрия при мелком лице — проверка вместо «подозрительно», чтобы снизить ложные срабатывания."
     ),
     "strong_screen_dual_mid_geometry_suspicious": (
-        "Сильный экранный паттерн и два умеренных геометрических канала у лица при достаточном размере лица — "
-        "автоматически «подозрительно»."
+        "У лица устойчиво видны признаки экрана. Кадр подозрительный."
     ),
     "strong_face_gated_screen_review": (
-        "Сильный «экранный» паттерн у лица без однозначного спуфа FasNet — проверка."
+        "У лица есть признаки экрана, но модель не уверена. Нужна проверка."
     ),
     "strong_device_only_face_attack_suspicious": (
         "Сильное устройство у лица без рамки — автоматически «подозрительно»."
     ),
     "recapture_strong_review": (
-        "Устаревшая ветка редкой проверки по экстремальной текстуре; в новых сканах см. ветки moiré / single-channel."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "recapture_strong_with_context": (
-        "Устаревшая ветка; см. recapture_strong_face_geometry_suspicious / "
-        "recapture_strong_loose_context_ambiguous_review / recapture_strong_quality_context_review."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "recapture_strong_face_geometry_suspicious": (
-        "Сильный рекапчер на лице при подкрепляющей геометрии у лица — автоматически «подозрительно»."
+        "Текстура лица похожа на пересъёмку, и это подтверждает геометрия кадра."
     ),
     "recapture_strong_without_face_geometry_clean": (
-        "Устаревшая ветка; сейчас см. recapture_strong_loose_context_ambiguous_review."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "recapture_strong_loose_context_suspicious": (
-        "Устаревшая ветка; сейчас см. recapture_strong_loose_context_ambiguous_review."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "recapture_strong_loose_context_ambiguous_review": (
-        "Сильная периодика при слабом экранном контексте без жёсткой геометрии — проверка, не авто-«подозрительно»."
+        "Текстура лица настораживает, но признаков экрана мало. Нужна проверка."
     ),
     "recapture_strong_quality_context_review": (
-        "Сильный рекапчер при одновременно низком качестве кадра — проверка (качество и текстура вместе неоднозначны)."
+        "Текстура лица настораживает, но кадр слабый. Нужна проверка."
     ),
     "recapture_isolated_fft_aniso_corroborated_review": (
-        "Устаревшая ветка; см. recapture_isolated_dual_texture_ambiguous_review / moiré clean."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "recapture_isolated_dual_texture_uncertain_clean": (
-        "Устаревшая ветка; см. recapture_isolated_dual_texture_ambiguous_review или moiré clean."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "recapture_isolated_dual_texture_suspicious": (
-        "Устаревшая ветка; сейчас см. recapture_isolated_dual_texture_ambiguous_review."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "recapture_isolated_dual_texture_ambiguous_review": (
-        "FFT и анизотропия на лице при сильной периодике, но FasNet и геометрия спокойны — проверка, не авто-«подозрительно»."
+        "Два текстурных признака лица настораживают, но модель и геометрия спокойны."
     ),
     "recapture_isolated_extreme_moire_live_uncertain_clean": (
-        "Очень высокий рекапчер при двух текстурных каналах и «чистом» качестве — вероятный муар, «норма» без полного подтверждения проверки фото."
+        "Очень сильная периодика похожа на муар камеры. Кадр принят без полного доверия."
     ),
     "recapture_isolated_extreme_single_channel_uncertain_clean": (
-        "Экстремальный рекапчер, один текстурный канал — «норма» без полного подтверждения проверки фото."
+        "Один сильный текстурный признак без подтверждений. Кадр принят осторожно."
     ),
     "recapture_isolated_dual_texture_low_rec_uncertain_clean": (
         "Два текстурных канала при рекапчере на нижней границе «сильно» — «норма» без полного подтверждения проверки фото."
@@ -109,11 +125,10 @@ _BRANCH_EXPLANATION_RU: dict[str, str] = {
         "автоматически «норма» без полного подтверждения проверки фото."
     ),
     "recapture_isolated_below_review_bar_clean": (
-        "Устаревшая ветка: ранее «ниже порога изоляции»; в новых сканах см. "
-        "recapture_isolated_single_cue_texture_clean."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "recapture_mid_with_context": (
-        "Устаревшая ветка: раньше «проверка». Сейчас — либо «подозрительно» при сильной геометрии, либо «норма»."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "recapture_mid_with_suspicious_context_suspicious": (
         "Умеренный рекапчер на лице при подозрительной геометрии устройства или рамки — автоматически «подозрительно»."
@@ -122,21 +137,19 @@ _BRANCH_EXPLANATION_RU: dict[str, str] = {
         "Умеренный рекапчер при слабой геометрии у лица — «норма» без полного подтверждения проверки фото."
     ),
     "spoof_model_uncertain_low_recapture_clean": (
-        "FasNet недоступен, рекапчер слабый — автоматически «норма» с пониженной уверенностью."
+        "Модель подмены недоступна, остальные признаки слабые. Кадр принят осторожно."
     ),
     "recapture_with_spoof_model_uncertain": (
-        "Устаревшая ветка: раньше проверка при недоступном FasNet и среднем рекапчере. "
-        "Сейчас см. spoof_model_uncertain_recapture_uncertain_clean и "
-        "spoof_uncertain_texture_ambiguous_review."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "spoof_model_uncertain_recapture_uncertain_clean": (
-        "FasNet недоступен; рекапчер заметен, но без порога сильной текстуры — «норма» с пониженной уверенностью."
+        "Модель подмены недоступна, текстура лица чуть настораживает. Кадр принят осторожно."
     ),
     "spoof_uncertain_strong_recapture_texture_suspicious": (
-        "Устаревшая ветка; сейчас см. spoof_uncertain_texture_ambiguous_review."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "spoof_uncertain_texture_ambiguous_review": (
-        "FasNet недоступен; сильная периодика с текстурным подтверждением без спокойной геометрии — проверка."
+        "Модель подмены недоступна, текстура лица подозрительная. Нужна проверка."
     ),
     "quality_poor_with_face_gated_screen": (
         "Низкое качество и слабые «экранные» признаки у лица — проверка (качество ≠ подделка)."
@@ -145,11 +158,13 @@ _BRANCH_EXPLANATION_RU: dict[str, str] = {
         "Сильно снижено качество или есть слабые признаки презентации — нужна ручная проверка."
     ),
     "image_quality_low_review": (
-        "Устаревшая ветка: низкое качество без достаточных признаков подмены — проверка "
-        "(в новых сканах используется image_quality_degraded_review / image_quality_uncertain_clean)."
+        "Старая ветка проверки больше не используется для новых кадров."
     ),
     "image_quality_uncertain_clean": (
-        "Качество снижено умеренно, явных признаков подмены по лицу нет — «норма» без полного авто-доверия к проверке фото."
+        "Кадр не идеальный, но признаков подмены по лицу нет. Принято осторожно."
+    ),
+    "face_reflection_isolated_uncertain_clean": (
+        "Сильный блик на лице без рамки, устройства и текстуры пересъёмки. Кадр принят осторожно."
     ),
     "no_fake_recapture_strong_corroborated_dual_geometry": (
         "Сильный рекапчер при двух подозрительных геометрических каналах у лица — «подозрительно»."
@@ -157,11 +172,17 @@ _BRANCH_EXPLANATION_RU: dict[str, str] = {
     "no_fake_recapture_strong_dual_geometry_small_face_review": (
         "Сильный рекапчер и геометрия при мелком лице — проверка."
     ),
+    "color_histogram_display_suspicious": (
+        "Цвета лица похожи на фото с экрана и подтверждены другим признаком."
+    ),
+    "color_histogram_context_review": (
+        "Цвета лица похожи на пересъёмку, но подтверждений мало. Нужна проверка."
+    ),
     "spoof_model_uncertain_weak_face_geometry": (
-        "Нет ответа FasNet; слабая геометрия у лица — проверка."
+        "Нет ответа модели подмены; слабая геометрия у лица — проверка."
     ),
     "spoof_model_uncertain_clean_fallback": (
-        "Нет ответа FasNet; остальные сигналы слабые — осторожный допуск «норма»."
+        "Нет ответа модели подмены; остальные сигналы слабые — осторожный допуск «норма»."
     ),
     "weak_face_gated_combined_review": (
         "Слабая комбинация признаков у лица (ниже порога «подозрительно») — проверка."
@@ -171,28 +192,46 @@ _BRANCH_EXPLANATION_RU: dict[str, str] = {
     ),
     "default_clean": "Значимых признаков подмены по лицу не зафиксировано.",
     "presentation_insufficient_input_review": (
-        "Кадр или область лица недостаточны для уверенного вердикта по текстуре/периодике — "
-        "нужна ручная проверка вместо авто-«подозрительно» или авто-«норма»."
+        "Лицо или качество кадра не дают уверенного ответа. Нужен новый кадр или проверка."
+    ),
+    "presentation_insufficient_input_uncertain_clean": (
+        "Данных по лицу мало, но явных признаков подмены нет. Кадр принят осторожно."
+    ),
+    "spoof_model_disagreement_review": (
+        "Модели не согласились между собой. Нужна проверка, без жёсткого отказа."
+    ),
+    "ensemble_consensus_suspicious": (
+        "Несколько независимых признаков сошлись: кадр похож на подмену."
+    ),
+    "ensemble_consensus_review": (
+        "Несколько признаков настораживают, но уверенности мало. Нужна проверка."
+    ),
+    "background_screen_context_review": (
+        "В фоне есть признаки экрана, но у лица подтверждений мало. Нужна проверка."
+    ),
+    "background_screen_context_uncertain_clean": (
+        "Экранные признаки остались в фоне и не привязаны к лицу. Кадр принят осторожно."
+    ),
+    "device_only_context_uncertain_clean": (
+        "В кадре есть устройство, но у лица нет сильных признаков подмены."
     ),
 }
 
 _INTERPRETABILITY_RU: dict[str, str] = {
     "review_primarily_face_texture_periodicity": (
-        "Итог в основном опирается на текстуру/периодику в области лица; FasNet и геометрия "
-        "экрана у лица почти не участвовали — не трактуйте это как жёсткое доказательство."
+        "Решение в основном по текстуре лица. Это повод проверить, но не жёсткое доказательство."
     ),
     "texture_fft_and_anisotropy_both_elevated": (
-        "Два текстурных канала (FFT и направленность градиентов) согласованы — основание сильнее, "
-        "чем у одного шумного признака."
+        "Два текстурных признака совпали, поэтому сигнал надёжнее одиночного шума."
     ),
     "liveness_model_signal_weak_not_strong_proof": (
-        "Сигнал FasNet в зоне сомнений — это не сильное доказательство подмены, решение осторожное."
+        "Модельный сигнал в зоне сомнений — это не сильное доказательство подмены, решение осторожное."
     ),
     "single_texture_channel_downweighted_automatic_clean": (
         "Один текстурный канал без подкрепления — автоматически «норма»."
     ),
     "fasnet_below_review_threshold_auto_cleared": (
-        "Балл FasNet не дотягивает до порога «проверка» и нет средней геометрии — автоматический допуск «норма»."
+        "Модельный балл не дотягивает до порога «проверка» и нет средней геометрии — автоматический допуск «норма»."
     ),
     "recapture_mid_downgraded_no_suspicious_geometry": (
         "Рекапчер умеренный, геометрия экрана у лица не на уровне «подозрительно» — автоматически «норма»."
@@ -201,45 +240,87 @@ _INTERPRETABILITY_RU: dict[str, str] = {
         "Модель подмены недоступна, текстурный сигнал слабый — автоматически «норма»."
     ),
     "presentation_roi_unreliable_for_attack_verdict": (
-        "Область лица или качество кадра не позволяют трактовать текстуру как доказательство подмены — "
-        "нужен визуальный осмотр."
+        "Лицо или качество кадра слабые: текстуру нельзя считать доказательством подмены."
+    ),
+    "color_histogram_recapture_pattern": (
+        "Цвета лица похожи на пересъёмку с экрана или фотографии."
+    ),
+    "isolated_reflection_downweighted_without_geometry": (
+        "Один блик без других признаков экрана не считается доказательством подмены."
     ),
 }
 
 _UNCERTAINTY_RU: dict[str, str] = {
-    "trust_indeterminate": "Автоматическое подтверждение проверки фото не выставлено.",
-    "low_image_quality": "Качество изображения снижено — учитывается отдельно от атаки презентации.",
-    "fake_model_unavailable": "Модель FasNet недоступна или завершилась ошибкой.",
-    "outcome_review_recommended": "По правилам автоматической проверки фото рекомендуется ручная проверка.",
-    "high_presentation_attack_risk": "Высокий риск атаки презентации по согласованным сигналам у лица.",
+    "trust_indeterminate": "Система сомневается. Лучше переснять.",
+    "low_image_quality": "Кадр слабый.",
+    "fake_model_unavailable": "Одна проверка не сработала.",
+    "outcome_review_recommended": "Нужен новый кадр или оператор.",
+    "high_presentation_attack_risk": "Похоже на подмену.",
     "presentation_roi_insufficient": (
-        "Область лица или качество кадра недостаточны для автоматического вердикта по этим сигналам."
+        "Лицо видно недостаточно хорошо."
     ),
 }
 
 _CONTEXT_RU: dict[str, str] = {
     "background_scores_excluded_from_presentation_risk": (
-        "Оценки устройства/рамки по всему кадру не входят в сводный риск подмены по лицу."
+        "Фон не смешивается с оценкой лица."
     ),
     "face_gated_geometry_required_for_suspicious": (
-        "Для «подозрительно» используются сигналы, привязанные к области лица."
+        "Для отказа нужны признаки у лица."
     ),
 }
 
 _SUPPORT_FLAG_RU: dict[str, str] = {
-    "shield_normal_live_active": "Сработала защита от ложных срабатываний на слабой геометрии при живом кадре.",
-    "corroboration_fasnet_fake": "В корреляции учтён сигнал FasNet о подмене.",
-    "corroboration_mid_device": "В корреляции: средний уровень «устройство у лица».",
-    "corroboration_mid_frame": "В корреляции: средний уровень «рамка у лица».",
-    "corroboration_recapture_threshold": "В корреляции: рекапчер достиг порога подтверждения.",
+    "shield_normal_live_active": "Похоже на обычный живой кадр.",
+    "corroboration_fasnet_fake": "Дополнительная модель тоже видит подмену.",
+    "corroboration_minifasnet_onnx_fake": "Один модельный канал насторожился.",
+    "corroboration_mid_device": "У лица заметно устройство.",
+    "corroboration_mid_frame": "У лица заметна рамка экрана.",
+    "corroboration_recapture_threshold": "Текстура лица похожа на пересъёмку.",
+    "corroboration_face_reflection": "Блики на лице похожи на экран.",
+    "corroboration_color_histogram": "Цвета лица похожи на пересъёмку.",
+}
+
+_OPERATOR_ACTION_RU: dict[str, str] = {
+    "accept": "Принять.",
+    "accept_with_caution": "Принять.",
+    "retry_photo": "Новый кадр.",
+    "manual_review": "Оператор.",
+    "reject": "Отклонить.",
+    "wait": "Подождать.",
+}
+
+_OPERATOR_ACTION_REASON_RU: dict[str, str] = {
+    "scan_pending": "Проверка идёт.",
+    "scan_failed_retry_photo": "Кадр не обработался.",
+    "presentation_attack_risk": "Похоже на подмену.",
+    "accepted_automatically": "Кадр принят.",
+    "accepted_with_lower_confidence": "Явной подмены нет.",
+    "quality_or_pose_blocks_auto_decision": (
+        "Мешает качество или ракурс."
+    ),
+    "ambiguous_presentation_signals": (
+        "Система сомневается."
+    ),
+    "quality_degraded_retry_photo": (
+        "Кадр слабый."
+    ),
+    "model_signal_missing_retry_photo": (
+        "Не все проверки сработали."
+    ),
+    "insufficient_consensus_for_auto_decision": (
+        "Недостаточно уверенности."
+    ),
 }
 
 _PRESENTATION_ROW_RU: tuple[tuple[str, str], ...] = (
     ("spoof_risk", "Сводный риск по лицу"),
-    ("fake_signal_score", "Подмена (FasNet)"),
+    ("fake_signal_score", "Подмена (модели)"),
     ("face_device_score", "Устройство у лица"),
     ("face_frame_score", "Рамка у лица"),
     ("recapture_score", "Периодика на лице"),
+    ("face_reflection_score", "Блики на лице"),
+    ("color_hist_score", "Цветовой паттерн лица"),
 )
 
 _QUALITY_FLAG_LABEL_RU: dict[str, str] = {
@@ -382,30 +463,62 @@ def _humanize_operator_hint(tag: str) -> Optional[SafeString]:
     t = tag.strip()
     if t.startswith("device_present:"):
         rest = t.split(":", 1)[1].strip()
-        return format_html("Устройство в кадре (подсказка детектора): {}", rest)
+        return _html("Устройство в кадре (подсказка детектора): {}", rest)
     if t == "quality_poor":
-        return format_html(
+        return _html(
             "Качество кадра помечено как сниженное (учитывается отдельно от подмены)."
         )
     if t.startswith("frame_present"):
         return None
     if t.startswith("quality_"):
-        return format_html("Качество: {}", t.replace("_", " "))
+        return _html("Качество: {}", t.replace("_", " "))
     if t == "recapture_fft_periodicity":
-        return format_html(
-            "Техн. подсказка: заметная периодика в спектре (FFT) на внутреннем ROI лица."
+        return _html(
+            "На лице есть повторяющийся рисунок, похожий на съёмку с экрана."
         )
     if t == "recapture_gradient_aniso":
-        return format_html(
-            "Техн. подсказка: преобладание горизонтальных или вертикальных градиентов на лице."
+        return _html(
+            "Текстура лица похожа на пересъёмку экрана."
         )
     if t == "recapture_combined":
         return None
     if t == "recapture_blur_dampened":
-        return format_html(
-            "Техн. подсказка: текстурные метрики ослаблены из‑за размытия кропа лица."
+        return _html(
+            "Размытие ослабило проверку текстуры лица."
         )
-    return format_html("{}", t)
+    if t.startswith("face_color_histogram"):
+        return _html(
+            "Цвета лица похожи на пересъёмку с экрана или фотографии."
+        )
+    if t == "guide_ycrcb_luv_model_used":
+        return _html("Цветовая модель проверила лицо.")
+    if t == "guide_ycrcb_luv_model_elevated":
+        return _html("Цветовая модель видит повышенный риск подмены.")
+    if t == "guide_ycrcb_luv_model_fake":
+        return _html("Цветовая модель считает кадр подменой.")
+    if t == "guide_ycrcb_luv_model_unavailable":
+        return _html(
+            "Цветовая модель недоступна, использован запасной анализ цветов."
+        )
+    if t == "guide_ycrcb_luv_model_error":
+        return _html("Цветовая модель не смогла оценить лицо.")
+    if t == "minifasnet_onnx_used":
+        return _html("Дополнительная модель проверила лицо.")
+    if t == "minifasnet_onnx_elevated":
+        return _html("Дополнительная модель видит повышенный риск подмены.")
+    if t == "minifasnet_onnx_fake":
+        return _html("Дополнительная модель считает кадр подменой.")
+    if t == "minifasnet_onnx_unavailable":
+        return _html("Дополнительная модель недоступна, этот канал пропущен.")
+    if t == "minifasnet_onnx_error":
+        return _html("Дополнительная модель не смогла оценить лицо.")
+    if t == "minifasnet_onnx_roi_too_small":
+        return _html("Лицо слишком маленькое для дополнительной модели.")
+    if t == "face_color_luma_chroma_mismatch":
+        return _html(
+            "Яркость и цвета лица выглядят нетипично для живого кадра."
+        )
+    return _html("{}", t)
 
 
 def format_lesson_attendance_antifraud_operator_panel(
@@ -425,7 +538,7 @@ def format_lesson_attendance_antifraud_operator_panel(
         HTML safe string for a ``readonly_fields`` admin renderer.
     """
     if obj is None or not getattr(obj, "pk", None):
-        return format_html(
+        return _html(
             "<p class='la-pad-muted'>Сохраните запись, чтобы увидеть результат проверки фото.</p>"
         )
 
@@ -436,6 +549,8 @@ def format_lesson_attendance_antifraud_operator_panel(
     trust = decision.get("trust_confirmed")
     branch = decision.get("decision_branch")
     pc = decision.get("presentation_confidence")
+    operator_action = str(decision.get("operator_action") or "").strip()
+    operator_action_reason = str(decision.get("operator_action_reason") or "").strip()
 
     eff_label, eff_source, eff_note = _effective_verdict_line(obj)
     trust_ru = "да" if trust is True else ("нет" if trust is False else "не определено")
@@ -445,29 +560,41 @@ def format_lesson_attendance_antifraud_operator_panel(
     if branch_str:
         expl = _BRANCH_EXPLANATION_RU.get(branch_str)
         if expl:
-            why_parts.append(format_html("{}", expl))
+            why_parts.append(_html("{}", expl))
     unc = diags.get("uncertainty") or {}
     for code in list(unc.get("interpretability_codes") or []):
         if isinstance(code, str):
             txt = _INTERPRETABILITY_RU.get(code.strip())
             if txt:
-                why_parts.append(format_html("{}", txt))
+                why_parts.append(_html("{}", txt))
 
     if not why_parts:
         if final == "pending":
             why_parts.append(
-                format_html(
+                _html(
                     "Автоматическая проверка ещё не завершена или ожидает перескана."
                 )
             )
         else:
             why_parts.append(
-                format_html(
+                _html(
                     "Сохранённых пояснений по правилу нет — смотрите сигналы по лицу ниже."
                 )
             )
 
     why_parts = why_parts[:1]
+    if operator_action:
+        action_text = _OPERATOR_ACTION_RU.get(operator_action, "Действие: по регламенту.")
+        reason_text = _OPERATOR_ACTION_REASON_RU.get(
+            operator_action_reason,
+            operator_action_reason,
+        )
+        action_line = (
+            f"{action_text} {reason_text}".strip()
+            if reason_text
+            else action_text
+        )
+        why_parts.append(_html("{}", action_line))
 
     pres = diags.get("presentation") or {}
     pres_chips: list[tuple[str, str]] = []
@@ -489,7 +616,7 @@ def format_lesson_attendance_antifraud_operator_panel(
             human_flags = [_humanize_admin_quality_flag(str(f)) for f in flags if f]
             human_flags = [h for h in human_flags if h]
             if human_flags:
-                quality_note_html = format_html(
+                quality_note_html = _html(
                     "Замечания по качеству: {}.",
                     ", ".join(human_flags),
                 )
@@ -500,14 +627,14 @@ def format_lesson_attendance_antifraud_operator_panel(
     bg_lines: list[SafeString] = []
     if isinstance(bg_dev, (int, float)):
         bg_lines.append(
-            format_html(
+            _html(
                 "Фон — устройство (только контекст, не смешивается с риском по лицу): {}",
                 _pct01(float(bg_dev)),
             )
         )
     if isinstance(bg_frm, (int, float)):
         bg_lines.append(
-            format_html(
+            _html(
                 "Фон — рамка по кадру (только контекст): {}",
                 _pct01(float(bg_frm)),
             )
@@ -516,7 +643,7 @@ def format_lesson_attendance_antifraud_operator_panel(
         if isinstance(code, str):
             txt = _CONTEXT_RU.get(code)
             if txt:
-                bg_lines.append(format_html("{}", txt))
+                bg_lines.append(_html("{}", txt))
 
     unc_lines: list[SafeString] = []
     for code in unc.get("uncertainty_codes") or []:
@@ -529,15 +656,15 @@ def format_lesson_attendance_antifraud_operator_panel(
             ):
                 continue
             txt = _UNCERTAINTY_RU.get(c, c)
-            unc_lines.append(format_html("{}", txt))
+            unc_lines.append(_html("{}", txt))
     for code in unc.get("missing_signal_codes") or []:
         if code == "fake_model_score":
             unc_lines.append(
-                format_html("Нет устойчивого балла FasNet для этого скана.")
+                _html("Нет устойчивого балла модели подмены для этого скана.")
             )
         elif isinstance(code, str):
             unc_lines.append(
-                format_html(
+                _html(
                     "Часть диагностики модели подмены для этого скана недоступна — "
                     "учитывайте осторожность при интерпретации."
                 )
@@ -545,20 +672,20 @@ def format_lesson_attendance_antifraud_operator_panel(
     for code in unc.get("conflicting_signal_codes") or []:
         if code == "low_quality_but_high_presentation_alert":
             unc_lines.append(
-                format_html(
+                _html(
                     "Сочетание: низкое качество при высоком риске презентации — проверьте визуально."
                 )
             )
         elif code == "low_quality_but_clean_presentation":
             unc_lines.append(
-                format_html(
+                _html(
                     "Сочетание: низкое качество при «чистом» презентационном вердикте — "
                     "плохой кадр не доказывает подлинность."
                 )
             )
         elif isinstance(code, str):
             unc_lines.append(
-                format_html(
+                _html(
                     "Есть накладка между оценкой качества и риском подмены — смотрите кадр глазами."
                 )
             )
@@ -574,7 +701,7 @@ def format_lesson_attendance_antifraud_operator_panel(
             ):
                 continue
             txt = _SUPPORT_FLAG_RU.get(flag, flag)
-            support_lines.append(format_html("{}", txt))
+            support_lines.append(_html("{}", txt))
 
     hints_raw = diags.get("operator_tags") or []
     hint_lines: list[SafeString] = []
@@ -591,7 +718,7 @@ def format_lesson_attendance_antifraud_operator_panel(
             conf_line += " Ниже высокой."
 
     pill_mod = _lesson_attendance_verdict_pill_class(obj)
-    hero = format_html(
+    hero = _html(
         "<header class='la-pad-header'>"
         "<div class='la-pad-header__intro'>"
         "<span class='la-pad-verdict-pill la-pad-verdict-pill--{0}'>{1}</span>"
@@ -606,13 +733,13 @@ def format_lesson_attendance_antifraud_operator_panel(
         eff_note,
         trust_ru,
         (
-            format_html("<p class='la-pad-header__conf'>{}</p>", conf_line)
+            _html("<p class='la-pad-header__conf'>{}</p>", conf_line)
             if conf_line
-            else format_html("")
+            else _html("")
         ),
     )
 
-    why_html = format_html_join(
+    why_html = _html_join(
         "",
         "<p class='la-pad-prose'>{}</p>",
         ((x,) for x in why_parts),
@@ -620,7 +747,7 @@ def format_lesson_attendance_antifraud_operator_panel(
     chip_cells: list[SafeString] = []
     for lab, val in pres_chips:
         chip_cells.append(
-            format_html(
+            _html(
                 "<div class='la-pad-metric'><span class='la-pad-metric__label'>{}</span>"
                 "<span class='la-pad-metric__value'>{}</span></div>",
                 lab,
@@ -628,38 +755,38 @@ def format_lesson_attendance_antifraud_operator_panel(
             )
         )
     pres_block = (
-        format_html(
+        _html(
             "<div class='la-pad-metric-grid'>{}</div>",
-            format_html_join("", "{}", ((c,) for c in chip_cells)),
+            _html_join("", "{}", ((c,) for c in chip_cells)),
         )
         if chip_cells
-        else format_html("<p class='la-pad-muted'>Нет сохранённых оценок по лицу.</p>")
+        else _html("<p class='la-pad-muted'>Нет сохранённых оценок по лицу.</p>")
     )
     if quality_note_html is not None:
-        pres_block = format_html(
+        pres_block = _html(
             "{}{}",
             pres_block,
-            format_html(
+            _html(
                 "<p class='la-pad-prose la-pad-prose--small'>{}</p>", quality_note_html
             ),
         )
 
     unc_html = (
-        format_html_join(
+        _html_join(
             "",
             "<p class='la-pad-prose la-pad-prose--warn'>{}</p>",
             ((x,) for x in unc_lines),
         )
         if unc_lines
-        else format_html("<p class='la-pad-muted'>Явных предупреждений нет.</p>")
+        else _html("<p class='la-pad-muted'>Явных предупреждений нет.</p>")
     )
 
     more_body: list[SafeString] = []
     if support_lines:
         more_body.append(
-            format_html(
+            _html(
                 "<div class='la-pad-more__block'><span class='la-pad-more__label'>Согласованность сигналов</span>{}</div>",
-                format_html_join(
+                _html_join(
                     "",
                     "<p class='la-pad-prose la-pad-prose--small'>{}</p>",
                     ((x,) for x in support_lines),
@@ -668,9 +795,9 @@ def format_lesson_attendance_antifraud_operator_panel(
         )
     if bg_lines:
         more_body.append(
-            format_html(
+            _html(
                 "<div class='la-pad-more__block'><span class='la-pad-more__label'>Контекст кадра</span>{}</div>",
-                format_html_join(
+                _html_join(
                     "",
                     "<p class='la-pad-prose la-pad-prose--small'>{}</p>",
                     ((x,) for x in bg_lines),
@@ -679,9 +806,9 @@ def format_lesson_attendance_antifraud_operator_panel(
         )
     if hint_lines:
         more_body.append(
-            format_html(
+            _html(
                 "<div class='la-pad-more__block'><span class='la-pad-more__label'>Подсказки по кадру</span>{}</div>",
-                format_html_join(
+                _html_join(
                     "",
                     "<p class='la-pad-prose la-pad-prose--small'>{}</p>",
                     ((x,) for x in hint_lines),
@@ -689,16 +816,16 @@ def format_lesson_attendance_antifraud_operator_panel(
             )
         )
     more_html = (
-        format_html(
+        _html(
             "<details class='la-pad-more'><summary class='la-pad-more__summary'>"
             "Ещё</summary><div class='la-pad-more__inner'>{}</div></details>",
-            format_html_join("", "{}", ((b,) for b in more_body)),
+            _html_join("", "{}", ((b,) for b in more_body)),
         )
         if more_body
-        else format_html("")
+        else _html("")
     )
 
-    out = format_html(
+    out = _html(
         "<div class='la-pad-review la-pad-panel'>{}"
         "<section class='la-pad-card' aria-labelledby='la-pad-why'>"
         "<h4 id='la-pad-why' class='la-pad-card__title'>Причина</h4>{}</section>"
@@ -732,7 +859,7 @@ def format_lesson_attendance_pad_technical_compact(
         HTML table safe string.
     """
     if obj is None:
-        return format_html("")
+        return _html("")
     diags = diagnostics_payload_for_lesson_attendance(obj)
     rows: list[tuple[str, str]] = []
     rows.append(("Версия модели проверки фото", str(diags.get("model_version") or "—")))
@@ -749,12 +876,12 @@ def format_lesson_attendance_pad_technical_compact(
     if isinstance(qp, (int, float)):
         rows.append(("Штраф качества", _pct01(float(qp))))
 
-    inner = format_html_join(
+    inner = _html_join(
         "",
         "<tr><th scope='row' class='la-pad-td-k'>{}</th><td class='la-pad-td-v'>{}</td></tr>",
-        ((format_html("{}", a), format_html("{}", b)) for a, b in rows),
+        ((_html("{}", a), _html("{}", b)) for a, b in rows),
     )
-    return format_html(
+    return _html(
         "<div class='la-pad-tech'><p class='la-pad-tech__lead'>Сводка чисел последнего скана (вторичный блок).</p>"
         "<table class='la-pad-table'><tbody>{}</tbody></table></div>",
         inner,
@@ -777,14 +904,14 @@ def format_lesson_attendance_antifraud_list_hint(
         Short HTML snippet.
     """
     if obj is None:
-        return format_html("—")
+        return _html("—")
     la = LessonAttendance
     if obj.photo_manual_verdict == la.PHOTO_MANUAL_VERDICT_CLEAN:
-        return format_html(
+        return _html(
             "<span class='la-pad-listhint la-pad-listhint--manual'>ручн.: норма</span>"
         )
     if obj.photo_manual_verdict == la.PHOTO_MANUAL_VERDICT_SUSPICIOUS:
-        return format_html(
+        return _html(
             "<span class='la-pad-listhint la-pad-listhint--manual'>ручн.: подозр.</span>"
         )
     st = str(obj.photo_spoof_status or "")
@@ -792,37 +919,37 @@ def format_lesson_attendance_antifraud_list_hint(
     cls = "la-pad-listhint"
     if st == la.PHOTO_SPOOF_STATUS_SUSPICIOUS:
         cls += " la-pad-listhint--bad"
-        return format_html("<span class='{}'>авто: {}</span>", cls, label)
+        return _html("<span class='{}'>авто: {}</span>", cls, label)
     if st == la.PHOTO_SPOOF_STATUS_CLEAN:
         cls += " la-pad-listhint--ok"
-        return format_html("<span class='{}'>авто: {}</span>", cls, label)
+        return _html("<span class='{}'>авто: {}</span>", cls, label)
     if st == la.PHOTO_SPOOF_STATUS_PENDING:
         cls += " la-pad-listhint--pending"
-        return format_html(
+        return _html(
             "<span class='{}' title=\"Авто-разбор ещё не записан.\">авто: ожидание</span>",
             cls,
         )
     if st == la.PHOTO_SPOOF_STATUS_REVIEW:
         if _is_auto_insufficient_input(obj):
             cls += " la-pad-listhint--insufficient"
-            return format_html(
+            return _html(
                 "<span class='{}' title=\"Системе не хватило usable кадра для авто-вердикта.\">"
                 "авто: мало данных ✓</span>",
                 cls,
             )
         cls += " la-pad-listhint--review"
         if getattr(obj, "photo_spoof_checked_at", None) is not None:
-            return format_html(
+            return _html(
                 "<span class='{}' title=\"Авто-разбор выполнен; «на проверку» — итог правил.\">"
                 "авто: на проверку ✓</span>",
                 cls,
             )
-        return format_html(
+        return _html(
             "<span class='{}' title=\"Нет времени скана — обновите или пересканируйте.\">"
             "авто: на проверку (?)</span>",
             cls,
         )
     if st == la.PHOTO_SPOOF_STATUS_ERROR:
         cls += " la-pad-listhint--review"
-        return format_html("<span class='{}'>авто: ошибка проверки фото</span>", cls)
-    return format_html("<span class='{}'>авто: {}</span>", cls, label)
+        return _html("<span class='{}'>авто: ошибка проверки фото</span>", cls)
+    return _html("<span class='{}'>авто: {}</span>", cls, label)

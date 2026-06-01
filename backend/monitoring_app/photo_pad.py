@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -23,7 +24,7 @@ from monitoring_app.pad_evidence import (
 
 logger = logging.getLogger(__name__)
 
-PAD_MODEL_VERSION = "pad_v8"
+PAD_MODEL_VERSION = "pad_v10"
 
 STATUS_PENDING = "pending"
 STATUS_CLEAN = "clean"
@@ -45,6 +46,19 @@ _COCO_DEVICE_CLASSES = {
 }
 
 _runtime_cache: dict[str, Any] = {}
+_runtime_cache_lock = threading.RLock()
+_guide_face_detector_infer_lock = threading.Lock()
+
+
+def _clamp01(value: float) -> float:
+    """Clamp a numeric signal to the PAD score range."""
+    try:
+        v = float(value)
+    except Exception:
+        return 0.0
+    if not np.isfinite(v):
+        return 0.0
+    return float(max(0.0, min(1.0, v)))
 
 
 def _cv2_get_attr(name: str) -> Any:
@@ -81,6 +95,8 @@ _CV2_CONNECTED_COMPONENTS_WITH_STATS = _cv2_get_callable(
 _CV2_COLOR_BGR2RGB = int(_cv2_get_attr("COLOR_BGR2RGB"))
 _CV2_COLOR_BGR2GRAY = int(_cv2_get_attr("COLOR_BGR2GRAY"))
 _CV2_COLOR_BGR2HSV = int(_cv2_get_attr("COLOR_BGR2HSV"))
+_CV2_COLOR_BGR2YCrCb = int(_cv2_get_attr("COLOR_BGR2YCrCb"))
+_CV2_COLOR_BGR2Luv = int(_cv2_get_attr("COLOR_BGR2Luv"))
 _CV2_MORPH_RECT = int(_cv2_get_attr("MORPH_RECT"))
 _CV2_MORPH_ELLIPSE = int(_cv2_get_attr("MORPH_ELLIPSE"))
 _CV2_RETR_EXTERNAL = int(_cv2_get_attr("RETR_EXTERNAL"))
@@ -192,6 +208,31 @@ _PAD_DEFAULT_NUMBERS: dict[str, float | int] = {
     "reflection_strong": 0.52,
     "reflection_suspicious_min_face_area_ratio": 0.034,
     "risk_weight_reflection": 0.10,
+    "color_hist_inner_face_scale": 0.76,
+    "color_hist_mid": 0.24,
+    "color_hist_strong": 0.40,
+    "color_hist_low_entropy_ref": 0.58,
+    "color_hist_peak_mass_ref": 0.32,
+    "color_hist_sparse_occupancy_ref": 0.56,
+    "color_hist_flat_chroma_std": 13.0,
+    "color_hist_luma_std_min": 22.0,
+    "color_hist_min_face_area_ratio": 0.034,
+    "guide_face_detector_conf_min": 0.50,
+    "guide_color_model_mid": 0.50,
+    "guide_color_model_strong": 0.70,
+    "minifasnet_onnx_crop_scale": 2.70,
+    "minifasnet_onnx_mid": 0.50,
+    "minifasnet_onnx_strong": 0.70,
+    "spoof_model_family_mid": 0.45,
+    "spoof_model_family_strong": 0.70,
+    "spoof_model_disagreement_min": 0.45,
+    "ensemble_review_vote_min": 0.35,
+    "ensemble_strong_vote_min": 0.58,
+    "ensemble_suspicious_score_min": 0.52,
+    "ensemble_review_score_min": 0.30,
+    "ensemble_suspicious_family_min": 2,
+    "risk_weight_color_hist": 0.10,
+    "shield_max_color_hist": 0.20,
 }
 
 
@@ -232,6 +273,7 @@ class PadResult:
     frame_global_score: float = 0.0
     recapture_score: float = 0.0
     face_reflection_score: float = 0.0
+    color_hist_score: float = 0.0
 
     def to_update_kwargs(self) -> dict[str, Any]:
         from django.utils import timezone
@@ -262,6 +304,8 @@ class DecisionInputs:
     recapture_score: float = 0.0
     face_area_ratio: float = 0.0
     face_reflection_score: float = 0.0
+    color_hist_score: float = 0.0
+    model_scores: dict[str, float] = field(default_factory=dict)
 
 
 def normalize_device(device: Optional[str] = None) -> str:
@@ -325,26 +369,27 @@ def _downscale_bgr_for_pad(img_bgr: np.ndarray) -> np.ndarray:
 
 
 def _get_fasnet():
-    if "fasnet" in _runtime_cache:
+    with _runtime_cache_lock:
+        if "fasnet" in _runtime_cache:
+            return _runtime_cache["fasnet"]
+        try:
+            import contextlib
+            import io
+
+            from deepface.models.spoofing.FasNet import Fasnet
+            from monitoring_app.ml_log_quiet import ml_third_party_stdout_verbose
+
+            _stdout_ctx = (
+                contextlib.nullcontext()
+                if ml_third_party_stdout_verbose()
+                else contextlib.redirect_stdout(io.StringIO())
+            )
+            with _stdout_ctx:
+                _runtime_cache["fasnet"] = Fasnet()
+        except Exception as exc:
+            logger.warning("FasNet is unavailable: %s", exc)
+            _runtime_cache["fasnet"] = None
         return _runtime_cache["fasnet"]
-    try:
-        import contextlib
-        import io
-
-        from deepface.models.spoofing.FasNet import Fasnet
-        from monitoring_app.ml_log_quiet import ml_third_party_stdout_verbose
-
-        _stdout_ctx = (
-            contextlib.nullcontext()
-            if ml_third_party_stdout_verbose()
-            else contextlib.redirect_stdout(io.StringIO())
-        )
-        with _stdout_ctx:
-            _runtime_cache["fasnet"] = Fasnet()
-    except Exception as exc:
-        logger.warning("FasNet is unavailable: %s", exc)
-        _runtime_cache["fasnet"] = None
-    return _runtime_cache["fasnet"]
 
 
 def _try_glasses_reflection_mask(img_bgr: np.ndarray) -> Optional[np.ndarray]:
@@ -399,91 +444,338 @@ def _device_box_overlap_glasses_mask(
     return float(np.count_nonzero(roi > 127)) / box_area
 
 
+def _guide_model_path(setting_name: str, default_name: str) -> Path:
+    """Resolve a PAD guide model path under ``backend/models`` by default."""
+    configured = getattr(settings, setting_name, None)
+    if configured:
+        return Path(str(configured)).expanduser()
+    root = getattr(settings, "PHOTO_PAD_GUIDE_MODELS_ROOT", None)
+    if root:
+        return Path(str(root)).expanduser() / default_name
+    return Path(getattr(settings, "BASE_DIR", Path("."))) / "models" / default_name
+
+
+def _get_guide_face_detector() -> Optional[Any]:
+    """Load the OpenCV Caffe SSD face detector used in the Medium guide."""
+    cache_key = "guide_face_detector"
+    with _runtime_cache_lock:
+        if cache_key in _runtime_cache:
+            return _runtime_cache[cache_key]
+        proto = _guide_model_path(
+            "PHOTO_PAD_GUIDE_FACE_DETECTOR_PROTO",
+            "deploy.prototxt.txt",
+        )
+        model = _guide_model_path(
+            "PHOTO_PAD_GUIDE_FACE_DETECTOR_MODEL",
+            "res10_300x300_ssd_iter_140000.caffemodel",
+        )
+        if not proto.is_file() or not model.is_file():
+            _runtime_cache[cache_key] = None
+            return None
+        try:
+            net = cv2.dnn.readNetFromCaffe(str(proto), str(model))
+            _runtime_cache[cache_key] = net
+            return net
+        except Exception as exc:
+            logger.warning("PAD guide Caffe face detector unavailable: %s", exc)
+            _runtime_cache[cache_key] = None
+            return None
+
+
+def _get_primary_face_bbox_guide_caffe(
+    img_bgr: np.ndarray,
+) -> Optional[tuple[int, int, int, int]]:
+    """Return the largest face from the guide's OpenCV Caffe SSD detector."""
+    net = _get_guide_face_detector()
+    if net is None:
+        return None
+    try:
+        h, w = img_bgr.shape[:2]
+        blob = cv2.dnn.blobFromImage(
+            _CV2_RESIZE(img_bgr, (300, 300)),
+            1.0,
+            (300, 300),
+            (104.0, 117.0, 123.0),
+        )
+        with _guide_face_detector_infer_lock:
+            net.setInput(blob)
+            detections = net.forward()
+        best_box: Optional[tuple[int, int, int, int]] = None
+        best_area = 0.0
+        min_conf = _pad_float("guide_face_detector_conf_min")
+        for i in range(int(detections.shape[2])):
+            conf = float(detections[0, 0, i, 2])
+            if conf < min_conf:
+                continue
+            x1f, y1f, x2f, y2f = detections[0, 0, i, 3:7]
+            x1 = max(0, min(w - 1, int(round(float(x1f) * w))))
+            y1 = max(0, min(h - 1, int(round(float(y1f) * h))))
+            x2 = max(0, min(w - 1, int(round(float(x2f) * w))))
+            y2 = max(0, min(h - 1, int(round(float(y2f) * h))))
+            bw = max(1, x2 - x1)
+            bh = max(1, y2 - y1)
+            area = float(bw * bh)
+            if area > best_area:
+                best_area = area
+                best_box = (x1, y1, bw, bh)
+        return best_box
+    except Exception as exc:
+        logger.debug("PAD guide Caffe face detector failed: %s", exc)
+        return None
+
+
 def _get_primary_face_bbox(img_bgr: np.ndarray) -> Optional[tuple[int, int, int, int]]:
-    """Return the largest ArcFace-detected face as ``(x, y, w, h)``.
+    """Return the largest detected face as ``(x, y, w, h)``.
 
     Args:
         img_bgr: BGR image.
 
     Returns:
-        Bounding box or None if detection fails.
+        Bounding box or None if detection fails. ArcFace stays primary; the guide's
+        Caffe SSD detector is a fallback and makes the YCrCb/Luv path usable even
+        when InsightFace is temporarily unavailable.
     """
     try:
         ml.load_arcface_model()
         arcface_instance = ml.arcface_model_holder.instance
-        if arcface_instance is None:
-            return None
-        faces = arcface_instance.get(img_bgr)
-        if not faces:
-            return None
-        best = max(
-            faces,
-            key=lambda face: max(0.0, float(face.bbox[2] - face.bbox[0]))
-            * max(0.0, float(face.bbox[3] - face.bbox[1])),
-        )
-        x1, y1, x2, y2 = [int(v) for v in best.bbox]
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(img_bgr.shape[1] - 1, x2)
-        y2 = min(img_bgr.shape[0] - 1, y2)
-        w = max(1, x2 - x1)
-        h = max(1, y2 - y1)
-        return x1, y1, w, h
+        if arcface_instance is not None:
+            faces = arcface_instance.get(img_bgr)
+            if faces:
+                best = max(
+                    faces,
+                    key=lambda face: max(0.0, float(face.bbox[2] - face.bbox[0]))
+                    * max(0.0, float(face.bbox[3] - face.bbox[1])),
+                )
+                x1, y1, x2, y2 = [int(v) for v in best.bbox]
+                x1 = max(0, x1)
+                y1 = max(0, y1)
+                x2 = min(img_bgr.shape[1] - 1, x2)
+                y2 = min(img_bgr.shape[0] - 1, y2)
+                w = max(1, x2 - x1)
+                h = max(1, y2 - y1)
+                return x1, y1, w, h
     except Exception as exc:
         logger.warning("Face detection failed in PAD: %s", exc)
+    return _get_primary_face_bbox_guide_caffe(img_bgr)
+
+
+def _get_minifasnet_onnx_session() -> Optional[tuple[Any, str, str]]:
+    """Load the compatible MiniFASNet ONNX spoof classifier."""
+    cache_key = "minifasnet_onnx_session"
+    with _runtime_cache_lock:
+        if cache_key in _runtime_cache:
+            return _runtime_cache[cache_key]
+
+        model_path = _guide_model_path(
+            "PHOTO_PAD_MINIFASNET_ONNX_MODEL",
+            "minifasnet_v2.onnx",
+        )
+        if not model_path.is_file():
+            _runtime_cache[cache_key] = None
+            _runtime_cache["minifasnet_onnx_error"] = "missing"
+            return None
+
+        try:
+            import onnxruntime as ort
+
+            session = ort.InferenceSession(
+                str(model_path),
+                providers=["CPUExecutionProvider"],
+            )
+            input_name = str(session.get_inputs()[0].name)
+            output_name = str(session.get_outputs()[0].name)
+            _runtime_cache[cache_key] = (session, input_name, output_name)
+            _runtime_cache["minifasnet_onnx_error"] = ""
+            return _runtime_cache[cache_key]
+        except Exception as exc:
+            logger.warning("MiniFASNet ONNX PAD model unavailable: %s", exc)
+            _runtime_cache[cache_key] = None
+            _runtime_cache["minifasnet_onnx_error"] = exc.__class__.__name__
+            return None
+
+
+def _scaled_face_crop_bgr(
+    img_bgr: np.ndarray,
+    face_bbox: tuple[int, int, int, int],
+    scale: float,
+) -> Optional[np.ndarray]:
+    """Crop a face ROI with the MiniFASNet 2.7x bbox expansion."""
+    img_h, img_w = img_bgr.shape[:2]
+    x, y, w, h = face_bbox
+    if w <= 1 or h <= 1 or img_w <= 1 or img_h <= 1:
         return None
+
+    scale = max(1.0, float(scale))
+    cx = float(x) + float(w) * 0.5
+    cy = float(y) + float(h) * 0.5
+    crop_w = float(w) * scale
+    crop_h = float(h) * scale
+    x1 = max(0, int(round(cx - crop_w * 0.5)))
+    y1 = max(0, int(round(cy - crop_h * 0.5)))
+    x2 = min(img_w, int(round(cx + crop_w * 0.5)))
+    y2 = min(img_h, int(round(cy + crop_h * 0.5)))
+    if x2 <= x1 + 2 or y2 <= y1 + 2:
+        return None
+    return img_bgr[y1:y2, x1:x2]
+
+
+def _minifasnet_onnx_input(
+    img_bgr: np.ndarray,
+    face_bbox: tuple[int, int, int, int],
+) -> Optional[np.ndarray]:
+    """Build the ONNX input: BGR crop, 80x80, float32 range 0..1, NCHW."""
+    crop = _scaled_face_crop_bgr(
+        img_bgr,
+        face_bbox,
+        _pad_float("minifasnet_onnx_crop_scale"),
+    )
+    if crop is None or crop.size < 720:
+        return None
+    resized = _CV2_RESIZE(crop, (80, 80), interpolation=_CV2_INTER_AREA)
+    tensor = resized.astype(np.float32) / 255.0
+    tensor = np.transpose(tensor, (2, 0, 1))[None, :, :, :]
+    return np.ascontiguousarray(tensor, dtype=np.float32)
+
+
+def _softmax_probs(values: np.ndarray) -> np.ndarray:
+    """Return numerically stable softmax probabilities for one output row."""
+    row = np.asarray(values, dtype=np.float64).reshape(-1)
+    if row.size == 0:
+        return row
+    shifted = row - float(np.max(row))
+    exp = np.exp(shifted)
+    total = float(exp.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        return np.zeros_like(row, dtype=np.float64)
+    return exp / total
+
+
+def _score_minifasnet_onnx(
+    img_bgr: np.ndarray,
+    face_bbox: tuple[int, int, int, int],
+) -> tuple[Optional[float], list[str]]:
+    """Score spoof probability with the compatible MiniFASNet ONNX model."""
+    loaded = _get_minifasnet_onnx_session()
+    if loaded is None:
+        err = str(_runtime_cache.get("minifasnet_onnx_error") or "")
+        if err and err != "missing":
+            return None, ["minifasnet_onnx_unavailable"]
+        return None, []
+
+    session, input_name, output_name = loaded
+    tensor = _minifasnet_onnx_input(img_bgr, face_bbox)
+    if tensor is None:
+        return None, ["minifasnet_onnx_roi_too_small"]
+
+    try:
+        raw = np.asarray(session.run([output_name], {input_name: tensor})[0])
+        if raw.ndim != 2 or raw.shape[0] < 1 or raw.shape[1] < 3:
+            return None, ["minifasnet_onnx_error"]
+        row = raw[0].astype(np.float64)
+        if (
+            np.all(row >= 0.0)
+            and np.all(row <= 1.0)
+            and abs(float(row.sum()) - 1.0) <= 0.02
+        ):
+            probs = row
+        else:
+            probs = _softmax_probs(row)
+        if probs.size < 3:
+            return None, ["minifasnet_onnx_error"]
+        spoof_score = float(max(0.0, min(1.0, probs[1] + probs[2])))
+        tags = ["minifasnet_onnx_used"]
+        if spoof_score >= _pad_float("minifasnet_onnx_mid"):
+            tags.append("minifasnet_onnx_elevated")
+        if spoof_score >= _pad_float("minifasnet_onnx_strong"):
+            tags.append("minifasnet_onnx_fake")
+        return spoof_score, tags
+    except Exception as exc:
+        logger.debug("MiniFASNet ONNX PAD inference failed: %s", exc)
+        return None, ["minifasnet_onnx_error"]
 
 
 def _signal_deepface(
     img_bgr: np.ndarray, face_bbox: Optional[tuple[int, int, int, int]]
-) -> tuple[float, list[str]]:
-    """Run FasNet anti-spoof on the primary face (spoof score + tags)."""
+) -> tuple[float, list[str], dict[str, float]]:
+    """Run model-based anti-spoof signals on the primary face."""
     if face_bbox is None:
-        return 0.0, ["no_face"]
+        return 0.0, ["no_face"], {}
+
+    score = 0.0
+    tags: list[str] = []
+    model_scores: dict[str, float] = {}
+    model_seen = False
 
     fasnet = _get_fasnet()
     if fasnet is None:
-        return 0.0, ["fasnet_unavailable", "pad_spoof_model_missing"]
+        tags.append("fasnet_unavailable")
+    else:
+        try:
+            model_seen = True
+            is_real, raw_score = fasnet.analyze(img=img_bgr, facial_area=face_bbox)
+            fasnet_score = _clamp01(float(raw_score))
+            if is_real is False:
+                model_scores["fasnet"] = fasnet_score
+                tags.append("fasnet_fake")
+            else:
+                model_scores["fasnet"] = 0.0
+                tags.append("fasnet_real")
+        except Exception as exc:
+            logger.warning("FasNet inference failed: %s", exc)
+            tags.append("deepface_error")
 
-    try:
-        is_real, raw_score = fasnet.analyze(img=img_bgr, facial_area=face_bbox)
-        score = max(0.0, min(1.0, float(raw_score)))
-        if is_real is False:
-            return score, ["fasnet_fake"]
-        return 0.0, []
-    except Exception as exc:
-        logger.warning("FasNet inference failed: %s", exc)
-        return 0.0, ["deepface_error"]
+    onnx_score, onnx_tags = _score_minifasnet_onnx(img_bgr, face_bbox)
+    if onnx_score is not None:
+        model_seen = True
+        model_scores["minifasnet_onnx"] = _clamp01(onnx_score)
+    tags.extend(onnx_tags)
+
+    if not model_seen:
+        tags.append("pad_spoof_model_missing")
+        return score, tags, model_scores
+
+    if model_scores:
+        values = list(model_scores.values())
+        score = _clamp01(sum(values) / float(len(values)))
+        spread = max(values) - min(values)
+        if spread >= _pad_float("spoof_model_disagreement_min"):
+            tags.append("spoof_model_disagreement")
+        if score >= _pad_float("spoof_model_family_mid"):
+            tags.append("spoof_model_family_elevated")
+        if score >= _pad_float("spoof_model_family_strong"):
+            tags.append("spoof_model_family_fake")
+    return score, tags, model_scores
 
 
 def _get_device_detector(
     preferred_device: str,
 ) -> tuple[Optional[Any], Optional[Any], str]:
     cache_key = f"detector:{preferred_device}"
-    if cache_key in _runtime_cache:
-        model, torch_module, resolved = _runtime_cache[cache_key]
-        return model, torch_module, resolved
+    with _runtime_cache_lock:
+        if cache_key in _runtime_cache:
+            model, torch_module, resolved = _runtime_cache[cache_key]
+            return model, torch_module, resolved
 
-    torch_device, resolved = _resolve_torch_device(preferred_device)
-    if torch_device is None:
-        _runtime_cache[cache_key] = (None, None, DEVICE_CPU)
-        return None, None, DEVICE_CPU
+        torch_device, resolved = _resolve_torch_device(preferred_device)
+        if torch_device is None:
+            _runtime_cache[cache_key] = (None, None, DEVICE_CPU)
+            return None, None, DEVICE_CPU
 
-    try:
-        import torch
-        import torchvision.models.detection as detection_models
+        try:
+            import torch
+            import torchvision.models.detection as detection_models
 
-        model = detection_models.fasterrcnn_mobilenet_v3_large_320_fpn(
-            weights=detection_models.FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT
-        )
-        model.to(torch_device)
-        model.eval()
-        _runtime_cache[cache_key] = (model, torch, resolved)
-        return model, torch, resolved
-    except Exception as exc:
-        logger.warning("Device detector unavailable: %s", exc)
-        _runtime_cache[cache_key] = (None, None, resolved)
-        return None, None, resolved
+            model = detection_models.fasterrcnn_mobilenet_v3_large_320_fpn(
+                weights=detection_models.FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT
+            )
+            model.to(torch_device)
+            model.eval()
+            _runtime_cache[cache_key] = (model, torch, resolved)
+            return model, torch, resolved
+        except Exception as exc:
+            logger.warning("Device detector unavailable: %s", exc)
+            _runtime_cache[cache_key] = (None, None, resolved)
+            return None, None, resolved
 
 
 def _signal_device(
@@ -954,6 +1246,272 @@ def _signal_face_reflection(
     return score, tags
 
 
+def _face_inner_roi_bgr(
+    img_bgr: np.ndarray,
+    face_bbox: tuple[int, int, int, int],
+    scale: float,
+) -> Optional[np.ndarray]:
+    """Crop a central face ROI, clipped to image bounds."""
+    x, y, fw, fh = face_bbox
+    if fw < 24 or fh < 24:
+        return None
+    ih, iw = img_bgr.shape[:2]
+    sc = max(0.35, min(1.0, float(scale)))
+    cx = float(x) + 0.5 * float(fw)
+    cy = float(y) + 0.52 * float(fh)
+    rw = max(8, int(round(float(fw) * sc)))
+    rh = max(8, int(round(float(fh) * sc)))
+    x1 = max(0, int(round(cx - 0.5 * rw)))
+    y1 = max(0, int(round(cy - 0.5 * rh)))
+    x2 = min(iw, int(round(cx + 0.5 * rw)))
+    y2 = min(ih, int(round(cy + 0.5 * rh)))
+    if x2 <= x1 + 8 or y2 <= y1 + 8:
+        return None
+    return img_bgr[y1:y2, x1:x2]
+
+
+def _channel_hist_metrics(
+    channel: np.ndarray, bins: int = 64
+) -> tuple[float, float, float]:
+    """Return normalized entropy, top-bin mass, and occupied-bin ratio."""
+    hist, _edges = np.histogram(channel.ravel(), bins=bins, range=(0, 256))
+    total = float(hist.sum())
+    if total <= 0.0:
+        return 1.0, 0.0, 1.0
+    p = hist.astype(np.float64) / total
+    nz = p[p > 0.0]
+    entropy = float(-(nz * np.log(nz)).sum() / np.log(float(bins)))
+    top_mass = float(np.sort(p)[-4:].sum())
+    occupied = float(np.count_nonzero(hist >= max(2.0, total * 0.001))) / float(bins)
+    return entropy, top_mass, occupied
+
+
+def _guide_calc_hist(img: np.ndarray) -> np.ndarray:
+    """Guide-compatible 3-channel histogram normalized to the 0..255 range."""
+    histograms: list[np.ndarray] = []
+    for channel_idx in range(3):
+        hist = cv2.calcHist([img], [channel_idx], None, [256], [0, 256])
+        hmax = float(hist.max())
+        if hmax > 1e-9:
+            hist = hist * (255.0 / hmax)
+        histograms.append(hist)
+    return np.asarray(histograms)
+
+
+def _guide_color_feature_vector(face_roi_bgr: np.ndarray) -> np.ndarray:
+    """Build the exact YCrCb+Luv feature vector used by the guide model."""
+    img_ycrcb = _CV2_CVT_COLOR(face_roi_bgr, _CV2_COLOR_BGR2YCrCb)
+    img_luv = _CV2_CVT_COLOR(face_roi_bgr, _CV2_COLOR_BGR2Luv)
+    ycrcb_hist = _guide_calc_hist(img_ycrcb)
+    luv_hist = _guide_calc_hist(img_luv)
+    feature_vector = np.append(ycrcb_hist.ravel(), luv_hist.ravel())
+    return feature_vector.reshape(1, int(feature_vector.shape[0]))
+
+
+def _install_sklearn_019_pickle_aliases(joblib_module: Any) -> None:
+    """Map old sklearn 0.19 pickle module paths to current sklearn modules."""
+    try:
+        import sys
+        import sklearn.ensemble._forest as forest_mod
+        import sklearn.tree._classes as tree_classes_mod
+
+        sys.modules.setdefault("sklearn.ensemble.forest", forest_mod)
+        sys.modules.setdefault("sklearn.tree.tree", tree_classes_mod)
+        sys.modules.setdefault("sklearn.externals.joblib", joblib_module)
+    except Exception as exc:
+        logger.debug("PAD guide sklearn pickle aliases skipped: %s", exc)
+
+
+def _get_guide_color_model() -> Optional[Any]:
+    """Load the guide's YCrCb+Luv ExtraTrees pickle when sklearn can read it."""
+    cache_key = "guide_ycrcb_luv_extra_trees"
+    with _runtime_cache_lock:
+        if cache_key in _runtime_cache:
+            return _runtime_cache[cache_key]
+        model_path = _guide_model_path(
+            "PHOTO_PAD_GUIDE_COLOR_MODEL",
+            "replay-attack_ycrcb_luv_extraTreesClassifier.pkl",
+        )
+        if not model_path.is_file():
+            _runtime_cache[cache_key] = None
+            _runtime_cache["guide_ycrcb_luv_model_error"] = "missing"
+            return None
+        try:
+            import warnings
+
+            import joblib
+
+            _install_sklearn_019_pickle_aliases(joblib)
+            try:
+                from sklearn.exceptions import InconsistentVersionWarning
+            except Exception:
+                InconsistentVersionWarning = UserWarning
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    category=InconsistentVersionWarning,
+                )
+                model = joblib.load(str(model_path))
+            if not callable(getattr(model, "predict_proba", None)):
+                raise RuntimeError("loaded object has no predict_proba")
+            _runtime_cache[cache_key] = model
+            _runtime_cache["guide_ycrcb_luv_model_error"] = ""
+            return model
+        except Exception as exc:
+            logger.warning(
+                "PAD guide YCrCb/Luv ExtraTrees model unavailable: %s. "
+                "The bundled model was trained with sklearn 0.19.1; keeping "
+                "heuristic YCrCb/Luv fallback active.",
+                exc,
+            )
+            _runtime_cache[cache_key] = None
+            _runtime_cache["guide_ycrcb_luv_model_error"] = exc.__class__.__name__
+            return None
+
+
+def _score_guide_color_model(face_roi_bgr: np.ndarray) -> tuple[Optional[float], list[str]]:
+    """Score face ROI with the guide's pretrained ExtraTrees model if loadable."""
+    model = _get_guide_color_model()
+    if model is None:
+        err = str(_runtime_cache.get("guide_ycrcb_luv_model_error") or "")
+        if err and err != "missing":
+            return None, ["guide_ycrcb_luv_model_unavailable"]
+        return None, []
+    try:
+        fv = _guide_color_feature_vector(face_roi_bgr)
+        probs = np.asarray(model.predict_proba(fv), dtype=np.float64)
+        if probs.ndim != 2 or probs.shape[0] < 1:
+            return None, ["guide_ycrcb_luv_model_error"]
+        classes = list(getattr(model, "classes_", []))
+        if 1 in classes:
+            spoof_idx = int(classes.index(1))
+        else:
+            spoof_idx = 1 if probs.shape[1] > 1 else 0
+        score = float(max(0.0, min(1.0, probs[0, spoof_idx])))
+        tags: list[str] = ["guide_ycrcb_luv_model_used"]
+        if score >= _pad_float("guide_color_model_mid"):
+            tags.append("guide_ycrcb_luv_model_elevated")
+        if score >= _pad_float("guide_color_model_strong"):
+            tags.append("guide_ycrcb_luv_model_fake")
+        return score, tags
+    except Exception as exc:
+        logger.debug("PAD guide YCrCb/Luv model inference failed: %s", exc)
+        return None, ["guide_ycrcb_luv_model_error"]
+
+
+def _signal_color_histogram(
+    img_bgr: np.ndarray,
+    face_bbox: Optional[tuple[int, int, int, int]],
+    face_area_ratio: float,
+) -> tuple[float, list[str]]:
+    """Color-space histogram cue inspired by the YCrCb/Luv PAD method.
+
+    The Medium article uses concatenated YCrCb and Luv histograms with a trained
+    classifier. Here the same color spaces are used as a conservative heuristic:
+    the score rises only when chroma histograms are concentrated/sparse or when
+    luminance varies while chroma stays implausibly flat. The decision engine
+    treats this as corroboration, not as standalone proof.
+    """
+    if face_bbox is None:
+        return 0.0, []
+    min_face = _pad_float("color_hist_min_face_area_ratio")
+    if face_area_ratio > 1e-9 and face_area_ratio < min_face:
+        return 0.0, []
+
+    roi = _face_inner_roi_bgr(
+        img_bgr,
+        face_bbox,
+        _pad_float("color_hist_inner_face_scale"),
+    )
+    if roi is None or roi.size < 720:
+        return 0.0, []
+
+    guide_score, guide_tags = _score_guide_color_model(roi)
+
+    try:
+        roi_small = _CV2_RESIZE(roi, (128, 128), interpolation=_CV2_INTER_AREA)
+        ycrcb = _CV2_CVT_COLOR(roi_small, _CV2_COLOR_BGR2YCrCb)
+        luv = _CV2_CVT_COLOR(roi_small, _CV2_COLOR_BGR2Luv)
+    except Exception as exc:
+        logger.debug("PAD color histogram signal skipped: %s", exc)
+        return 0.0, []
+
+    chroma_channels = [
+        ycrcb[:, :, 1],
+        ycrcb[:, :, 2],
+        luv[:, :, 1],
+        luv[:, :, 2],
+    ]
+    metrics = [_channel_hist_metrics(ch) for ch in chroma_channels]
+    entropy = float(np.mean([m[0] for m in metrics]))
+    peak_mass = float(np.mean([m[1] for m in metrics]))
+    occupancy = float(np.mean([m[2] for m in metrics]))
+
+    low_entropy = max(
+        0.0,
+        (_pad_float("color_hist_low_entropy_ref") - entropy)
+        / max(1e-6, _pad_float("color_hist_low_entropy_ref")),
+    )
+    peak_score = max(
+        0.0,
+        (peak_mass - _pad_float("color_hist_peak_mass_ref"))
+        / max(1e-6, 0.82 - _pad_float("color_hist_peak_mass_ref")),
+    )
+    sparse_score = max(
+        0.0,
+        (_pad_float("color_hist_sparse_occupancy_ref") - occupancy)
+        / max(1e-6, _pad_float("color_hist_sparse_occupancy_ref")),
+    )
+
+    y_std = float(ycrcb[:, :, 0].std())
+    l_std = float(luv[:, :, 0].std())
+    luma_std = 0.5 * (y_std + l_std)
+    chroma_std = float(np.mean([float(ch.std()) for ch in chroma_channels]))
+    flat_chroma = max(
+        0.0,
+        (_pad_float("color_hist_flat_chroma_std") - chroma_std)
+        / max(1e-6, _pad_float("color_hist_flat_chroma_std")),
+    )
+    luma_support = max(
+        0.0,
+        min(
+            1.0,
+            (luma_std - _pad_float("color_hist_luma_std_min")) / 34.0,
+        ),
+    )
+    mismatch = flat_chroma * luma_support
+
+    score = (
+        0.34 * min(1.0, peak_score)
+        + 0.28 * min(1.0, sparse_score)
+        + 0.24 * min(1.0, low_entropy)
+        + 0.14 * min(1.0, mismatch)
+    )
+    strong_feature_count = sum(
+        1
+        for value in (peak_score, sparse_score, low_entropy, mismatch)
+        if value >= 0.38
+    )
+    if strong_feature_count < 2:
+        score *= 0.45
+    score = float(max(0.0, min(1.0, score)))
+    if guide_score is not None:
+        score = max(score, guide_score)
+
+    tags: list[str] = list(guide_tags)
+    if score >= _pad_float("color_hist_mid"):
+        tags.append("face_color_histogram_elevated")
+    if score >= _pad_float("color_hist_strong"):
+        tags.append("face_color_histogram_screen_like")
+    if peak_score >= 0.45:
+        tags.append("face_color_histogram_concentrated_chroma")
+    if sparse_score >= 0.45:
+        tags.append("face_color_histogram_sparse_chroma")
+    if mismatch >= 0.45:
+        tags.append("face_color_luma_chroma_mismatch")
+    return score, tags
+
+
 def _face_bbox_is_edge_cropped(
     face_bbox: Optional[tuple[int, int, int, int]],
     img_w: int,
@@ -1072,13 +1630,121 @@ def _presentation_input_insufficient(
     return False
 
 
+def _mean_clamped(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return _clamp01(sum(_clamp01(v) for v in values) / float(len(values)))
+
+
+def _pad_consensus_jury(inputs: DecisionInputs, tags: list[str]) -> dict[str, Any]:
+    """Build an equal-family PAD jury over independent spoof evidence.
+
+    The rule engine below is deliberately conservative and domain-specific. This
+    jury gives each evidence family one normalized vote so FasNet/MiniFASNet,
+    screen geometry, background context, recapture texture, and face-surface
+    artifacts can agree before we escalate. It is used for traceability and for
+    safe upgrades from ``clean`` to ``review`` or from ``review`` to
+    ``suspicious`` when multiple independent families fire together.
+    """
+    model_values = [_clamp01(v) for v in inputs.model_scores.values()]
+    if model_values:
+        neural_model = _mean_clamped(model_values)
+    elif (
+        "fasnet_fake" in tags
+        or "minifasnet_onnx_fake" in tags
+        or inputs.deepface_score > 0.0
+    ):
+        neural_model = _clamp01(inputs.deepface_score)
+    else:
+        neural_model = 0.0
+
+    face_display = max(
+        _mean_clamped([inputs.device_score, inputs.frame_score]),
+        min(_clamp01(inputs.device_score), _clamp01(inputs.frame_score)) * 1.12,
+    )
+    background_display = _mean_clamped(
+        [inputs.device_bg_score, inputs.frame_global_score]
+    )
+    recapture_texture = _clamp01(inputs.recapture_score)
+    face_surface = max(_clamp01(inputs.face_reflection_score), _clamp01(inputs.color_hist_score))
+
+    votes = [
+        {
+            "family": "neural_model",
+            "score": neural_model,
+            "signals": sorted(inputs.model_scores.keys())
+            or [
+                tag
+                for tag in ("fasnet_fake", "minifasnet_onnx_fake")
+                if tag in tags
+            ],
+        },
+        {
+            "family": "face_display_geometry",
+            "score": _clamp01(face_display),
+            "signals": ["device_face", "frame_face"],
+        },
+        {
+            "family": "background_display_context",
+            "score": _clamp01(background_display),
+            "signals": ["device_bg", "frame_global"],
+        },
+        {
+            "family": "recapture_texture",
+            "score": recapture_texture,
+            "signals": ["fft", "gradient"],
+        },
+        {
+            "family": "face_surface_artifacts",
+            "score": face_surface,
+            "signals": ["reflection", "color_histogram"],
+        },
+    ]
+    review_min = _pad_float("ensemble_review_vote_min")
+    strong_min = _pad_float("ensemble_strong_vote_min")
+    strong = [v["family"] for v in votes if float(v["score"]) >= strong_min]
+    review = [v["family"] for v in votes if float(v["score"]) >= review_min]
+    active_scores = [
+        float(v["score"]) for v in votes if float(v["score"]) >= review_min
+    ]
+    consensus_score = _mean_clamped(active_scores)
+    suspicious_family_min = _pad_int("ensemble_suspicious_family_min")
+
+    decision = STATUS_CLEAN
+    if (
+        len(strong) >= suspicious_family_min
+        and consensus_score >= _pad_float("ensemble_suspicious_score_min")
+    ):
+        decision = STATUS_SUSPICIOUS
+    elif "neural_model" in strong or (
+        len(review) >= suspicious_family_min
+        and consensus_score >= _pad_float("ensemble_review_score_min")
+    ):
+        decision = STATUS_REVIEW
+
+    return {
+        "decision": decision,
+        "score": round(consensus_score, 4),
+        "strong_families": strong,
+        "review_families": review,
+        "votes": [
+            {
+                "family": str(v["family"]),
+                "score": round(float(v["score"]), 4),
+                "signals": v["signals"],
+            }
+            for v in votes
+        ],
+    }
+
+
 def _decide(inputs: DecisionInputs) -> PadResult:
     """Fuse PAD channels with corroboration rules, shielding, and structured trace.
 
-    FasNet and face geometry drive hard ``suspicious``. Inner-face FFT/anisotropy
-    and recapture without corroboration yield ``review`` when the ROI is reliable,
-    or insufficient-input ``review`` when it is not; they do not auto-``suspicious``
-    calm-channel live photos.
+    Model spoof scores and face geometry drive hard ``suspicious``. Inner-face
+    FFT/anisotropy and recapture without corroboration yield ``review`` when the
+    ROI is reliable, or insufficient-input ``review`` when it is not; they do not
+    auto-``suspicious`` calm-channel live photos.
 
     Args:
         inputs: Per-channel scores and tags from the PAD pipeline.
@@ -1106,6 +1772,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             frame_global_score=inputs.frame_global_score,
             recapture_score=inputs.recapture_score,
             face_reflection_score=inputs.face_reflection_score,
+            color_hist_score=inputs.color_hist_score,
         )
     if not inputs.has_face or "no_face" in tags:
         return PadResult(
@@ -1121,16 +1788,20 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             frame_global_score=inputs.frame_global_score,
             recapture_score=inputs.recapture_score,
             face_reflection_score=inputs.face_reflection_score,
+            color_hist_score=inputs.color_hist_score,
         )
 
-    deepfake = "fasnet_fake" in tags
-    spoof_model_uncertain = (
-        "fasnet_unavailable" in tags
-        or "deepface_error" in tags
-        or "pad_spoof_model_missing" in tags
+    model_disagreement = "spoof_model_disagreement" in tags
+    deepfake = "spoof_model_family_fake" in tags or (
+        ("fasnet_fake" in tags or "minifasnet_onnx_fake" in tags)
+        and not model_disagreement
     )
+    spoof_model_uncertain = "pad_spoof_model_missing" in tags or (
+        "deepface_error" in tags and "minifasnet_onnx_used" not in tags
+    ) or model_disagreement
     rec = float(inputs.recapture_score)
     refl = float(inputs.face_reflection_score)
+    clr = float(inputs.color_hist_score)
     rec_mid = _pad_float("recapture_mid")
     rec_strong = _pad_float("recapture_strong")
     rec_review_min = _pad_float("decision_recapture_review_min")
@@ -1138,6 +1809,8 @@ def _decide(inputs: DecisionInputs) -> PadResult:
     refl_review_min = _pad_float("reflection_review_min")
     refl_mid = _pad_float("reflection_mid")
     refl_strong = _pad_float("reflection_strong")
+    color_mid = _pad_float("color_hist_mid")
+    color_strong = _pad_float("color_hist_strong")
 
     has_device = inputs.device_score >= _pad_float("decision_device_present_min")
     has_frame = inputs.frame_score >= _pad_float("decision_frame_present_min")
@@ -1193,6 +1866,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         and inputs.device_score <= _pad_float("shield_max_device_face")
         and inputs.frame_score <= _pad_float("shield_max_frame_face")
         and rec <= _pad_float("shield_max_recapture")
+        and clr <= _pad_float("shield_max_color_hist")
     )
     ch_rec_corr = rec >= rec_corr_min
     reflection_context = refl >= refl_review_min and (
@@ -1202,6 +1876,18 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         or rec >= rec_review_min
         or deepfake
         or spoof_model_uncertain
+    )
+    isolated_reflection_uncertain = (
+        refl >= refl_mid
+        and not has_device
+        and not has_frame
+        and not credible_display_context
+        and rec < rec_review_min
+        and clr < color_mid
+        and not quality_poor
+        and not insufficient_input
+        and inputs.quality_penalty <= 0.40
+        and inputs.face_area_ratio >= 0.05
     )
     reflection_suspicious = (
         refl >= refl_strong
@@ -1223,6 +1909,34 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             )
         )
     )
+    color_context = clr >= color_mid and (
+        credible_display_context
+        or has_device
+        or has_frame
+        or rec >= rec_review_min
+        or refl >= refl_review_min
+        or deepfake
+        or spoof_model_uncertain
+    )
+    color_suspicious = (
+        clr >= color_strong
+        and not quality_poor
+        and not insufficient_input
+        and not reflection_guard_fake
+        and inputs.face_area_ratio >= _pad_float("color_hist_min_face_area_ratio")
+        and (
+            strong_screen
+            or dual_mid_geometry
+            or rec >= rec_corr_min
+            or refl >= refl_mid
+            or (
+                deepfake
+                and inputs.deepface_score
+                >= _pad_float("decision_deepfake_review_min")
+            )
+        )
+    )
+    ensemble = _pad_consensus_jury(inputs, tags)
 
     risk = (
         _pad_float("risk_weight_deepface") * inputs.deepface_score
@@ -1230,6 +1944,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         + _pad_float("risk_weight_frame") * inputs.frame_score
         + _pad_float("risk_weight_recapture") * rec
         + _pad_float("risk_weight_reflection") * refl
+        + _pad_float("risk_weight_color_hist") * clr
     )
     risk = max(0.0, min(1.0, risk))
 
@@ -1286,6 +2001,11 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             trust = False
             branch = "fake_mid_plus_background_display_suspicious"
             _append_trace(branch)
+        elif color_suspicious:
+            status = STATUS_SUSPICIOUS
+            trust = False
+            branch = "fake_plus_color_histogram_suspicious"
+            _append_trace(branch)
         elif reflection_suspicious:
             status = STATUS_SUSPICIOUS
             trust = False
@@ -1303,6 +2023,14 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             status = STATUS_REVIEW
             trust = None
             branch = "fake_background_display_review"
+            _append_trace(branch)
+        elif (
+            inputs.deepface_score >= _pad_float("decision_deepfake_review_min")
+            and color_context
+        ):
+            status = STATUS_REVIEW
+            trust = None
+            branch = "fake_color_histogram_review"
             _append_trace(branch)
         elif (
             "quality_blur" in tags
@@ -1346,6 +2074,11 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         status = STATUS_SUSPICIOUS
         trust = False
         branch = "face_reflection_display_suspicious"
+        _append_trace(branch)
+    elif color_suspicious:
+        status = STATUS_SUSPICIOUS
+        trust = False
+        branch = "color_histogram_display_suspicious"
         _append_trace(branch)
     elif (
         strong_screen
@@ -1522,10 +2255,27 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             trust = None
             branch = "spoof_model_uncertain_recapture_uncertain_clean"
             _append_trace(branch)
+    elif isolated_reflection_uncertain:
+        status = STATUS_CLEAN
+        trust = None
+        branch = "face_reflection_isolated_uncertain_clean"
+        _append_trace(branch)
     elif reflection_context and refl >= refl_mid:
         status = STATUS_REVIEW
         trust = None
         branch = "face_reflection_context_review"
+        _append_trace(branch)
+    elif color_context and (
+        clr >= color_strong
+        or spoof_model_uncertain
+        or rec >= rec_review_min
+        or refl >= refl_review_min
+        or has_device
+        or has_frame
+    ):
+        status = STATUS_REVIEW
+        trust = None
+        branch = "color_histogram_context_review"
         _append_trace(branch)
     elif credible_display_context and not has_device and not has_frame:
         if not deepfake and not spoof_model_uncertain and rec < rec_review_min:
@@ -1618,7 +2368,14 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         weak_dev = _pad_float("decision_weak_device_min")
         weak_frm = _pad_float("decision_weak_frame_min")
         weak_sum = _pad_float("decision_weak_combined_sum_min")
-        if (inputs.device_score >= weak_dev or inputs.frame_score >= weak_frm) and (
+        if model_disagreement and inputs.deepface_score >= _pad_float(
+            "spoof_model_family_mid"
+        ):
+            status = STATUS_REVIEW
+            trust = None
+            branch = "spoof_model_disagreement_review"
+            _append_trace(branch)
+        elif (inputs.device_score >= weak_dev or inputs.frame_score >= weak_frm) and (
             inputs.device_score + inputs.frame_score >= weak_sum
         ):
             status = STATUS_REVIEW
@@ -1667,6 +2424,27 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             branch = "default_clean"
             _append_trace(branch)
 
+    if (
+        ensemble["decision"] == STATUS_SUSPICIOUS
+        and status != STATUS_SUSPICIOUS
+        and not quality_poor
+        and not insufficient_input
+        and not reflection_guard_fake
+    ):
+        status = STATUS_SUSPICIOUS
+        trust = False
+        branch = "ensemble_consensus_suspicious"
+        _append_trace(branch)
+    elif (
+        ensemble["decision"] == STATUS_REVIEW
+        and status == STATUS_CLEAN
+        and trust is True
+    ):
+        status = STATUS_REVIEW
+        trust = None
+        branch = "ensemble_consensus_review"
+        _append_trace(branch)
+
     struct = {
         "schema": PAD_TRACE_SCHEMA,
         "branch": branch,
@@ -1682,15 +2460,20 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         "frame_global_diag": round(inputs.frame_global_score, 4),
         "recapture": round(rec, 4),
         "face_reflection": round(refl, 4),
+        "color_histogram": round(clr, 4),
+        "ensemble_consensus": ensemble,
         "quality_penalty": round(inputs.quality_penalty, 4),
         "face_area_ratio": round(inputs.face_area_ratio, 5),
         "shield_normal_live": shield,
         "corroboration": {
-            "fasnet_fake": deepfake,
+            "fasnet_fake": "fasnet_fake" in tags,
+            "minifasnet_onnx_fake": "minifasnet_onnx_fake" in tags,
+            "spoof_model_fake": deepfake,
             "mid_device": mid_device,
             "mid_frame": mid_frame,
             "recapture_corr": ch_rec_corr,
             "face_reflection": refl >= refl_mid,
+            "color_histogram": clr >= color_mid,
         },
         "status": status,
     }
@@ -1700,9 +2483,10 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         f"df={inputs.deepface_score:.3f},dev_f={inputs.device_score:.3f},"
         f"dev_bg={inputs.device_bg_score:.3f},frm_f={inputs.frame_score:.3f},"
         f"frm_gl={inputs.frame_global_score:.3f},rec={rec:.3f},"
-        f"refl={refl:.3f},qp={inputs.quality_penalty:.3f}"
+        f"refl={refl:.3f},clr={clr:.3f},qp={inputs.quality_penalty:.3f}"
     )
     tags.append(f"pad_struct:{json.dumps(struct, separators=(',', ':'))}")
+    tags.append(f"pad_ensemble:{json.dumps(ensemble, separators=(',', ':'))}")
 
     return PadResult(
         status=status,
@@ -1717,6 +2501,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         frame_global_score=inputs.frame_global_score,
         recapture_score=rec,
         face_reflection_score=refl,
+        color_hist_score=clr,
     )
 
 
@@ -1729,7 +2514,9 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
     requested_device = normalize_device(device)
     face_bbox = _get_primary_face_bbox(img_bgr)
     glasses_mask = _try_glasses_reflection_mask(img_bgr)
-    deepface_score, deepface_tags = _signal_deepface(img_bgr, face_bbox)
+    deepface_score, deepface_tags, model_scores = _signal_deepface(
+        img_bgr, face_bbox
+    )
     device_face, device_bg, device_tags = _signal_device(
         img_bgr, requested_device, face_bbox, glasses_mask=glasses_mask
     )
@@ -1738,13 +2525,18 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
     )
     recapture_score, recapture_tags = _signal_recapture(img_bgr, face_bbox)
     reflection_score, reflection_tags = _signal_face_reflection(img_bgr, face_bbox)
-    quality_penalty, quality_tags = _signal_quality(img_bgr, face_bbox)
 
     face_area_ratio = 0.0
     if face_bbox is not None:
         fw, fh = face_bbox[2], face_bbox[3]
         ih, iw = img_bgr.shape[:2]
         face_area_ratio = float(max(1, fw * fh)) / float(max(1, ih * iw))
+    color_score, color_tags = _signal_color_histogram(
+        img_bgr,
+        face_bbox,
+        face_area_ratio,
+    )
+    quality_penalty, quality_tags = _signal_quality(img_bgr, face_bbox)
 
     guard_tags: list[str] = []
     if glasses_mask is not None:
@@ -1764,6 +2556,7 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
                 + frame_tags
                 + recapture_tags
                 + reflection_tags
+                + color_tags
                 + quality_tags
                 + guard_tags
             ),
@@ -1772,6 +2565,8 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
             recapture_score=recapture_score,
             face_area_ratio=face_area_ratio,
             face_reflection_score=reflection_score,
+            color_hist_score=color_score,
+            model_scores=model_scores,
         )
     )
     result.elapsed_ms = (time.monotonic() - started) * 1000.0

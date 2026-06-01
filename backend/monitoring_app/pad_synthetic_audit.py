@@ -190,7 +190,7 @@ SYNTHETIC_REVIEW_RATE_AUDIT_SCENARIOS: list[tuple[str, DecisionInputs]] = [
             device_score=0.05,
             frame_score=0.05,
             quality_penalty=0.05,
-            tags=["fasnet_unavailable"],
+            tags=["fasnet_unavailable", "pad_spoof_model_missing"],
         ),
     ),
     (

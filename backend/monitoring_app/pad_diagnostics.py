@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-PAD_DIAGNOSTICS_VERSION = "pad_diagnostics_v3"
+PAD_DIAGNOSTICS_VERSION = "pad_diagnostics_v5"
 
-PAD_TRACE_SCHEMA = "pad_trace_v9"
+PAD_TRACE_SCHEMA = "pad_trace_v11"
 
 
 def _quality_poor_threshold() -> float:
@@ -99,6 +99,8 @@ def filter_operator_facing_tags(tags: list[str]) -> list[str]:
             continue
         if tag.startswith("pad_evidence:"):
             continue
+        if tag.startswith("pad_ensemble:"):
+            continue
         out.append(tag)
     return out
 
@@ -151,6 +153,7 @@ def _evidence_line_to_english_metrics(
         "frm_gl": "background_frame_score",
         "rec": "recapture_score",
         "refl": "face_reflection_score",
+        "clr": "color_hist_score",
         "qp": "quality_penalty",
     }
     out: dict[str, float] = {}
@@ -189,13 +192,17 @@ def _evidence_codes_from_inputs(
     frame_score: float,
     recapture_score: float,
     face_reflection_score: float,
+    color_hist_score: float = 0.0,
     tags: list[str],
 ) -> list[str]:
     """Derive machine codes for which presentation channels fired (not natural language)."""
     codes: list[str] = []
-    if deepface_score >= 0.01 and "fasnet_fake" in tags:
+    spoof_model_fake = "fasnet_fake" in tags or "minifasnet_onnx_fake" in tags
+    if deepface_score >= 0.01 and spoof_model_fake:
         codes.append("fake_model_signal")
-    if "fasnet_unavailable" in tags or "deepface_error" in tags:
+    if "pad_spoof_model_missing" in tags or (
+        "deepface_error" in tags and "minifasnet_onnx_used" not in tags
+    ):
         codes.append("fake_model_missing_or_error")
     if device_score >= 0.18:
         codes.append("elevated_face_device_score")
@@ -205,6 +212,8 @@ def _evidence_codes_from_inputs(
         codes.append("elevated_recapture_score")
     if face_reflection_score >= 0.24:
         codes.append("elevated_face_reflection_score")
+    if color_hist_score >= 0.24:
+        codes.append("elevated_color_histogram_score")
     return codes
 
 
@@ -246,6 +255,8 @@ def _presentation_confidence(
             "recapture_strong_face_geometry_suspicious",
             "fake_plus_face_reflection_suspicious",
             "face_reflection_display_suspicious",
+            "fake_plus_color_histogram_suspicious",
+            "color_histogram_display_suspicious",
         )
         if branch_str in strong:
             return 0.72
@@ -292,6 +303,7 @@ def _presentation_confidence(
             "spoof_model_uncertain_low_recapture_clean",
             "spoof_model_uncertain_recapture_uncertain_clean",
             "recapture_strong_without_face_geometry_clean",
+            "face_reflection_isolated_uncertain_clean",
         ):
             return 0.40
         return 0.38
@@ -313,7 +325,9 @@ def _uncertainty_codes(
         codes.append("trust_indeterminate")
     if quality_degraded:
         codes.append("low_image_quality")
-    if "fasnet_unavailable" in tags or "deepface_error" in tags:
+    if "pad_spoof_model_missing" in tags or (
+        "deepface_error" in tags and "minifasnet_onnx_used" not in tags
+    ):
         codes.append("fake_model_unavailable")
     if status == "review":
         codes.append("outcome_review_recommended")
@@ -328,6 +342,62 @@ def _append_insufficient_roi_uncertainty(
     """Tag review outcomes that stem from inadequate ROI for texture/geometry fusion."""
     if branch_str == "presentation_insufficient_input_review":
         uncertainty_codes.append("presentation_roi_insufficient")
+
+
+def _operator_action(
+    *,
+    status: str,
+    product_outcome: str,
+    trust_confirmed: Optional[bool],
+    branch_str: Optional[str],
+    quality_degraded: bool,
+    missing_signals: list[str],
+) -> tuple[str, str]:
+    if status == "pending":
+        return "wait", "scan_pending"
+    if status == "error":
+        return "retry_photo", "scan_failed_retry_photo"
+    if status == "suspicious" or trust_confirmed is False:
+        return "reject", "presentation_attack_risk"
+    if status == "clean" and trust_confirmed is True:
+        return "accept", "accepted_automatically"
+    if status == "clean":
+        return "accept_with_caution", "accepted_with_lower_confidence"
+
+    branch = branch_str or ""
+    retry_branches = {
+        "presentation_insufficient_input_review",
+        "fake_quality_limited_review",
+        "fake_quality_poor_review",
+        "image_quality_degraded_review",
+        "quality_poor_with_face_gated_screen",
+        "background_screen_context_review",
+        "no_fake_dual_geom_small_face_review",
+        "no_fake_recapture_strong_dual_geometry_small_face_review",
+        "recapture_strong_quality_context_review",
+    }
+    manual_branches = {
+        "spoof_model_disagreement_review",
+        "ensemble_consensus_review",
+        "fake_default_review_not_clean",
+        "fake_color_histogram_review",
+        "face_reflection_context_review",
+        "color_histogram_context_review",
+        "recapture_isolated_dual_texture_ambiguous_review",
+        "recapture_strong_loose_context_ambiguous_review",
+        "spoof_uncertain_texture_ambiguous_review",
+        "spoof_model_uncertain_weak_face_geometry",
+        "weak_face_gated_combined_review",
+    }
+    if product_outcome == "insufficient_input_review" or branch in retry_branches:
+        return "retry_photo", "quality_or_pose_blocks_auto_decision"
+    if branch in manual_branches:
+        return "manual_review", "ambiguous_presentation_signals"
+    if quality_degraded:
+        return "retry_photo", "quality_degraded_retry_photo"
+    if missing_signals:
+        return "retry_photo", "model_signal_missing_retry_photo"
+    return "manual_review", "insufficient_consensus_for_auto_decision"
 
 
 def _background_context_codes() -> list[str]:
@@ -354,6 +424,7 @@ def build_pad_diagnostic_payload(
     recapture_score: float,
     tags: list[str],
     face_reflection_score: float = 0.0,
+    color_hist_score: float = 0.0,
 ) -> dict[str, Any]:
     """Build the public, English-keyed diagnostics object for clients.
 
@@ -374,6 +445,7 @@ def build_pad_diagnostic_payload(
         frame_global_score: Global frame diagnostic.
         recapture_score: Face-inner recapture heuristic.
         face_reflection_score: Screen-like reflections on the upper face.
+        color_hist_score: Face ROI YCrCb/Luv histogram recapture cue.
         tags: Full tag list from the pipeline.
 
     Returns:
@@ -391,6 +463,7 @@ def build_pad_diagnostic_payload(
 
     q_thr = _quality_poor_threshold()
     quality_degraded = "quality_poor" in tags or quality_penalty >= q_thr
+    spoof_model_fake = "fasnet_fake" in tags or "minifasnet_onnx_fake" in tags
     face_area_ratio = 0.0
     if isinstance(struct_dict, dict):
         far = struct_dict.get("face_area_ratio")
@@ -412,6 +485,7 @@ def build_pad_diagnostic_payload(
         frame_score=frame_score,
         recapture_score=recapture_score,
         face_reflection_score=face_reflection_score,
+        color_hist_score=color_hist_score,
         tags=tags,
     )
 
@@ -422,7 +496,9 @@ def build_pad_diagnostic_payload(
         conflicting.append("low_quality_but_clean_presentation")
 
     missing_signals: list[str] = []
-    if "fasnet_unavailable" in tags or "deepface_error" in tags:
+    if "pad_spoof_model_missing" in tags or (
+        "deepface_error" in tags and "minifasnet_onnx_used" not in tags
+    ):
         missing_signals.append("fake_model_score")
 
     review_reason_codes: list[str] = []
@@ -444,7 +520,7 @@ def build_pad_diagnostic_payload(
             "recapture_strong_review",
             "recapture_isolated_fft_aniso_corroborated_review",
         ):
-            if low_other and "fasnet_fake" not in tags:
+            if low_other and not spoof_model_fake:
                 interpretability_codes.append(
                     "review_primarily_face_texture_periodicity"
                 )
@@ -452,8 +528,10 @@ def build_pad_diagnostic_payload(
                 interpretability_codes.append(
                     "texture_fft_and_anisotropy_both_elevated"
                 )
-        if branch_str == "fake_default_review_not_clean" and (
-            "fasnet_fake" in tags and deepface_score < 0.48
+        if (
+            branch_str == "fake_default_review_not_clean"
+            and spoof_model_fake
+            and deepface_score < 0.48
         ):
             interpretability_codes.append("liveness_model_signal_weak_not_strong_proof")
         if branch_str == "recapture_isolated_dual_texture_ambiguous_review":
@@ -463,8 +541,15 @@ def build_pad_diagnostic_payload(
             "recapture_strong_loose_context_ambiguous_review",
             "spoof_uncertain_texture_ambiguous_review",
             "face_reflection_context_review",
+            "color_histogram_context_review",
+            "fake_color_histogram_review",
         ):
             interpretability_codes.append("review_primarily_face_texture_periodicity")
+        if branch_str in (
+            "color_histogram_context_review",
+            "fake_color_histogram_review",
+        ):
+            interpretability_codes.append("color_histogram_recapture_pattern")
     if status == "clean":
         if branch_str == "recapture_isolated_single_cue_texture_clean":
             interpretability_codes.append(
@@ -490,6 +575,10 @@ def build_pad_diagnostic_payload(
             interpretability_codes.append(
                 "spoof_model_missing_low_recapture_auto_cleared",
             )
+        if branch_str == "face_reflection_isolated_uncertain_clean":
+            interpretability_codes.append(
+                "isolated_reflection_downweighted_without_geometry",
+            )
 
     uncertainty_codes = _uncertainty_codes(
         status=status,
@@ -504,6 +593,8 @@ def build_pad_diagnostic_payload(
         decision_support_flags.append("shield_normal_live_active")
     if corr_dict.get("fasnet_fake"):
         decision_support_flags.append("corroboration_fasnet_fake")
+    if corr_dict.get("minifasnet_onnx_fake"):
+        decision_support_flags.append("corroboration_minifasnet_onnx_fake")
     if corr_dict.get("mid_device"):
         decision_support_flags.append("corroboration_mid_device")
     if corr_dict.get("mid_frame"):
@@ -512,6 +603,17 @@ def build_pad_diagnostic_payload(
         decision_support_flags.append("corroboration_recapture_threshold")
     if corr_dict.get("face_reflection"):
         decision_support_flags.append("corroboration_face_reflection")
+    if corr_dict.get("color_histogram"):
+        decision_support_flags.append("corroboration_color_histogram")
+
+    operator_action, operator_action_reason = _operator_action(
+        status=status,
+        product_outcome=product_outcome,
+        trust_confirmed=trust_confirmed,
+        branch_str=branch_str,
+        quality_degraded=quality_degraded,
+        missing_signals=missing_signals,
+    )
 
     return {
         "diagnostics_version": PAD_DIAGNOSTICS_VERSION,
@@ -529,6 +631,8 @@ def build_pad_diagnostic_payload(
                 ),
                 3,
             ),
+            "operator_action": operator_action,
+            "operator_action_reason": operator_action_reason,
         },
         "presentation": {
             "spoof_risk": round(float(risk_score), 4),
@@ -537,6 +641,7 @@ def build_pad_diagnostic_payload(
             "face_frame_score": round(float(frame_score), 4),
             "recapture_score": round(float(recapture_score), 4),
             "face_reflection_score": round(float(face_reflection_score), 4),
+            "color_hist_score": round(float(color_hist_score), 4),
         },
         "quality": {
             "overall_penalty": round(float(quality_penalty), 4),
@@ -583,7 +688,7 @@ def diagnostics_payload_for_lesson_attendance(record: Any) -> dict[str, Any]:
         record: Model instance with ``photo_spoof_*`` and ``photo_trust_confirmed``.
 
     Returns:
-        Same structure as :func:`build_pad_diagnostic_payload` (``pad_diagnostics_v2``).
+        Same structure as :func:`build_pad_diagnostic_payload`.
     """
     tags_raw = getattr(record, "photo_spoof_tags", None)
     tags: list[str] = [str(t) for t in tags_raw] if isinstance(tags_raw, list) else []
@@ -609,6 +714,7 @@ def diagnostics_payload_for_lesson_attendance(record: Any) -> dict[str, Any]:
         frame_global_score=float(metrics.get("background_frame_score", 0.0)),
         recapture_score=float(metrics.get("recapture_score", 0.0)),
         face_reflection_score=float(metrics.get("face_reflection_score", 0.0)),
+        color_hist_score=float(metrics.get("color_hist_score", 0.0)),
         tags=tags,
     )
 
@@ -637,5 +743,6 @@ def diagnostics_from_pad_result(pad: object) -> dict[str, Any]:
         frame_global_score=float(getattr(pad, "frame_global_score", 0.0)),
         recapture_score=float(getattr(pad, "recapture_score", 0.0)),
         face_reflection_score=float(getattr(pad, "face_reflection_score", 0.0)),
+        color_hist_score=float(getattr(pad, "color_hist_score", 0.0)),
         tags=tags,
     )
