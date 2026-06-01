@@ -16,7 +16,7 @@ import torch.nn as nn
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
-from monitoring_app import models
+from monitoring_app import face_parsing, models
 from rest_framework.exceptions import ValidationError
 from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
@@ -122,7 +122,7 @@ arcface_model_holder = _ArcFaceModelHolder()
 arcface_lock = Lock()
 runtime_gallery_cache_lock = Lock()
 
-RUNTIME_GALLERY_CACHE_VERSION = 5
+RUNTIME_GALLERY_CACHE_VERSION = 6
 _staff_runtime_gallery_mem_cache: dict[
     str, tuple[str, Optional[np.ndarray], dict[str, int]]
 ] = {}
@@ -220,7 +220,11 @@ def _runtime_gallery_file_signature(path: Optional[str]) -> Optional[str]:
     return f"{stat.st_mtime_ns}:{stat.st_size}"
 
 
-def _staff_runtime_gallery_signature(staff: "models.Staff") -> str:
+def _staff_runtime_gallery_signature(
+    staff: "models.Staff",
+    *,
+    rich_variants: bool = True,
+) -> str:
     """Describe all runtime gallery sources for one staff row.
 
     Args:
@@ -261,19 +265,40 @@ def _staff_runtime_gallery_signature(staff: "models.Staff") -> str:
                 (os.path.basename(p), _runtime_gallery_file_signature(p))
             )
 
+    face_sample_signatures: list[tuple[object, ...]] = []
+    if bool(getattr(settings, "FACE_RUNTIME_INCLUDE_FACE_SAMPLES", True)):
+        for row in _collect_trusted_staff_face_sample_records_for_staff(staff):
+            p = str(row.get("path") or "")
+            face_sample_signatures.append(
+                (
+                    row.get("id"),
+                    row.get("angle"),
+                    row.get("with_glasses"),
+                    row.get("probe_eyeglasses_likely"),
+                    row.get("updated_at"),
+                    _runtime_gallery_file_signature(p),
+                )
+            )
+
     payload = {
         "pin": pin,
         "avatar": _runtime_gallery_file_signature(avatar_path),
         "gallery_real": _runtime_gallery_file_signature(gallery_real_path),
         "runtime_augments": augment_signatures,
+        "face_samples": face_sample_signatures,
         "mask_present": mask_present,
         "mask_updated": mask_updated,
+        "rich_variants": bool(rich_variants),
         "version": RUNTIME_GALLERY_CACHE_VERSION,
     }
     return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
-def _staff_runtime_gallery_cache_path(pin: str) -> str:
+def _staff_runtime_gallery_cache_path(
+    pin: str,
+    *,
+    rich_variants: bool = True,
+) -> str:
     """Return file path for one staff runtime gallery cache.
 
     Args:
@@ -283,9 +308,10 @@ def _staff_runtime_gallery_cache_path(pin: str) -> str:
         Absolute ``.npz`` path.
     """
     safe_pin = "".join(ch if ch.isalnum() else "_" for ch in pin.upper())
+    mode = "rich" if rich_variants else "lean"
     return os.path.join(
         _runtime_gallery_cache_dir(),
-        f"{safe_pin}_runtime_gallery_v{RUNTIME_GALLERY_CACHE_VERSION}.npz",
+        f"{safe_pin}_runtime_gallery_{mode}_v{RUNTIME_GALLERY_CACHE_VERSION}.npz",
     )
 
 
@@ -405,16 +431,17 @@ def _load_cached_runtime_gallery_only(
     Returns:
         Cached gallery payload or None when nothing is prepared yet.
     """
-    signature = _staff_runtime_gallery_signature(staff)
+    signature = _staff_runtime_gallery_signature(staff, rich_variants=False)
     pin = _staff_pin(staff)
-    mem_cached = _staff_runtime_gallery_mem_cache.get(pin)
+    cache_key = f"{pin}:lean"
+    mem_cached = _staff_runtime_gallery_mem_cache.get(cache_key)
     if mem_cached and mem_cached[0] == signature:
         return mem_cached[1], dict(mem_cached[2])
-    cache_path = _staff_runtime_gallery_cache_path(pin)
+    cache_path = _staff_runtime_gallery_cache_path(pin, rich_variants=False)
     disk_cached = _load_staff_runtime_gallery_cache(cache_path, signature)
     if disk_cached is not None:
         gallery, breakdown = disk_cached
-        _staff_runtime_gallery_mem_cache[pin] = (
+        _staff_runtime_gallery_mem_cache[cache_key] = (
             signature,
             gallery,
             dict(breakdown),
@@ -488,13 +515,18 @@ def invalidate_runtime_gallery_caches(staff_pin: Optional[str] = None) -> None:
     with runtime_gallery_cache_lock:
         _multi_staff_runtime_gallery_mem_cache = None
         if staff_pin:
-            _staff_runtime_gallery_mem_cache.pop(staff_pin, None)
-            staff_cache = _staff_runtime_gallery_cache_path(staff_pin)
-            if os.path.isfile(staff_cache):
-                try:
-                    os.remove(staff_cache)
-                except OSError:
-                    pass
+            _staff_runtime_gallery_mem_cache.pop(f"{staff_pin}:rich", None)
+            _staff_runtime_gallery_mem_cache.pop(f"{staff_pin}:lean", None)
+            for rich_variants in (True, False):
+                staff_cache = _staff_runtime_gallery_cache_path(
+                    staff_pin,
+                    rich_variants=rich_variants,
+                )
+                if os.path.isfile(staff_cache):
+                    try:
+                        os.remove(staff_cache)
+                    except OSError:
+                        pass
         else:
             _staff_runtime_gallery_mem_cache.clear()
         global_cache = _multi_staff_runtime_gallery_cache_path()
@@ -753,6 +785,50 @@ def _face_encoding_tta_variants(image_bgr: np.ndarray) -> list[tuple[str, np.nda
     return variants[: max(0, max_extra)]
 
 
+def _accepted_condition_variant_rows(
+    image_bgr: np.ndarray,
+    *,
+    base: np.ndarray,
+    base_face: Any,
+) -> list[np.ndarray]:
+    """Separate trusted one-photo variants for light/sharpness/JPEG robustness."""
+    if not bool(getattr(settings, "FACE_RUNTIME_CONDITION_VARIANTS_ENABLE", True)):
+        return []
+    cap = max(0, int(getattr(settings, "FACE_RUNTIME_CONDITION_VARIANTS_MAX", 3)))
+    if cap == 0:
+        return []
+    min_cos = float(getattr(settings, "FACE_RUNTIME_CONDITION_VARIANT_MIN_COS", 0.84))
+    min_iou = float(getattr(settings, "FACE_ENCODING_TTA_MIN_FACE_IOU", 0.20))
+    out: list[np.ndarray] = []
+    for name, variant in _face_encoding_tta_variants(image_bgr):
+        try:
+            vf = _best_insight_face(_arcface_get_faces(variant))
+            if vf is None:
+                continue
+            if _bbox_iou_insight(base_face.bbox, vf.bbox) < min_iou:
+                logger.debug(
+                    "Runtime condition variant %s skipped: bbox moved too far", name
+                )
+                continue
+            row = _normalized_embedding_row_from_face(vf)
+            if row is None:
+                continue
+            cos = float(row @ base.reshape(-1))
+            if cos >= min_cos:
+                out.append(row)
+                if len(out) >= cap:
+                    break
+            else:
+                logger.debug(
+                    "Runtime condition variant %s skipped: consensus %.4f",
+                    name,
+                    cos,
+                )
+        except Exception as exc:
+            logger.debug("Runtime condition variant %s failed: %s", name, exc)
+    return out
+
+
 def _create_face_encoding_from_bgr(
     image_bgr: np.ndarray,
     *,
@@ -995,15 +1071,25 @@ def _collect_trusted_staff_face_sample_paths_for_staff(
     staff: "models.Staff",
 ) -> list[str]:
     """Paths for active trusted :class:`~monitoring_app.models.StaffFaceSample` images."""
+    return [
+        str(row["path"])
+        for row in _collect_trusted_staff_face_sample_records_for_staff(staff)
+    ]
+
+
+def _collect_trusted_staff_face_sample_records_for_staff(
+    staff: "models.Staff",
+) -> list[dict[str, object]]:
+    """Active trusted Face Lab samples with metadata for runtime matching."""
     cap = max(0, int(getattr(settings, "FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES", 5)))
     if cap == 0:
         return []
-    out: list[str] = []
+    out: list[dict[str, object]] = []
     seen: set[str] = set()
     face_sample_manager = cast(Any, models.StaffFaceSample).objects
     qs = face_sample_manager.filter(
         staff=staff, is_active=True, is_trusted=True
-    ).order_by("-created_at")
+    ).order_by("-created_at", "-id")
     for row in qs.iterator(chunk_size=50):
         if len(out) >= cap:
             break
@@ -1015,8 +1101,199 @@ def _collect_trusted_staff_face_sample_paths_for_staff(
         if ap in seen:
             continue
         seen.add(ap)
-        out.append(p)
+        out.append(
+            {
+                "id": int(row.pk),
+                "path": p,
+                "angle": str(row.angle or ""),
+                "with_glasses": bool(row.with_glasses),
+                "probe_eyeglasses_likely": row.probe_eyeglasses_likely,
+                "updated_at": (
+                    row.updated_at.isoformat() if row.updated_at is not None else ""
+                ),
+            }
+        )
     return out
+
+
+def _runtime_glasses_variant_bgr(
+    image_bgr: np.ndarray,
+    *,
+    glasses_hint: bool = False,
+) -> Optional[np.ndarray]:
+    """Return a conservative glasses-inpainted frame for matching diversity."""
+    if not bool(getattr(settings, "FACE_RUNTIME_GLASSES_VARIANTS_ENABLE", True)):
+        return None
+    if image_bgr is None or image_bgr.size == 0:
+        return None
+
+    try:
+        probe = face_parsing.probe_bgr(image_bgr)
+        parser_says_glasses = probe.get("eyeglasses_likely") is True
+    except Exception:
+        parser_says_glasses = False
+    if not glasses_hint and not parser_says_glasses:
+        return None
+
+    eng = face_parsing.get_engine()
+    if eng is None:
+        return None
+
+    try:
+        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        dilate = int(
+            getattr(settings, "FACE_RUNTIME_GLASSES_VARIANT_INPAINT_DILATE", 7)
+        )
+        mask = eng.eyeglasses_inpaint_mask_u8(rgb, dilate=dilate)
+        if mask is None or int(np.count_nonzero(mask)) < 10:
+            return None
+        radius = max(
+            1,
+            int(getattr(settings, "FACE_RUNTIME_GLASSES_VARIANT_INPAINT_RADIUS", 3)),
+        )
+        return cv2.inpaint(image_bgr, mask, radius, cv2.INPAINT_TELEA)
+    except Exception as exc:
+        logger.debug("runtime glasses variant failed: %s", exc)
+        return None
+
+
+def _runtime_synthetic_glasses_bgr(
+    image_bgr: np.ndarray,
+    *,
+    face: Any,
+    glasses_hint: bool = False,
+) -> Optional[np.ndarray]:
+    """Add a mild glasses overlay for bare-face one-photo galleries."""
+    if not bool(getattr(settings, "FACE_RUNTIME_GLASSES_VARIANTS_ENABLE", True)):
+        return None
+    if glasses_hint or image_bgr is None or image_bgr.size == 0:
+        return None
+    try:
+        probe = face_parsing.probe_bgr(image_bgr)
+        if probe.get("eyeglasses_likely") is True:
+            return None
+    except Exception:
+        pass
+
+    kps = getattr(face, "kps", None)
+    if kps is None:
+        return None
+    try:
+        pts = np.asarray(kps, dtype=np.float64).reshape(-1, 2)
+        if pts.shape[0] < 2:
+            return None
+        left_eye = pts[0]
+        right_eye = pts[1]
+        eye_dist = float(np.linalg.norm(right_eye - left_eye))
+        if eye_dist < 12.0:
+            return None
+        angle = float(
+            np.degrees(
+                np.arctan2(
+                    right_eye[1] - left_eye[1],
+                    right_eye[0] - left_eye[0],
+                )
+            )
+        )
+        rx = max(7, int(round(eye_dist * 0.24)))
+        ry = max(5, int(round(eye_dist * 0.15)))
+        thickness = max(1, int(round(eye_dist * 0.035)))
+        overlay = image_bgr.copy()
+        line_col = (32, 32, 36)
+        lens_col = (46, 48, 52)
+        for center in (left_eye, right_eye):
+            c = (int(round(center[0])), int(round(center[1])))
+            cv2.ellipse(overlay, c, (rx, ry), angle, 0, 360, lens_col, -1)
+            cv2.ellipse(overlay, c, (rx, ry), angle, 0, 360, line_col, thickness)
+        p1 = (
+            int(round(left_eye[0] + rx * 0.72)),
+            int(round(left_eye[1])),
+        )
+        p2 = (
+            int(round(right_eye[0] - rx * 0.72)),
+            int(round(right_eye[1])),
+        )
+        cv2.line(overlay, p1, p2, line_col, thickness)
+        return cv2.addWeighted(overlay, 0.20, image_bgr, 0.80, 0)
+    except Exception as exc:
+        logger.debug("runtime synthetic glasses variant failed: %s", exc)
+        return None
+
+
+def _runtime_embedding_rows_from_image(
+    image_bgr: np.ndarray,
+    *,
+    use_tta: Optional[bool] = None,
+    glasses_hint: bool = False,
+    rich_variants: bool = True,
+) -> tuple[list[np.ndarray], int, int]:
+    """Build base + one-photo condition/glasses variants for runtime matching."""
+    embedding, face, _faces = _create_face_encoding_from_bgr(
+        image_bgr,
+        use_tta=use_tta,
+    )
+    if embedding is None or face is None:
+        return [], 0, 0
+    base = _l2_normalize_embedding_rows(
+        np.asarray(embedding, dtype=np.float64).reshape(1, -1)
+    )[0]
+
+    rows: list[np.ndarray] = [base]
+    condition_count = 0
+    if rich_variants:
+        for row in _accepted_condition_variant_rows(
+            image_bgr,
+            base=base,
+            base_face=face,
+        ):
+            rows.append(row)
+            condition_count += 1
+
+    variant_count = 0
+    if rich_variants:
+        for variant in (
+            _runtime_glasses_variant_bgr(image_bgr, glasses_hint=glasses_hint),
+            _runtime_synthetic_glasses_bgr(
+                image_bgr,
+                face=face,
+                glasses_hint=glasses_hint,
+            ),
+        ):
+            if variant is None:
+                continue
+            variant_embedding = create_face_encoding(variant, use_tta=False)
+            if variant_embedding is not None:
+                v = _l2_normalize_embedding_rows(
+                    np.asarray(variant_embedding, dtype=np.float64).reshape(1, -1)
+                )[0]
+                min_cos = float(
+                    getattr(settings, "FACE_RUNTIME_GLASSES_VARIANT_MIN_COS", 0.58)
+                )
+                if float(base @ v.reshape(-1)) >= min_cos:
+                    rows.append(v)
+                    variant_count += 1
+    return rows, variant_count, condition_count
+
+
+def _runtime_embedding_rows_from_path(
+    image_path: str,
+    *,
+    use_tta: Optional[bool] = None,
+    glasses_hint: bool = False,
+    rich_variants: bool = True,
+) -> tuple[list[np.ndarray], int, int]:
+    if not image_path or not os.path.isfile(image_path):
+        return [], 0, 0
+    image = imread_bgr(image_path)
+    if image is None:
+        return [], 0, 0
+    image = preprocess_image(image)
+    return _runtime_embedding_rows_from_image(
+        image,
+        use_tta=use_tta,
+        glasses_hint=glasses_hint,
+        rich_variants=rich_variants,
+    )
 
 
 def create_embeddings_for_staff(staff):
@@ -1463,12 +1740,10 @@ def _gallery_pad_reject_reasons(
     if risk > max_risk:
         reasons.append("gallery_pad_high_risk")
     if bool(getattr(settings, "FACE_GALLERY_ENROLLMENT_REQUIRE_PAD_MODEL", False)):
-        model_missing_tags = {
-            "fasnet_unavailable",
-            "deepface_error",
-            "pad_spoof_model_missing",
-        }
-        if any(tag in model_missing_tags for tag in tags):
+        model_missing = "pad_spoof_model_missing" in tags or (
+            "deepface_error" in tags and "minifasnet_onnx_used" not in tags
+        )
+        if model_missing:
             reasons.append("gallery_pad_model_unavailable")
     if trusted_source and reasons == ["gallery_pad_not_confirmed"]:
         reasons = []
@@ -1878,6 +2153,8 @@ def _mask_json_to_matrix(mask_encoding: Any) -> Optional[np.ndarray]:
 
 def build_runtime_gallery_embeddings(
     staff: "models.Staff",
+    *,
+    rich_variants: bool = True,
 ) -> tuple[Optional[np.ndarray], dict[str, int]]:
     """
     Runtime gallery only: stored mask, live avatar file, capped validated
@@ -1887,16 +2164,17 @@ def build_runtime_gallery_embeddings(
     Rows are L2-normalized and near-duplicate collapsed.
     """
     pin = _staff_pin(staff)
-    signature = _staff_runtime_gallery_signature(staff)
-    mem_cached = _staff_runtime_gallery_mem_cache.get(pin)
+    signature = _staff_runtime_gallery_signature(staff, rich_variants=rich_variants)
+    cache_key = f"{pin}:{'rich' if rich_variants else 'lean'}"
+    mem_cached = _staff_runtime_gallery_mem_cache.get(cache_key)
     if mem_cached and mem_cached[0] == signature:
         return mem_cached[1], dict(mem_cached[2])
 
-    cache_path = _staff_runtime_gallery_cache_path(pin)
+    cache_path = _staff_runtime_gallery_cache_path(pin, rich_variants=rich_variants)
     disk_cached = _load_staff_runtime_gallery_cache(cache_path, signature)
     if disk_cached is not None:
         gallery, breakdown = disk_cached
-        _staff_runtime_gallery_mem_cache[pin] = (
+        _staff_runtime_gallery_mem_cache[cache_key] = (
             signature,
             gallery,
             dict(breakdown),
@@ -1908,7 +2186,10 @@ def build_runtime_gallery_embeddings(
     breakdown: dict[str, int] = {
         "mask_prototypes": 0,
         "avatar_prototypes": 0,
+        "face_sample_prototypes": 0,
         "augment_prototypes": 0,
+        "condition_variant_prototypes": 0,
+        "glasses_variant_prototypes": 0,
         "centroid_prototypes": 0,
         "gallery_real_npy_prototypes": 0,
     }
@@ -1930,16 +2211,66 @@ def build_runtime_gallery_embeddings(
         if avatar and getattr(avatar, "path", None):
             ap = str(avatar.path)
             if ap and os.path.isfile(ap):
-                enc = create_face_encoding(ap)
-                if enc is not None:
-                    avatar_mat = np.asarray(enc, dtype=np.float64).reshape(1, -1)
+                (
+                    avatar_rows,
+                    variant_count,
+                    condition_count,
+                ) = _runtime_embedding_rows_from_path(
+                    ap,
+                    use_tta=None if rich_variants else False,
+                    glasses_hint=False,
+                    rich_variants=rich_variants,
+                )
+                if avatar_rows:
+                    avatar_mat = np.vstack(avatar_rows)
                     rows.append(avatar_mat)
                     source_blocks.append(("avatar", avatar_mat))
-                    breakdown["avatar_prototypes"] = 1
+                    breakdown["avatar_prototypes"] = int(avatar_mat.shape[0])
+                    breakdown["glasses_variant_prototypes"] += variant_count
+                    breakdown["condition_variant_prototypes"] += condition_count
     except Exception as e:
         logger.warning(
             "Avatar embedding for runtime gallery skipped for %s: %s", staff.pin, e
         )
+
+    if bool(getattr(settings, "FACE_RUNTIME_INCLUDE_FACE_SAMPLES", True)):
+        sample_rows: list[np.ndarray] = []
+        sample_variant_count = 0
+        for sample in _collect_trusted_staff_face_sample_records_for_staff(staff):
+            p = str(sample.get("path") or "")
+            if not p or not os.path.isfile(p):
+                continue
+            glasses_hint = bool(sample.get("with_glasses")) or (
+                sample.get("probe_eyeglasses_likely") is True
+            )
+            try:
+                (
+                    one_rows,
+                    variant_count,
+                    condition_count,
+                ) = _runtime_embedding_rows_from_path(
+                    p,
+                    use_tta=None if rich_variants else False,
+                    glasses_hint=glasses_hint,
+                    rich_variants=rich_variants,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Face sample embedding skipped for %s sample=%s: %s",
+                    staff.pin,
+                    sample.get("id"),
+                    exc,
+                )
+                continue
+            sample_rows.extend(one_rows)
+            sample_variant_count += variant_count
+            breakdown["condition_variant_prototypes"] += condition_count
+        if sample_rows:
+            sample_mat = np.vstack(sample_rows)
+            rows.append(sample_mat)
+            source_blocks.append(("face_sample", sample_mat))
+            breakdown["face_sample_prototypes"] = int(sample_mat.shape[0])
+            breakdown["glasses_variant_prototypes"] += sample_variant_count
 
     augment_paths = _collect_runtime_augment_paths_for_staff(staff)
     if augment_paths:
@@ -1991,7 +2322,7 @@ def build_runtime_gallery_embeddings(
         gal = _dedupe_normalized_rows(gal, min_cos=0.999)
 
     _save_staff_runtime_gallery_cache(cache_path, signature, gal, breakdown)
-    _staff_runtime_gallery_mem_cache[pin] = (signature, gal, dict(breakdown))
+    _staff_runtime_gallery_mem_cache[cache_key] = (signature, gal, dict(breakdown))
     return gal, breakdown
 
 
@@ -2037,7 +2368,7 @@ def build_multi_staff_runtime_gallery_matrix(
     owner_pins: list[str] = []
     blocks: list[np.ndarray] = []
     for staff in staff_list:
-        gal, _bd = build_runtime_gallery_embeddings(staff)
+        gal, _bd = build_runtime_gallery_embeddings(staff, rich_variants=False)
         if gal is None or gal.size == 0:
             continue
         for i in range(int(gal.shape[0])):

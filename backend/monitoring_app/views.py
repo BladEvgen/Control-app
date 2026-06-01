@@ -55,6 +55,7 @@ from monitoring_app.cache_conf import (
     invalidate_lesson_attendance_derived_caches,
     invalidate_staff_detail_for_pin,
 )
+from monitoring_app.face_bootstrap_quality import bootstrap_quality_decision
 from monitoring_app.lesson_locations_conf import (
     ACCEPTANCE_R_CLUSTER,
     ACCEPTANCE_R_SAME_POINT,
@@ -1242,6 +1243,34 @@ def home(request):
 def _get_frontend_app_version_path() -> Path:
     frontend_dir = Path(getattr(settings, "FRONTEND_DIR"))
     return frontend_dir / "dist" / "app-version.json"
+
+
+_FRONTEND_PUBLIC_ASSET_DIRS = frozenset(("mediapipe", "mediapipe-models"))
+
+
+def _get_frontend_public_asset_path(asset_dir: str, asset_path: str) -> Path:
+    if asset_dir not in _FRONTEND_PUBLIC_ASSET_DIRS:
+        raise Http404("Unknown frontend asset directory")
+
+    frontend_dir = Path(getattr(settings, "FRONTEND_DIR"))
+    root = (frontend_dir / "dist" / asset_dir).resolve()
+    candidate = (root / asset_path).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise Http404("Invalid frontend asset path") from exc
+    if not candidate.is_file():
+        raise Http404("Frontend asset not found")
+    return candidate
+
+
+@permission_classes([AllowAny])
+def frontend_public_asset(request, asset_dir: str, asset_path: str):
+    file_path = _get_frontend_public_asset_path(asset_dir, asset_path)
+    content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+    response = FileResponse(open(file_path, "rb"), content_type=content_type)
+    response["Cache-Control"] = "public, max-age=86400"
+    return response
 
 
 @permission_classes([AllowAny])
@@ -3737,6 +3766,7 @@ def class_location_list_create(request):
             {"deleted": deleted, "ids": id_list},
             status=status.HTTP_200_OK,
         )
+    return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
 
 @swagger_auto_schema(
@@ -3845,6 +3875,7 @@ def class_location_detail(request, pk):
     if request.method == "DELETE":
         loc.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+    return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
 
 _classlocation_bulk_update_schema = openapi.Schema(
@@ -9691,10 +9722,11 @@ def face_lab_staff_options(request):
 @permission_classes([IsAuthenticated])
 def face_lab_pad_test(request):
     """Run presentation-attack detection on an uploaded frame (authenticated testers)."""
-    from monitoring_app.pad_diagnostics import (
-        diagnostics_from_pad_result,
-        filter_operator_facing_tags,
+    from monitoring_app.face_verification_pad import (
+        pad_operator_action_from_diagnostics,
+        pad_public_decision_from_result,
     )
+    from monitoring_app.pad_diagnostics import diagnostics_from_pad_result
     from monitoring_app.photo_pad import check_photo_bgr
 
     uploaded = request.FILES.get("image")
@@ -9720,21 +9752,10 @@ def face_lab_pad_test(request):
     diagnostics = diagnostics_from_pad_result(result)
     return Response(
         {
+            "decision": pad_public_decision_from_result(result),
+            "operator_action": pad_operator_action_from_diagnostics(diagnostics),
             "status": result.status,
             "trust_confirmed": result.trust_confirmed,
-            "risk_score": result.risk_score,
-            "tags": filter_operator_facing_tags(list(result.tags)),
-            "diagnostics": diagnostics,
-            "model_version": result.model_version,
-            "elapsed_ms": result.elapsed_ms,
-            "deepface_score": result.deepface_score,
-            "device_score": result.device_score,
-            "frame_score": result.frame_score,
-            "quality_penalty": result.quality_penalty,
-            "device_bg_score": result.device_bg_score,
-            "frame_global_score": result.frame_global_score,
-            "recapture_score": result.recapture_score,
-            "face_reflection_score": getattr(result, "face_reflection_score", 0.0),
         },
         status=status.HTTP_200_OK,
     )
@@ -9809,13 +9830,12 @@ def face_lab_save_face_sample(request):
         API response that keeps setup focused on usable photos, not on PAD jargon.
     """
     import numpy as np
-    from monitoring_app.face_verification_pad import pad_blocks_bootstrap_sample
     from monitoring_app.photo_pad import check_photo_bgr
 
     pin = (request.data.get("pin") or "").strip()
     angle = (request.data.get("angle") or "").strip()
     raw_source = (request.data.get("source") or "").strip()
-    with_glasses = _face_lab_bool_param(request.data.get("with_glasses"))
+    manual_with_glasses = _face_lab_bool_param(request.data.get("with_glasses"))
     uploaded = request.FILES.get("image")
     allowed_angles = frozenset(
         {
@@ -9856,25 +9876,33 @@ def face_lab_save_face_sample(request):
         )
 
     pad_result = check_photo_bgr(img_bgr)
-    if pad_blocks_bootstrap_sample(pad_result):
-        return Response(
-            {
-                "error": (
-                    "Похоже, это не живой кадр человека. "
-                    "Сделайте новый снимок прямо с камеры."
-                ),
-                "pad_status": pad_result.status,
-                "trust_confirmed": pad_result.trust_confirmed,
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
     embedding, probe_meta = ml.create_face_encoding_with_probe_meta(img_bgr)
-    if embedding is None or not probe_meta.get("quality_pass"):
+    bootstrap_quality_ok, bootstrap_quality = bootstrap_quality_decision(
+        probe_meta,
+        angle,
+    )
+    raw_quality_codes = probe_meta.get("quality_reason_codes")
+    quality_reason_codes = (
+        [str(code) for code in raw_quality_codes]
+        if isinstance(raw_quality_codes, (list, tuple))
+        else []
+    )
+    if embedding is None or not bootstrap_quality_ok:
         return Response(
             {
-                "error": "Качество кадра или детекция недостаточны — образец не сохранён.",
+                "error": bootstrap_quality.get(
+                    "message",
+                    "Кадр не сохранён. Снимите ещё раз.",
+                ),
                 "quality_pass": bool(probe_meta.get("quality_pass")),
+                "quality_reason_codes": quality_reason_codes,
+                "bootstrap_quality": bootstrap_quality,
+                "det_score": probe_meta.get("det_score"),
+                "face_area_ratio": probe_meta.get("face_area_ratio"),
+                "blur_laplacian_var": probe_meta.get("blur_laplacian_var"),
+                "brightness_mean": probe_meta.get("brightness_mean"),
+                "pose_yaw": probe_meta.get("pose_yaw"),
+                "pose_pitch": probe_meta.get("pose_pitch"),
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
@@ -9902,6 +9930,9 @@ def face_lab_save_face_sample(request):
 
     parsing_meta = face_parsing.probe_bgr(img_bgr)
     glasses_probe = parsing_meta.get("eyeglasses_likely")
+    auto_with_glasses = (
+        bool(glasses_probe) if isinstance(glasses_probe, bool) else manual_with_glasses
+    )
 
     max_active = int(getattr(settings, "FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES", 5))
     fname = f"{staff.pin}_face_{angle}_{uuid.uuid4().hex[:10]}.jpg"
@@ -9913,7 +9944,7 @@ def face_lab_save_face_sample(request):
             staff=staff,
             source=source,
             angle=angle,
-            with_glasses=with_glasses,
+            with_glasses=auto_with_glasses,
             pad_status=pad_result.status,
             quality_passed=True,
             is_trusted=True,
@@ -9957,7 +9988,10 @@ def face_lab_save_face_sample(request):
             "angle": angle,
             "saved_as": fname,
             "stored_format": "jpeg",
-            "message": "Образец сохранён (JPEG). Запустите build_staff_gallery_real для обновления gallery_real.npy.",
+            "glasses_detected": (
+                glasses_probe if isinstance(glasses_probe, bool) else None
+            ),
+            "message": "Образец сохранён.",
         },
         status=status.HTTP_200_OK,
     )
@@ -10197,19 +10231,34 @@ def staff_avatar_upload(request, staff_pin: str):
                     ),
                     "liveness": openapi.Schema(
                         type=openapi.TYPE_OBJECT,
-                        description="Результат проверки живости (PAD).",
+                        description="Короткий результат проверки живости (PAD).",
                         properties={
                             "checked": openapi.Schema(
                                 type=openapi.TYPE_BOOLEAN,
                                 description="Проверка живости была выполнена.",
                             ),
+                            "decision": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                enum=["YES", "NO", "REVIEW"],
+                                description=(
+                                    "YES — пропускаем, NO — не пропускаем, "
+                                    "REVIEW — нужен новый кадр или оператор."
+                                ),
+                            ),
+                            "operator_action": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                description="Краткое действие для оператора.",
+                            ),
                             "trust_confirmed": openapi.Schema(
                                 type=openapi.TYPE_BOOLEAN,
-                                description="true — живость подтверждена, false — нет, null — неопределённо.",
+                                description=(
+                                    "Старое совместимое поле: true — да, false — нет, "
+                                    "null — сомнение."
+                                ),
                             ),
                             "status": openapi.Schema(
                                 type=openapi.TYPE_STRING,
-                                description="Статус PAD.",
+                                description="Старый совместимый статус PAD.",
                                 enum=[
                                     "clean",
                                     "review",
@@ -10217,19 +10266,6 @@ def staff_avatar_upload(request, staff_pin: str):
                                     "error",
                                     "pending",
                                 ],
-                            ),
-                            "risk_score": openapi.Schema(
-                                type=openapi.TYPE_NUMBER,
-                                description="Оценка риска подмены.",
-                            ),
-                            "model_version": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                description="Версия модели PAD.",
-                            ),
-                            "tags": openapi.Schema(
-                                type=openapi.TYPE_ARRAY,
-                                items=openapi.Schema(type=openapi.TYPE_STRING),
-                                description="Технические теги PAD.",
                             ),
                         },
                     ),
@@ -10302,7 +10338,6 @@ def verify_face(request):
         )
         from monitoring_app.face_verification_pad import (
             liveness_payload_from_pad_result,
-            pad_blocks_before_identity,
         )
         from monitoring_app.face_verification_policy import (
             build_contract_core,
@@ -10326,7 +10361,10 @@ def verify_face(request):
             _bk = (
                 "mask_prototypes",
                 "avatar_prototypes",
+                "face_sample_prototypes",
                 "augment_prototypes",
+                "condition_variant_prototypes",
+                "glasses_variant_prototypes",
                 "centroid_prototypes",
                 "gallery_real_npy_prototypes",
             )
@@ -10381,6 +10419,7 @@ def verify_face(request):
             breakdown_ints: dict[str, int],
             identity_ambiguous: bool = False,
             identity_reason_codes: list[str] | None = None,
+            identity_gap: float | None = None,
             identity_diagnostics: dict[str, object] | None = None,
         ) -> dict[str, object]:
             gallery_info = build_gallery_info(
@@ -10399,6 +10438,7 @@ def verify_face(request):
                     threshold_cold_start=thr_cold,
                     identity_ambiguous=identity_ambiguous,
                     identity_reason_codes=identity_reason_codes,
+                    identity_gap=identity_gap,
                 )
             )
             contract = build_contract_core(
@@ -10436,22 +10476,6 @@ def verify_face(request):
             if parsing_meta.get("face_parsing_error"):
                 body["face_parsing_error"] = parsing_meta["face_parsing_error"]
             return body
-
-        if pad_blocks_before_identity(pad_result):
-            n_templates, breakdown_ints = _gallery_snapshot()
-            quality_payload_pad = _quality_payload_from_probe_meta(
-                {},
-                passed=True,
-                reason_codes=[],
-            )
-            body = _finalize_verify_body(
-                quality_payload=quality_payload_pad,
-                score=0.0,
-                max_cosine=0.0,
-                gallery_templates=n_templates,
-                breakdown_ints=breakdown_ints,
-            )
-            return Response(body, status=status.HTTP_200_OK)
 
         new_embedding, probe_meta = ml.create_face_encoding_with_probe_meta(new_image)
         if new_embedding is None:
@@ -10498,7 +10522,10 @@ def verify_face(request):
         _bk = (
             "mask_prototypes",
             "avatar_prototypes",
+            "face_sample_prototypes",
             "augment_prototypes",
+            "condition_variant_prototypes",
+            "glasses_variant_prototypes",
             "centroid_prototypes",
             "gallery_real_npy_prototypes",
         )
@@ -10523,6 +10550,7 @@ def verify_face(request):
             gallery_templates=int(meta["gallery_templates"]),
             breakdown_ints=breakdown_ints,
             identity_ambiguous=bool(meta.get("impostor_ambiguous")),
+            identity_gap=_optional_float(meta.get("impostor_gap")),
             identity_diagnostics=identity_diagnostics,
         )
         return Response(body, status=status.HTTP_200_OK)

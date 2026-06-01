@@ -27,7 +27,10 @@ R_NEAREST_IMPOSTOR_TOO_CLOSE = "NEAREST_IMPOSTOR_TOO_CLOSE"
 class GalleryBreakdownPayload(TypedDict, total=False):
     mask_prototypes: int
     avatar_prototypes: int
+    face_sample_prototypes: int
     augment_prototypes: int
+    condition_variant_prototypes: int
+    glasses_variant_prototypes: int
     centroid_prototypes: int
     gallery_real_npy_prototypes: int
 
@@ -46,6 +49,8 @@ class QualityPayload(TypedDict, total=False):
 
 class LivenessPayload(TypedDict, total=False):
     checked: bool
+    decision: str
+    operator_action: str
     trust_confirmed: bool | None
     status: str | None
     risk_score: float | None
@@ -60,6 +65,7 @@ class LivenessPayload(TypedDict, total=False):
     frame_global_score: float
     recapture_score: float
     face_reflection_score: float
+    color_hist_score: float
     diagnostics: dict[str, object]
     note: str
 

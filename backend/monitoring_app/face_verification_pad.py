@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from django.conf import settings
+
 from monitoring_app.face_verification_contract import LivenessPayload
 from monitoring_app.pad_diagnostics import (
     diagnostics_from_pad_result,
@@ -18,6 +20,74 @@ from monitoring_app.photo_pad import (
 VERIFY_PAD_NOTE_RU = (
     "Проверка живости (PAD) выполнена на сервере в составе verify_face."
 )
+
+
+def pad_operator_action_from_diagnostics(diagnostics: dict[str, object]) -> str:
+    decision = diagnostics.get("decision")
+    if not isinstance(decision, dict):
+        return ""
+    return str(decision.get("operator_action") or "").strip()
+
+
+def _pad_num(name: str, default: float) -> float:
+    numbers = getattr(settings, "PHOTO_PAD_NUMBERS", {})
+    if not isinstance(numbers, dict):
+        return default
+    value = numbers.get(name, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def pad_has_hard_spoof_evidence(pad: PadResult) -> bool:
+    """Return true only for PAD signals strong enough to block immediately."""
+    if pad.status != STATUS_SUSPICIOUS or pad.trust_confirmed is not False:
+        return False
+
+    risk = float(getattr(pad, "risk_score", 0.0) or 0.0)
+    model = float(getattr(pad, "deepface_score", 0.0) or 0.0)
+    device = float(getattr(pad, "device_score", 0.0) or 0.0)
+    frame = float(getattr(pad, "frame_score", 0.0) or 0.0)
+    recapture = float(getattr(pad, "recapture_score", 0.0) or 0.0)
+    color = float(getattr(pad, "color_hist_score", 0.0) or 0.0)
+
+    if risk >= _pad_num("public_no_risk_min", 0.72):
+        return True
+    if model >= _pad_num("decision_deepfake_mid_suspicious_min", 0.82):
+        return True
+    if device >= _pad_num("decision_suspicious_device_min", 0.34):
+        return True
+    if frame >= _pad_num("decision_suspicious_frame_min", 0.42):
+        return True
+
+    recapture_strong = recapture >= _pad_num("recapture_strong", 0.38)
+    color_strong = color >= _pad_num("color_hist_strong", 0.40)
+    has_geometry = (
+        device >= _pad_num("decision_weak_device_min", 0.16)
+        or frame >= _pad_num("decision_weak_frame_min", 0.20)
+    )
+    has_model = model >= _pad_num("decision_deepfake_review_min", 0.65)
+    return (recapture_strong or color_strong) and (has_geometry or has_model)
+
+
+def pad_public_decision_from_result(pad: PadResult) -> str:
+    """Public three-state PAD result for UI and sockets: YES / NO / REVIEW."""
+    diagnostics = diagnostics_from_pad_result(pad)
+    action = pad_operator_action_from_diagnostics(diagnostics)
+    if pad_has_hard_spoof_evidence(pad):
+        return "NO"
+    if (
+        action == "reject"
+        or pad.status == STATUS_SUSPICIOUS
+        or pad.trust_confirmed is False
+    ):
+        return "REVIEW"
+    if action in {"manual_review", "retry_photo"}:
+        return "REVIEW"
+    if action in {"accept", "accept_with_caution"} or pad.status == STATUS_CLEAN:
+        return "YES"
+    return "REVIEW"
 
 
 def pad_allows_identity_probe(pad: PadResult) -> bool:
@@ -43,25 +113,25 @@ def pad_blocks_before_identity(pad: PadResult) -> bool:
         allowed to continue so compare can still produce a useful score.
     """
     status = str(getattr(pad, "status", "") or "").strip().lower()
-    if getattr(pad, "trust_confirmed", None) is False:
+    if status == STATUS_ERROR:
         return True
-    if status in {STATUS_ERROR, STATUS_SUSPICIOUS}:
+    if pad_public_decision_from_result(pad) == "NO":
         return True
-    return status not in {STATUS_CLEAN, STATUS_REVIEW, "insufficient_input_review"}
+    return status not in {
+        STATUS_CLEAN,
+        STATUS_REVIEW,
+        STATUS_SUSPICIOUS,
+        "insufficient_input_review",
+    }
 
 
 def pad_blocks_bootstrap_sample(pad: PadResult) -> bool:
     """Return whether bootstrap must reject the captured frame.
 
-    Args:
-        pad: Result from ``check_photo_bgr``.
-
-    Returns:
-        ``True`` only for clear spoof-like frames. Soft review or insufficient-input
-        outcomes stay non-blocking in the three-photo setup flow.
+    Bootstrap enrollment is a controlled setup flow: PAD is stored as audit metadata,
+    while face quality and embedding extraction decide whether the sample is usable.
     """
-    status = str(getattr(pad, "status", "") or "").strip().lower()
-    return getattr(pad, "trust_confirmed", None) is False or status == STATUS_SUSPICIOUS
+    return False
 
 
 def liveness_payload_from_pad_result(pad: PadResult) -> LivenessPayload:
@@ -71,8 +141,11 @@ def liveness_payload_from_pad_result(pad: PadResult) -> LivenessPayload:
         Payload including operator-facing ``tags`` (no internal ``pad_*`` blobs) and
         structured Russian ``diagnostics`` for Face Lab.
     """
+    diagnostics = diagnostics_from_pad_result(pad)
     return {
         "checked": True,
+        "decision": pad_public_decision_from_result(pad),
+        "operator_action": pad_operator_action_from_diagnostics(diagnostics),
         "trust_confirmed": pad.trust_confirmed,
         "status": pad.status,
         "risk_score": pad.risk_score,
@@ -87,7 +160,7 @@ def liveness_payload_from_pad_result(pad: PadResult) -> LivenessPayload:
         "frame_global_score": pad.frame_global_score,
         "recapture_score": pad.recapture_score,
         "face_reflection_score": getattr(pad, "face_reflection_score", 0.0),
-        "diagnostics": diagnostics_from_pad_result(pad),
+        "color_hist_score": getattr(pad, "color_hist_score", 0.0),
         "note": VERIFY_PAD_NOTE_RU,
     }
 
@@ -104,4 +177,7 @@ __all__ = [
     "pad_blocks_before_identity",
     "pad_blocks_bootstrap_sample",
     "pad_blocks_identity_verification",
+    "pad_has_hard_spoof_evidence",
+    "pad_operator_action_from_diagnostics",
+    "pad_public_decision_from_result",
 ]

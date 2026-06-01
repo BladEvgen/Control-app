@@ -6,6 +6,11 @@ from monitoring_app.swagger_views import swagger_session_login, swagger_session_
 
 urlpatterns = [
     path("", RedirectView.as_view(url="/app/")),
+    re_path(
+        r"^(?P<asset_dir>mediapipe|mediapipe-models)/(?P<asset_path>.+)$",
+        views.frontend_public_asset,
+        name="frontend-public-asset",
+    ),
     path("login_view/", views.login_view, name="login_view"),
     path("logout/", views.logout_view, name="logout"),
     path("upload/", views.UploadFileView.as_view(), name="uploadFile"),

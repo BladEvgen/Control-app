@@ -971,6 +971,57 @@ class FetcherViewTest(APITestCase):
 
 
 class AppVersionEndpointTest(SimpleTestCase):
+    def test_frontend_public_asset_serves_mediapipe_model(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            frontend_dir = Path(temp_dir) / "frontend"
+            model_path = frontend_dir / "dist" / "mediapipe-models" / "face.task"
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            model_path.write_bytes(b"face-model")
+
+            with override_settings(FRONTEND_DIR=frontend_dir):
+                response = self.client.get("/mediapipe-models/face.task")
+                head_response = self.client.head("/mediapipe-models/face.task")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(b"".join(response.streaming_content), b"face-model")
+        self.assertEqual(response["Content-Type"], "application/octet-stream")
+        self.assertIn("public", response["Cache-Control"])
+        self.assertEqual(head_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(head_response["Content-Type"], "application/octet-stream")
+
+    def test_frontend_public_asset_serves_mediapipe_wasm(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            frontend_dir = Path(temp_dir) / "frontend"
+            wasm_path = (
+                frontend_dir
+                / "dist"
+                / "mediapipe"
+                / "tasks-vision"
+                / "wasm"
+                / "vision_wasm_internal.wasm"
+            )
+            wasm_path.parent.mkdir(parents=True, exist_ok=True)
+            wasm_path.write_bytes(b"wasm")
+
+            with override_settings(FRONTEND_DIR=frontend_dir):
+                response = self.client.get(
+                    "/mediapipe/tasks-vision/wasm/vision_wasm_internal.wasm"
+                )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(b"".join(response.streaming_content), b"wasm")
+        self.assertEqual(response["Content-Type"], "application/wasm")
+
+    def test_frontend_public_asset_rejects_missing_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            frontend_dir = Path(temp_dir) / "frontend"
+            (frontend_dir / "dist" / "mediapipe-models").mkdir(parents=True)
+
+            with override_settings(FRONTEND_DIR=frontend_dir):
+                response = self.client.get("/mediapipe-models/missing.task")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_app_version_returns_live_frontend_metadata_with_no_store_headers(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             frontend_dir = Path(temp_dir) / "frontend"

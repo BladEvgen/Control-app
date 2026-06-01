@@ -30,6 +30,8 @@ def _distinct_enrollment_sources(breakdown: Mapping[str, int]) -> int:
         n += 1
     if breakdown.get("avatar_prototypes", 0) > 0:
         n += 1
+    if breakdown.get("face_sample_prototypes", 0) > 0:
+        n += 1
     if breakdown.get("gallery_real_npy_prototypes", 0) > 0:
         n += 1
     return n
@@ -60,6 +62,68 @@ def _cold_start_guard_quality(quality: QualityPayload) -> bool:
     return True
 
 
+def _cold_start_response_strength(
+    *,
+    quality: QualityPayload,
+    score: float,
+    threshold_weak_gallery: float,
+    threshold_cold_start: float,
+) -> Literal["strong", "weak"]:
+    score_margin = float(
+        getattr(settings, "FACE_VERIFY_COLD_START_STRONG_SCORE_MARGIN", 0.025)
+    )
+    min_score = max(
+        float(threshold_weak_gallery),
+        float(threshold_cold_start) + score_margin,
+    )
+    min_det = float(getattr(settings, "FACE_VERIFY_COLD_START_STRONG_DET_MIN", 0.72))
+    min_area = float(
+        getattr(settings, "FACE_VERIFY_COLD_START_STRONG_FACE_AREA_MIN", 0.04)
+    )
+    det = quality.get("det_score")
+    area = quality.get("face_area_ratio")
+    if (
+        isinstance(det, (int, float))
+        and isinstance(area, (int, float))
+        and float(score) >= min_score
+        and float(det) >= min_det
+        and float(area) >= min_area
+    ):
+        return "strong"
+    return "weak"
+
+
+def _single_photo_relaxed_allowed(
+    *,
+    quality: QualityPayload,
+    score: float,
+    identity_gap: float | None,
+    gallery_templates: int,
+    breakdown: Mapping[str, int],
+) -> bool:
+    if not bool(getattr(settings, "FACE_VERIFY_SINGLE_PHOTO_RELAXED_ENABLE", True)):
+        return False
+    min_templates = int(getattr(settings, "FACE_VERIFY_SINGLE_PHOTO_MIN_TEMPLATES", 3))
+    if int(gallery_templates) < min_templates:
+        return False
+    if int(breakdown.get("avatar_prototypes") or 0) < 1:
+        return False
+    runtime_variants = int(breakdown.get("condition_variant_prototypes") or 0) + int(
+        breakdown.get("glasses_variant_prototypes") or 0
+    )
+    if runtime_variants < 2:
+        return False
+    if not _cold_start_guard_quality(quality):
+        return False
+    if identity_gap is None:
+        return False
+    gap_min = float(getattr(settings, "FACE_VERIFY_SINGLE_PHOTO_GAP_MIN", 0.16))
+    if float(identity_gap) < gap_min:
+        return False
+    thr = float(getattr(settings, "FACE_VERIFY_SINGLE_PHOTO_THRESHOLD", 0.76))
+    return float(score) >= thr
+
+
 def is_strong_gallery(breakdown: Mapping[str, int], gallery_templates: int) -> bool:
     """
     Strong gallery: at least FACE_VERIFY_MIN_ENROLLMENT_SOURCES distinct prototype
@@ -83,6 +147,7 @@ def decide_face_verify_binary(
     threshold_cold_start: float,
     identity_ambiguous: bool = False,
     identity_reason_codes: list[str] | None = None,
+    identity_gap: float | None = None,
 ) -> tuple[
     bool,
     FinalDecision,
@@ -109,8 +174,31 @@ def decide_face_verify_binary(
         applied threshold, and gallery strength.
     """
     st_live = str(liveness.get("status") or "").strip().lower()
+    public_liveness_decision = str(liveness.get("decision") or "").strip().upper()
     tc = liveness.get("trust_confirmed")
-    liveness_uncertain_retry = st_live in {"review", "insufficient_input_review"}
+    diag = liveness.get("diagnostics")
+    decision = diag.get("decision") if isinstance(diag, Mapping) else None
+    operator_action = (
+        str(liveness.get("operator_action") or decision.get("operator_action") or "")
+        .strip()
+        .lower()
+        if isinstance(decision, Mapping)
+        else str(liveness.get("operator_action") or "").strip().lower()
+    )
+    liveness_accepted_with_caution = (
+        public_liveness_decision == "YES"
+        or (
+            st_live == "clean"
+            and tc is None
+            and operator_action == "accept_with_caution"
+        )
+    )
+    liveness_rejected = public_liveness_decision == "NO"
+    liveness_uncertain = (
+        public_liveness_decision == "REVIEW"
+        or st_live in {"review", "insufficient_input_review"}
+        or operator_action in {"manual_review", "retry_photo"}
+    )
     current_gallery_strength: Literal["strong", "weak"] = (
         "strong" if is_strong_gallery(breakdown, gallery_templates) else "weak"
     )
@@ -119,7 +207,7 @@ def decide_face_verify_binary(
         return (
             False,
             "NO",
-            "Проверка не выполнена.",
+            "Проверка не сработала.",
             "PAD_ERROR",
             [R_PAD_PIPELINE_FAILED],
             0.0,
@@ -130,52 +218,44 @@ def decide_face_verify_binary(
         return (
             False,
             "NO",
-            "Кадр не обработан (PAD).",
+            "Кадр не обработан.",
             "PAD_ERROR",
             [R_PAD_PIPELINE_FAILED],
             0.0,
             "weak",
         )
 
-    if tc is False:
+    if liveness_rejected:
         return (
             False,
             "NO",
-            "Живость не подтверждена.",
+            "Фото не принято.",
             "LIVENESS_FAIL",
             [R_LIVENESS_FAILED],
             0.0,
             current_gallery_strength,
         )
 
-    if st_live == "suspicious":
+    if (tc is False or st_live == "suspicious") and not liveness_uncertain:
         return (
             False,
             "NO",
-            "Живость не подтверждена безусловно.",
+            "Фото не принято.",
             "LIVENESS_FAIL",
             [R_LIVENESS_FAILED],
             0.0,
             current_gallery_strength,
         )
 
-    if liveness_uncertain_retry:
+    if (
+        (tc is not True or st_live != "clean")
+        and not liveness_accepted_with_caution
+        and not liveness_uncertain
+    ):
         return (
             False,
             "NO",
-            "Автоматическая проверка фото не дала уверенного живого кадра: "
-            "совпадение не подтверждено.",
-            "QUALITY_FAIL",
-            [R_LIVENESS_UNCERTAIN],
-            0.0,
-            current_gallery_strength,
-        )
-
-    if tc is not True or st_live != "clean":
-        return (
-            False,
-            "NO",
-            "Живость не подтверждена безусловно.",
+            "Система сомневается.",
             "LIVENESS_FAIL",
             [R_LIVENESS_UNCERTAIN],
             0.0,
@@ -189,7 +269,7 @@ def decide_face_verify_binary(
         return (
             False,
             "NO",
-            "Качество кадра или детекция недостаточны.",
+            "Нужен новый кадр.",
             "QUALITY_FAIL",
             reason_codes,
             0.0,
@@ -200,7 +280,7 @@ def decide_face_verify_binary(
         return (
             False,
             "NO",
-            "Нет эталона для сравнения на сервере.",
+            "Нет эталона для сравнения.",
             "REJECTED",
             [R_WEAK_ENROLLMENT],
             0.0,
@@ -218,29 +298,63 @@ def decide_face_verify_binary(
         return (
             False,
             "NO",
-            "Лицо слишком близко к другому сотруднику: совпадение не подтверждено.",
+            "Похоже на другого сотрудника.",
             "REJECTED",
             rc,
             0.0,
-            gallery_strength,
+            "weak",
         )
 
     if strong:
         thr = float(threshold_verified)
         if float(score) >= thr:
+            summary = (
+                "Да. Фото принято."
+                if liveness_uncertain
+                else "Да. Совпадение есть."
+            )
             return (
                 True,
                 "YES",
-                "Совпадение подтверждено.",
+                summary,
                 "VERIFIED",
                 [],
                 thr,
                 gallery_strength,
             )
+        relaxed_enabled = bool(
+            getattr(settings, "FACE_VERIFY_STRONG_GALLERY_RELAXED_ENABLE", True)
+        )
+        relaxed_thr = float(
+            getattr(settings, "FACE_VERIFY_STRONG_GALLERY_RELAXED_THRESHOLD", 0.74)
+        )
+        relaxed_gap_min = float(
+            getattr(settings, "FACE_VERIFY_STRONG_GALLERY_RELAXED_GAP_MIN", 0.12)
+        )
+        if (
+            relaxed_enabled
+            and identity_gap is not None
+            and float(score) >= relaxed_thr
+            and float(identity_gap) >= relaxed_gap_min
+        ):
+            summary = (
+                "Да. Фото принято."
+                if liveness_uncertain
+                else "Да. Совпадение есть."
+            )
+            return (
+                True,
+                "YES",
+                summary,
+                "VERIFIED",
+                [],
+                relaxed_thr,
+                gallery_strength,
+            )
         return (
             False,
             "NO",
-            "Недостаточно надёжное совпадение.",
+            "Сходство ниже порога.",
             "REJECTED",
             [R_SCORE_BELOW_VERIFIED_THRESHOLD],
             thr,
@@ -255,17 +369,46 @@ def decide_face_verify_binary(
             return (
                 False,
                 "NO",
-                "Для первичной проверки без собранной галереи нужен более уверенный "
-                "кадр (крупнее лицо и выше уверенность детектора).",
+                "Нужен кадр крупнее.",
                 "REJECTED",
                 [R_COLD_START_QUALITY_INSUFFICIENT],
                 0.0,
                 "weak",
             )
+        if _single_photo_relaxed_allowed(
+            quality=quality,
+            score=float(score),
+            identity_gap=identity_gap,
+            gallery_templates=int(gallery_templates),
+            breakdown=breakdown,
+        ):
+            thr_sp = float(getattr(settings, "FACE_VERIFY_SINGLE_PHOTO_THRESHOLD", 0.76))
+            summary = (
+                "Да. Фото принято."
+                if liveness_uncertain
+                else "Да. Совпадение есть."
+            )
+            return (
+                True,
+                "YES",
+                summary,
+                "VERIFIED",
+                [],
+                thr_sp,
+                "weak",
+            )
         thr_c = float(threshold_cold_start)
         if float(score) >= thr_c:
             summary = (
-                "Совпадение подтверждено (режим холодного старта до сборки галереи)."
+                "Да. Фото принято."
+                if liveness_uncertain
+                else "Да. Совпадение есть."
+            )
+            response_strength = _cold_start_response_strength(
+                quality=quality,
+                score=float(score),
+                threshold_weak_gallery=float(threshold_weak_gallery),
+                threshold_cold_start=thr_c,
             )
             return (
                 True,
@@ -274,12 +417,12 @@ def decide_face_verify_binary(
                 "VERIFIED",
                 [],
                 thr_c,
-                "weak",
+                response_strength,
             )
         return (
             False,
             "NO",
-            "Недостаточно сходство для режима холодного старта (галерея ещё не собрана).",
+            "Сходство ниже порога.",
             "REJECTED",
             [R_SCORE_BELOW_COLD_START_THRESHOLD],
             thr_c,
@@ -288,10 +431,15 @@ def decide_face_verify_binary(
 
     thr_w = float(threshold_weak_gallery)
     if float(score) >= thr_w:
+        summary = (
+            "Да. Фото принято."
+            if liveness_uncertain
+            else "Да. Совпадение есть."
+        )
         return (
             True,
             "YES",
-            "Совпадение подтверждено (строгий порог для слабой галереи).",
+            summary,
             "VERIFIED",
             [],
             thr_w,
@@ -301,7 +449,7 @@ def decide_face_verify_binary(
     return (
         False,
         "NO",
-        "Слабая галерея эталонов — применён строгий порог; совпадение не подтверждено.",
+        "Сходство ниже порога.",
         "REJECTED",
         list(dict.fromkeys(rc)),
         thr_w,
