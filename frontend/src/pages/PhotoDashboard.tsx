@@ -28,6 +28,7 @@ import LoaderComponent from "../components/LoaderComponent";
 import { Toggle } from "../components/Toggle";
 import useWindowSize from "../hooks/useWindowSize";
 import EditableDateField from "../components/EditableDateField";
+import PhotoPadVerdictPanel from "../components/PhotoPadVerdictPanel";
 
 const PING_INTERVAL = 15000;
 const PONG_TIMEOUT = 8000;
@@ -234,90 +235,6 @@ const normalizePhotoSpoofTags = (
 ): string[] | undefined => {
   if (!Array.isArray(value)) return undefined;
   return value.filter((tag): tag is string => typeof tag === "string");
-};
-
-const buildPhotoPadReason = (photo: Partial<PhotoData>): string => {
-  const status = resolvePhotoEffectiveStatus(photo);
-  const tags = normalizePhotoSpoofTags(photo.photoSpoofTags) ?? [];
-  const reasons: string[] = [];
-  const seen = new Set<string>();
-  const add = (reason: string) => {
-    if (seen.has(reason)) return;
-    seen.add(reason);
-    reasons.push(reason);
-  };
-
-  for (const rawTag of tags) {
-    const tag = rawTag.trim().toLowerCase();
-    if (!tag) continue;
-    if (tag.startsWith("pad_struct:") || tag.startsWith("pad_evidence:")) {
-      continue;
-    }
-    if (
-      tag.includes("face_reflection") ||
-      tag.includes("rectangular_reflection") ||
-      tag.includes("colored_screen_reflection") ||
-      tag.includes("specular_reflection")
-    ) {
-      add("блики на лице похожи на отражение экрана");
-      continue;
-    }
-    if (
-      tag.includes("recapture") ||
-      tag.includes("fft_periodicity") ||
-      tag.includes("gradient_aniso") ||
-      tag.includes("color_histogram") ||
-      tag.includes("ycrcb_luv") ||
-      tag.includes("luma_chroma")
-    ) {
-      add("текстура лица похожа на пересъёмку с другого экрана");
-      continue;
-    }
-    if (tag.includes("screen_frame") || tag.includes("frame_screen")) {
-      add("рядом с лицом видна экранная рамка");
-      continue;
-    }
-    if (
-      tag.includes("device_present") ||
-      tag.includes("device_on_face") ||
-      tag.includes("deepfake_device")
-    ) {
-      add("устройство находится слишком близко к лицу");
-      continue;
-    }
-    if (
-      tag.includes("fasnet_fake") ||
-      tag.includes("minifasnet_onnx_fake") ||
-      tag.includes("deepfake_high")
-    ) {
-      add("модель лица видит признаки подмены");
-      continue;
-    }
-    if (tag.includes("quality_") || tag.includes("insufficient")) {
-      add("кадр слабый для окончательного вывода");
-    }
-  }
-
-  if (reasons.length === 0) {
-    if (status === "suspicious") {
-      add("автоанализ видит согласованные признаки подмены");
-    } else if (status === "review") {
-      add("сигналы неоднозначные, нужен новый кадр");
-    } else if (status === "error") {
-      add("проверка фото не завершилась");
-    } else if (status === "pending") {
-      add("проверка фото ещё идёт");
-    }
-  }
-
-  const score =
-    typeof photo.photoSpoofScore === "number" &&
-    Number.isFinite(photo.photoSpoofScore)
-      ? Math.round(Math.max(0, Math.min(1, photo.photoSpoofScore)) * 100)
-      : null;
-  const text = reasons.slice(0, 2).join(", ");
-  if (!text && score == null) return "";
-  return score == null ? text : `${text || "риск подмены"}: ${score}%`;
 };
 
 const canPhotoSetManualVerdict = (photo: Partial<PhotoData>): boolean => {
@@ -3578,7 +3495,12 @@ const PhotoDashboard: React.FC = () => {
                   uiStatus === "suspicious_manual";
                 const showCheckBadge =
                   uiStatus === "check" || uiStatus === "check_error";
-                const padReason = buildPhotoPadReason(p);
+                const effectiveStatus = resolvePhotoEffectiveStatus(p);
+                const showPadVerdictPanel =
+                  Boolean(p.photoSpoofModelVersion || p.photoSpoofCheckedAt) &&
+                  (isSuspicious ||
+                    showCheckBadge ||
+                    (p.photoManualVerdict ?? "none") !== "none");
                 const canSetManualVerdict = canPhotoSetManualVerdict(p);
                 const verdictButtonsLocked =
                   isSubmittingVerdictForPhoto(p.id) || verdictAutoClosePending;
@@ -3626,20 +3548,20 @@ const PhotoDashboard: React.FC = () => {
                           </span>
                         </p>
                         {(isSuspicious || showCheckBadge) && (
-                          <div className="mt-2 flex flex-col items-start gap-2">
-                            <span
-                              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${statusMeta.badgeClass}`}
-                            >
-                              <FaShieldAlt className="h-3.5 w-3.5" />
-                              {statusMeta.label}
-                            </span>
-                            {padReason ? (
-                              <p className="max-w-full rounded-xl border border-slate-200/80 bg-slate-50/90 px-3 py-2 text-[13px] leading-snug text-slate-700 shadow-sm dark:border-slate-600/60 dark:bg-slate-900/60 dark:text-slate-200">
-                                {padReason}
-                              </p>
-                            ) : null}
-                          </div>
+                          <span
+                            className={`mt-2 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${statusMeta.badgeClass}`}
+                          >
+                            <FaShieldAlt className="h-3.5 w-3.5" />
+                            {statusMeta.label}
+                          </span>
                         )}
+                        {showPadVerdictPanel ? (
+                          <PhotoPadVerdictPanel
+                            photo={p}
+                            effectiveStatus={effectiveStatus}
+                            className="mt-3 w-full"
+                          />
+                        ) : null}
                         {p.tutorInfo && (
                           <p className="text-gray-500 dark:text-gray-400 text-xs mt-1 leading-relaxed">
                             {p.tutorInfo}

@@ -900,6 +900,12 @@ PHOTO_PAD_NUMBERS = {
     "risk_weight_frame": _float_env("PHOTO_PAD_RISK_WEIGHT_FRAME", 0.12),
     # --- Rule engine: FasNet + geometry + recapture + shield ---
     "decision_device_present_min": _float_env("PHOTO_PAD_DECISION_DEVICE_PRESENT_MIN", 0.24),
+    "decision_device_confirmed_strong_min": _float_env(
+        "PHOTO_PAD_DECISION_DEVICE_CONFIRMED_STRONG_MIN", 0.48
+    ),
+    "decision_device_confirmed_single_min": _float_env(
+        "PHOTO_PAD_DECISION_DEVICE_CONFIRMED_SINGLE_MIN", 0.36
+    ),
     "decision_frame_present_min": _float_env("PHOTO_PAD_DECISION_FRAME_PRESENT_MIN", 0.34),
     "decision_strong_device_min": _float_env("PHOTO_PAD_DECISION_STRONG_DEVICE_MIN", 0.40),
     "decision_strong_frame_min": _float_env("PHOTO_PAD_DECISION_STRONG_FRAME_MIN", 0.34),
@@ -1003,6 +1009,23 @@ PHOTO_PAD_NUMBERS = {
     "minifasnet_onnx_crop_scale": _float_env("PHOTO_PAD_MINIFASNET_ONNX_CROP_SCALE", 2.70),
     "minifasnet_onnx_mid": _float_env("PHOTO_PAD_MINIFASNET_ONNX_MID", 0.50),
     "minifasnet_onnx_strong": _float_env("PHOTO_PAD_MINIFASNET_ONNX_STRONG", 0.70),
+    "spoof_model_family_mid": _float_env("PHOTO_PAD_SPOOF_MODEL_FAMILY_MID", 0.45),
+    "spoof_model_family_strong": _float_env("PHOTO_PAD_SPOOF_MODEL_FAMILY_STRONG", 0.70),
+    "spoof_model_disagreement_min": _float_env("PHOTO_PAD_SPOOF_MODEL_DISAGREEMENT_MIN", 0.45),
+    "ensemble_review_vote_min": _float_env("PHOTO_PAD_ENSEMBLE_REVIEW_VOTE_MIN", 0.35),
+    "ensemble_strong_vote_min": _float_env("PHOTO_PAD_ENSEMBLE_STRONG_VOTE_MIN", 0.58),
+    "ensemble_suspicious_score_min": _float_env("PHOTO_PAD_ENSEMBLE_SUSPICIOUS_SCORE_MIN", 0.52),
+    "ensemble_review_score_min": _float_env("PHOTO_PAD_ENSEMBLE_REVIEW_SCORE_MIN", 0.30),
+    "ensemble_suspicious_family_min": _int_env("PHOTO_PAD_ENSEMBLE_SUSPICIOUS_FAMILY_MIN", 2),
+    "color_hist_heuristic_only_scale": _float_env(
+        "PHOTO_PAD_COLOR_HIST_HEURISTIC_ONLY_SCALE", 0.80
+    ),
+    "color_hist_strong_feature_min": _float_env(
+        "PHOTO_PAD_COLOR_HIST_STRONG_FEATURE_MIN", 0.48
+    ),
+    "color_hist_full_score_features_min": _int_env(
+        "PHOTO_PAD_COLOR_HIST_FULL_SCORE_FEATURES_MIN", 3
+    ),
     "risk_weight_color_hist": _float_env("PHOTO_PAD_RISK_WEIGHT_COLOR_HIST", 0.10),
     "shield_max_color_hist": _float_env("PHOTO_PAD_SHIELD_MAX_COLOR_HIST", 0.20),
 }

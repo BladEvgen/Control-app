@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 PAD_DIAGNOSTICS_VERSION = "pad_diagnostics_v5"
 
-PAD_TRACE_SCHEMA = "pad_trace_v11"
+PAD_TRACE_SCHEMA = "pad_trace_v12"
 
 
 def _quality_poor_threshold() -> float:
@@ -101,8 +101,11 @@ def filter_operator_facing_tags(tags: list[str]) -> list[str]:
             continue
         if tag.startswith("pad_ensemble:"):
             continue
+        if tag.startswith("pad_global:"):
+            continue
+        if tag.startswith("pad_ui_reason:"):
+            continue
         out.append(tag)
-    return out
 
 
 def parse_pad_evidence_line(tags: list[str]) -> Optional[dict[str, float]]:
@@ -129,6 +132,16 @@ def parse_pad_evidence_line(tags: list[str]) -> Optional[dict[str, float]]:
                 except ValueError:
                     continue
             return pairs or None
+    return None
+
+
+def parse_pad_ui_reason_from_tags(tags: list[str]) -> Optional[str]:
+    """Return operator-facing Russian copy from ``pad_ui_reason:…`` tag."""
+    prefix = "pad_ui_reason:"
+    for tag in tags:
+        if isinstance(tag, str) and tag.startswith(prefix):
+            text = tag[len(prefix) :].strip()
+            return text or None
     return None
 
 
@@ -337,10 +350,16 @@ def _uncertainty_codes(
 
 
 def _append_insufficient_roi_uncertainty(
-    uncertainty_codes: list[str], branch_str: Optional[str]
+    uncertainty_codes: list[str],
+    *,
+    status: str,
+    branch_str: Optional[str],
 ) -> None:
     """Tag review outcomes that stem from inadequate ROI for texture/geometry fusion."""
-    if branch_str == "presentation_insufficient_input_review":
+    if (
+        status == "review"
+        and branch_str == "presentation_insufficient_input_review"
+    ):
         uncertainty_codes.append("presentation_roi_insufficient")
 
 
@@ -459,6 +478,8 @@ def build_pad_diagnostic_payload(
         struct_dict.get("product_outcome") if isinstance(struct_dict, dict) else None
     )
     if not isinstance(product_outcome, str) or not product_outcome:
+        product_outcome = status
+    elif product_outcome != status and status in ("suspicious", "clean", "error"):
         product_outcome = status
 
     q_thr = _quality_poor_threshold()
@@ -586,7 +607,9 @@ def build_pad_diagnostic_payload(
         tags=tags,
         quality_degraded=quality_degraded,
     )
-    _append_insufficient_roi_uncertainty(uncertainty_codes, branch_str)
+    _append_insufficient_roi_uncertainty(
+        uncertainty_codes, status=status, branch_str=branch_str
+    )
 
     decision_support_flags: list[str] = []
     if isinstance(struct_dict, dict) and struct_dict.get("shield_normal_live") is True:

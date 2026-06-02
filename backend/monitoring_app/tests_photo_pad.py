@@ -102,7 +102,30 @@ class PadDecisionTests(SimpleTestCase):
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
         self.assertIn("pad_rule:fake_mid_plus_dual_mid_geometry", result.tags)
 
-    def test_model_disagreement_goes_review_not_hard_reject(self):
+    def test_model_disagreement_when_fasnet_live_accepts_cautiously(self):
+        """FasNet live + elevated ONNX must not auto-block (campus selfie pattern)."""
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.04,
+                tags=[
+                    "fasnet_real",
+                    "minifasnet_onnx_fake",
+                    "spoof_model_disagreement",
+                    "minifasnet_onnx_advisory_when_fasnet_real",
+                ],
+                model_scores={"fasnet": 0.0, "minifasnet_onnx": 0.92},
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertTrue(result.trust_confirmed)
+        self.assertIn("pad_rule:default_clean", result.tags)
+
+    def test_model_disagreement_without_fasnet_live_stays_review(self):
         result = _decide(
             DecisionInputs(
                 decode_error=False,
@@ -112,16 +135,178 @@ class PadDecisionTests(SimpleTestCase):
                 frame_score=0.0,
                 quality_penalty=0.04,
                 tags=[
-                    "fasnet_real",
                     "minifasnet_onnx_fake",
                     "spoof_model_disagreement",
                 ],
-                model_scores={"fasnet": 0.0, "minifasnet_onnx": 0.92},
+                model_scores={"minifasnet_onnx": 0.92},
             )
         )
         self.assertEqual(result.status, STATUS_REVIEW)
         self.assertIsNone(result.trust_confirmed)
         self.assertIn("pad_rule:spoof_model_disagreement_review", result.tags)
+
+    def test_weak_multi_device_clutter_does_not_escalate_live_selfie(self):
+        """Regression: COCO tags phone+laptop+tv at ~0.41 must not force review."""
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.41,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=[
+                    "fasnet_real",
+                    "device_on_face:cell phone",
+                    "device_on_face:laptop",
+                    "device_on_face:tv",
+                    "face_reflection_screen_like",
+                    "face_color_histogram_screen_like",
+                ],
+                face_area_ratio=0.11,
+                face_reflection_score=0.36,
+                color_hist_score=0.53,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIn("pad_rule:live_selfie_surface_noise_uncertain_clean", result.tags)
+
+    def test_bezel_only_reflection_does_not_hard_reject_live_face(self):
+        """Regression: screen_bezel in background without on-face device."""
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=[
+                    "fasnet_real",
+                    "screen_bezel_context",
+                    "face_reflection_screen_like",
+                    "face_color_histogram_screen_like",
+                ],
+                frame_global_score=0.37,
+                face_area_ratio=0.12,
+                face_reflection_score=0.89,
+                color_hist_score=0.60,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIn("pad_rule:live_selfie_surface_noise_uncertain_clean", result.tags)
+
+    def test_confirmed_tv_on_face_keeps_color_suspicious_for_spoof(self):
+        """Regression: real replay should stay suspicious when TV on face is strong."""
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.56,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=[
+                    "fasnet_real",
+                    "device_on_face:tv",
+                    "face_reflection_screen_like",
+                    "face_color_histogram_screen_like",
+                ],
+                face_area_ratio=0.09,
+                face_reflection_score=0.78,
+                color_hist_score=0.80,
+            )
+        )
+        self.assertEqual(result.status, STATUS_SUSPICIOUS)
+        self.assertTrue(
+            any(
+                tag in result.tags
+                for tag in (
+                    "pad_rule:color_histogram_display_suspicious",
+                    "pad_rule:face_reflection_display_suspicious",
+                )
+            )
+        )
+        ui = [t for t in result.tags if t.startswith("pad_ui_reason:")]
+        self.assertEqual(len(ui), 1)
+        self.assertIn("пересъёмка", ui[0].lower())
+
+    def test_fake_background_display_review_ui_reason_mentions_background(self):
+        from monitoring_app.photo_pad import _pad_ui_reason_text
+
+        text = _pad_ui_reason_text("fake_background_display_review", STATUS_REVIEW)
+        self.assertIn("фоне", text)
+
+    def test_live_selfie_clean_has_no_pad_ui_reason(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.27,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=[
+                    "fasnet_real",
+                    "device_on_face:tv",
+                    "face_reflection_screen_like",
+                ],
+                face_area_ratio=0.12,
+                face_reflection_score=0.80,
+                color_hist_score=0.50,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertFalse(any(t.startswith("pad_ui_reason:") for t in result.tags))
+
+    def test_weak_tv_on_face_live_selfie_not_suspicious(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.27,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=[
+                    "fasnet_real",
+                    "device_on_face:tv",
+                    "face_reflection_screen_like",
+                    "face_color_histogram_screen_like",
+                ],
+                face_area_ratio=0.12,
+                face_reflection_score=0.80,
+                color_hist_score=0.50,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIn("pad_rule:live_selfie_surface_noise_uncertain_clean", result.tags)
+
+    def test_live_selfie_color_reflection_without_geometry_not_suspicious(self):
+        """Regression: 2026-06-02 false positives (fasnet live + color + glare, no screen)."""
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=[
+                    "fasnet_real",
+                    "minifasnet_onnx_fake",
+                    "spoof_model_disagreement",
+                    "face_color_histogram_screen_like",
+                    "face_reflection_screen_like",
+                ],
+                face_area_ratio=0.11,
+                face_reflection_score=0.78,
+                color_hist_score=0.52,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn("pad_rule:live_selfie_surface_noise_uncertain_clean", result.tags)
 
     def test_ensemble_consensus_escalates_independent_families(self):
         result = _decide(
@@ -436,6 +621,74 @@ class PadDecisionTests(SimpleTestCase):
         self.assertFalse(result.trust_confirmed)
         self.assertIn("pad_rule:face_reflection_display_suspicious", result.tags)
 
+    def test_fasnet_live_blur_tv_color_stays_clean_not_suspicious(self):
+        """Blur + weak TV box + MiniFAS noise while FasNet live (June 2 Baygozha class)."""
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.549,
+                frame_score=0.0,
+                quality_penalty=0.35,
+                tags=[
+                    "fasnet_real",
+                    "minifasnet_onnx_fake",
+                    "spoof_model_disagreement",
+                    "minifasnet_onnx_advisory_when_fasnet_real",
+                    "device_on_face:tv",
+                    "quality_blur",
+                    "quality_poor",
+                    "glasses_reflection_guard",
+                    "face_color_histogram_screen_like",
+                ],
+                face_area_ratio=0.158,
+                face_reflection_score=0.0,
+                color_hist_score=0.6,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertTrue(
+            any(
+                rule in result.tags
+                for rule in (
+                    "pad_rule:live_selfie_surface_noise_uncertain_clean",
+                    "pad_rule:image_quality_uncertain_clean",
+                )
+            ),
+            msg=f"unexpected rules: {result.tags}",
+        )
+        self.assertNotIn("pad_rule:face_reflection_display_suspicious", result.tags)
+
+    def test_fasnet_live_tv_reflection_stays_clean_not_suspicious(self):
+        """FasNet live + color/reflection heuristics without neural spoof (June 2 Dudikova class)."""
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.563,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=[
+                    "fasnet_real",
+                    "minifasnet_onnx_fake",
+                    "spoof_model_disagreement",
+                    "device_on_face:tv",
+                    "face_reflection_screen_like",
+                    "face_color_histogram_screen_like",
+                ],
+                face_area_ratio=0.089,
+                face_reflection_score=0.78,
+                color_hist_score=0.8,
+            )
+        )
+        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn("pad_rule:live_selfie_surface_noise_uncertain_clean", result.tags)
+        self.assertNotIn("pad_rule:face_reflection_display_suspicious", result.tags)
+
     def test_face_reflection_without_context_does_not_auto_reject(self):
         result = _decide(
             DecisionInputs(
@@ -572,6 +825,31 @@ class PadDecisionTests(SimpleTestCase):
         self.assertIsNone(result.trust_confirmed)
         self.assertIn("pad_rule:color_histogram_context_review", result.tags)
 
+    def test_global_verdict_trace_includes_jury_and_debate(self):
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.0,
+                device_score=0.56,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=[
+                    "fasnet_real",
+                    "device_on_face:tv",
+                    "face_reflection_screen_like",
+                ],
+                face_area_ratio=0.09,
+                face_reflection_score=0.78,
+                color_hist_score=0.80,
+            )
+        )
+        struct_tag = next(t for t in result.tags if t.startswith("pad_struct:"))
+        self.assertIn("global_verdict", struct_tag)
+        self.assertIn("neural_debate", struct_tag)
+        global_tag = next(t for t in result.tags if t.startswith("pad_global:"))
+        self.assertIn("debate", global_tag)
+
     def test_pad_struct_tag_present(self):
         result = _decide(
             DecisionInputs(
@@ -586,7 +864,7 @@ class PadDecisionTests(SimpleTestCase):
         )
         struct_tags = [t for t in result.tags if t.startswith("pad_struct:")]
         self.assertEqual(len(struct_tags), 1)
-        self.assertIn("pad_trace_v11", struct_tags[0])
+        self.assertIn("pad_trace_v12", struct_tags[0])
         self.assertIn('"product_outcome":"clean"', struct_tags[0])
 
     def test_fake_plus_strong_recapture_without_geometry_stays_review(self):
@@ -1402,3 +1680,56 @@ class LessonAttendancePhotoResetTests(TestCase):
         self.assertEqual(lesson.photo_manual_comment, "")
         self.assertIsNone(lesson.photo_manual_by)
         self.assertIsNone(lesson.photo_manual_at)
+
+
+class PadAdminSummaryTests(TestCase):
+    """Admin operator panel must follow ``photo_spoof_status`` and ``pad_ui_reason``."""
+
+    def test_suspicious_with_neural_fake_shows_spoof_not_insufficient(self):
+        from monitoring_app.models import LessonAttendance
+        from monitoring_app.pad_admin_summary import (
+            _effective_verdict_line,
+            _is_auto_insufficient_input,
+            format_lesson_attendance_antifraud_operator_panel,
+        )
+
+        tags = [
+            "fasnet_fake",
+            "minifasnet_onnx_fake",
+            "pad_rule:fake_plus_face_reflection_suspicious",
+            "pad_ui_reason:Обе модели видят подмену; отражение и цвета лица как на экране.",
+            'pad_struct:{"schema":"pad_trace_v12","branch":"fake_plus_face_reflection_suspicious","product_outcome":"suspicious","deepfake_score":0.84}',
+            "pad_evidence:df=0.840,dev_f=0.000,dev_bg=0.000,frm_f=0.000,frm_gl=0.598,rec=0.000,refl=0.821,clr=0.700,qp=0.475",
+            "quality_poor",
+        ]
+        lesson = LessonAttendance(
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+            photo_spoof_score=0.54,
+            photo_spoof_tags=tags,
+            photo_spoof_model_version="pad_v12",
+            photo_trust_confirmed=False,
+        )
+        self.assertFalse(_is_auto_insufficient_input(lesson))
+        label, _source, _note = _effective_verdict_line(lesson)
+        self.assertEqual(label, "Подозрительно")
+        html = str(format_lesson_attendance_antifraud_operator_panel(lesson))
+        self.assertIn("Обе модели видят подмену", html)
+        self.assertNotIn("Недостаточно данных", html)
+        self.assertNotIn("не подозрение на подмену", html)
+        self.assertNotIn("pad_global:", html)
+
+    def test_insufficient_input_only_when_review_rule(self):
+        from monitoring_app.models import LessonAttendance
+        from monitoring_app.pad_admin_summary import _is_auto_insufficient_input
+
+        review_tags = ["pad_rule:presentation_insufficient_input_review", "quality_poor"]
+        review = LessonAttendance(
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+            photo_spoof_tags=review_tags,
+        )
+        self.assertTrue(_is_auto_insufficient_input(review))
+        suspicious = LessonAttendance(
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+            photo_spoof_tags=review_tags,
+        )
+        self.assertFalse(_is_auto_insufficient_input(suspicious))

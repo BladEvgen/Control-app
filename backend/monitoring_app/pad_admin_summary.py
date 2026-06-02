@@ -6,7 +6,11 @@ from typing import Optional, cast
 from django.utils.html import format_html, format_html_join
 from django.utils.safestring import SafeString
 from monitoring_app.models import LessonAttendance
-from monitoring_app.pad_diagnostics import diagnostics_payload_for_lesson_attendance
+from monitoring_app.pad_diagnostics import (
+    diagnostics_payload_for_lesson_attendance,
+    parse_pad_ui_reason_from_tags,
+)
+from monitoring_app.photo_pad import _PAD_UI_REASON_RU
 
 
 def _html(format_string: str, *args: object, **kwargs: object) -> SafeString:
@@ -166,6 +170,10 @@ _BRANCH_EXPLANATION_RU: dict[str, str] = {
     "face_reflection_isolated_uncertain_clean": (
         "Сильный блик на лице без рамки, устройства и текстуры пересъёмки. Кадр принят осторожно."
     ),
+    "live_selfie_surface_noise_uncertain_clean": (
+        "Живое лицо по основной модели: блики или цвет кожи настораживают, "
+        "но экрана и пересъёмки в кадре нет. Кадр принят осторожно."
+    ),
     "no_fake_recapture_strong_corroborated_dual_geometry": (
         "Сильный рекапчер при двух подозрительных геометрических каналах у лица — «подозрительно»."
     ),
@@ -205,6 +213,27 @@ _BRANCH_EXPLANATION_RU: dict[str, str] = {
     ),
     "ensemble_consensus_review": (
         "Несколько признаков настораживают, но уверенности мало. Нужна проверка."
+    ),
+    "fake_plus_face_reflection_suspicious": (
+        "Обе модели видят подмену; отражение и цвета лица как на экране."
+    ),
+    "fake_high_confidence_no_geometry_suspicious": (
+        "Обе модели уверены в подмене."
+    ),
+    "face_reflection_display_suspicious": (
+        "Отражение и цвета лица как на экране; подмена вероятна."
+    ),
+    "color_histogram_display_suspicious": (
+        "Цвета лица как на экране, есть подтверждающие признаки."
+    ),
+    "fake_plus_color_histogram_suspicious": (
+        "Подмена: модели и цвета лица как на экране."
+    ),
+    "fake_quality_poor_review": (
+        "Модели видят подмену, но кадр слабый — нужна проверка, не автоблок."
+    ),
+    "fake_quality_limited_review": (
+        "Модели видят риск подмены при ограниченном качестве кадра. Нужна проверка."
     ),
     "background_screen_context_review": (
         "В фоне есть признаки экрана, но у лица подтверждений мало. Нужна проверка."
@@ -332,6 +361,13 @@ _QUALITY_FLAG_LABEL_RU: dict[str, str] = {
 }
 
 
+def _lesson_attendance_tags(obj: LessonAttendance) -> list[str]:
+    raw = getattr(obj, "photo_spoof_tags", None)
+    if not isinstance(raw, list):
+        return []
+    return [str(t) for t in raw]
+
+
 def _is_auto_insufficient_input(obj: LessonAttendance) -> bool:
     """Return whether the stored automatic PAD outcome is insufficient-input review.
 
@@ -339,13 +375,34 @@ def _is_auto_insufficient_input(obj: LessonAttendance) -> bool:
         obj: LessonAttendance row with ``photo_spoof_tags`` already loaded.
 
     Returns:
-        ``True`` when the latest automatic PAD result is the distinct
-        insufficient-input review class.
+        ``True`` only for ``review`` with the dedicated insufficient-input rule.
     """
-    tags = getattr(obj, "photo_spoof_tags", None)
-    if not isinstance(tags, list):
+    la = LessonAttendance
+    if str(getattr(obj, "photo_spoof_status", "") or "") != la.PHOTO_SPOOF_STATUS_REVIEW:
         return False
-    return "pad_rule:presentation_insufficient_input_review" in tags
+    return "pad_rule:presentation_insufficient_input_review" in _lesson_attendance_tags(obj)
+
+
+def _primary_reason_ru(
+    obj: LessonAttendance,
+    *,
+    branch_str: Optional[str],
+    status: str,
+) -> Optional[str]:
+    """Operator-facing reason: persisted ``pad_ui_reason`` first, then branch copy."""
+    ui = parse_pad_ui_reason_from_tags(_lesson_attendance_tags(obj))
+    if ui:
+        return ui
+    if branch_str:
+        if branch_str in _BRANCH_EXPLANATION_RU:
+            return _BRANCH_EXPLANATION_RU[branch_str]
+        if branch_str in _PAD_UI_REASON_RU:
+            return _PAD_UI_REASON_RU[branch_str]
+    if status == LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS:
+        return "Автопроверка: согласованные признаки подмены."
+    if status == LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW:
+        return "Автопроверка: сигналы неоднозначны — нужна проверка."
+    return None
 
 
 def _humanize_admin_quality_flag(flag: str) -> str:
@@ -438,7 +495,14 @@ def _effective_verdict_line(obj: LessonAttendance) -> tuple[str, str, str]:
             "автоматическая проверка фото",
             "Системе не хватило качества кадра или пригодной области лица. Это не подозрение на подмену.",
         )
-    auto = _decision_label_ru(str(obj.photo_spoof_status or ""))
+    st = str(obj.photo_spoof_status or "")
+    auto = _decision_label_ru(st)
+    if st == la.PHOTO_SPOOF_STATUS_SUSPICIOUS:
+        return (
+            auto,
+            "автоматическая проверка фото",
+            "Согласованные признаки подмены (модели, блики, цвет лица). Ручная проверка по регламенту.",
+        )
     return (
         auto,
         "автоматическая проверка фото",
@@ -555,18 +619,21 @@ def format_lesson_attendance_antifraud_operator_panel(
     eff_label, eff_source, eff_note = _effective_verdict_line(obj)
     trust_ru = "да" if trust is True else ("нет" if trust is False else "не определено")
 
-    why_parts: list[SafeString] = []
     branch_str = branch if isinstance(branch, str) else None
-    if branch_str:
-        expl = _BRANCH_EXPLANATION_RU.get(branch_str)
-        if expl:
-            why_parts.append(_html("{}", expl))
+    st_raw = str(obj.photo_spoof_status or final or "")
+    is_suspicious = st_raw == LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS
+    primary_reason = _primary_reason_ru(obj, branch_str=branch_str, status=st_raw)
+
+    why_parts: list[SafeString] = []
+    if primary_reason:
+        why_parts.append(_html("{}", primary_reason))
     unc = diags.get("uncertainty") or {}
-    for code in list(unc.get("interpretability_codes") or []):
-        if isinstance(code, str):
-            txt = _INTERPRETABILITY_RU.get(code.strip())
-            if txt:
-                why_parts.append(_html("{}", txt))
+    if st_raw != LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS:
+        for code in list(unc.get("interpretability_codes") or []):
+            if isinstance(code, str):
+                txt = _INTERPRETABILITY_RU.get(code.strip())
+                if txt:
+                    why_parts.append(_html("{}", txt))
 
     if not why_parts:
         if final == "pending":
@@ -583,7 +650,7 @@ def format_lesson_attendance_antifraud_operator_panel(
             )
 
     why_parts = why_parts[:1]
-    if operator_action:
+    if operator_action and not is_suspicious:
         action_text = _OPERATOR_ACTION_RU.get(operator_action, "Действие: по регламенту.")
         reason_text = _OPERATOR_ACTION_REASON_RU.get(
             operator_action_reason,
@@ -649,14 +716,31 @@ def format_lesson_attendance_antifraud_operator_panel(
     for code in unc.get("uncertainty_codes") or []:
         if isinstance(code, str):
             c = code.strip()
+            if is_suspicious and c in (
+                "trust_indeterminate",
+                "outcome_review_recommended",
+                "presentation_roi_insufficient",
+            ):
+                continue
             if (
                 c == "outcome_review_recommended"
                 and str(final).strip().lower() == "review"
                 and branch_str
             ):
                 continue
+            if is_suspicious and c == "low_image_quality":
+                unc_lines.append(
+                    _html(
+                        "Качество кадра снижено; вердикт опирается на модели и признаки у лица."
+                    )
+                )
+                continue
             txt = _UNCERTAINTY_RU.get(c, c)
             unc_lines.append(_html("{}", txt))
+    if is_suspicious and not unc_lines:
+        unc_lines.append(
+            _html("{}", _UNCERTAINTY_RU["high_presentation_attack_risk"])
+        )
     for code in unc.get("missing_signal_codes") or []:
         if code == "fake_model_score":
             unc_lines.append(

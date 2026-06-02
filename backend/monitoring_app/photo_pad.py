@@ -24,7 +24,7 @@ from monitoring_app.pad_evidence import (
 
 logger = logging.getLogger(__name__)
 
-PAD_MODEL_VERSION = "pad_v10"
+PAD_MODEL_VERSION = "pad_v12"
 
 STATUS_PENDING = "pending"
 STATUS_CLEAN = "clean"
@@ -142,6 +142,8 @@ _PAD_DEFAULT_NUMBERS: dict[str, float | int] = {
     "risk_weight_device": 0.22,
     "risk_weight_frame": 0.12,
     "decision_device_present_min": 0.24,
+    "decision_device_confirmed_strong_min": 0.48,
+    "decision_device_confirmed_single_min": 0.36,
     "decision_frame_present_min": 0.34,
     "decision_strong_device_min": 0.40,
     "decision_strong_frame_min": 0.34,
@@ -233,6 +235,9 @@ _PAD_DEFAULT_NUMBERS: dict[str, float | int] = {
     "ensemble_suspicious_family_min": 2,
     "risk_weight_color_hist": 0.10,
     "shield_max_color_hist": 0.20,
+    "color_hist_heuristic_only_scale": 0.80,
+    "color_hist_strong_feature_min": 0.48,
+    "color_hist_full_score_features_min": 3,
 }
 
 
@@ -735,11 +740,19 @@ def _signal_deepface(
         return score, tags, model_scores
 
     if model_scores:
-        values = list(model_scores.values())
-        score = _clamp01(sum(values) / float(len(values)))
-        spread = max(values) - min(values)
-        if spread >= _pad_float("spoof_model_disagreement_min"):
-            tags.append("spoof_model_disagreement")
+        fasnet_live = "fasnet_real" in tags
+        onnx_score = _clamp01(model_scores.get("minifasnet_onnx", 0.0))
+        if fasnet_live and "minifasnet_onnx" in model_scores:
+            score = 0.0
+            if onnx_score >= _pad_float("spoof_model_disagreement_min"):
+                tags.append("spoof_model_disagreement")
+                tags.append("minifasnet_onnx_advisory_when_fasnet_real")
+        else:
+            values = list(model_scores.values())
+            score = _clamp01(sum(values) / float(len(values)))
+            spread = max(values) - min(values)
+            if spread >= _pad_float("spoof_model_disagreement_min"):
+                tags.append("spoof_model_disagreement")
         if score >= _pad_float("spoof_model_family_mid"):
             tags.append("spoof_model_family_elevated")
         if score >= _pad_float("spoof_model_family_strong"):
@@ -1312,14 +1325,114 @@ def _install_sklearn_019_pickle_aliases(joblib_module: Any) -> None:
     """Map old sklearn 0.19 pickle module paths to current sklearn modules."""
     try:
         import sys
+
+        import joblib.numpy_pickle as numpy_pickle
         import sklearn.ensemble._forest as forest_mod
         import sklearn.tree._classes as tree_classes_mod
 
         sys.modules.setdefault("sklearn.ensemble.forest", forest_mod)
         sys.modules.setdefault("sklearn.tree.tree", tree_classes_mod)
         sys.modules.setdefault("sklearn.externals.joblib", joblib_module)
+        sys.modules.setdefault("sklearn.externals.joblib.numpy_pickle", numpy_pickle)
     except Exception as exc:
         logger.debug("PAD guide sklearn pickle aliases skipped: %s", exc)
+
+
+def _patch_sklearn_tree_unpickle_compat() -> Any:
+    """Allow unpickling sklearn 0.19 trees into sklearn 1.5+ runtime."""
+    import sklearn.tree._tree as tree_mod
+
+    cache_key = "guide_sklearn_tree_unpickle_patch"
+    with _runtime_cache_lock:
+        if cache_key in _runtime_cache:
+            return _runtime_cache[cache_key]
+
+        original_check = tree_mod._check_node_ndarray
+
+        def _relaxed_check(node_ndarray: Any, expected_dtype: Any = None) -> Any:
+            try:
+                return original_check(node_ndarray, expected_dtype=expected_dtype)
+            except ValueError:
+                names = list(getattr(node_ndarray, "dtype", None).names or [])
+                if (
+                    "missing_go_to_left" not in names
+                    and expected_dtype is not None
+                    and hasattr(node_ndarray, "shape")
+                ):
+                    upgraded = np.zeros(node_ndarray.shape, dtype=expected_dtype)
+                    for field in names:
+                        upgraded[field] = node_ndarray[field]
+                    return upgraded
+                return node_ndarray
+
+        tree_mod._check_node_ndarray = _relaxed_check
+        _runtime_cache[cache_key] = original_check
+        return original_check
+
+
+def _guide_model_modern_path(legacy_path: Path) -> Path:
+    """Path for a sklearn 1.5+ compatible re-export of a legacy guide model."""
+    return legacy_path.parent / f"{legacy_path.stem}.sklearn15.joblib"
+
+
+def _load_guide_extra_trees_classifier(model_path: Path) -> Any:
+    """Load guide ExtraTrees: prefer modern export, else migrate legacy pickle."""
+    import warnings
+
+    import joblib
+
+    modern_path = _guide_model_modern_path(model_path)
+    if modern_path.is_file():
+        return joblib.load(str(modern_path))
+
+    if not model_path.is_file():
+        raise FileNotFoundError(str(model_path))
+
+    _install_sklearn_019_pickle_aliases(joblib)
+    _patch_sklearn_tree_unpickle_compat()
+    try:
+        from sklearn.exceptions import InconsistentVersionWarning
+    except Exception:
+        InconsistentVersionWarning = UserWarning
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
+        model = joblib.load(str(model_path))
+    if not callable(getattr(model, "predict", None)):
+        raise RuntimeError("loaded object has no predict")
+    try:
+        joblib.dump(model, str(modern_path))
+        logger.info("PAD guide model migrated to %s", modern_path)
+    except Exception as exc:
+        logger.warning("PAD guide model migration save failed: %s", exc)
+    return model
+
+
+def _guide_extra_trees_spoof_score(model: Any, feature_vector: np.ndarray) -> float:
+    """Spoof probability from guide ExtraTrees (handles legacy exports)."""
+    row = np.asarray(feature_vector, dtype=np.float64)
+    if row.ndim == 1:
+        row = row.reshape(1, -1)
+    try:
+        probs = np.asarray(model.predict_proba(row), dtype=np.float64)
+    except Exception:
+        probs = None
+    if probs is not None and probs.ndim == 2 and probs.shape[0] >= 1:
+        total = float(probs[0].sum())
+        if 0.99 <= total <= 1.01:
+            classes = list(getattr(model, "classes_", []))
+            if 1 in classes:
+                spoof_idx = int(classes.index(1))
+            else:
+                spoof_idx = 1 if probs.shape[1] > 1 else 0
+            return float(max(0.0, min(1.0, probs[0, spoof_idx])))
+    estimators = list(getattr(model, "estimators_", []) or [])
+    if estimators:
+        votes = np.asarray(
+            [int(est.predict(row)[0]) for est in estimators],
+            dtype=np.int8,
+        )
+        return float(np.mean(votes == 1))
+    return float(int(model.predict(row)[0]) == 1)
 
 
 def _get_guide_color_model() -> Optional[Any]:
@@ -1332,31 +1445,15 @@ def _get_guide_color_model() -> Optional[Any]:
             "PHOTO_PAD_GUIDE_COLOR_MODEL",
             "replay-attack_ycrcb_luv_extraTreesClassifier.pkl",
         )
-        if not model_path.is_file():
-            _runtime_cache[cache_key] = None
-            _runtime_cache["guide_ycrcb_luv_model_error"] = "missing"
-            return None
         try:
-            import warnings
-
-            import joblib
-
-            _install_sklearn_019_pickle_aliases(joblib)
-            try:
-                from sklearn.exceptions import InconsistentVersionWarning
-            except Exception:
-                InconsistentVersionWarning = UserWarning
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    category=InconsistentVersionWarning,
-                )
-                model = joblib.load(str(model_path))
-            if not callable(getattr(model, "predict_proba", None)):
-                raise RuntimeError("loaded object has no predict_proba")
+            model = _load_guide_extra_trees_classifier(model_path)
             _runtime_cache[cache_key] = model
             _runtime_cache["guide_ycrcb_luv_model_error"] = ""
             return model
+        except FileNotFoundError:
+            _runtime_cache[cache_key] = None
+            _runtime_cache["guide_ycrcb_luv_model_error"] = "missing"
+            return None
         except Exception as exc:
             logger.warning(
                 "PAD guide YCrCb/Luv ExtraTrees model unavailable: %s. "
@@ -1379,15 +1476,7 @@ def _score_guide_color_model(face_roi_bgr: np.ndarray) -> tuple[Optional[float],
         return None, []
     try:
         fv = _guide_color_feature_vector(face_roi_bgr)
-        probs = np.asarray(model.predict_proba(fv), dtype=np.float64)
-        if probs.ndim != 2 or probs.shape[0] < 1:
-            return None, ["guide_ycrcb_luv_model_error"]
-        classes = list(getattr(model, "classes_", []))
-        if 1 in classes:
-            spoof_idx = int(classes.index(1))
-        else:
-            spoof_idx = 1 if probs.shape[1] > 1 else 0
-        score = float(max(0.0, min(1.0, probs[0, spoof_idx])))
+        score = _guide_extra_trees_spoof_score(model, fv)
         tags: list[str] = ["guide_ycrcb_luv_model_used"]
         if score >= _pad_float("guide_color_model_mid"):
             tags.append("guide_ycrcb_luv_model_elevated")
@@ -1487,16 +1576,22 @@ def _signal_color_histogram(
         + 0.24 * min(1.0, low_entropy)
         + 0.14 * min(1.0, mismatch)
     )
+    feat_min = _pad_float("color_hist_strong_feature_min")
     strong_feature_count = sum(
         1
         for value in (peak_score, sparse_score, low_entropy, mismatch)
-        if value >= 0.38
+        if value >= feat_min
     )
+    full_feats = _pad_int("color_hist_full_score_features_min")
     if strong_feature_count < 2:
-        score *= 0.45
+        score *= 0.40
+    elif strong_feature_count < full_feats:
+        score *= 0.78
     score = float(max(0.0, min(1.0, score)))
     if guide_score is not None:
         score = max(score, guide_score)
+    else:
+        score *= _pad_float("color_hist_heuristic_only_scale")
 
     tags: list[str] = list(guide_tags)
     if score >= _pad_float("color_hist_mid"):
@@ -1636,6 +1731,94 @@ def _mean_clamped(values: list[float]) -> float:
     return _clamp01(sum(_clamp01(v) for v in values) / float(len(values)))
 
 
+def _presentation_device_confirmed(tags: list[str], device_score: float) -> bool:
+    """Strong on-face COCO device box — ignores weak or multi-class clutter."""
+    on_face = [t for t in tags if t.startswith("device_on_face:")]
+    score = _clamp01(device_score)
+    if score >= _pad_float("decision_device_confirmed_strong_min"):
+        return True
+    if len(on_face) != 1:
+        return False
+    return score >= _pad_float("decision_device_confirmed_single_min")
+
+
+# Short operator-facing copy for the photo feed (see pad_ui_reason tag).
+_PAD_UI_REASON_RU: dict[str, str] = {
+    "fake_background_display_review": (
+        "Модели видят подмену; признаки экрана в фоне (рамки, сертификаты), не у лица. "
+        "Нужна проверка."
+    ),
+    "fake_color_histogram_review": (
+        "Модели видят подмену; цвета лица настораживают. Нужна проверка."
+    ),
+    "fake_default_review_not_clean": (
+        "Модели видят риск подмены без явного экрана у лица. Нужна проверка."
+    ),
+    "fake_plus_face_gated_screen": (
+        "Модели и геометрия: у лица признаки экрана или рамки."
+    ),
+    "fake_extreme_score_suspicious": "Модели почти уверены: кадр похож на подмену.",
+    "fake_high_plus_suspicious_device_face": (
+        "Высокий риск подмены: устройство подтверждено у лица."
+    ),
+    "fake_plus_color_histogram_suspicious": (
+        "Подмена: модели и цвета лица как на экране."
+    ),
+    "fake_plus_face_reflection_suspicious": (
+        "Обе модели видят подмену; отражение и цвета лица как на экране."
+    ),
+    "fake_high_confidence_no_geometry_suspicious": (
+        "Обе модели уверены в подмене."
+    ),
+    "presentation_insufficient_input_review": (
+        "Лицо или качество не дают уверенного ответа. Нужен новый кадр."
+    ),
+    "face_reflection_display_suspicious": (
+        "Отражение и цвета лица как на экране; подмена вероятна "
+        "(не «телефон у лица», а пересъёмка с дисплея)."
+    ),
+    "color_histogram_display_suspicious": (
+        "Цвета лица как на экране, есть подтверждающие признаки."
+    ),
+    "color_histogram_context_review": (
+        "Цвета или блики на лице настораживают; экран у лица не подтверждён. "
+        "Нужна проверка."
+    ),
+    "face_reflection_context_review": (
+        "Блики на лице; экран или пересъёмка не подтверждены. Нужна проверка."
+    ),
+    "strong_face_gated_screen_review": (
+        "Признаки экрана у лица; модели не уверены. Нужна проверка."
+    ),
+    "background_screen_context_review": (
+        "В фоне видны признаки экрана или рамки; лицо отдельно. Нужна проверка."
+    ),
+    "quality_poor_with_face_gated_screen": (
+        "Слабый кадр и слабые признаки экрана у лица. Нужна проверка."
+    ),
+    "ensemble_consensus_review": "Несколько каналов настораживают. Нужна проверка.",
+    "ensemble_consensus_suspicious": "Несколько каналов согласованно указывают на подмену.",
+    "fake_quality_poor_review": (
+        "Модели видят подмену, но кадр слабый — нужна проверка, не автоблок."
+    ),
+    "fake_quality_limited_review": (
+        "Модели видят риск подмены при ограниченном качестве кадра. Нужна проверка."
+    ),
+}
+
+
+def _pad_ui_reason_text(branch: str, status: str) -> str:
+    if status not in (STATUS_REVIEW, STATUS_SUSPICIOUS):
+        return ""
+    if branch in _PAD_UI_REASON_RU:
+        return _PAD_UI_REASON_RU[branch]
+    if status == STATUS_SUSPICIOUS:
+        return "Автопроверка: согласованные признаки подмены."
+    if status == STATUS_REVIEW:
+        return "Автопроверка: сигналы неоднозначны — нужна проверка."
+    return ""
+
+
 def _pad_consensus_jury(inputs: DecisionInputs, tags: list[str]) -> dict[str, Any]:
     """Build an equal-family PAD jury over independent spoof evidence.
 
@@ -1648,7 +1831,10 @@ def _pad_consensus_jury(inputs: DecisionInputs, tags: list[str]) -> dict[str, An
     """
     model_values = [_clamp01(v) for v in inputs.model_scores.values()]
     if model_values:
-        neural_model = _mean_clamped(model_values)
+        if "fasnet_real" in tags and "minifasnet_onnx" in inputs.model_scores:
+            neural_model = 0.0
+        else:
+            neural_model = _mean_clamped(model_values)
     elif (
         "fasnet_fake" in tags
         or "minifasnet_onnx_fake" in tags
@@ -1739,24 +1925,10 @@ def _pad_consensus_jury(inputs: DecisionInputs, tags: list[str]) -> dict[str, An
 
 
 def _decide(inputs: DecisionInputs) -> PadResult:
-    """Fuse PAD channels with corroboration rules, shielding, and structured trace.
+    """Single global PAD verdict (pad_v12): jury channels, neural debate, one outcome."""
+    from monitoring_app.pad_global_verdict import resolve_global_verdict
 
-    Model spoof scores and face geometry drive hard ``suspicious``. Inner-face
-    FFT/anisotropy and recapture without corroboration yield ``review`` when the
-    ROI is reliable, or insufficient-input ``review`` when it is not; they do not
-    auto-``suspicious`` calm-channel live photos.
-
-    Args:
-        inputs: Per-channel scores and tags from the PAD pipeline.
-
-    Returns:
-        PadResult including human-readable tags and ``pad_struct`` JSON.
-    """
     tags = list(dict.fromkeys(inputs.tags))
-    trace: list[str] = []
-
-    def _append_trace(rule: str) -> None:
-        trace.append(f"pad_rule:{rule}")
 
     if inputs.decode_error:
         return PadResult(
@@ -1791,660 +1963,29 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             color_hist_score=inputs.color_hist_score,
         )
 
-    model_disagreement = "spoof_model_disagreement" in tags
-    deepfake = "spoof_model_family_fake" in tags or (
-        ("fasnet_fake" in tags or "minifasnet_onnx_fake" in tags)
-        and not model_disagreement
-    )
-    spoof_model_uncertain = "pad_spoof_model_missing" in tags or (
-        "deepface_error" in tags and "minifasnet_onnx_used" not in tags
-    ) or model_disagreement
-    rec = float(inputs.recapture_score)
-    refl = float(inputs.face_reflection_score)
-    clr = float(inputs.color_hist_score)
-    rec_mid = _pad_float("recapture_mid")
-    rec_strong = _pad_float("recapture_strong")
-    rec_review_min = _pad_float("decision_recapture_review_min")
-    rec_corr_min = _pad_float("decision_recapture_corroboration_min")
-    refl_review_min = _pad_float("reflection_review_min")
-    refl_mid = _pad_float("reflection_mid")
-    refl_strong = _pad_float("reflection_strong")
-    color_mid = _pad_float("color_hist_mid")
-    color_strong = _pad_float("color_hist_strong")
+    verdict = resolve_global_verdict(inputs, tags)
+    status = verdict.status
+    trust = verdict.trust
+    branch = verdict.branch
+    risk = verdict.risk_score
+    jury = verdict.jury
+    rec = _clamp01(inputs.recapture_score)
+    refl = _clamp01(inputs.face_reflection_score)
+    clr = _clamp01(inputs.color_hist_score)
+    debate = jury.get("debate") or {}
+    neural = float(debate.get("score", inputs.deepface_score))
 
-    has_device = inputs.device_score >= _pad_float("decision_device_present_min")
-    has_frame = inputs.frame_score >= _pad_float("decision_frame_present_min")
-    mid_device = inputs.device_score >= _pad_float("decision_mid_device_min")
-    mid_frame = inputs.frame_score >= _pad_float("decision_mid_frame_min")
-    strong_screen = inputs.device_score >= _pad_float(
-        "decision_strong_device_min"
-    ) and inputs.frame_score >= _pad_float("decision_strong_frame_min")
-    susp_dev = inputs.device_score >= _pad_float("decision_suspicious_device_min")
-    susp_frm = inputs.frame_score >= _pad_float("decision_suspicious_frame_min")
-    dual_mid_geometry = mid_device and mid_frame
-    dual_susp_geometry = susp_dev and susp_frm
-    quality_poor = (
-        inputs.quality_penalty >= _pad_float("decision_quality_poor_min")
-        or "quality_poor" in tags
-    )
-    insufficient_input = _presentation_input_insufficient(
-        tags, inputs.face_area_ratio, inputs.quality_penalty
-    )
-    q_rev_dev = _pad_float("decision_quality_device_review_min")
-    q_rev_frm = _pad_float("decision_quality_frame_review_min")
-    q_rev_sum = _pad_float("decision_quality_combined_review_sum_min")
-    quality_review_signal = (
-        inputs.device_score >= q_rev_dev and inputs.frame_score >= q_rev_frm
-    ) or (inputs.device_score + inputs.frame_score >= q_rev_sum)
-    background_screen_context = inputs.device_bg_score >= max(
-        _pad_float("decision_strong_device_min"), 0.52
-    ) or inputs.frame_global_score >= max(_pad_float("decision_strong_frame_min"), 0.42)
-    credible_display_context = background_screen_context or (
-        "screen_bezel_context" in tags
-        and inputs.frame_global_score >= _pad_float("decision_weak_frame_min")
-    )
-    strong_display_context = background_screen_context or (
-        "screen_bezel_context" in tags
-        and inputs.frame_global_score >= _pad_float("decision_frame_present_min")
-    )
-    high_fake_without_geometry = inputs.deepface_score >= _pad_float(
-        "decision_deepfake_device_min"
-    ) and inputs.quality_penalty < _pad_float(
-        "quality_degraded_force_review_penalty_min"
-    )
-    reflection_guard_fake = (
-        "glasses_reflection_guard" in tags
-        and not has_device
-        and not has_frame
-        and rec < rec_review_min
-    )
+    ensemble = {
+        "decision": jury.get("jury_decision", status),
+        "score": jury.get("consensus_score", 0.0),
+        "strong_families": jury.get("strong_families", []),
+        "review_families": jury.get("review_families", []),
+        "votes": jury.get("votes", []),
+        "global_spoof_score": jury.get("global_spoof_score", risk),
+        "neural_debate": debate,
+    }
 
-    shield = (
-        not deepfake
-        and not quality_poor
-        and inputs.quality_penalty < _pad_float("shield_max_quality_penalty")
-        and inputs.device_score <= _pad_float("shield_max_device_face")
-        and inputs.frame_score <= _pad_float("shield_max_frame_face")
-        and rec <= _pad_float("shield_max_recapture")
-        and clr <= _pad_float("shield_max_color_hist")
-    )
-    ch_rec_corr = rec >= rec_corr_min
-    reflection_context = refl >= refl_review_min and (
-        credible_display_context
-        or has_device
-        or has_frame
-        or rec >= rec_review_min
-        or deepfake
-        or spoof_model_uncertain
-    )
-    isolated_reflection_uncertain = (
-        refl >= refl_mid
-        and not has_device
-        and not has_frame
-        and not credible_display_context
-        and rec < rec_review_min
-        and clr < color_mid
-        and not quality_poor
-        and not insufficient_input
-        and inputs.quality_penalty <= 0.40
-        and inputs.face_area_ratio >= 0.05
-    )
-    reflection_suspicious = (
-        refl >= refl_strong
-        and not quality_poor
-        and not insufficient_input
-        and not reflection_guard_fake
-        and inputs.face_area_ratio
-        >= _pad_float("reflection_suspicious_min_face_area_ratio")
-        and (
-            strong_display_context
-            or strong_screen
-            or dual_susp_geometry
-            or dual_mid_geometry
-            or rec >= rec_corr_min
-            or (
-                deepfake
-                and inputs.deepface_score
-                >= _pad_float("decision_deepfake_mid_suspicious_min")
-            )
-        )
-    )
-    color_context = clr >= color_mid and (
-        credible_display_context
-        or has_device
-        or has_frame
-        or rec >= rec_review_min
-        or refl >= refl_review_min
-        or deepfake
-        or spoof_model_uncertain
-    )
-    color_suspicious = (
-        clr >= color_strong
-        and not quality_poor
-        and not insufficient_input
-        and not reflection_guard_fake
-        and inputs.face_area_ratio >= _pad_float("color_hist_min_face_area_ratio")
-        and (
-            strong_screen
-            or dual_mid_geometry
-            or rec >= rec_corr_min
-            or refl >= refl_mid
-            or (
-                deepfake
-                and inputs.deepface_score
-                >= _pad_float("decision_deepfake_review_min")
-            )
-        )
-    )
-    ensemble = _pad_consensus_jury(inputs, tags)
-
-    risk = (
-        _pad_float("risk_weight_deepface") * inputs.deepface_score
-        + _pad_float("risk_weight_device") * inputs.device_score
-        + _pad_float("risk_weight_frame") * inputs.frame_score
-        + _pad_float("risk_weight_recapture") * rec
-        + _pad_float("risk_weight_reflection") * refl
-        + _pad_float("risk_weight_color_hist") * clr
-    )
-    risk = max(0.0, min(1.0, risk))
-
-    status = STATUS_CLEAN
-    trust: Optional[bool] = True
-    branch = "default_clean"
-
-    if deepfake:
-        if strong_screen or (has_device and has_frame):
-            status = STATUS_SUSPICIOUS
-            trust = False
-            branch = "fake_plus_face_gated_screen"
-            _append_trace(branch)
-        elif inputs.deepface_score >= _pad_float("decision_deepfake_very_high") and (
-            dual_susp_geometry or rec >= rec_mid
-        ):
-            status = STATUS_SUSPICIOUS
-            trust = False
-            branch = "fake_extreme_score_suspicious"
-            _append_trace(branch)
-        elif (
-            inputs.deepface_score >= _pad_float("decision_deepfake_device_min")
-            and susp_dev
-            and has_frame
-        ):
-            status = STATUS_SUSPICIOUS
-            trust = False
-            branch = "fake_high_plus_suspicious_device_face"
-            _append_trace(branch)
-        elif (
-            inputs.deepface_score >= _pad_float("decision_deepfake_mid_suspicious_min")
-            and dual_mid_geometry
-        ):
-            status = STATUS_SUSPICIOUS
-            trust = False
-            branch = "fake_mid_plus_dual_mid_geometry"
-            _append_trace(branch)
-        elif (
-            rec >= rec_strong
-            and inputs.deepface_score
-            >= _pad_float("decision_deepfake_mid_suspicious_min")
-            and ch_rec_corr
-            and (dual_mid_geometry or dual_susp_geometry or (has_device and has_frame))
-        ):
-            status = STATUS_SUSPICIOUS
-            trust = False
-            branch = "fake_plus_strong_recapture_corroborated"
-            _append_trace(branch)
-        elif (
-            inputs.deepface_score >= _pad_float("decision_deepfake_mid_suspicious_min")
-            and strong_display_context
-        ):
-            status = STATUS_SUSPICIOUS
-            trust = False
-            branch = "fake_mid_plus_background_display_suspicious"
-            _append_trace(branch)
-        elif color_suspicious:
-            status = STATUS_SUSPICIOUS
-            trust = False
-            branch = "fake_plus_color_histogram_suspicious"
-            _append_trace(branch)
-        elif reflection_suspicious:
-            status = STATUS_SUSPICIOUS
-            trust = False
-            branch = "fake_plus_face_reflection_suspicious"
-            _append_trace(branch)
-        elif high_fake_without_geometry:
-            status = STATUS_SUSPICIOUS
-            trust = False
-            branch = "fake_high_confidence_no_geometry_suspicious"
-            _append_trace(branch)
-        elif (
-            inputs.deepface_score >= _pad_float("decision_deepfake_review_min")
-            and credible_display_context
-        ):
-            status = STATUS_REVIEW
-            trust = None
-            branch = "fake_background_display_review"
-            _append_trace(branch)
-        elif (
-            inputs.deepface_score >= _pad_float("decision_deepfake_review_min")
-            and color_context
-        ):
-            status = STATUS_REVIEW
-            trust = None
-            branch = "fake_color_histogram_review"
-            _append_trace(branch)
-        elif (
-            "quality_blur" in tags
-            or "quality_low_contrast" in tags
-            or "quality_exposure" in tags
-        ):
-            status = STATUS_REVIEW
-            trust = None
-            branch = "fake_quality_limited_review"
-            _append_trace(branch)
-        elif insufficient_input:
-            status = STATUS_REVIEW
-            trust = None
-            branch = "fake_quality_limited_review"
-            _append_trace(branch)
-        elif quality_poor:
-            status = STATUS_REVIEW
-            trust = None
-            branch = "fake_quality_poor_review"
-            _append_trace(branch)
-        elif reflection_guard_fake:
-            status = STATUS_REVIEW
-            trust = None
-            branch = "fake_reflection_guard_review"
-            _append_trace(branch)
-        elif (
-            inputs.deepface_score < _pad_float("decision_deepfake_review_min")
-            and not mid_device
-            and not mid_frame
-        ):
-            status = STATUS_CLEAN
-            trust = True
-            branch = "fake_low_confidence_no_geometry_clean"
-            _append_trace(branch)
-        else:
-            status = STATUS_REVIEW
-            trust = None
-            branch = "fake_default_review_not_clean"
-            _append_trace(branch)
-    elif reflection_suspicious:
-        status = STATUS_SUSPICIOUS
-        trust = False
-        branch = "face_reflection_display_suspicious"
-        _append_trace(branch)
-    elif color_suspicious:
-        status = STATUS_SUSPICIOUS
-        trust = False
-        branch = "color_histogram_display_suspicious"
-        _append_trace(branch)
-    elif (
-        strong_screen
-        and dual_susp_geometry
-        and not quality_poor
-        and not insufficient_input
-        and inputs.face_area_ratio >= _pad_float("no_fake_susp_min_face_area_ratio")
-    ):
-        status = STATUS_SUSPICIOUS
-        trust = False
-        branch = "no_fake_dual_suspicious_geometry"
-        _append_trace(branch)
-    elif strong_screen and dual_susp_geometry and not quality_poor:
-        status = STATUS_REVIEW
-        trust = None
-        branch = (
-            "presentation_insufficient_input_review"
-            if insufficient_input
-            else "no_fake_dual_geom_small_face_review"
-        )
-        _append_trace(branch)
-    elif (
-        strong_screen
-        and not quality_poor
-        and not insufficient_input
-        and dual_mid_geometry
-        and inputs.face_area_ratio >= _pad_float("no_fake_susp_min_face_area_ratio")
-    ):
-        status = STATUS_SUSPICIOUS
-        trust = False
-        branch = "strong_screen_dual_mid_geometry_suspicious"
-        _append_trace(branch)
-    elif strong_screen and not quality_poor and (has_device or has_frame):
-        status = STATUS_REVIEW
-        trust = None
-        branch = (
-            "presentation_insufficient_input_review"
-            if insufficient_input
-            else "strong_face_gated_screen_review"
-        )
-        _append_trace(branch)
-    elif (
-        rec >= rec_strong
-        and ch_rec_corr
-        and dual_susp_geometry
-        and not quality_poor
-        and not insufficient_input
-        and inputs.face_area_ratio >= _pad_float("no_fake_susp_min_face_area_ratio")
-    ):
-        status = STATUS_SUSPICIOUS
-        trust = False
-        branch = "no_fake_recapture_strong_corroborated_dual_geometry"
-        _append_trace(branch)
-    elif rec >= rec_strong and ch_rec_corr and dual_susp_geometry and not quality_poor:
-        status = STATUS_REVIEW
-        trust = None
-        branch = "no_fake_recapture_strong_dual_geometry_small_face_review"
-        _append_trace(branch)
-    elif rec >= rec_strong:
-        roi_tex = _presentation_roi_reliable_for_texture(
-            tags, inputs.face_area_ratio, inputs.quality_penalty
-        )
-        isolated_rec = not has_device and not has_frame and not quality_poor
-        dual_tex = _recapture_dual_inner_cues(tags)
-        qp_iso = inputs.quality_penalty
-        moire_rec = _pad_float("recapture_isolated_moire_forgive_min_rec")
-        moire_qp = _pad_float("recapture_isolated_moire_max_quality_penalty")
-        ext_single = _pad_float("recapture_isolated_extreme_single_channel_min")
-        if isolated_rec:
-            if dual_tex and rec >= moire_rec and qp_iso < moire_qp:
-                if roi_tex:
-                    status = STATUS_CLEAN
-                    trust = None
-                    branch = "recapture_isolated_extreme_moire_live_uncertain_clean"
-                else:
-                    status = STATUS_REVIEW
-                    trust = None
-                    branch = "presentation_insufficient_input_review"
-                _append_trace(branch)
-            elif dual_tex:
-                if roi_tex:
-                    status = STATUS_REVIEW
-                    trust = None
-                    branch = "recapture_isolated_dual_texture_ambiguous_review"
-                else:
-                    status = STATUS_REVIEW
-                    trust = None
-                    branch = "presentation_insufficient_input_review"
-                _append_trace(branch)
-            elif rec >= ext_single and not dual_tex:
-                if roi_tex:
-                    status = STATUS_CLEAN
-                    trust = None
-                    branch = "recapture_isolated_extreme_single_channel_uncertain_clean"
-                else:
-                    status = STATUS_REVIEW
-                    trust = None
-                    branch = "presentation_insufficient_input_review"
-                _append_trace(branch)
-            else:
-                if roi_tex:
-                    status = STATUS_CLEAN
-                    trust = None
-                    if dual_tex:
-                        branch = (
-                            "recapture_isolated_dual_texture_low_rec_uncertain_clean"
-                        )
-                    else:
-                        branch = "recapture_isolated_single_cue_texture_clean"
-                else:
-                    status = STATUS_REVIEW
-                    trust = None
-                    branch = "presentation_insufficient_input_review"
-                _append_trace(branch)
-        else:
-            if quality_poor:
-                status = STATUS_REVIEW
-                trust = None
-                branch = (
-                    "presentation_insufficient_input_review"
-                    if insufficient_input
-                    else "recapture_strong_quality_context_review"
-                )
-                _append_trace(branch)
-            elif dual_susp_geometry:
-                if roi_tex:
-                    status = STATUS_SUSPICIOUS
-                    trust = False
-                    branch = "recapture_strong_face_geometry_suspicious"
-                else:
-                    status = STATUS_REVIEW
-                    trust = None
-                    branch = "presentation_insufficient_input_review"
-                _append_trace(branch)
-            elif roi_tex:
-                status = STATUS_REVIEW
-                trust = None
-                branch = "recapture_strong_loose_context_ambiguous_review"
-                _append_trace(branch)
-            else:
-                status = STATUS_REVIEW
-                trust = None
-                branch = "presentation_insufficient_input_review"
-                _append_trace(branch)
-    elif rec >= rec_mid and (has_device or has_frame):
-        if dual_susp_geometry:
-            status = STATUS_SUSPICIOUS
-            trust = False
-            branch = "recapture_mid_with_suspicious_context_suspicious"
-            _append_trace(branch)
-        elif insufficient_input:
-            status = STATUS_REVIEW
-            trust = None
-            branch = "presentation_insufficient_input_review"
-            _append_trace(branch)
-        else:
-            status = STATUS_CLEAN
-            trust = None
-            branch = "recapture_mid_weak_geometry_clean"
-            _append_trace(branch)
-    elif rec >= rec_review_min and spoof_model_uncertain:
-        if rec < rec_mid:
-            status = STATUS_CLEAN
-            trust = None
-            branch = "spoof_model_uncertain_low_recapture_clean"
-            _append_trace(branch)
-        elif rec >= rec_mid and (ch_rec_corr or _recapture_dual_inner_cues(tags)):
-            status = STATUS_REVIEW
-            trust = None
-            branch = "spoof_uncertain_texture_ambiguous_review"
-            _append_trace(branch)
-        else:
-            status = STATUS_CLEAN
-            trust = None
-            branch = "spoof_model_uncertain_recapture_uncertain_clean"
-            _append_trace(branch)
-    elif isolated_reflection_uncertain:
-        status = STATUS_CLEAN
-        trust = None
-        branch = "face_reflection_isolated_uncertain_clean"
-        _append_trace(branch)
-    elif reflection_context and refl >= refl_mid:
-        status = STATUS_REVIEW
-        trust = None
-        branch = "face_reflection_context_review"
-        _append_trace(branch)
-    elif color_context and (
-        clr >= color_strong
-        or spoof_model_uncertain
-        or rec >= rec_review_min
-        or refl >= refl_review_min
-        or has_device
-        or has_frame
-    ):
-        status = STATUS_REVIEW
-        trust = None
-        branch = "color_histogram_context_review"
-        _append_trace(branch)
-    elif credible_display_context and not has_device and not has_frame:
-        if not deepfake and not spoof_model_uncertain and rec < rec_review_min:
-            status = STATUS_CLEAN
-            trust = None
-            branch = "background_screen_context_uncertain_clean"
-        else:
-            status = STATUS_REVIEW
-            trust = None
-            branch = "background_screen_context_review"
-        _append_trace(branch)
-    elif quality_poor and quality_review_signal:
-        status = STATUS_REVIEW
-        trust = None
-        branch = (
-            "presentation_insufficient_input_review"
-            if insufficient_input
-            else "quality_poor_with_face_gated_screen"
-        )
-        _append_trace(branch)
-    elif quality_poor and (
-        has_device
-        or has_frame
-        or rec >= rec_review_min
-        or inputs.quality_penalty
-        >= _pad_float("quality_degraded_force_review_penalty_min")
-    ):
-        weak_dev = _pad_float("decision_weak_device_min")
-        weak_frm = _pad_float("decision_weak_frame_min")
-        if (
-            not deepfake
-            and not spoof_model_uncertain
-            and inputs.device_score < weak_dev
-            and inputs.frame_score < weak_frm
-            and rec < rec_review_min
-            and not credible_display_context
-        ):
-            status = STATUS_CLEAN
-            trust = None
-            branch = "image_quality_uncertain_clean"
-        else:
-            status = STATUS_REVIEW
-            trust = None
-            branch = (
-                "presentation_insufficient_input_review"
-                if insufficient_input
-                else "image_quality_degraded_review"
-            )
-        _append_trace(branch)
-    elif insufficient_input:
-        if (
-            not deepfake
-            and not spoof_model_uncertain
-            and not has_device
-            and not has_frame
-            and rec < rec_review_min
-            and not credible_display_context
-        ):
-            status = STATUS_CLEAN
-            trust = None
-            branch = "presentation_insufficient_input_uncertain_clean"
-        else:
-            status = STATUS_REVIEW
-            trust = None
-            branch = "presentation_insufficient_input_review"
-        _append_trace(branch)
-    elif (
-        inputs.quality_penalty > 0.0
-        and any(
-            tag in tags
-            for tag in ("quality_blur", "quality_low_contrast", "quality_exposure")
-        )
-        and not quality_poor
-        and not deepfake
-        and not has_device
-        and not has_frame
-        and rec < rec_review_min
-        and not credible_display_context
-    ):
-        status = STATUS_CLEAN
-        trust = None
-        branch = "image_quality_uncertain_clean"
-        _append_trace(branch)
-    elif quality_poor:
-        status = STATUS_CLEAN
-        trust = None
-        branch = "image_quality_uncertain_clean"
-        _append_trace(branch)
-    elif spoof_model_uncertain and not quality_poor:
-        weak_dev = _pad_float("decision_weak_device_min")
-        weak_frm = _pad_float("decision_weak_frame_min")
-        weak_sum = _pad_float("decision_weak_combined_sum_min")
-        if model_disagreement and inputs.deepface_score >= _pad_float(
-            "spoof_model_family_mid"
-        ):
-            status = STATUS_REVIEW
-            trust = None
-            branch = "spoof_model_disagreement_review"
-            _append_trace(branch)
-        elif (inputs.device_score >= weak_dev or inputs.frame_score >= weak_frm) and (
-            inputs.device_score + inputs.frame_score >= weak_sum
-        ):
-            status = STATUS_REVIEW
-            trust = None
-            branch = "spoof_model_uncertain_weak_face_geometry"
-            _append_trace(branch)
-        else:
-            status = STATUS_CLEAN
-            trust = True
-            branch = "spoof_model_uncertain_clean_fallback"
-            _append_trace(branch)
-    else:
-        weak_dev = _pad_float("decision_weak_device_min")
-        weak_frm = _pad_float("decision_weak_frame_min")
-        weak_sum = _pad_float("decision_weak_combined_sum_min")
-        weak_hit = (
-            not quality_poor
-            and (inputs.device_score >= weak_dev or inputs.frame_score >= weak_frm)
-            and (inputs.device_score + inputs.frame_score >= weak_sum)
-        )
-        if (
-            not deepfake
-            and inputs.device_score >= weak_dev
-            and not has_frame
-            and rec < rec_mid
-            and not quality_poor
-            and not insufficient_input
-        ):
-            status = STATUS_CLEAN
-            trust = None
-            branch = "device_only_context_uncertain_clean"
-            _append_trace(branch)
-        elif weak_hit and not shield:
-            status = STATUS_REVIEW
-            trust = None
-            branch = "weak_face_gated_combined_review"
-            _append_trace(branch)
-        elif weak_hit and shield:
-            status = STATUS_CLEAN
-            trust = True
-            branch = "shield_weak_geometry_clean"
-            _append_trace(branch)
-        else:
-            status = STATUS_CLEAN
-            trust = True
-            branch = "default_clean"
-            _append_trace(branch)
-
-    if (
-        ensemble["decision"] == STATUS_SUSPICIOUS
-        and status != STATUS_SUSPICIOUS
-        and not quality_poor
-        and not insufficient_input
-        and not reflection_guard_fake
-    ):
-        status = STATUS_SUSPICIOUS
-        trust = False
-        branch = "ensemble_consensus_suspicious"
-        _append_trace(branch)
-    elif (
-        ensemble["decision"] == STATUS_REVIEW
-        and status == STATUS_CLEAN
-        and trust is True
-    ):
-        status = STATUS_REVIEW
-        trust = None
-        branch = "ensemble_consensus_review"
-        _append_trace(branch)
-
+    tags.append(f"pad_rule:{branch}")
     struct = {
         "schema": PAD_TRACE_SCHEMA,
         "branch": branch,
@@ -2453,7 +1994,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             if branch == "presentation_insufficient_input_review"
             else status
         ),
-        "deepfake_score": round(inputs.deepface_score, 4),
+        "deepfake_score": round(neural, 4),
         "device_face": round(inputs.device_score, 4),
         "device_bg_diag": round(inputs.device_bg_score, 4),
         "frame_face": round(inputs.frame_score, 4),
@@ -2461,32 +2002,29 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         "recapture": round(rec, 4),
         "face_reflection": round(refl, 4),
         "color_histogram": round(clr, 4),
+        "global_verdict": {
+            "global_spoof_score": jury.get("global_spoof_score", risk),
+            "jury_decision": jury.get("jury_decision"),
+            "neural_debate": debate,
+        },
         "ensemble_consensus": ensemble,
         "quality_penalty": round(inputs.quality_penalty, 4),
         "face_area_ratio": round(inputs.face_area_ratio, 5),
-        "shield_normal_live": shield,
-        "corroboration": {
-            "fasnet_fake": "fasnet_fake" in tags,
-            "minifasnet_onnx_fake": "minifasnet_onnx_fake" in tags,
-            "spoof_model_fake": deepfake,
-            "mid_device": mid_device,
-            "mid_frame": mid_frame,
-            "recapture_corr": ch_rec_corr,
-            "face_reflection": refl >= refl_mid,
-            "color_histogram": clr >= color_mid,
-        },
         "status": status,
     }
-    tags.extend(trace)
     tags.append(
         "pad_evidence:"
-        f"df={inputs.deepface_score:.3f},dev_f={inputs.device_score:.3f},"
+        f"df={neural:.3f},dev_f={inputs.device_score:.3f},"
         f"dev_bg={inputs.device_bg_score:.3f},frm_f={inputs.frame_score:.3f},"
         f"frm_gl={inputs.frame_global_score:.3f},rec={rec:.3f},"
         f"refl={refl:.3f},clr={clr:.3f},qp={inputs.quality_penalty:.3f}"
     )
     tags.append(f"pad_struct:{json.dumps(struct, separators=(',', ':'))}")
     tags.append(f"pad_ensemble:{json.dumps(ensemble, separators=(',', ':'))}")
+    tags.append(f"pad_global:{json.dumps({'score': jury.get('global_spoof_score', risk), 'debate': debate}, separators=(',', ':'))}")
+    ui_reason = _pad_ui_reason_text(branch, status)
+    if ui_reason:
+        tags.append(f"pad_ui_reason:{ui_reason}")
 
     return PadResult(
         status=status,
@@ -2503,6 +2041,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         face_reflection_score=refl,
         color_hist_score=clr,
     )
+
 
 
 def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadResult:
