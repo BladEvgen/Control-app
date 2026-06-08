@@ -106,6 +106,7 @@ def filter_operator_facing_tags(tags: list[str]) -> list[str]:
         if tag.startswith("pad_ui_reason:"):
             continue
         out.append(tag)
+    return out
 
 
 def parse_pad_evidence_line(tags: list[str]) -> Optional[dict[str, float]]:

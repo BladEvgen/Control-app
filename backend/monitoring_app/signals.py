@@ -22,11 +22,14 @@ from .lesson_locations_conf import (
     CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
     CLASS_LOCATION_LIST_CACHE_KEY,
     CLASS_LOCATION_LIST_CACHE_TTL,
+    PUBLIC_HOLIDAY_LIST_CACHE_KEY,
+    PUBLIC_HOLIDAY_LIST_CACHE_TTL,
 )
 from .models import (
     ChildDepartment,
     ClassLocation,
     LessonAttendance,
+    PublicHoliday,
     Staff,
     StaffAttendance,
 )
@@ -292,3 +295,33 @@ def invalidate_class_location_cache(sender, instance, **kwargs):
     _ = instance
     _ = kwargs
     invalidate_class_location_cache_impl()
+
+
+def invalidate_public_holiday_cache_impl():
+    """Инвалидирует кэш PublicHoliday (список API и ключи отчётов)."""
+    invalidate_cache(PUBLIC_HOLIDAY_LIST_CACHE_KEY)
+    invalidate_cache("public_holidays")
+    invalidate_cache("public_holidays_for_excel")
+    try:
+        list_data = list(
+            PublicHoliday.objects.order_by("date").values(
+                "id", "date", "name", "is_working_day"
+            )
+        )
+        Cache.set(
+            PUBLIC_HOLIDAY_LIST_CACHE_KEY,
+            list_data,
+            PUBLIC_HOLIDAY_LIST_CACHE_TTL,
+        )
+    except Exception as e:
+        logger.warning("PublicHoliday list cache warmup failed: %s", e)
+    logger.info("Invalidated PublicHoliday cache and warmed list")
+
+
+@receiver([post_save, post_delete], sender=PublicHoliday)
+def invalidate_public_holiday_cache(sender, instance, **kwargs):
+    """Сигнал: инвалидирует кэш при изменении PublicHoliday."""
+    _ = sender
+    _ = instance
+    _ = kwargs
+    invalidate_public_holiday_cache_impl()

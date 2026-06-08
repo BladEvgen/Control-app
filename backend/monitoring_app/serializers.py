@@ -347,3 +347,12 @@ class ClassLocationSerializer(serializers.ModelSerializer):
             "acceptance_radius_m",
         ]
         read_only_fields = ["id"]
+
+
+class PublicHolidaySerializer(serializers.ModelSerializer):
+    """Сериализатор праздничных дней: дата, название, рабочий ли день."""
+
+    class Meta:
+        model = models.PublicHoliday
+        fields = ["id", "date", "name", "is_working_day"]
+        read_only_fields = ["id"]

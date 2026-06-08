@@ -66,13 +66,18 @@ from monitoring_app.lesson_locations_conf import (
     CLASS_LOCATION_LIST_CACHE_TTL,
     CLUSTER_THRESHOLD_M,
     DEFAULT_ACCEPTANCE_RADIUS_M,
+    PUBLIC_HOLIDAY_LIST_CACHE_KEY,
+    PUBLIC_HOLIDAY_LIST_CACHE_TTL,
     SAME_POINT_THRESHOLD_M,
 )
 from monitoring_app.photo_ws_broadcast import (
     broadcast_lesson_attendance_photo_meta_updates,
 )
 from monitoring_app.services import building_attendance_report
-from monitoring_app.signals import invalidate_class_location_cache_impl
+from monitoring_app.signals import (
+    invalidate_class_location_cache_impl,
+    invalidate_public_holiday_cache_impl,
+)
 from openpyxl import load_workbook
 from rest_framework import status
 from rest_framework.decorators import (
@@ -4001,6 +4006,492 @@ def class_location_bulk_update(request):
         for o in qs
     ]
     return Response({"updated": len(qs), "results": results}, status=status.HTTP_200_OK)
+
+
+_PUBLICHOLIDAY_FIELDS = ("id", "date", "name", "is_working_day")
+
+_publicholiday_item_schema = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=["date", "name"],
+    properties={
+        "date": openapi.Schema(
+            type=openapi.TYPE_STRING,
+            format=openapi.FORMAT_DATE,
+            description="Дата праздника (YYYY-MM-DD)",
+        ),
+        "name": openapi.Schema(type=openapi.TYPE_STRING, description="Название"),
+        "is_working_day": openapi.Schema(
+            type=openapi.TYPE_BOOLEAN,
+            description="Рабочий день (по умолчанию false)",
+        ),
+    },
+)
+
+_publicholiday_list_response = openapi.Response(
+    description="Список праздничных дней",
+    schema=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        properties={
+            "results": openapi.Schema(
+                type=openapi.TYPE_ARRAY,
+                items=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "id": openapi.Schema(type=openapi.TYPE_INTEGER),
+                        "date": openapi.Schema(
+                            type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE
+                        ),
+                        "name": openapi.Schema(type=openapi.TYPE_STRING),
+                        "is_working_day": openapi.Schema(type=openapi.TYPE_BOOLEAN),
+                    },
+                ),
+            ),
+        },
+    ),
+)
+
+
+def _publicholiday_row(obj):
+    return {
+        "id": obj.id,
+        "date": obj.date,
+        "name": obj.name,
+        "is_working_day": obj.is_working_day,
+    }
+
+
+def _parse_public_holiday_ids(request):
+    """IDs из тела {"ids": [...]} или query ?ids=1,2,3."""
+    body = getattr(request, "data", None)
+    if isinstance(body, dict) and body.get("ids") is not None:
+        raw_ids = body.get("ids")
+        if not isinstance(raw_ids, (list, tuple)):
+            return None, "ids must be an array of integers"
+        try:
+            return [int(x) for x in raw_ids], None
+        except (TypeError, ValueError):
+            return None, "ids must be an array of integers"
+    ids_param = request.query_params.get("ids") or request.query_params.get("id")
+    if not ids_param:
+        return None, "Request body 'ids' array or query parameter 'ids' is required"
+    try:
+        id_list = [int(x.strip()) for x in str(ids_param).split(",") if x.strip()]
+    except ValueError:
+        return None, "ids must be comma-separated integers"
+    if not id_list:
+        return None, "At least one id required"
+    return id_list, None
+
+
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Список праздничных дней (CRUD)",
+    operation_description="Возвращает все праздники: id, дата, название, рабочий день. Кэш 1 ч.",
+    tags=["PublicHoliday"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+    ],
+    responses={200: _publicholiday_list_response},
+)
+@swagger_auto_schema(
+    method="post",
+    operation_summary="Создать один или несколько праздничных дней",
+    operation_description="Тело: один объект или массив объектов. Кэш праздников инвалидируется.",
+    tags=["PublicHoliday"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+    ],
+    request_body=openapi.Schema(
+        type=openapi.TYPE_ARRAY,
+        description="Один объект или массив: date, name, is_working_day (опционально).",
+        items=_publicholiday_item_schema,
+    ),
+    responses={
+        201: openapi.Response(
+            description="Создано",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "results": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(description="Ошибка валидации"),
+    },
+)
+@swagger_auto_schema(
+    method="delete",
+    operation_summary="Массовое удаление праздничных дней",
+    operation_description='Тело: {"ids": [1, 2, 3]} или query ?ids=1,2,3.',
+    tags=["PublicHoliday"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            name="ids",
+            in_=openapi.IN_QUERY,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="ID через запятую (альтернатива телу ids)",
+        ),
+    ],
+    request_body=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        properties={
+            "ids": openapi.Schema(
+                type=openapi.TYPE_ARRAY,
+                items=openapi.Schema(type=openapi.TYPE_INTEGER),
+            ),
+        },
+    ),
+    responses={
+        200: openapi.Response(description="Удалено"),
+        400: openapi.Response(description="Не указаны ids"),
+    },
+)
+@api_view(["GET", "POST", "DELETE"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def public_holiday_list_create(request):
+    """GET: список (кэш 1 ч). POST/DELETE: инвалидация кэша праздников."""
+    if request.method == "GET":
+        data = Cache.get(PUBLIC_HOLIDAY_LIST_CACHE_KEY)
+        if data is None:
+            data = list(
+                models.PublicHoliday.objects.order_by("date").values(
+                    "id", "date", "name", "is_working_day"
+                )
+            )
+            Cache.set(
+                PUBLIC_HOLIDAY_LIST_CACHE_KEY,
+                data,
+                PUBLIC_HOLIDAY_LIST_CACHE_TTL,
+            )
+        return Response({"results": data}, status=status.HTTP_200_OK)
+
+    if request.method == "POST":
+        try:
+            body = request.data
+        except Exception:
+            body = None
+        if body is None:
+            return Response(
+                {"error": "Request body is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        is_list = isinstance(body, list)
+        items = body if is_list else [body]
+        serializer = serializers.PublicHolidaySerializer(data=items, many=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        validated = serializer.validated_data
+        if not validated or not isinstance(validated, (list, tuple)):
+            return Response(
+                {"error": "At least one item required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        with _db_atomic():
+            created = []
+            for d in validated:
+                obj = models.PublicHoliday.objects.create(
+                    date=d["date"],
+                    name=d["name"],
+                    is_working_day=d.get("is_working_day", False),
+                )
+                created.append(obj)
+        if len(created) > 0:
+            invalidate_public_holiday_cache_impl()
+        return Response(
+            {"results": [_publicholiday_row(o) for o in created]},
+            status=status.HTTP_201_CREATED,
+        )
+
+    if request.method == "DELETE":
+        id_list, err = _parse_public_holiday_ids(request)
+        if err:
+            return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+        deleted, _ = models.PublicHoliday.objects.filter(id__in=id_list).delete()
+        return Response(
+            {"deleted": deleted, "ids": id_list},
+            status=status.HTTP_200_OK,
+        )
+    return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
+@swagger_auto_schema(
+    method="get",
+    operation_summary="Один праздничный день по ID",
+    tags=["PublicHoliday"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            "id",
+            openapi.IN_PATH,
+            type=openapi.TYPE_INTEGER,
+            description="ID праздника",
+        ),
+    ],
+    responses={
+        200: _publicholiday_list_response,
+        404: openapi.Response(description="Не найдено"),
+    },
+)
+@swagger_auto_schema(
+    method="put",
+    operation_summary="Полностью обновить праздничный день",
+    tags=["PublicHoliday"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            "id",
+            openapi.IN_PATH,
+            type=openapi.TYPE_INTEGER,
+            description="ID праздника",
+        ),
+    ],
+    request_body=_publicholiday_item_schema,
+    responses={
+        200: _publicholiday_list_response,
+        404: openapi.Response(description="Не найдено"),
+    },
+)
+@swagger_auto_schema(
+    method="patch",
+    operation_summary="Частично обновить праздничный день",
+    tags=["PublicHoliday"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            "id",
+            openapi.IN_PATH,
+            type=openapi.TYPE_INTEGER,
+            description="ID праздника",
+        ),
+    ],
+    request_body=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        properties={
+            "date": openapi.Schema(
+                type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE
+            ),
+            "name": openapi.Schema(type=openapi.TYPE_STRING),
+            "is_working_day": openapi.Schema(type=openapi.TYPE_BOOLEAN),
+        },
+    ),
+    responses={
+        200: _publicholiday_list_response,
+        404: openapi.Response(description="Не найдено"),
+    },
+)
+@swagger_auto_schema(
+    method="delete",
+    operation_summary="Удалить один праздничный день",
+    tags=["PublicHoliday"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+        openapi.Parameter(
+            "id",
+            openapi.IN_PATH,
+            type=openapi.TYPE_INTEGER,
+            description="ID праздника",
+        ),
+    ],
+    responses={
+        204: openapi.Response(description="Удалено"),
+        404: openapi.Response(description="Не найдено"),
+    },
+)
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def public_holiday_detail(request, pk):
+    """GET/PUT/PATCH/DELETE одного праздника по pk."""
+    holiday = get_object_or_404(
+        models.PublicHoliday.objects.only(*_PUBLICHOLIDAY_FIELDS),
+        pk=pk,
+    )
+    if request.method == "GET":
+        return Response(_publicholiday_row(holiday), status=status.HTTP_200_OK)
+    if request.method == "PUT":
+        serializer = serializers.PublicHolidaySerializer(
+            holiday, data=request.data, partial=False
+        )
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    if request.method == "PATCH":
+        serializer = serializers.PublicHolidaySerializer(
+            holiday, data=request.data, partial=True
+        )
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    if request.method == "DELETE":
+        holiday.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
+_publicholiday_bulk_update_schema = openapi.Schema(
+    type=openapi.TYPE_ARRAY,
+    items=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        required=["id"],
+        properties={
+            "id": openapi.Schema(type=openapi.TYPE_INTEGER, description="ID праздника"),
+            "date": openapi.Schema(
+                type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE
+            ),
+            "name": openapi.Schema(type=openapi.TYPE_STRING),
+            "is_working_day": openapi.Schema(type=openapi.TYPE_BOOLEAN),
+        },
+    ),
+)
+
+
+@swagger_auto_schema(
+    method="patch",
+    operation_summary="Массовое обновление праздничных дней",
+    operation_description="Тело: массив объектов с обязательным полем id. Кэш инвалидируется.",
+    tags=["PublicHoliday"],
+    manual_parameters=[
+        openapi.Parameter(
+            name="X-API-KEY",
+            in_=openapi.IN_HEADER,
+            type=openapi.TYPE_STRING,
+            required=False,
+            description="API ключ (альтернатива JWT).",
+        ),
+    ],
+    request_body=_publicholiday_bulk_update_schema,
+    responses={
+        200: openapi.Response(
+            description="Обновлено",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "updated": openapi.Schema(type=openapi.TYPE_INTEGER),
+                    "results": openapi.Schema(
+                        type=openapi.TYPE_ARRAY,
+                        items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                    ),
+                },
+            ),
+        ),
+        400: openapi.Response(description="Ошибка валидации"),
+    },
+)
+@api_view(["PATCH"])
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+def public_holiday_bulk_update(request):
+    """Массовое обновление праздников: bulk_update + инвалидация кэша."""
+    try:
+        body = request.data
+    except Exception:
+        body = None
+    if body is None:
+        return Response(
+            {"error": "Body must be a non-empty array of objects with 'id'"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not isinstance(body, list):
+        body = [body] if isinstance(body, dict) and "id" in body else []
+    if not body:
+        return Response(
+            {"error": "Body must be a non-empty array of objects with 'id'"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    ids = []
+    for item in body:
+        raw_id = item.get("id")
+        if raw_id is None:
+            return Response(
+                {"error": "Each item must have integer 'id'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "Each item must have integer 'id'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    unique_ids = list(dict.fromkeys(ids))
+    qs = list(
+        models.PublicHoliday.objects.only(*_PUBLICHOLIDAY_FIELDS).filter(
+            id__in=unique_ids
+        )
+    )
+    found_ids = {o.id for o in qs}
+    missing = [i for i in unique_ids if i not in found_ids]
+    if missing:
+        return Response(
+            {"error": "Some ids not found", "missing_ids": missing},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    by_id = {o.id: o for o in qs}
+    update_fields = ["date", "name", "is_working_day"]
+    for raw in body:
+        obj = by_id.get(int(raw["id"]))
+        if not obj:
+            continue
+        for f in update_fields:
+            if f in raw:
+                setattr(obj, f, raw[f])
+    with _db_atomic():
+        models.PublicHoliday.objects.bulk_update(qs, update_fields)
+    invalidate_public_holiday_cache_impl()
+    return Response(
+        {
+            "updated": len(qs),
+            "results": [_publicholiday_row(o) for o in qs],
+        },
+        status=status.HTTP_200_OK,
+    )
 
 
 @swagger_auto_schema(

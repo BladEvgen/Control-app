@@ -823,6 +823,61 @@ class PublicHolidayAdminInitialDataTest(SimpleTestCase):
         self.assertIs(initial["is_working_day"], False)
 
 
+class PublicHolidayAPITest(APITestCase):
+    def setUp(self):
+        super().setUp()
+        Cache.clear()
+        self.user = User.objects.create_user(
+            username="public-holiday-api-user",
+            password="12345",
+        )
+        self.api_key = APIKey.objects.create(
+            key_name="Public Holiday API Key",
+            created_by=self.user,
+        )
+        self.client.credentials(HTTP_X_API_KEY=self.api_key.key)
+        self.list_url = reverse("public_holiday_list_create")
+        self.bulk_url = reverse("public_holiday_bulk_update")
+
+    def test_public_holiday_crud_and_bulk(self):
+        create_resp = self.client.post(
+            self.list_url,
+            [{"date": "2026-01-01", "name": "Новый год"}],
+            format="json",
+        )
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED)
+        holiday_id = create_resp.data["results"][0]["id"]
+
+        list_resp = self.client.get(self.list_url)
+        self.assertEqual(list_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(list_resp.data["results"]), 1)
+
+        detail_url = reverse("public_holiday_detail", kwargs={"pk": holiday_id})
+        patch_resp = self.client.patch(
+            detail_url,
+            {"name": "Новый год (обновлено)"},
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_resp.data["name"], "Новый год (обновлено)")
+
+        bulk_resp = self.client.patch(
+            self.bulk_url,
+            [{"id": holiday_id, "is_working_day": True}],
+            format="json",
+        )
+        self.assertEqual(bulk_resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(bulk_resp.data["results"][0]["is_working_day"])
+
+        delete_resp = self.client.delete(
+            self.list_url,
+            {"ids": [holiday_id]},
+            format="json",
+        )
+        self.assertEqual(delete_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(PublicHoliday.objects.filter(id=holiday_id).count(), 0)
+
+
 class FetcherViewTest(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="fetcher_user", password="12345")

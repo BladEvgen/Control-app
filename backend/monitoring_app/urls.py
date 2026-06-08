@@ -59,6 +59,21 @@ urlpatterns = [
         name="class_location_detail",
     ),
     path(
+        "api/publicholiday/",
+        views.public_holiday_list_create,
+        name="public_holiday_list_create",
+    ),
+    path(
+        "api/publicholiday/bulk/",
+        views.public_holiday_bulk_update,
+        name="public_holiday_bulk_update",
+    ),
+    path(
+        "api/publicholiday/<int:pk>/",
+        views.public_holiday_detail,
+        name="public_holiday_detail",
+    ),
+    path(
         "api/lesson_attendance/",
         views.create_lesson_attendance,
         name="create_lesson_attendance",
