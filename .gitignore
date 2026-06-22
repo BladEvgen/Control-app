@@ -321,3 +321,4 @@ backend/models/face_verification_calibration*.json
 scripts/augment_clear.sh
 scripts/git-commit-grouped-tracked.sh
 **/graphify-out/**
+**/.memsearch/**
