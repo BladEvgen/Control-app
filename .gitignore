@@ -322,3 +322,5 @@ scripts/augment_clear.sh
 scripts/git-commit-grouped-tracked.sh
 **/graphify-out/**
 **/.memsearch/**
+**/.claude/**
+**/pad_ml/**

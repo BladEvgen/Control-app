@@ -102,8 +102,11 @@ class PadDecisionTests(SimpleTestCase):
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
         self.assertIn("pad_rule:fake_mid_plus_dual_mid_geometry", result.tags)
 
-    def test_model_disagreement_when_fasnet_live_accepts_cautiously(self):
-        """FasNet live + elevated ONNX must not auto-block (campus selfie pattern)."""
+    def test_model_disagreement_when_fasnet_live_goes_to_review(self):
+        """FasNet live + elevated ONNX with zero corroboration must go to review,
+        not auto-clean: neither model's raw score reliably separates real from
+        spoofed faces in this disagreement zone (confirmed by manual image audit),
+        so a human must decide instead of trusting FasNet's "live" call blindly."""
         result = _decide(
             DecisionInputs(
                 decode_error=False,
@@ -121,9 +124,9 @@ class PadDecisionTests(SimpleTestCase):
                 model_scores={"fasnet": 0.0, "minifasnet_onnx": 0.92},
             )
         )
-        self.assertEqual(result.status, STATUS_CLEAN)
-        self.assertTrue(result.trust_confirmed)
-        self.assertIn("pad_rule:default_clean", result.tags)
+        self.assertEqual(result.status, STATUS_REVIEW)
+        self.assertIsNone(result.trust_confirmed)
+        self.assertIn("pad_rule:fake_default_review_not_clean", result.tags)
 
     def test_model_disagreement_without_fasnet_live_stays_review(self):
         result = _decide(
@@ -282,8 +285,14 @@ class PadDecisionTests(SimpleTestCase):
         self.assertEqual(result.status, STATUS_CLEAN)
         self.assertIn("pad_rule:live_selfie_surface_noise_uncertain_clean", result.tags)
 
-    def test_live_selfie_color_reflection_without_geometry_not_suspicious(self):
-        """Regression: 2026-06-02 false positives (fasnet live + color + glare, no screen)."""
+    def test_live_selfie_color_reflection_without_geometry_goes_to_review(self):
+        """2026-06-02 false-positive pattern (fasnet live + color + glare, no screen)
+        is indistinguishable, on existing signals, from confirmed close-up screen
+        recaptures with the same fingerprint (zero geometry, high reflection/color,
+        model disagreement) found via manual photo audit in 2026-06-22. Real selfies
+        and real spoofs produce identical scores here, so this now goes to human
+        review instead of auto-clean, accepting more manual checks to avoid letting
+        spoofs through silently."""
         result = _decide(
             DecisionInputs(
                 decode_error=False,
@@ -304,9 +313,11 @@ class PadDecisionTests(SimpleTestCase):
                 color_hist_score=0.52,
             )
         )
-        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertEqual(result.status, STATUS_REVIEW)
         self.assertIsNone(result.trust_confirmed)
-        self.assertIn("pad_rule:live_selfie_surface_noise_uncertain_clean", result.tags)
+        self.assertIn(
+            "pad_rule:fake_plus_color_histogram_review_no_geometry", result.tags
+        )
 
     def test_ensemble_consensus_escalates_independent_families(self):
         result = _decide(
@@ -584,6 +595,30 @@ class PadDecisionTests(SimpleTestCase):
         self.assertTrue(result.trust_confirmed)
         self.assertIn("pad_rule:fake_low_confidence_no_geometry_clean", result.tags)
 
+    def test_mid_confidence_fake_without_geometry_goes_review_not_clean(self):
+        """Regression: neural in [spoof_model_family_mid, decision_deepfake_review_min)
+        with zero geometry must not silently auto-clean. Historical replay of confirmed
+        real spoofs (pad_v7 manual_verdict=suspicious) showed deepfake_score in 0.50-0.64
+        auto-resolving to clean because this band fell through fake_low_confidence_no_geometry_clean
+        before ever reaching the spoof_model_family_mid review check below it.
+        """
+        for score in (0.50, 0.55, 0.60, 0.64):
+            with self.subTest(score=score):
+                result = _decide(
+                    DecisionInputs(
+                        decode_error=False,
+                        has_face=True,
+                        deepface_score=score,
+                        device_score=0.0,
+                        frame_score=0.0,
+                        quality_penalty=0.05,
+                        tags=["fasnet_fake"],
+                        recapture_score=0.0,
+                    )
+                )
+                self.assertEqual(result.status, STATUS_REVIEW)
+                self.assertIn("pad_rule:fake_default_review_not_clean", result.tags)
+
     def test_reflection_guard_fake_without_geometry_stays_review(self):
         result = _decide(
             DecisionInputs(
@@ -621,8 +656,12 @@ class PadDecisionTests(SimpleTestCase):
         self.assertFalse(result.trust_confirmed)
         self.assertIn("pad_rule:face_reflection_display_suspicious", result.tags)
 
-    def test_fasnet_live_blur_tv_color_stays_clean_not_suspicious(self):
-        """Blur + weak TV box + MiniFAS noise while FasNet live (June 2 Baygozha class)."""
+    def test_fasnet_live_blur_tv_disagreement_goes_to_review(self):
+        """Blur + weak TV box + MiniFAS noise while FasNet live (June 2 Baygozha class).
+
+        Model disagreement is no longer trusted as automatically benign: with a
+        device confirmed on-face and poor image quality, this now requires human
+        review rather than silently resolving to clean."""
         result = _decide(
             DecisionInputs(
                 decode_error=False,
@@ -647,22 +686,16 @@ class PadDecisionTests(SimpleTestCase):
                 color_hist_score=0.6,
             )
         )
-        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertEqual(result.status, STATUS_REVIEW)
         self.assertIsNone(result.trust_confirmed)
-        self.assertTrue(
-            any(
-                rule in result.tags
-                for rule in (
-                    "pad_rule:live_selfie_surface_noise_uncertain_clean",
-                    "pad_rule:image_quality_uncertain_clean",
-                )
-            ),
-            msg=f"unexpected rules: {result.tags}",
-        )
-        self.assertNotIn("pad_rule:face_reflection_display_suspicious", result.tags)
+        self.assertIn("pad_rule:quality_poor_with_face_gated_screen", result.tags)
 
-    def test_fasnet_live_tv_reflection_stays_clean_not_suspicious(self):
-        """FasNet live + color/reflection heuristics without neural spoof (June 2 Dudikova class)."""
+    def test_fasnet_live_tv_reflection_disagreement_goes_to_suspicious(self):
+        """FasNet live + color/reflection heuristics without neural spoof (June 2 Dudikova class).
+
+        With a device confirmed on-face plus a strong color-histogram screen
+        signature, model disagreement must escalate to suspicious rather than
+        being waved through as clean."""
         result = _decide(
             DecisionInputs(
                 decode_error=False,
@@ -684,10 +717,9 @@ class PadDecisionTests(SimpleTestCase):
                 color_hist_score=0.8,
             )
         )
-        self.assertEqual(result.status, STATUS_CLEAN)
-        self.assertIsNone(result.trust_confirmed)
-        self.assertIn("pad_rule:live_selfie_surface_noise_uncertain_clean", result.tags)
-        self.assertNotIn("pad_rule:face_reflection_display_suspicious", result.tags)
+        self.assertEqual(result.status, STATUS_SUSPICIOUS)
+        self.assertFalse(result.trust_confirmed)
+        self.assertIn("pad_rule:fake_plus_color_histogram_suspicious", result.tags)
 
     def test_face_reflection_without_context_does_not_auto_reject(self):
         result = _decide(
@@ -706,7 +738,11 @@ class PadDecisionTests(SimpleTestCase):
         self.assertNotEqual(result.status, STATUS_SUSPICIOUS)
         self.assertIn("pad_rule:face_reflection_isolated_uncertain_clean", result.tags)
 
-    def test_isolated_reflection_with_model_disagreement_accepts_cautiously(self):
+    def test_isolated_reflection_with_model_disagreement_goes_to_review(self):
+        """Model disagreement is treated as genuine uncertainty, not automatically
+        benign, even with only an isolated reflection signal and no color
+        corroboration: catching real screen-recapture attacks takes priority
+        over avoiding the extra manual review."""
         result = _decide(
             DecisionInputs(
                 decode_error=False,
@@ -726,9 +762,8 @@ class PadDecisionTests(SimpleTestCase):
                 color_hist_score=0.1162,
             )
         )
-        self.assertEqual(result.status, STATUS_CLEAN)
+        self.assertEqual(result.status, STATUS_REVIEW)
         self.assertIsNone(result.trust_confirmed)
-        self.assertIn("pad_rule:face_reflection_isolated_uncertain_clean", result.tags)
 
     def test_fake_plus_face_reflection_goes_suspicious(self):
         result = _decide(
@@ -736,7 +771,7 @@ class PadDecisionTests(SimpleTestCase):
                 decode_error=False,
                 has_face=True,
                 deepface_score=0.84,
-                device_score=0.0,
+                device_score=0.40,
                 frame_score=0.0,
                 quality_penalty=0.05,
                 tags=["fasnet_fake", "face_reflection_screen_like"],
@@ -754,7 +789,7 @@ class PadDecisionTests(SimpleTestCase):
                 decode_error=False,
                 has_face=True,
                 deepface_score=0.70,
-                device_score=0.0,
+                device_score=0.40,
                 frame_score=0.0,
                 quality_penalty=0.05,
                 tags=["fasnet_fake", "face_color_histogram_screen_like"],
@@ -765,6 +800,74 @@ class PadDecisionTests(SimpleTestCase):
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
         self.assertFalse(result.trust_confirmed)
         self.assertIn("pad_rule:fake_plus_color_histogram_suspicious", result.tags)
+
+    def test_fake_plus_face_reflection_without_geometry_stays_review(self):
+        """Regression: real selfies (normal face crop, no screen/frame/recapture
+        evidence) were wrongly auto-rejected because face_reflection alone
+        corroborated a miscalibrated neural 'fake' call. Reproduces production
+        false positive LessonAttendance id 61783 (manual_verdict=clean):
+        fasnet=0.9872, minifasnet_onnx=0.9997, guide=0.7 (both_fake debate
+        neural=0.8957), device/frame=0.0, face_reflection=0.8325,
+        face_area_ratio=0.204.
+        """
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.9872,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.35,
+                tags=[
+                    "fasnet_fake",
+                    "minifasnet_onnx_fake",
+                    "guide_ycrcb_luv_model_fake",
+                    "face_reflection_screen_like",
+                ],
+                face_area_ratio=0.204,
+                face_reflection_score=0.8325,
+                color_hist_score=0.70,
+                model_scores={"minifasnet_onnx": 0.9997},
+            )
+        )
+        self.assertEqual(result.status, STATUS_REVIEW)
+        self.assertIn(
+            "pad_rule:fake_plus_face_reflection_review_no_geometry", result.tags
+        )
+
+    def test_fake_plus_color_histogram_without_geometry_stays_review(self):
+        """Regression: same false-positive pattern via the color-histogram
+        branch (isolated from face-reflection by keeping face_reflection_score
+        below refl_mid, so the color branch is the one being exercised).
+        Based on production false positive LessonAttendance id 62749
+        (manual_verdict=clean): fasnet=0.9812, minifasnet_onnx=0.9997,
+        guide=0.7 (both_fake debate neural=0.8936), device/frame=0.0,
+        color_hist=0.70, face_area_ratio=0.133.
+        """
+        result = _decide(
+            DecisionInputs(
+                decode_error=False,
+                has_face=True,
+                deepface_score=0.9812,
+                device_score=0.0,
+                frame_score=0.0,
+                quality_penalty=0.0,
+                tags=[
+                    "fasnet_fake",
+                    "minifasnet_onnx_fake",
+                    "guide_ycrcb_luv_model_fake",
+                    "face_color_histogram_screen_like",
+                ],
+                face_area_ratio=0.133,
+                face_reflection_score=0.0,
+                color_hist_score=0.70,
+                model_scores={"minifasnet_onnx": 0.9997},
+            )
+        )
+        self.assertEqual(result.status, STATUS_REVIEW)
+        self.assertIn(
+            "pad_rule:fake_plus_color_histogram_review_no_geometry", result.tags
+        )
 
     def test_color_histogram_with_recapture_context_goes_suspicious(self):
         result = _decide(
@@ -1412,9 +1515,7 @@ class PadGuideModelFeatureTests(SimpleTestCase):
         _runtime_cache["guide_ycrcb_luv_extra_trees"] = fake
         _runtime_cache["guide_ycrcb_luv_model_error"] = ""
 
-        score, tags = _score_guide_color_model(
-            np.zeros((32, 32, 3), dtype=np.uint8)
-        )
+        score, tags = _score_guide_color_model(np.zeros((32, 32, 3), dtype=np.uint8))
 
         self.assertIsNotNone(score)
         score_value = cast(float, score)
@@ -1722,7 +1823,10 @@ class PadAdminSummaryTests(TestCase):
         from monitoring_app.models import LessonAttendance
         from monitoring_app.pad_admin_summary import _is_auto_insufficient_input
 
-        review_tags = ["pad_rule:presentation_insufficient_input_review", "quality_poor"]
+        review_tags = [
+            "pad_rule:presentation_insufficient_input_review",
+            "quality_poor",
+        ]
         review = LessonAttendance(
             photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
             photo_spoof_tags=review_tags,
