@@ -1,0 +1,17 @@
+# Опционально: PyTorch с поддержкой NVIDIA CUDA + InsightFace (Windows).
+#
+# 1) torch/torchvision/torchaudio из base-win.txt — CPU-only wheel по умолчанию.
+#    Если есть NVIDIA GPU, переустановите одной командой (подставьте версию CUDA):
+#
+#   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+#
+#    Варианты index-url: cu118, cu121, cu124, cu128 — см. https://pytorch.org/get-started/locally/
+#    Проверка: python -c "import torch; print(torch.cuda.is_available())"
+#
+# 2) InsightFace (распознавание лиц) требует Microsoft C++ Build Tools:
+#    https://visualstudio.microsoft.com/visual-cpp-build-tools/
+#    После установки Build Tools и перезапуска терминала:
+#
+#   pip install -r requirements/cuda-win.txt
+
+insightface==0.7.3

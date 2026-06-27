@@ -103,7 +103,6 @@ msgpack==1.1.0
 mtcnn==1.0.0
 multidict==6.0.5
 mypy-extensions==1.0.0
-mysqlclient==2.2.4
 namex==0.0.8
 networkx==3.4.1
 ninja==1.13.0
@@ -125,7 +124,6 @@ platformdirs==4.2.2
 prettytable==3.11.0
 prompt_toolkit==3.0.48
 protobuf==4.25.5
-psycopg2-binary==2.9.9
 pyasn1==0.6.1
 pyasn1_modules==0.4.1
 pybind11==3.0.1
