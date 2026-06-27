@@ -18,9 +18,13 @@ except Exception:
 
 app = Celery("django_settings")
 
+_redis_host = os.getenv("REDIS_HOST", "localhost")
+_redis_port = os.getenv("REDIS_PORT", "6379")
+_redis_url = f"redis://{_redis_host}:{_redis_port}/0"
+
 app.conf.update(
-    broker_url="redis://localhost:6379/0",
-    result_backend="redis://localhost:6379/0",
+    broker_url=_redis_url,
+    result_backend=_redis_url,
     broker_connection_retry_on_startup=True,
     task_soft_time_limit=21600,
     task_time_limit=21660,

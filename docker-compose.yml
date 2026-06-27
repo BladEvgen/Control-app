@@ -1,0 +1,249 @@
+name: control-app
+
+# Локальная разработка (НЕ прод — прод работает через native systemd, см.
+# backend/scripts/setup.sh). Поднимает БД (MySQL или PostgreSQL, через
+# profiles) + Redis + backend (ASGI/Uvicorn + Celery worker + Celery beat) +
+# одноразовую сборку frontend.
+#
+#   cp backend/.env.docker.example backend/.env.docker   # один раз, заполнить
+#
+#   docker compose --profile mysql up -d      # backend + MySQL + Redis
+#   docker compose --profile postgres up -d   # backend + PostgreSQL + Redis
+#
+# Frontend собирается в ./frontend/dist (bind mount) — раздавайте его локальным
+# nginx/`npm run preview`/`vite` так же, как на проде, контейнер с frontend
+# завершается после сборки (restart: "no").
+#
+# GPU (опционально): если на хосте есть NVIDIA GPU + nvidia-container-toolkit,
+# раскомментируйте секцию `deploy.resources.reservations.devices` у web/
+# celery-worker. Без GPU сервисы работают на CPU как сейчас в проде.
+
+x-backend-build: &backend_build
+  build:
+    context: .
+    dockerfile: docker/backend/Dockerfile
+
+x-logging-json: &logging_json
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-runtime-volumes: &runtime_volumes
+  - ./backend/media:/app/media
+  - ./backend/staticroot:/app/staticroot
+  - ./backend/logs:/app/logs
+  - ./backend/models:/app/models
+
+# Опциональный проброс GPU (требует nvidia-container-toolkit на хосте).
+# Подключайте через `<<: *gpu_reservation` в нужном сервисе при необходимости.
+x-gpu-reservation: &gpu_reservation
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+networks:
+  backend:
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: control-app-mysql
+    profiles: ["mysql"]
+    restart: unless-stopped
+    networks:
+      - backend
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-control_app}
+      MYSQL_USER: ${DB_USER:-control_app}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-control_app}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    logging: *logging_json
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  postgres:
+    image: postgres:16
+    container_name: control-app-postgres
+    profiles: ["postgres"]
+    restart: unless-stopped
+    networks:
+      - backend
+    environment:
+      POSTGRES_DB: ${DB_NAME:-control_app}
+      POSTGRES_USER: ${DB_USER:-control_app}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-control_app}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    logging: *logging_json
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-control_app}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: control-app-redis
+    profiles: ["mysql", "postgres"]
+    restart: unless-stopped
+    networks:
+      - backend
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    volumes:
+      - redis_data:/data
+    logging: *logging_json
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  app-init:
+    <<: *backend_build
+    container_name: control-app-init
+    profiles: ["mysql", "postgres"]
+    restart: "no"
+    init: true
+    user: "1000:1013"
+    networks:
+      - backend
+    env_file:
+      - ./backend/.env.docker
+    depends_on:
+      mysql:
+        condition: service_healthy
+        required: false
+      postgres:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+    volumes: *runtime_volumes
+    logging: *logging_json
+    entrypoint: ["/entrypoint.sh"]
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        python manage.py migrate --noinput
+        python manage.py collectstatic --noinput
+
+  web:
+    <<: *backend_build
+    container_name: control-app-web
+    profiles: ["mysql", "postgres"]
+    init: true
+    restart: unless-stopped
+    user: "1000:1013"
+    networks:
+      - backend
+    env_file:
+      - ./backend/.env.docker
+    depends_on:
+      app-init:
+        condition: service_completed_successfully
+    volumes: *runtime_volumes
+    ports:
+      - "127.0.0.1:${DJANGO_PUBLISH_PORT:-10808}:10808"
+    logging: *logging_json
+    command:
+      - uvicorn
+      - django_settings.asgi:application
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "10808"
+      - --workers
+      - "${UVICORN_WORKERS:-4}"
+      - --proxy-headers
+
+  celery-worker:
+    <<: *backend_build
+    container_name: control-app-celery-worker
+    profiles: ["mysql", "postgres"]
+    init: true
+    restart: unless-stopped
+    user: "1000:1013"
+    networks:
+      - backend
+    env_file:
+      - ./backend/.env.docker
+    depends_on:
+      app-init:
+        condition: service_completed_successfully
+    volumes: *runtime_volumes
+    logging: *logging_json
+    stop_grace_period: 60s
+    command:
+      - celery
+      - -A
+      - django_settings.celery_app
+      - worker
+      - --loglevel=info
+      - --concurrency=2
+      - --prefetch-multiplier=4
+      - --max-tasks-per-child=1000
+      - --queues=control_app_queue
+
+  celery-beat:
+    <<: *backend_build
+    container_name: control-app-celery-beat
+    profiles: ["mysql", "postgres"]
+    init: true
+    restart: unless-stopped
+    user: "1000:1013"
+    networks:
+      - backend
+    env_file:
+      - ./backend/.env.docker
+    depends_on:
+      app-init:
+        condition: service_completed_successfully
+    volumes: *runtime_volumes
+    logging: *logging_json
+    command:
+      - celery
+      - -A
+      - django_settings.celery_app
+      - beat
+      - --loglevel=info
+      - --max-interval=10
+
+  frontend:
+    container_name: control-app-frontend
+    profiles: ["frontend"]
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    init: true
+    restart: "no"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    logging: *logging_json
+
+volumes:
+  mysql_data:
+  postgres_data:
+  redis_data:

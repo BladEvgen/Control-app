@@ -1,8 +1,19 @@
 #!/bin/bash
+# Локальная разработка без Docker: установка Node.js через nvm.
+# Если вы используете docker-compose.yml (рекомендуемый путь), этот скрипт не нужен —
+# Node.js ставится внутри docker/frontend/Dockerfile.
 
+set -euo pipefail
 
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+if ! command -v nvm >/dev/null 2>&1; then
+    echo -e "\e[93mnvm не найден. Установите его: https://github.com/nvm-sh/nvm#installing-and-updating\e[0m"
+    exit 1
+fi
+
+NODE_VERSION="20.11.1"
 
 execute_command() {
     eval "$1"
@@ -13,6 +24,7 @@ execute_command() {
     fi
 }
 
-execute_command "nvm install v20.11.1"
-execute_command "sudo apt install npm"
-echo -e "\e[92mПожалуйста, запустите install_dependencies.sh\e[0m"
+execute_command "nvm install ${NODE_VERSION}"
+execute_command "nvm alias default ${NODE_VERSION}"
+
+echo -e "\e[92mГотово. Далее: backend/scripts/install_dependencies.sh\e[0m"

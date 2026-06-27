@@ -39,39 +39,64 @@ Control-app is a system designed for managing employee attendance, calculating w
 
 ## Setup and Installation
 
-### Prerequisites
+### Recommended: Docker Compose (local development)
 
-- **Python 3.11**
-- **Node.js & npm**
-- **PostgreSQL/MySQL**
-- **Cuda 12**
+The fastest way to run the full stack (MySQL/PostgreSQL + Redis + Django/ASGI
+backend + Celery worker + Celery beat + a one-shot frontend build) is via the
+`docker-compose.yml` at the repo root. This works the same way on Linux, macOS,
+and Windows (with Docker Desktop) — no need to install Python, Node, MySQL,
+PostgreSQL, or Redis on your machine.
 
-### Setup
-You may download the setup script using the following command:
+**Note:** production does *not* run via Docker — the deployed server uses
+native systemd services (see "Linux Service creation" below). Docker here is
+for local development only.
+
 ```bash
-wget https://github.com/BladEvgen/Control-app/blob/main/backend/scripts/setup.sh
+git clone https://github.com/BladEvgen/Control-app.git
+cd Control-app
+
+cp backend/.env.docker.example backend/.env.docker
+# edit backend/.env.docker: set DB_TYPE (mysql or postgres) and other values
+
+docker compose --profile mysql up -d --build      # MySQL + Redis + backend
+# or
+docker compose --profile postgres up -d --build   # PostgreSQL + Redis + backend
+
+# build the frontend (writes to ./frontend/dist, then exits)
+docker compose --profile frontend up --build
 ```
 
-#### CUDA Installation
-To install CUDA, follow the steps provided on the NVIDIA website:
+The backend (Uvicorn/ASGI) is published on `http://127.0.0.1:10808` by default
+(override with `DJANGO_PUBLISH_PORT`). `app-init` runs migrations and
+`collectstatic` once before `web`/`celery-worker`/`celery-beat` start.
 
-Visit the CUDA Downloads Page.
+GPU (optional): if your machine has an NVIDIA GPU and
+[nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+installed, merge the `x-gpu-reservation` anchor defined in `docker-compose.yml`
+into the `web`/`celery-worker` services to enable CUDA inside the containers.
+Without it, everything runs on CPU (same as the current production server).
+
+### Alternative: local setup without Docker (Linux)
+
+If you prefer not to use Docker, `backend/scripts/setup.sh` bootstraps Python
+3.11 + venv, system packages, and a local MySQL/PostgreSQL + Redis on a Debian/
+Ubuntu machine:
+
 ```bash
-https://developer.nvidia.com/cuda-downloads?target_os=Linux
+git clone https://github.com/BladEvgen/Control-app.git
+cd Control-app
+bash backend/scripts/setup.sh
 ```
 
-Select your target operating system and follow the instructions to download the appropriate installer.
-Additionally, you must read the detailed installation instructions provided by NVIDIA to ensure a successful installation:
+For Node.js, run `bash backend/scripts/nvm_install.sh` first if you don't
+already have Node 20+. To update dependencies later, use
+`bash backend/scripts/install_dependencies.sh` (set `DB_TYPE=postgres` env var
+if not using MySQL).
 
-CUDA Installation Guide for Linux:
-```bash
-https://docs.nvidia.com/cuda/cuda-installation-guide-linux/#meta-packages
-```
-Make sure to follow all the steps carefully to avoid any issues during the installation process. 
-####
-###
+On macOS/Windows without Docker, install Python 3.11, Node.js, and your
+chosen database manually, then follow the manual steps below.
 
-### Backend Setup
+### Manual backend setup (any OS)
 
 1. Clone the repository:
 
@@ -94,17 +119,22 @@ python -m venv venv
 call venv/Scripts/Activate
 ```
 
-2. Install requirements:
+2. Install requirements (CPU-only by default; choose your DB driver):
 
 ```bash
-pip install -r requirements_lin.txt
-```
+# Linux/macOS, MySQL
+pip install -r requirements/base.txt -r requirements/mysql.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 
-or
+# Linux/macOS, PostgreSQL
+pip install -r requirements/base.txt -r requirements/postgres.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+```
 
 ```shell
-pip install -r requirements_win.txt
+:: Windows, PostgreSQL
+pip install -r requirements/base-win.txt -r requirements/postgres.txt
 ```
+
+If you have an NVIDIA GPU and want CUDA acceleration, see `requirements/cuda.txt` (Linux/macOS) or `requirements/cuda-win.txt` (Windows) for the extra install step — CUDA is optional and not required to run the project.
 
 3. Set up the environment variables:
 
@@ -352,48 +382,37 @@ sudo certbot renew --dry-run
 
 # Linux Service creation
 
+The project runs ASGI (Django Channels) via **Uvicorn**, not Gunicorn/WSGI — needed for the websocket endpoints (`/ws/`).
+
 ```bash
 # vim or nano /etc/systemd/system/control_app.service
 
 [Unit]
-Description=Gunicorn instance to serve control_django
+Description=Uvicorn instance to serve ControlApp (ASGI)
 After=network.target
 
 [Service]
-User=www-data
-Group=www-data
-WorkingDirectory=/var/www/control_app/backend/
-ExecStart=/var/www/control_app/venv/bin/gunicorn \
-    --access-logfile - \
-    --workers 9 \  # Adjust this based on your CPU cores
-    --threads 2 \  # Adjust this based on the nature of your app
-    --timeout 120 \
-    --bind unix:/var/run/control_app.sock \
-    django_settings.wsgi:application
+User=youruser
+Group=yourgroup
+WorkingDirectory=/path/to/project/dir/backend
+ExecStart=/path/to/project/dir/venv/bin/uvicorn \
+    django_settings.asgi:application \
+    --uds /path/to/project/dir/backend/socket/control_app.sock \
+    --workers 10 \
+    --timeout-keep-alive 120 \
+    --proxy-headers
 
 Restart=always
 RestartSec=3
+UMask=0002
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-## Configuring Gunicorn Workers and Threads
+Adjust `--workers` based on CPU cores available (a common starting point is `2 * CPU cores`, lower if the box is also running Celery/ML inference).
 
-To ensure optimal performance, it's important to correctly configure the number of workers and threads for Gunicorn:
-
-1. **Workers**: The recommended formula is `workers = 2 * CPU cores + 1`. This formula helps ensure that Gunicorn can handle the maximum number of requests while efficiently utilizing the CPU.
-
-2. **Threads**: The number of threads should generally start at `2`. Threads allow each worker to handle multiple requests concurrently, which is particularly useful for I/O-bound tasks.
-
-For example, on a server with 4 CPU cores:
-
-- **Workers**: `2 * 4 + 1 = 9`
-- **Threads**: Start with `2`, and adjust based on the application's performance.
-
-These values can be adjusted based on the specific needs of your application and server.
-
-
+The unix socket directory's group must include both the app user and `nginx` (`usermod -aG yourgroup nginx`) so nginx can read/write the socket — `UMask=0002` keeps it group-writable. `setup.sh` does this automatically.
 
 # Celery service creation
 
@@ -405,22 +424,25 @@ Description=Celery Service for control_app
 After=network.target
 
 [Service]
-User=ubuntu
-Group=www-data
+User=youruser
+Group=yourgroup
 WorkingDirectory=/path/to/project/dir/backend/
+Environment="DJANGO_SETTINGS_MODULE=django_settings.settings"
 
 ExecStart=/path/to/project/dir/venv/bin/celery -A django_settings worker \
-    --loglevel=warning \
+    --loglevel=info \
     --logfile=/path/to/project/dir/backend/logs/celery_worker.log \
     --concurrency=2 \
     --prefetch-multiplier=4 \
-    --max-tasks-per-child=1000
+    --max-tasks-per-child=1000 \
+    --queues=control_app_queue
 
-Restart=on-failure
+Restart=always
 RestartSec=10
 TimeoutSec=300
 
 LimitNOFILE=4096
+UMask=0002
 
 [Install]
 WantedBy=multi-user.target
@@ -438,21 +460,20 @@ Description=Celery Beat Service for control_app
 After=network.target
 
 [Service]
-User=ubuntu
-Group=www-data
+User=youruser
+Group=yourgroup
 WorkingDirectory=/path/to/project/dir/backend/
+Environment="DJANGO_SETTINGS_MODULE=django_settings.settings"
 
 ExecStart=/path/to/project/dir/venv/bin/celery -A django_settings beat \
-    --loglevel=warning \
+    --loglevel=info \
     --logfile=/path/to/project/dir/backend/logs/celery_beat.log \
     --max-interval=10
 
-
-Restart=on-failure
+Restart=always
 RestartSec=5
 TimeoutSec=700
-
-LimitNOFILE=4096
+UMask=0002
 
 [Install]
 WantedBy=multi-user.target
