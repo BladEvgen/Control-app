@@ -1399,9 +1399,6 @@ _PAD_UI_REASON_RU: dict[str, str] = {
     "fake_high_plus_suspicious_device_face": (
         "Высокий риск подмены: устройство подтверждено у лица."
     ),
-    "fake_plus_color_histogram_suspicious": (
-        "Подмена: модели и цвета лица как на экране."
-    ),
     "fake_plus_face_reflection_suspicious": (
         "Обе модели видят подмену; отражение и цвета лица как на экране."
     ),
@@ -1412,13 +1409,6 @@ _PAD_UI_REASON_RU: dict[str, str] = {
     "face_reflection_display_suspicious": (
         "Отражение и цвета лица как на экране; подмена вероятна "
         "(не «телефон у лица», а пересъёмка с дисплея)."
-    ),
-    "color_histogram_display_suspicious": (
-        "Цвета лица как на экране, есть подтверждающие признаки."
-    ),
-    "color_histogram_context_review": (
-        "Цвета или блики на лице настораживают; экран у лица не подтверждён. "
-        "Нужна проверка."
     ),
     "face_reflection_context_review": (
         "Блики на лице; экран или пересъёмка не подтверждены. Нужна проверка."
@@ -1627,6 +1617,31 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
         )
     )
     result.elapsed_ms = (time.monotonic() - started) * 1000.0
+    return result
+
+
+_STRICT_SCREEN_DISAGREEMENT_TAGS = frozenset(
+    {"spoof_model_disagreement", "minifasnet_onnx_fake", "minifasnet_onnx_elevated"}
+)
+
+
+def apply_strict_self_service_escalation(result: PadResult) -> PadResult:
+    """Escalate a borderline ``review`` verdict to ``suspicious`` for self-service callers.
+
+    Self-service verification (personal phone/laptop, no operator watching) has no
+    social deterrent against photographing a screen or printout, unlike a supervised
+    kiosk/turnstile. When the model already saw screen-display evidence
+    (``screen_bezel_context``) together with neural disagreement on the same frame,
+    treat that combination as a reject rather than handing it to manual review.
+    """
+    if result.status != STATUS_REVIEW:
+        return result
+    if "screen_bezel_context" not in result.tags:
+        return result
+    if not _STRICT_SCREEN_DISAGREEMENT_TAGS.intersection(result.tags):
+        return result
+    result.status = STATUS_SUSPICIOUS
+    result.tags = list(result.tags) + ["strict_self_service_screen_escalation"]
     return result
 
 

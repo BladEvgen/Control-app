@@ -18,11 +18,50 @@ from monitoring_app.photo_pad import (
     STATUS_REVIEW,
     STATUS_SUSPICIOUS,
     DecisionInputs,
+    PadResult,
     _decide,
     _minifasnet_onnx_input,
     _runtime_cache,
     _score_minifasnet_onnx,
+    apply_strict_self_service_escalation,
 )
+
+
+class PadStrictSelfServiceEscalationTests(SimpleTestCase):
+    def _review_result(self, tags: list[str]) -> PadResult:
+        return PadResult(
+            status=STATUS_REVIEW, trust_confirmed=None, risk_score=0.38, tags=tags
+        )
+
+    def test_screen_bezel_plus_disagreement_escalates_to_suspicious(self):
+        result = self._review_result(
+            ["screen_bezel_context", "spoof_model_disagreement", "minifasnet_onnx_fake"]
+        )
+        escalated = apply_strict_self_service_escalation(result)
+        self.assertEqual(escalated.status, STATUS_SUSPICIOUS)
+        self.assertIn("strict_self_service_screen_escalation", escalated.tags)
+
+    def test_screen_bezel_without_disagreement_stays_review(self):
+        result = self._review_result(["screen_bezel_context"])
+        escalated = apply_strict_self_service_escalation(result)
+        self.assertEqual(escalated.status, STATUS_REVIEW)
+
+    def test_disagreement_without_screen_bezel_stays_review(self):
+        result = self._review_result(
+            ["spoof_model_disagreement", "minifasnet_onnx_fake"]
+        )
+        escalated = apply_strict_self_service_escalation(result)
+        self.assertEqual(escalated.status, STATUS_REVIEW)
+
+    def test_clean_status_is_never_escalated(self):
+        result = PadResult(
+            status=STATUS_CLEAN,
+            trust_confirmed=True,
+            risk_score=0.05,
+            tags=["screen_bezel_context", "spoof_model_disagreement"],
+        )
+        escalated = apply_strict_self_service_escalation(result)
+        self.assertEqual(escalated.status, STATUS_CLEAN)
 
 
 class PadDecisionTests(SimpleTestCase):

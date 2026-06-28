@@ -10801,6 +10801,8 @@ def verify_face(request):
 
     staff_pin = request.data.get("pin")
     staff_image = request.FILES.get("image")
+    verify_context = str(request.data.get("context") or "kiosk").strip().lower()
+    is_self_service = verify_context == "self_service"
 
     if not staff_pin or not staff_image:
         face_logger.warning("PIN or image is missing in the request.")
@@ -10835,10 +10837,15 @@ def verify_face(request):
             build_gallery_info,
             decide_face_verify_binary,
         )
-        from monitoring_app.photo_pad import check_photo_bgr
+        from monitoring_app.photo_pad import (
+            apply_strict_self_service_escalation,
+            check_photo_bgr,
+        )
 
         new_image = ml.load_image_from_memory(staff_image)
         pad_result = check_photo_bgr(new_image)
+        if is_self_service:
+            pad_result = apply_strict_self_service_escalation(pad_result)
         liveness_payload: LivenessPayload = liveness_payload_from_pad_result(pad_result)
 
         thr_strong = float(getattr(settings, "FACE_VERIFY_THRESHOLD_VERIFIED", 0.76))
