@@ -1525,6 +1525,10 @@ class PadGuideModelFeatureTests(SimpleTestCase):
         self.assertIn("guide_ycrcb_luv_model_fake", tags)
 
     def test_minifasnet_onnx_input_uses_bgr_80x80_nchw(self):
+        """This checkpoint expects raw 0..255 pixel values, not /255-scaled
+        floats — confirmed empirically: /255 scaling made the model output
+        a constant ~0.9997 "fake" score on every manually-verified-clean
+        photo, regardless of content."""
         img = np.zeros((120, 100, 3), dtype=np.uint8)
         img[:, :, 0] = 255
 
@@ -1534,14 +1538,19 @@ class PadGuideModelFeatureTests(SimpleTestCase):
         tensor_value = cast(np.ndarray, tensor)
         self.assertEqual(tensor_value.shape, (1, 3, 80, 80))
         self.assertEqual(tensor_value.dtype, np.float32)
-        self.assertAlmostEqual(float(tensor_value[0, 0].max()), 1.0)
+        self.assertAlmostEqual(float(tensor_value[0, 0].max()), 255.0)
 
     def test_minifasnet_onnx_score_sums_print_and_replay_classes(self):
+        """Index 1 is "real" in the minivision-ai class layout; index 1's
+        probability must NOT be counted as spoof evidence. Logits here keep
+        index 1 (real) low and split mass across index 0 (print) and index 2
+        (replay) so the test fails if either spoof class is dropped."""
+
         class FakeOnnxSession:
             def run(self, output_names, feed):
                 self.output_names = output_names
                 self.input_shape = feed["input"].shape
-                return [np.array([[-2.0, 3.0, 4.0]], dtype=np.float32)]
+                return [np.array([[3.0, -2.0, 3.5]], dtype=np.float32)]
 
         fake = FakeOnnxSession()
         _runtime_cache["minifasnet_onnx_session"] = (fake, "input", "output")
@@ -1557,6 +1566,31 @@ class PadGuideModelFeatureTests(SimpleTestCase):
         self.assertEqual(fake.input_shape, (1, 3, 80, 80))
         self.assertIn("minifasnet_onnx_used", tags)
         self.assertIn("minifasnet_onnx_fake", tags)
+
+    def test_minifasnet_onnx_score_excludes_real_class_probability(self):
+        """A confident "real" prediction (index 1 dominant) must score low,
+        not high — regression test for the inverted-index bug where
+        probs[1] (real) was being added into the spoof score."""
+
+        class RealFaceOnnxSession:
+            def run(self, output_names, feed):
+                # index 1 ("real") dominates: this is a live, non-spoof face.
+                return [np.array([[-3.7, 4.4, -0.7]], dtype=np.float32)]
+
+        _runtime_cache["minifasnet_onnx_session"] = (
+            RealFaceOnnxSession(),
+            "input",
+            "output",
+        )
+        _runtime_cache["minifasnet_onnx_error"] = ""
+        img = np.zeros((120, 100, 3), dtype=np.uint8)
+
+        score, tags = _score_minifasnet_onnx(img, (25, 25, 40, 50))
+
+        self.assertIsNotNone(score)
+        score_value = cast(float, score)
+        self.assertLess(score_value, 0.1)
+        self.assertNotIn("minifasnet_onnx_fake", tags)
 
 
 class PadDiagnosticsContractTests(SimpleTestCase):

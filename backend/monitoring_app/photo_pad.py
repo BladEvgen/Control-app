@@ -628,7 +628,14 @@ def _minifasnet_onnx_input(
     img_bgr: np.ndarray,
     face_bbox: tuple[int, int, int, int],
 ) -> Optional[np.ndarray]:
-    """Build the ONNX input: BGR crop, 80x80, float32 range 0..1, NCHW."""
+    """Build the ONNX input: BGR crop, 80x80, float32 range 0..255, NCHW.
+
+    This checkpoint was trained on raw 0..255 pixel values (no /255
+    normalization) — confirmed empirically: with /255 scaling the model
+    collapses to one class on almost every input (constant ~0.9997 "fake" on
+    live, manually-confirmed-clean faces); feeding 0..255 floats produces a
+    confident, image-dependent "real" prediction on those same faces.
+    """
     crop = _scaled_face_crop_bgr(
         img_bgr,
         face_bbox,
@@ -637,7 +644,7 @@ def _minifasnet_onnx_input(
     if crop is None or crop.size < 720:
         return None
     resized = _CV2_RESIZE(crop, (80, 80), interpolation=_CV2_INTER_AREA)
-    tensor = resized.astype(np.float32) / 255.0
+    tensor = resized.astype(np.float32)
     tensor = np.transpose(tensor, (2, 0, 1))[None, :, :, :]
     return np.ascontiguousarray(tensor, dtype=np.float32)
 
@@ -687,7 +694,11 @@ def _score_minifasnet_onnx(
             probs = _softmax_probs(row)
         if probs.size < 3:
             return None, ["minifasnet_onnx_error"]
-        spoof_score = float(max(0.0, min(1.0, probs[1] + probs[2])))
+        # minivision-ai Silent-Face-Anti-Spoofing class layout: index 1 is
+        # "real" (live face), indices 0 and 2 are the two spoof classes
+        # (print attack, replay attack) — see upstream test.py: label == 1
+        # selects RealFace, anything else is FakeFace.
+        spoof_score = float(max(0.0, min(1.0, probs[0] + probs[2])))
         tags = ["minifasnet_onnx_used"]
         if spoof_score >= _pad_float("minifasnet_onnx_mid"):
             tags.append("minifasnet_onnx_elevated")
