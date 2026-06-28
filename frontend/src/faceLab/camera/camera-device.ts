@@ -1,15 +1,26 @@
 import type { Facing } from "./types";
 import { CAMERA_PATTERNS } from "./types";
+import { camLog } from "./cameraLog";
+
+type CapRange = { max?: number; min?: number; step?: number };
 
 type ExtendedCapabilities = MediaTrackCapabilities & {
-  width?: { max?: number; min?: number };
-  height?: { max?: number; min?: number };
-  frameRate?: { max?: number; min?: number };
+  width?: CapRange;
+  height?: CapRange;
+  frameRate?: CapRange;
   focusMode?: string[];
   exposureMode?: string[];
   whiteBalanceMode?: string[];
   torch?: boolean;
-  zoom?: { max?: number; min?: number; step?: number };
+  zoom?: CapRange;
+  sharpness?: CapRange;
+  exposureCompensation?: CapRange;
+  exposureTime?: CapRange;
+  iso?: CapRange;
+  colorTemperature?: CapRange;
+  contrast?: CapRange;
+  saturation?: CapRange;
+  brightness?: CapRange;
 };
 
 type ExtendedConstraintSet = MediaTrackConstraintSet & {
@@ -18,10 +29,10 @@ type ExtendedConstraintSet = MediaTrackConstraintSet & {
   whiteBalanceMode?: string;
   torch?: boolean;
   zoom?: number;
+  sharpness?: number;
+  exposureCompensation?: number;
   pointsOfInterest?: Array<{ x: number; y: number }>;
 };
-
-const TRACK_MAX_LONG_EDGE = 1920;
 
 export function isAppleSystemBrowserOnMobile(): boolean {
   if (typeof navigator === "undefined") return false;
@@ -117,14 +128,14 @@ export function createHighQualityConstraints(
   const candidates: MediaTrackConstraints[] = [];
   const conservative = isWebKitCameraConservativeMode();
   const mainFace = {
-    width: { ideal: conservative ? 1280 : 1920 },
-    height: { ideal: conservative ? 960 : 1440 },
+    width: { ideal: conservative ? 1920 : 4096 },
+    height: { ideal: conservative ? 1440 : 3072 },
     aspectRatio: { ideal: 4 / 3 },
     frameRate: { ideal: 30, max: 30 },
   } satisfies MediaTrackConstraints;
   const fallbackFace = {
-    width: { ideal: 1280 },
-    height: { ideal: 960 },
+    width: { ideal: 1920 },
+    height: { ideal: 1440 },
     aspectRatio: { ideal: 4 / 3 },
     frameRate: { ideal: 30, max: 30 },
   } satisfies MediaTrackConstraints;
@@ -155,35 +166,6 @@ export function createHighQualityConstraints(
   return candidates;
 }
 
-export async function applyMaxVideoResolution(
-  track: MediaStreamTrack | null,
-): Promise<{ width?: number; height?: number } | null> {
-  if (!track?.applyConstraints || !track.getCapabilities) return null;
-  try {
-    const caps = track.getCapabilities() as ExtendedCapabilities;
-    const wMax = caps.width?.max;
-    const hMax = caps.height?.max;
-    if (!wMax || !hMax) return null;
-    let tw = wMax;
-    let th = hMax;
-    const L = Math.max(tw, th);
-    if (L > TRACK_MAX_LONG_EDGE) {
-      const s = TRACK_MAX_LONG_EDGE / L;
-      tw = Math.max(1, Math.round(tw * s));
-      th = Math.max(1, Math.round(th * s));
-    }
-    await track.applyConstraints({
-      width: { ideal: tw },
-      height: { ideal: th },
-      frameRate: { ideal: 30, max: 30 },
-    });
-    const s = track.getSettings();
-    return { width: s.width, height: s.height };
-  } catch {
-    return null;
-  }
-}
-
 export async function optimizeCameraTrackForFace(
   track: MediaStreamTrack | null,
 ): Promise<{ width?: number; height?: number } | null> {
@@ -196,6 +178,48 @@ export async function optimizeCameraTrackForFace(
   if (!caps) {
     const s = track.getSettings();
     return { width: s.width, height: s.height };
+  }
+
+  camLog.info("Camera capabilities", {
+    width: caps.width,
+    height: caps.height,
+    frameRate: caps.frameRate,
+    focusMode: caps.focusMode,
+    exposureMode: caps.exposureMode,
+    whiteBalanceMode: caps.whiteBalanceMode,
+    zoom: caps.zoom,
+    sharpness: caps.sharpness,
+    exposureCompensation: caps.exposureCompensation,
+    exposureTime: caps.exposureTime,
+    iso: caps.iso,
+    colorTemperature: caps.colorTemperature,
+    contrast: caps.contrast,
+    saturation: caps.saturation,
+    brightness: caps.brightness,
+    torch: caps.torch,
+  });
+
+  const maxW = caps.width?.max;
+  const maxH = caps.height?.max;
+  const current = track.getSettings();
+  if (
+    typeof maxW === "number" &&
+    typeof maxH === "number" &&
+    maxW > 0 &&
+    maxH > 0 &&
+    (maxW > (current.width ?? 0) || maxH > (current.height ?? 0))
+  ) {
+    const targetWidth = maxW;
+    const targetHeight = Math.min(maxH, Math.round((targetWidth * 3) / 4));
+    try {
+      await track.applyConstraints({
+        width: { ideal: targetWidth },
+        height: { ideal: targetHeight },
+        aspectRatio: { ideal: 4 / 3 },
+      });
+    } catch {
+      /* Device may reject a resolution bump mid-stream; keep current settings. */
+    }
   }
 
   const advanced: ExtendedConstraintSet = {};
@@ -216,6 +240,13 @@ export async function optimizeCameraTrackForFace(
     const max = Number(caps.zoom.max);
     if (Number.isFinite(min) && Number.isFinite(max)) {
       advanced.zoom = Math.min(Math.max(1, min), max);
+    }
+  }
+
+  if (caps.sharpness?.max != null) {
+    const max = Number(caps.sharpness.max);
+    if (Number.isFinite(max)) {
+      advanced.sharpness = max;
     }
   }
 

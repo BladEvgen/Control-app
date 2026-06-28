@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 import type { CSSProperties } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { FaTimesCircle, FaExclamationTriangle } from "react-icons/fa";
@@ -137,17 +137,12 @@ function FacePoseSilhouette({ className }: { className?: string }) {
 function ProfileYawSwing({ direction }: { direction: "left" | "right" }) {
   const shift = direction === "left" ? [0, -10, 0] : [0, 10, 0];
   return (
-    <div className="flex items-center gap-2 rounded-full bg-black/35 px-3 py-1.5 text-[11px] font-semibold text-white/90 ring-1 ring-white/20 backdrop-blur-sm">
-      <motion.span
-        className="block h-1.5 w-8 rounded-full bg-white/85"
-        animate={{ x: shift }}
-        transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
-        aria-hidden
-      />
-      <span>
-        {direction === "left" ? "Голова чуть влево" : "Голова чуть вправо"}
-      </span>
-    </div>
+    <motion.span
+      className="block h-1.5 w-8 rounded-full bg-white/85"
+      animate={{ x: shift }}
+      transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+      aria-hidden
+    />
   );
 }
 
@@ -157,8 +152,7 @@ function ViewfinderYawTurnFace3D({
   direction: "left" | "right";
 }) {
   const yDeg = direction === "left" ? -22 : 22;
-  const directionLabel =
-    direction === "left" ? "Поверните голову влево" : "Поверните голову вправо";
+  const directionLabel = "Поворачивайтесь медленно, без наклона головы";
   return (
     <div className="flex max-w-[min(92%,240px)] flex-col items-center gap-3">
       <div
@@ -384,70 +378,6 @@ export function GridOverlay({ visible, frame, aspect }: GridOverlayProps) {
         </motion.div>
       )}
     </AnimatePresence>
-  );
-}
-
-export function FlashEffect({ visible }: { visible: boolean }) {
-  const [mounted, setMounted] = useState(false);
-  const [lit, setLit] = useState(false);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const rafRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (hideTimerRef.current != null) {
-      clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
-    }
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-
-    if (visible) {
-      setMounted(true);
-      setLit(false);
-      rafRef.current = requestAnimationFrame(() => {
-        rafRef.current = requestAnimationFrame(() => {
-          rafRef.current = null;
-          setLit(true);
-        });
-      });
-      return () => {
-        if (rafRef.current != null) {
-          cancelAnimationFrame(rafRef.current);
-          rafRef.current = null;
-        }
-      };
-    }
-
-    setLit(false);
-    hideTimerRef.current = setTimeout(() => {
-      hideTimerRef.current = null;
-      setMounted(false);
-    }, 240);
-    return () => {
-      if (hideTimerRef.current != null) {
-        clearTimeout(hideTimerRef.current);
-        hideTimerRef.current = null;
-      }
-    };
-  }, [visible]);
-
-  if (!mounted) return null;
-
-  return (
-    <div
-      aria-hidden
-      className="pointer-events-none fixed inset-0 z-[10012] isolate bg-white will-change-[opacity]"
-      style={{
-        opacity: lit ? 1 : 0,
-        transform: "translateZ(0)",
-        backfaceVisibility: "hidden",
-        transition: lit
-          ? "opacity 95ms cubic-bezier(0.22, 1, 0.36, 1)"
-          : "opacity 220ms cubic-bezier(0.4, 0, 0.2, 1)",
-      }}
-    />
   );
 }
 

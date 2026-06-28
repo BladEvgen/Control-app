@@ -10,9 +10,9 @@ export function cameraGuidanceMessage(
     case "bootstrap_front":
       return "Прямой кадр. Смотрите прямо.";
     case "bootstrap_left":
-      return "Голова чуть влево. Не наклоняйтесь.";
+      return "Повернитесь левым ухом к камере. Не наклоняйте голову.";
     case "bootstrap_right":
-      return "Голова чуть вправо. Не наклоняйтесь.";
+      return "Повернитесь правым ухом к камере. Не наклоняйте голову.";
     default:
       return requireLiveness
         ? "Держите лицо в рамке."

@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { motion } from "framer-motion";
 import axiosInstance from "../api";
 import { humanizeApiError } from "./faceLabHumanMessages";
+import { faceLabSpring } from "./faceLabDesignTokens";
+
+const smoothEase = [0.22, 1, 0.36, 1] as const;
 
 const SAVE_FACE_SAMPLE_TIMEOUT_MS = 180_000;
 
@@ -9,9 +13,9 @@ const BOOTSTRAP_ANGLES = ["front", "left", "right"] as const;
 export type BootstrapAngle = (typeof BOOTSTRAP_ANGLES)[number];
 
 const ANGLE_HINTS: Record<BootstrapAngle, string> = {
-  front: "Смотрите прямо в камеру.",
-  left: "Поверните голову немного влево.",
-  right: "Поверните голову немного вправо.",
+  front: "Смотрите прямо в камеру, без поворота головы.",
+  left: "Повернитесь левым ухом к камере. Голову не наклоняйте.",
+  right: "Повернитесь правым ухом к камере. Голову не наклоняйте.",
 };
 
 const ANGLE_STEP_TITLES: Record<BootstrapAngle, string> = {
@@ -62,8 +66,10 @@ function StepDot({
   done: boolean;
 }) {
   return (
-    <div
-      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold transition ${
+    <motion.div
+      layout
+      transition={faceLabSpring}
+      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
         done
           ? "bg-emerald-500 text-white shadow-md shadow-emerald-500/30"
           : active
@@ -72,7 +78,7 @@ function StepDot({
       }`}
     >
       {done ? "✓" : n}
-    </div>
+    </motion.div>
   );
 }
 
@@ -342,9 +348,11 @@ export function FaceLabBootstrapPanel({
             ))}
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-            <div
-              className="h-full rounded-full bg-blue-600 transition-[width] duration-500 ease-out dark:bg-blue-500"
-              style={{ width: `${progressFraction * 100}%` }}
+            <motion.div
+              className="h-full rounded-full bg-blue-600 dark:bg-blue-500"
+              initial={false}
+              animate={{ width: `${progressFraction * 100}%` }}
+              transition={{ duration: 0.4, ease: smoothEase }}
             />
           </div>
           <p className="mt-2 text-center text-xs text-slate-500 dark:text-slate-400">
