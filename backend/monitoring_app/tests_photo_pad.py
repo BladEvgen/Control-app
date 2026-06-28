@@ -19,10 +19,8 @@ from monitoring_app.photo_pad import (
     STATUS_SUSPICIOUS,
     DecisionInputs,
     _decide,
-    _guide_color_feature_vector,
     _minifasnet_onnx_input,
     _runtime_cache,
-    _score_guide_color_model,
     _score_minifasnet_onnx,
 )
 
@@ -168,7 +166,6 @@ class PadDecisionTests(SimpleTestCase):
                 ],
                 face_area_ratio=0.11,
                 face_reflection_score=0.36,
-                color_hist_score=0.53,
             )
         )
         self.assertEqual(result.status, STATUS_CLEAN)
@@ -188,16 +185,13 @@ class PadDecisionTests(SimpleTestCase):
                     "fasnet_real",
                     "screen_bezel_context",
                     "face_reflection_screen_like",
-                    "face_color_histogram_screen_like",
                 ],
                 frame_global_score=0.37,
                 face_area_ratio=0.12,
                 face_reflection_score=0.89,
-                color_hist_score=0.60,
             )
         )
         self.assertEqual(result.status, STATUS_CLEAN)
-        self.assertIn("pad_rule:live_selfie_surface_noise_uncertain_clean", result.tags)
 
     def test_confirmed_tv_on_face_keeps_color_suspicious_for_spoof(self):
         """Regression: real replay should stay suspicious when TV on face is strong."""
@@ -217,7 +211,6 @@ class PadDecisionTests(SimpleTestCase):
                 ],
                 face_area_ratio=0.09,
                 face_reflection_score=0.78,
-                color_hist_score=0.80,
             )
         )
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
@@ -256,7 +249,6 @@ class PadDecisionTests(SimpleTestCase):
                 ],
                 face_area_ratio=0.12,
                 face_reflection_score=0.80,
-                color_hist_score=0.50,
             )
         )
         self.assertEqual(result.status, STATUS_CLEAN)
@@ -279,7 +271,6 @@ class PadDecisionTests(SimpleTestCase):
                 ],
                 face_area_ratio=0.12,
                 face_reflection_score=0.80,
-                color_hist_score=0.50,
             )
         )
         self.assertEqual(result.status, STATUS_CLEAN)
@@ -305,19 +296,14 @@ class PadDecisionTests(SimpleTestCase):
                     "fasnet_real",
                     "minifasnet_onnx_fake",
                     "spoof_model_disagreement",
-                    "face_color_histogram_screen_like",
                     "face_reflection_screen_like",
                 ],
                 face_area_ratio=0.11,
                 face_reflection_score=0.78,
-                color_hist_score=0.52,
             )
         )
         self.assertEqual(result.status, STATUS_REVIEW)
         self.assertIsNone(result.trust_confirmed)
-        self.assertIn(
-            "pad_rule:fake_plus_color_histogram_review_no_geometry", result.tags
-        )
 
     def test_ensemble_consensus_escalates_independent_families(self):
         result = _decide(
@@ -683,7 +669,6 @@ class PadDecisionTests(SimpleTestCase):
                 ],
                 face_area_ratio=0.158,
                 face_reflection_score=0.0,
-                color_hist_score=0.6,
             )
         )
         self.assertEqual(result.status, STATUS_REVIEW)
@@ -691,9 +676,9 @@ class PadDecisionTests(SimpleTestCase):
         self.assertIn("pad_rule:quality_poor_with_face_gated_screen", result.tags)
 
     def test_fasnet_live_tv_reflection_disagreement_goes_to_suspicious(self):
-        """FasNet live + color/reflection heuristics without neural spoof (June 2 Dudikova class).
+        """FasNet live + reflection heuristics without neural spoof (June 2 Dudikova class).
 
-        With a device confirmed on-face plus a strong color-histogram screen
+        With a device confirmed on-face plus a strong reflection screen
         signature, model disagreement must escalate to suspicious rather than
         being waved through as clean."""
         result = _decide(
@@ -710,16 +695,13 @@ class PadDecisionTests(SimpleTestCase):
                     "spoof_model_disagreement",
                     "device_on_face:tv",
                     "face_reflection_screen_like",
-                    "face_color_histogram_screen_like",
                 ],
                 face_area_ratio=0.089,
                 face_reflection_score=0.78,
-                color_hist_score=0.8,
             )
         )
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
         self.assertFalse(result.trust_confirmed)
-        self.assertIn("pad_rule:fake_plus_color_histogram_suspicious", result.tags)
 
     def test_face_reflection_without_context_does_not_auto_reject(self):
         result = _decide(
@@ -759,7 +741,6 @@ class PadDecisionTests(SimpleTestCase):
                 ],
                 face_area_ratio=0.20,
                 face_reflection_score=0.8227,
-                color_hist_score=0.1162,
             )
         )
         self.assertEqual(result.status, STATUS_REVIEW)
@@ -783,150 +764,30 @@ class PadDecisionTests(SimpleTestCase):
         self.assertFalse(result.trust_confirmed)
         self.assertIn("pad_rule:fake_plus_face_reflection_suspicious", result.tags)
 
-    def test_fake_plus_color_histogram_goes_suspicious(self):
-        result = _decide(
-            DecisionInputs(
-                decode_error=False,
-                has_face=True,
-                deepface_score=0.70,
-                device_score=0.40,
-                frame_score=0.0,
-                quality_penalty=0.05,
-                tags=["fasnet_fake", "face_color_histogram_screen_like"],
-                face_area_ratio=0.06,
-                color_hist_score=0.58,
-            )
-        )
-        self.assertEqual(result.status, STATUS_SUSPICIOUS)
-        self.assertFalse(result.trust_confirmed)
-        self.assertIn("pad_rule:fake_plus_color_histogram_suspicious", result.tags)
-
     def test_fake_plus_face_reflection_without_geometry_stays_review(self):
         """Regression: real selfies (normal face crop, no screen/frame/recapture
         evidence) were wrongly auto-rejected because face_reflection alone
-        corroborated a miscalibrated neural 'fake' call. Reproduces production
-        false positive LessonAttendance id 61783 (manual_verdict=clean):
-        fasnet=0.9872, minifasnet_onnx=0.9997, guide=0.7 (both_fake debate
-        neural=0.8957), device/frame=0.0, face_reflection=0.8325,
-        face_area_ratio=0.204.
+        corroborated a miscalibrated neural 'fake' call.
         """
         result = _decide(
             DecisionInputs(
                 decode_error=False,
                 has_face=True,
-                deepface_score=0.9872,
+                deepface_score=0.70,
                 device_score=0.0,
                 frame_score=0.0,
                 quality_penalty=0.35,
                 tags=[
                     "fasnet_fake",
                     "minifasnet_onnx_fake",
-                    "guide_ycrcb_luv_model_fake",
                     "face_reflection_screen_like",
                 ],
                 face_area_ratio=0.204,
                 face_reflection_score=0.8325,
-                color_hist_score=0.70,
-                model_scores={"minifasnet_onnx": 0.9997},
+                model_scores={"minifasnet_onnx": 0.60},
             )
         )
         self.assertEqual(result.status, STATUS_REVIEW)
-        self.assertIn(
-            "pad_rule:fake_plus_face_reflection_review_no_geometry", result.tags
-        )
-
-    def test_fake_plus_color_histogram_without_geometry_stays_review(self):
-        """Regression: same false-positive pattern via the color-histogram
-        branch (isolated from face-reflection by keeping face_reflection_score
-        below refl_mid, so the color branch is the one being exercised).
-        Based on production false positive LessonAttendance id 62749
-        (manual_verdict=clean): fasnet=0.9812, minifasnet_onnx=0.9997,
-        guide=0.7 (both_fake debate neural=0.8936), device/frame=0.0,
-        color_hist=0.70, face_area_ratio=0.133.
-        """
-        result = _decide(
-            DecisionInputs(
-                decode_error=False,
-                has_face=True,
-                deepface_score=0.9812,
-                device_score=0.0,
-                frame_score=0.0,
-                quality_penalty=0.0,
-                tags=[
-                    "fasnet_fake",
-                    "minifasnet_onnx_fake",
-                    "guide_ycrcb_luv_model_fake",
-                    "face_color_histogram_screen_like",
-                ],
-                face_area_ratio=0.133,
-                face_reflection_score=0.0,
-                color_hist_score=0.70,
-                model_scores={"minifasnet_onnx": 0.9997},
-            )
-        )
-        self.assertEqual(result.status, STATUS_REVIEW)
-        self.assertIn(
-            "pad_rule:fake_plus_color_histogram_review_no_geometry", result.tags
-        )
-
-    def test_color_histogram_with_recapture_context_goes_suspicious(self):
-        result = _decide(
-            DecisionInputs(
-                decode_error=False,
-                has_face=True,
-                deepface_score=0.0,
-                device_score=0.0,
-                frame_score=0.0,
-                quality_penalty=0.05,
-                tags=["face_color_histogram_screen_like"],
-                recapture_score=0.30,
-                face_area_ratio=0.06,
-                color_hist_score=0.58,
-            )
-        )
-        self.assertEqual(result.status, STATUS_SUSPICIOUS)
-        self.assertFalse(result.trust_confirmed)
-        self.assertIn("pad_rule:color_histogram_display_suspicious", result.tags)
-
-    def test_color_histogram_alone_does_not_auto_reject(self):
-        result = _decide(
-            DecisionInputs(
-                decode_error=False,
-                has_face=True,
-                deepface_score=0.0,
-                device_score=0.0,
-                frame_score=0.0,
-                quality_penalty=0.05,
-                tags=["face_color_histogram_screen_like"],
-                face_area_ratio=0.06,
-                color_hist_score=0.90,
-            )
-        )
-        self.assertEqual(result.status, STATUS_CLEAN)
-        self.assertTrue(result.trust_confirmed)
-        self.assertIn("pad_rule:default_clean", result.tags)
-
-    def test_spoof_uncertain_strong_color_histogram_goes_review(self):
-        result = _decide(
-            DecisionInputs(
-                decode_error=False,
-                has_face=True,
-                deepface_score=0.0,
-                device_score=0.0,
-                frame_score=0.0,
-                quality_penalty=0.05,
-                tags=[
-                    "fasnet_unavailable",
-                    "pad_spoof_model_missing",
-                    "face_color_histogram_screen_like",
-                ],
-                face_area_ratio=0.06,
-                color_hist_score=0.58,
-            )
-        )
-        self.assertEqual(result.status, STATUS_REVIEW)
-        self.assertIsNone(result.trust_confirmed)
-        self.assertIn("pad_rule:color_histogram_context_review", result.tags)
 
     def test_global_verdict_trace_includes_jury_and_debate(self):
         result = _decide(
@@ -944,7 +805,6 @@ class PadDecisionTests(SimpleTestCase):
                 ],
                 face_area_ratio=0.09,
                 face_reflection_score=0.78,
-                color_hist_score=0.80,
             )
         )
         struct_tag = next(t for t in result.tags if t.startswith("pad_struct:"))
@@ -1491,38 +1351,10 @@ class PadDecisionTests(SimpleTestCase):
 class PadGuideModelFeatureTests(SimpleTestCase):
     def tearDown(self):
         for key in (
-            "guide_ycrcb_luv_extra_trees",
-            "guide_ycrcb_luv_model_error",
             "minifasnet_onnx_session",
             "minifasnet_onnx_error",
         ):
             _runtime_cache.pop(key, None)
-
-    def test_guide_color_feature_vector_matches_article_shape(self):
-        roi = np.zeros((32, 32, 3), dtype=np.uint8)
-        fv = _guide_color_feature_vector(roi)
-        self.assertEqual(fv.shape, (1, 1536))
-
-    def test_guide_color_model_score_uses_fake_class_probability(self):
-        class FakeGuideModel:
-            classes_ = np.array([0, 1])
-
-            def predict_proba(self, x):
-                self.last_shape = x.shape
-                return np.array([[0.2, 0.8]], dtype=np.float64)
-
-        fake = FakeGuideModel()
-        _runtime_cache["guide_ycrcb_luv_extra_trees"] = fake
-        _runtime_cache["guide_ycrcb_luv_model_error"] = ""
-
-        score, tags = _score_guide_color_model(np.zeros((32, 32, 3), dtype=np.uint8))
-
-        self.assertIsNotNone(score)
-        score_value = cast(float, score)
-        self.assertAlmostEqual(score_value, 0.8)
-        self.assertEqual(fake.last_shape, (1, 1536))
-        self.assertIn("guide_ycrcb_luv_model_used", tags)
-        self.assertIn("guide_ycrcb_luv_model_fake", tags)
 
     def test_minifasnet_onnx_input_uses_bgr_80x80_nchw(self):
         """This checkpoint expects raw 0..255 pixel values, not /255-scaled

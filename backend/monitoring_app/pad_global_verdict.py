@@ -28,7 +28,6 @@ class PadDecisionContext:
     tags: list[str]
     rec: float
     refl: float
-    clr: float
     fasnet_live: bool
     model_disagreement: bool
     deepfake: bool
@@ -54,7 +53,6 @@ class PadDecisionContext:
 def _build_context(inputs: DecisionInputs, tags: list[str]) -> PadDecisionContext:
     rec = _clamp01(inputs.recapture_score)
     refl = _clamp01(inputs.face_reflection_score)
-    clr = _clamp01(inputs.color_hist_score)
     model_disagreement = "spoof_model_disagreement" in tags
     fasnet_live = "fasnet_real" in tags
     deepfake = "spoof_model_family_fake" in tags or (
@@ -125,7 +123,6 @@ def _build_context(inputs: DecisionInputs, tags: list[str]) -> PadDecisionContex
         tags=tags,
         rec=rec,
         refl=refl,
-        clr=clr,
         fasnet_live=fasnet_live,
         model_disagreement=model_disagreement,
         deepfake=deepfake,
@@ -150,7 +147,7 @@ def _build_context(inputs: DecisionInputs, tags: list[str]) -> PadDecisionContex
 
 
 def _neural_debate(ctx: PadDecisionContext) -> dict[str, Any]:
-    """FasNet vs MiniFASNet (+ optional guide): one neural spoof score."""
+    """FasNet vs MiniFASNet: one neural spoof score."""
     inp = ctx.inputs
     tags = ctx.tags
     votes: dict[str, float] = {}
@@ -162,12 +159,6 @@ def _neural_debate(ctx: PadDecisionContext) -> dict[str, Any]:
     if "minifasnet_onnx_fake" in tags and "minifasnet_onnx" not in votes:
         minifas_spoof = max(minifas_spoof, _pad_float("minifasnet_onnx_mid"))
 
-    guide_spoof = 0.0
-    if "guide_ycrcb_luv_model_fake" in tags:
-        guide_spoof = _pad_float("guide_color_model_strong")
-    elif "guide_ycrcb_luv_model_elevated" in tags:
-        guide_spoof = _pad_float("guide_color_model_mid")
-
     outcome = "agree_live"
     score = 0.0
     if ctx.fasnet_live and ctx.model_disagreement:
@@ -175,20 +166,17 @@ def _neural_debate(ctx: PadDecisionContext) -> dict[str, Any]:
         score = _pad_float("decision_deepfake_review_min")
     elif "fasnet_fake" in tags and "minifasnet_onnx_fake" in tags:
         outcome = "both_fake"
-        score = _mean_clamped([fasnet_spoof, minifas_spoof, guide_spoof])
+        score = _mean_clamped([fasnet_spoof, minifas_spoof])
     elif "fasnet_fake" in tags:
         outcome = "fasnet_fake"
-        score = max(fasnet_spoof, guide_spoof * 0.85)
+        score = fasnet_spoof
     elif "minifasnet_onnx_fake" in tags and not ctx.fasnet_live:
         if ctx.model_disagreement:
             outcome = "minifas_disagreement_conservative"
             score = fasnet_spoof
         else:
             outcome = "minifas_only"
-            score = max(minifas_spoof, fasnet_spoof, guide_spoof)
-    elif guide_spoof > 0.0 and not ctx.fasnet_live:
-        outcome = "guide_elevated"
-        score = guide_spoof
+            score = max(minifas_spoof, fasnet_spoof)
     else:
         outcome = "live"
         score = 0.0
@@ -198,7 +186,6 @@ def _neural_debate(ctx: PadDecisionContext) -> dict[str, Any]:
         "score": round(score, 4),
         "fasnet_spoof": round(fasnet_spoof, 4),
         "minifas_spoof": round(minifas_spoof, 4),
-        "guide_spoof": round(guide_spoof, 4),
     }
 
 
@@ -241,8 +228,8 @@ def _background_vote(ctx: PadDecisionContext) -> float:
     return _mean_clamped([ctx.inputs.frame_global_score, ctx.inputs.device_bg_score])
 
 
-def _face_surface_vote(ctx: PadDecisionContext) -> float:
-    raw = max(ctx.refl, ctx.clr)
+def _face_reflection_vote(ctx: PadDecisionContext) -> float:
+    raw = ctx.refl
     if ctx.fasnet_live and not ctx.device_confirmed and not ctx.has_frame:
         if not ctx.credible_display_context:
             return min(raw * 0.42, 0.34)
@@ -273,7 +260,7 @@ def _build_jury(ctx: PadDecisionContext) -> dict[str, Any]:
     geometry = _face_geometry_vote(ctx)
     background = _background_vote(ctx)
     recapture = ctx.rec
-    surface = _face_surface_vote(ctx)
+    reflection = _face_reflection_vote(ctx)
 
     review_min = _pad_float("ensemble_review_vote_min")
     strong_min = _pad_float("ensemble_strong_vote_min")
@@ -295,9 +282,9 @@ def _build_jury(ctx: PadDecisionContext) -> dict[str, Any]:
             "signals": ["fft", "gradient"],
         },
         {
-            "family": "face_surface_artifacts",
-            "score": round(surface, 4),
-            "signals": ["reflection", "color_histogram"],
+            "family": "face_reflection_artifacts",
+            "score": round(reflection, 4),
+            "signals": ["reflection"],
         },
     ]
     strong = [v["family"] for v in votes if float(v["score"]) >= strong_min]
@@ -311,8 +298,7 @@ def _build_jury(ctx: PadDecisionContext) -> dict[str, Any]:
         + _pad_float("risk_weight_frame"),
         "background_display_context": 0.08,
         "recapture_texture": _pad_float("risk_weight_recapture"),
-        "face_surface_artifacts": _pad_float("risk_weight_reflection")
-        + _pad_float("risk_weight_color_hist"),
+        "face_reflection_artifacts": _pad_float("risk_weight_reflection"),
     }
     wsum = sum(weights.values()) or 1.0
     global_score = (
@@ -372,18 +358,17 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
     )
     surface = float(
         next(
-            v["score"] for v in jury["votes"] if v["family"] == "face_surface_artifacts"
+            v["score"]
+            for v in jury["votes"]
+            if v["family"] == "face_reflection_artifacts"
         )
     )
     rec = ctx.rec
     refl = ctx.refl
-    clr = ctx.clr
     g = float(jury["global_spoof_score"])
 
     refl_strong = _pad_float("reflection_strong")
     refl_mid = _pad_float("reflection_mid")
-    color_strong = _pad_float("color_hist_strong")
-    color_mid = _pad_float("color_hist_mid")
     rec_strong = _pad_float("recapture_strong")
     rec_mid = _pad_float("recapture_mid")
     rec_review = _pad_float("decision_recapture_review_min")
@@ -399,7 +384,6 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
         + _pad_float("risk_weight_frame") * ctx.inputs.frame_score
         + _pad_float("risk_weight_recapture") * rec
         + _pad_float("risk_weight_reflection") * refl
-        + _pad_float("risk_weight_color_hist") * clr
     )
     risk = _clamp01(risk)
 
@@ -460,26 +444,15 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
             return GlobalVerdict(status, trust, branch, risk, jury)
         if (
             neural >= df_mid_susp
-            and surface >= color_mid
+            and surface >= refl_mid
             and refl >= refl_mid
             and ctx.inputs.face_area_ratio
-            >= _pad_float("color_hist_min_face_area_ratio")
+            >= _pad_float("reflection_suspicious_min_face_area_ratio")
         ):
             if has_corroboration:
                 _suspicious("fake_plus_face_reflection_suspicious")
             else:
                 _review("fake_plus_face_reflection_review_no_geometry")
-            return GlobalVerdict(status, trust, branch, risk, jury)
-        if (
-            neural >= df_review
-            and clr >= color_strong
-            and ctx.inputs.face_area_ratio
-            >= _pad_float("color_hist_min_face_area_ratio")
-        ):
-            if has_corroboration:
-                _suspicious("fake_plus_color_histogram_suspicious")
-            else:
-                _review("fake_plus_color_histogram_review_no_geometry")
             return GlobalVerdict(status, trust, branch, risk, jury)
 
     if roi_insufficient:
@@ -571,18 +544,6 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
         _suspicious("face_reflection_display_suspicious")
         return GlobalVerdict(status, trust, branch, risk, jury)
 
-    if (
-        clr >= color_strong
-        and rec >= rec_corr
-        and not ctx.quality_poor
-        and ctx.inputs.face_area_ratio >= _pad_float("color_hist_min_face_area_ratio")
-    ):
-        if _live_model_vetoes_heuristic_suspicious(ctx, neural):
-            _clean("live_selfie_surface_noise_uncertain_clean", uncertain=True)
-            return GlobalVerdict(status, trust, branch, risk, jury)
-        _suspicious("color_histogram_display_suspicious")
-        return GlobalVerdict(status, trust, branch, risk, jury)
-
     if ctx.deepfake:
         if ctx.model_disagreement and not ctx.fasnet_live and neural < df_review:
             _review("spoof_model_disagreement_review")
@@ -597,18 +558,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
         ):
             _suspicious("fake_mid_plus_background_display_suspicious")
             return GlobalVerdict(status, trust, branch, risk, jury)
-        if (
-            neural >= df_review
-            and clr >= color_strong
-            and ctx.inputs.face_area_ratio
-            >= _pad_float("color_hist_min_face_area_ratio")
-        ):
-            if has_corroboration:
-                _suspicious("fake_plus_color_histogram_suspicious")
-            else:
-                _review("fake_plus_color_histogram_review_no_geometry")
-            return GlobalVerdict(status, trust, branch, risk, jury)
-        if neural >= df_mid_susp and surface >= color_mid and refl >= refl_mid:
+        if neural >= df_mid_susp and surface >= refl_mid and refl >= refl_mid:
             if has_corroboration:
                 _suspicious("fake_plus_face_reflection_suspicious")
             else:
@@ -621,9 +571,6 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
             and background >= review_floor
         ):
             _review("fake_background_display_review")
-            return GlobalVerdict(status, trust, branch, risk, jury)
-        if neural >= df_review and clr >= color_mid:
-            _review("fake_color_histogram_review")
             return GlobalVerdict(status, trust, branch, risk, jury)
         if ctx.reflection_guard_fake and neural >= 0.55:
             _review("fake_reflection_guard_review")
@@ -668,7 +615,6 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
         and not ctx.has_frame
         and not ctx.credible_display_context
         and rec < rec_review
-        and clr < color_mid
         and not ctx.quality_poor
         and not ctx.insufficient_input
     ):
@@ -684,7 +630,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
         and not roi_insufficient
         and neural < df_review
         and ctx.inputs.face_area_ratio >= 0.05
-        and (refl >= _pad_float("reflection_review_min") or clr >= color_mid)
+        and refl >= _pad_float("reflection_review_min")
         and (
             not ctx.device_confirmed
             or "quality_blur" in tags
@@ -726,9 +672,6 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
         return GlobalVerdict(status, trust, branch, risk, jury)
 
     if ctx.spoof_model_uncertain:
-        if clr >= color_mid and surface >= color_mid:
-            _review("color_histogram_context_review")
-            return GlobalVerdict(status, trust, branch, risk, jury)
         if rec >= rec_mid and (rec >= rec_corr or _recapture_dual_inner_cues(ctx.tags)):
             _review("spoof_uncertain_texture_ambiguous_review")
             return GlobalVerdict(status, trust, branch, risk, jury)
@@ -755,9 +698,6 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
     if jury["jury_decision"] == STATUS_REVIEW and trust is True:
         _review("ensemble_consensus_review")
         return GlobalVerdict(status, trust, branch, risk, jury)
-
-    if clr >= color_strong and not ctx.deepfake and not ctx.credible_display_context:
-        pass
 
     return GlobalVerdict(status, trust, branch, risk, jury)
 

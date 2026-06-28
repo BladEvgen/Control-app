@@ -88,15 +88,11 @@ _CV2_APPROX_POLY_DP = _cv2_get_callable("approxPolyDP")
 _CV2_BOUNDING_RECT = _cv2_get_callable("boundingRect")
 _CV2_LAPLACIAN = _cv2_get_callable("Laplacian")
 _CV2_RESIZE = _cv2_get_callable("resize")
-_CV2_CONNECTED_COMPONENTS_WITH_STATS = _cv2_get_callable(
-    "connectedComponentsWithStats"
-)
+_CV2_CONNECTED_COMPONENTS_WITH_STATS = _cv2_get_callable("connectedComponentsWithStats")
 
 _CV2_COLOR_BGR2RGB = int(_cv2_get_attr("COLOR_BGR2RGB"))
 _CV2_COLOR_BGR2GRAY = int(_cv2_get_attr("COLOR_BGR2GRAY"))
 _CV2_COLOR_BGR2HSV = int(_cv2_get_attr("COLOR_BGR2HSV"))
-_CV2_COLOR_BGR2YCrCb = int(_cv2_get_attr("COLOR_BGR2YCrCb"))
-_CV2_COLOR_BGR2Luv = int(_cv2_get_attr("COLOR_BGR2Luv"))
 _CV2_MORPH_RECT = int(_cv2_get_attr("MORPH_RECT"))
 _CV2_MORPH_ELLIPSE = int(_cv2_get_attr("MORPH_ELLIPSE"))
 _CV2_RETR_EXTERNAL = int(_cv2_get_attr("RETR_EXTERNAL"))
@@ -210,18 +206,7 @@ _PAD_DEFAULT_NUMBERS: dict[str, float | int] = {
     "reflection_strong": 0.52,
     "reflection_suspicious_min_face_area_ratio": 0.034,
     "risk_weight_reflection": 0.10,
-    "color_hist_inner_face_scale": 0.76,
-    "color_hist_mid": 0.24,
-    "color_hist_strong": 0.40,
-    "color_hist_low_entropy_ref": 0.58,
-    "color_hist_peak_mass_ref": 0.32,
-    "color_hist_sparse_occupancy_ref": 0.56,
-    "color_hist_flat_chroma_std": 13.0,
-    "color_hist_luma_std_min": 22.0,
-    "color_hist_min_face_area_ratio": 0.034,
     "guide_face_detector_conf_min": 0.50,
-    "guide_color_model_mid": 0.50,
-    "guide_color_model_strong": 0.70,
     "minifasnet_onnx_crop_scale": 2.70,
     "minifasnet_onnx_mid": 0.50,
     "minifasnet_onnx_strong": 0.70,
@@ -233,11 +218,6 @@ _PAD_DEFAULT_NUMBERS: dict[str, float | int] = {
     "ensemble_suspicious_score_min": 0.52,
     "ensemble_review_score_min": 0.30,
     "ensemble_suspicious_family_min": 2,
-    "risk_weight_color_hist": 0.10,
-    "shield_max_color_hist": 0.20,
-    "color_hist_heuristic_only_scale": 0.80,
-    "color_hist_strong_feature_min": 0.48,
-    "color_hist_full_score_features_min": 3,
 }
 
 
@@ -278,7 +258,6 @@ class PadResult:
     frame_global_score: float = 0.0
     recapture_score: float = 0.0
     face_reflection_score: float = 0.0
-    color_hist_score: float = 0.0
 
     def to_update_kwargs(self) -> dict[str, Any]:
         from django.utils import timezone
@@ -309,7 +288,6 @@ class DecisionInputs:
     recapture_score: float = 0.0
     face_area_ratio: float = 0.0
     face_reflection_score: float = 0.0
-    color_hist_score: float = 0.0
     model_scores: dict[str, float] = field(default_factory=dict)
 
 
@@ -1270,354 +1248,6 @@ def _signal_face_reflection(
     return score, tags
 
 
-def _face_inner_roi_bgr(
-    img_bgr: np.ndarray,
-    face_bbox: tuple[int, int, int, int],
-    scale: float,
-) -> Optional[np.ndarray]:
-    """Crop a central face ROI, clipped to image bounds."""
-    x, y, fw, fh = face_bbox
-    if fw < 24 or fh < 24:
-        return None
-    ih, iw = img_bgr.shape[:2]
-    sc = max(0.35, min(1.0, float(scale)))
-    cx = float(x) + 0.5 * float(fw)
-    cy = float(y) + 0.52 * float(fh)
-    rw = max(8, int(round(float(fw) * sc)))
-    rh = max(8, int(round(float(fh) * sc)))
-    x1 = max(0, int(round(cx - 0.5 * rw)))
-    y1 = max(0, int(round(cy - 0.5 * rh)))
-    x2 = min(iw, int(round(cx + 0.5 * rw)))
-    y2 = min(ih, int(round(cy + 0.5 * rh)))
-    if x2 <= x1 + 8 or y2 <= y1 + 8:
-        return None
-    return img_bgr[y1:y2, x1:x2]
-
-
-def _channel_hist_metrics(
-    channel: np.ndarray, bins: int = 64
-) -> tuple[float, float, float]:
-    """Return normalized entropy, top-bin mass, and occupied-bin ratio."""
-    hist, _edges = np.histogram(channel.ravel(), bins=bins, range=(0, 256))
-    total = float(hist.sum())
-    if total <= 0.0:
-        return 1.0, 0.0, 1.0
-    p = hist.astype(np.float64) / total
-    nz = p[p > 0.0]
-    entropy = float(-(nz * np.log(nz)).sum() / np.log(float(bins)))
-    top_mass = float(np.sort(p)[-4:].sum())
-    occupied = float(np.count_nonzero(hist >= max(2.0, total * 0.001))) / float(bins)
-    return entropy, top_mass, occupied
-
-
-def _guide_calc_hist(img: np.ndarray) -> np.ndarray:
-    """Guide-compatible 3-channel histogram normalized to the 0..255 range."""
-    histograms: list[np.ndarray] = []
-    for channel_idx in range(3):
-        hist = cv2.calcHist([img], [channel_idx], None, [256], [0, 256])
-        hmax = float(hist.max())
-        if hmax > 1e-9:
-            hist = hist * (255.0 / hmax)
-        histograms.append(hist)
-    return np.asarray(histograms)
-
-
-def _guide_color_feature_vector(face_roi_bgr: np.ndarray) -> np.ndarray:
-    """Build the exact YCrCb+Luv feature vector used by the guide model."""
-    img_ycrcb = _CV2_CVT_COLOR(face_roi_bgr, _CV2_COLOR_BGR2YCrCb)
-    img_luv = _CV2_CVT_COLOR(face_roi_bgr, _CV2_COLOR_BGR2Luv)
-    ycrcb_hist = _guide_calc_hist(img_ycrcb)
-    luv_hist = _guide_calc_hist(img_luv)
-    feature_vector = np.append(ycrcb_hist.ravel(), luv_hist.ravel())
-    return feature_vector.reshape(1, int(feature_vector.shape[0]))
-
-
-def _install_sklearn_019_pickle_aliases(joblib_module: Any) -> None:
-    """Map old sklearn 0.19 pickle module paths to current sklearn modules."""
-    try:
-        import sys
-
-        import joblib.numpy_pickle as numpy_pickle
-        import sklearn.ensemble._forest as forest_mod
-        import sklearn.tree._classes as tree_classes_mod
-
-        sys.modules.setdefault("sklearn.ensemble.forest", forest_mod)
-        sys.modules.setdefault("sklearn.tree.tree", tree_classes_mod)
-        sys.modules.setdefault("sklearn.externals.joblib", joblib_module)
-        sys.modules.setdefault("sklearn.externals.joblib.numpy_pickle", numpy_pickle)
-    except Exception as exc:
-        logger.debug("PAD guide sklearn pickle aliases skipped: %s", exc)
-
-
-def _patch_sklearn_tree_unpickle_compat() -> Any:
-    """Allow unpickling sklearn 0.19 trees into sklearn 1.5+ runtime."""
-    import sklearn.tree._tree as tree_mod
-
-    cache_key = "guide_sklearn_tree_unpickle_patch"
-    with _runtime_cache_lock:
-        if cache_key in _runtime_cache:
-            return _runtime_cache[cache_key]
-
-        original_check = tree_mod._check_node_ndarray
-
-        def _relaxed_check(node_ndarray: Any, expected_dtype: Any = None) -> Any:
-            try:
-                return original_check(node_ndarray, expected_dtype=expected_dtype)
-            except ValueError:
-                names = list(getattr(node_ndarray, "dtype", None).names or [])
-                if (
-                    "missing_go_to_left" not in names
-                    and expected_dtype is not None
-                    and hasattr(node_ndarray, "shape")
-                ):
-                    upgraded = np.zeros(node_ndarray.shape, dtype=expected_dtype)
-                    for field in names:
-                        upgraded[field] = node_ndarray[field]
-                    return upgraded
-                return node_ndarray
-
-        tree_mod._check_node_ndarray = _relaxed_check
-        _runtime_cache[cache_key] = original_check
-        return original_check
-
-
-def _guide_model_modern_path(legacy_path: Path) -> Path:
-    """Path for a sklearn 1.5+ compatible re-export of a legacy guide model."""
-    return legacy_path.parent / f"{legacy_path.stem}.sklearn15.joblib"
-
-
-def _load_guide_extra_trees_classifier(model_path: Path) -> Any:
-    """Load guide ExtraTrees: prefer modern export, else migrate legacy pickle."""
-    import warnings
-
-    import joblib
-
-    modern_path = _guide_model_modern_path(model_path)
-    if modern_path.is_file():
-        return joblib.load(str(modern_path))
-
-    if not model_path.is_file():
-        raise FileNotFoundError(str(model_path))
-
-    _install_sklearn_019_pickle_aliases(joblib)
-    _patch_sklearn_tree_unpickle_compat()
-    try:
-        from sklearn.exceptions import InconsistentVersionWarning
-    except Exception:
-        InconsistentVersionWarning = UserWarning
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
-        model = joblib.load(str(model_path))
-    if not callable(getattr(model, "predict", None)):
-        raise RuntimeError("loaded object has no predict")
-    try:
-        joblib.dump(model, str(modern_path))
-        logger.info("PAD guide model migrated to %s", modern_path)
-    except Exception as exc:
-        logger.warning("PAD guide model migration save failed: %s", exc)
-    return model
-
-
-def _guide_extra_trees_spoof_score(model: Any, feature_vector: np.ndarray) -> float:
-    """Spoof probability from guide ExtraTrees (handles legacy exports)."""
-    row = np.asarray(feature_vector, dtype=np.float64)
-    if row.ndim == 1:
-        row = row.reshape(1, -1)
-    try:
-        probs = np.asarray(model.predict_proba(row), dtype=np.float64)
-    except Exception:
-        probs = None
-    if probs is not None and probs.ndim == 2 and probs.shape[0] >= 1:
-        total = float(probs[0].sum())
-        if 0.99 <= total <= 1.01:
-            classes = list(getattr(model, "classes_", []))
-            if 1 in classes:
-                spoof_idx = int(classes.index(1))
-            else:
-                spoof_idx = 1 if probs.shape[1] > 1 else 0
-            return float(max(0.0, min(1.0, probs[0, spoof_idx])))
-    estimators = list(getattr(model, "estimators_", []) or [])
-    if estimators:
-        votes = np.asarray(
-            [int(est.predict(row)[0]) for est in estimators],
-            dtype=np.int8,
-        )
-        return float(np.mean(votes == 1))
-    return float(int(model.predict(row)[0]) == 1)
-
-
-def _get_guide_color_model() -> Optional[Any]:
-    """Load the guide's YCrCb+Luv ExtraTrees pickle when sklearn can read it."""
-    cache_key = "guide_ycrcb_luv_extra_trees"
-    with _runtime_cache_lock:
-        if cache_key in _runtime_cache:
-            return _runtime_cache[cache_key]
-        model_path = _guide_model_path(
-            "PHOTO_PAD_GUIDE_COLOR_MODEL",
-            "replay-attack_ycrcb_luv_extraTreesClassifier.pkl",
-        )
-        try:
-            model = _load_guide_extra_trees_classifier(model_path)
-            _runtime_cache[cache_key] = model
-            _runtime_cache["guide_ycrcb_luv_model_error"] = ""
-            return model
-        except FileNotFoundError:
-            _runtime_cache[cache_key] = None
-            _runtime_cache["guide_ycrcb_luv_model_error"] = "missing"
-            return None
-        except Exception as exc:
-            logger.warning(
-                "PAD guide YCrCb/Luv ExtraTrees model unavailable: %s. "
-                "The bundled model was trained with sklearn 0.19.1; keeping "
-                "heuristic YCrCb/Luv fallback active.",
-                exc,
-            )
-            _runtime_cache[cache_key] = None
-            _runtime_cache["guide_ycrcb_luv_model_error"] = exc.__class__.__name__
-            return None
-
-
-def _score_guide_color_model(face_roi_bgr: np.ndarray) -> tuple[Optional[float], list[str]]:
-    """Score face ROI with the guide's pretrained ExtraTrees model if loadable."""
-    model = _get_guide_color_model()
-    if model is None:
-        err = str(_runtime_cache.get("guide_ycrcb_luv_model_error") or "")
-        if err and err != "missing":
-            return None, ["guide_ycrcb_luv_model_unavailable"]
-        return None, []
-    try:
-        fv = _guide_color_feature_vector(face_roi_bgr)
-        score = _guide_extra_trees_spoof_score(model, fv)
-        tags: list[str] = ["guide_ycrcb_luv_model_used"]
-        if score >= _pad_float("guide_color_model_mid"):
-            tags.append("guide_ycrcb_luv_model_elevated")
-        if score >= _pad_float("guide_color_model_strong"):
-            tags.append("guide_ycrcb_luv_model_fake")
-        return score, tags
-    except Exception as exc:
-        logger.debug("PAD guide YCrCb/Luv model inference failed: %s", exc)
-        return None, ["guide_ycrcb_luv_model_error"]
-
-
-def _signal_color_histogram(
-    img_bgr: np.ndarray,
-    face_bbox: Optional[tuple[int, int, int, int]],
-    face_area_ratio: float,
-) -> tuple[float, list[str]]:
-    """Color-space histogram cue inspired by the YCrCb/Luv PAD method.
-
-    The Medium article uses concatenated YCrCb and Luv histograms with a trained
-    classifier. Here the same color spaces are used as a conservative heuristic:
-    the score rises only when chroma histograms are concentrated/sparse or when
-    luminance varies while chroma stays implausibly flat. The decision engine
-    treats this as corroboration, not as standalone proof.
-    """
-    if face_bbox is None:
-        return 0.0, []
-    min_face = _pad_float("color_hist_min_face_area_ratio")
-    if face_area_ratio > 1e-9 and face_area_ratio < min_face:
-        return 0.0, []
-
-    roi = _face_inner_roi_bgr(
-        img_bgr,
-        face_bbox,
-        _pad_float("color_hist_inner_face_scale"),
-    )
-    if roi is None or roi.size < 720:
-        return 0.0, []
-
-    guide_score, guide_tags = _score_guide_color_model(roi)
-
-    try:
-        roi_small = _CV2_RESIZE(roi, (128, 128), interpolation=_CV2_INTER_AREA)
-        ycrcb = _CV2_CVT_COLOR(roi_small, _CV2_COLOR_BGR2YCrCb)
-        luv = _CV2_CVT_COLOR(roi_small, _CV2_COLOR_BGR2Luv)
-    except Exception as exc:
-        logger.debug("PAD color histogram signal skipped: %s", exc)
-        return 0.0, []
-
-    chroma_channels = [
-        ycrcb[:, :, 1],
-        ycrcb[:, :, 2],
-        luv[:, :, 1],
-        luv[:, :, 2],
-    ]
-    metrics = [_channel_hist_metrics(ch) for ch in chroma_channels]
-    entropy = float(np.mean([m[0] for m in metrics]))
-    peak_mass = float(np.mean([m[1] for m in metrics]))
-    occupancy = float(np.mean([m[2] for m in metrics]))
-
-    low_entropy = max(
-        0.0,
-        (_pad_float("color_hist_low_entropy_ref") - entropy)
-        / max(1e-6, _pad_float("color_hist_low_entropy_ref")),
-    )
-    peak_score = max(
-        0.0,
-        (peak_mass - _pad_float("color_hist_peak_mass_ref"))
-        / max(1e-6, 0.82 - _pad_float("color_hist_peak_mass_ref")),
-    )
-    sparse_score = max(
-        0.0,
-        (_pad_float("color_hist_sparse_occupancy_ref") - occupancy)
-        / max(1e-6, _pad_float("color_hist_sparse_occupancy_ref")),
-    )
-
-    y_std = float(ycrcb[:, :, 0].std())
-    l_std = float(luv[:, :, 0].std())
-    luma_std = 0.5 * (y_std + l_std)
-    chroma_std = float(np.mean([float(ch.std()) for ch in chroma_channels]))
-    flat_chroma = max(
-        0.0,
-        (_pad_float("color_hist_flat_chroma_std") - chroma_std)
-        / max(1e-6, _pad_float("color_hist_flat_chroma_std")),
-    )
-    luma_support = max(
-        0.0,
-        min(
-            1.0,
-            (luma_std - _pad_float("color_hist_luma_std_min")) / 34.0,
-        ),
-    )
-    mismatch = flat_chroma * luma_support
-
-    score = (
-        0.34 * min(1.0, peak_score)
-        + 0.28 * min(1.0, sparse_score)
-        + 0.24 * min(1.0, low_entropy)
-        + 0.14 * min(1.0, mismatch)
-    )
-    feat_min = _pad_float("color_hist_strong_feature_min")
-    strong_feature_count = sum(
-        1
-        for value in (peak_score, sparse_score, low_entropy, mismatch)
-        if value >= feat_min
-    )
-    full_feats = _pad_int("color_hist_full_score_features_min")
-    if strong_feature_count < 2:
-        score *= 0.40
-    elif strong_feature_count < full_feats:
-        score *= 0.78
-    score = float(max(0.0, min(1.0, score)))
-    if guide_score is not None:
-        score = max(score, guide_score)
-    else:
-        score *= _pad_float("color_hist_heuristic_only_scale")
-
-    tags: list[str] = list(guide_tags)
-    if score >= _pad_float("color_hist_mid"):
-        tags.append("face_color_histogram_elevated")
-    if score >= _pad_float("color_hist_strong"):
-        tags.append("face_color_histogram_screen_like")
-    if peak_score >= 0.45:
-        tags.append("face_color_histogram_concentrated_chroma")
-    if sparse_score >= 0.45:
-        tags.append("face_color_histogram_sparse_chroma")
-    if mismatch >= 0.45:
-        tags.append("face_color_luma_chroma_mismatch")
-    return score, tags
-
-
 def _face_bbox_is_edge_cropped(
     face_bbox: Optional[tuple[int, int, int, int]],
     img_w: int,
@@ -1759,9 +1389,6 @@ _PAD_UI_REASON_RU: dict[str, str] = {
         "Модели видят подмену; признаки экрана в фоне (рамки, сертификаты), не у лица. "
         "Нужна проверка."
     ),
-    "fake_color_histogram_review": (
-        "Модели видят подмену; цвета лица настораживают. Нужна проверка."
-    ),
     "fake_default_review_not_clean": (
         "Модели видят риск подмены без явного экрана у лица. Нужна проверка."
     ),
@@ -1778,9 +1405,7 @@ _PAD_UI_REASON_RU: dict[str, str] = {
     "fake_plus_face_reflection_suspicious": (
         "Обе модели видят подмену; отражение и цвета лица как на экране."
     ),
-    "fake_high_confidence_no_geometry_suspicious": (
-        "Обе модели уверены в подмене."
-    ),
+    "fake_high_confidence_no_geometry_suspicious": ("Обе модели уверены в подмене."),
     "presentation_insufficient_input_review": (
         "Лицо или качество не дают уверенного ответа. Нужен новый кадр."
     ),
@@ -1830,111 +1455,6 @@ def _pad_ui_reason_text(branch: str, status: str) -> str:
     return ""
 
 
-def _pad_consensus_jury(inputs: DecisionInputs, tags: list[str]) -> dict[str, Any]:
-    """Build an equal-family PAD jury over independent spoof evidence.
-
-    The rule engine below is deliberately conservative and domain-specific. This
-    jury gives each evidence family one normalized vote so FasNet/MiniFASNet,
-    screen geometry, background context, recapture texture, and face-surface
-    artifacts can agree before we escalate. It is used for traceability and for
-    safe upgrades from ``clean`` to ``review`` or from ``review`` to
-    ``suspicious`` when multiple independent families fire together.
-    """
-    model_values = [_clamp01(v) for v in inputs.model_scores.values()]
-    if model_values:
-        if "fasnet_real" in tags and "minifasnet_onnx" in inputs.model_scores:
-            neural_model = 0.0
-        else:
-            neural_model = _mean_clamped(model_values)
-    elif (
-        "fasnet_fake" in tags
-        or "minifasnet_onnx_fake" in tags
-        or inputs.deepface_score > 0.0
-    ):
-        neural_model = _clamp01(inputs.deepface_score)
-    else:
-        neural_model = 0.0
-
-    face_display = max(
-        _mean_clamped([inputs.device_score, inputs.frame_score]),
-        min(_clamp01(inputs.device_score), _clamp01(inputs.frame_score)) * 1.12,
-    )
-    background_display = _mean_clamped(
-        [inputs.device_bg_score, inputs.frame_global_score]
-    )
-    recapture_texture = _clamp01(inputs.recapture_score)
-    face_surface = max(_clamp01(inputs.face_reflection_score), _clamp01(inputs.color_hist_score))
-
-    votes = [
-        {
-            "family": "neural_model",
-            "score": neural_model,
-            "signals": sorted(inputs.model_scores.keys())
-            or [
-                tag
-                for tag in ("fasnet_fake", "minifasnet_onnx_fake")
-                if tag in tags
-            ],
-        },
-        {
-            "family": "face_display_geometry",
-            "score": _clamp01(face_display),
-            "signals": ["device_face", "frame_face"],
-        },
-        {
-            "family": "background_display_context",
-            "score": _clamp01(background_display),
-            "signals": ["device_bg", "frame_global"],
-        },
-        {
-            "family": "recapture_texture",
-            "score": recapture_texture,
-            "signals": ["fft", "gradient"],
-        },
-        {
-            "family": "face_surface_artifacts",
-            "score": face_surface,
-            "signals": ["reflection", "color_histogram"],
-        },
-    ]
-    review_min = _pad_float("ensemble_review_vote_min")
-    strong_min = _pad_float("ensemble_strong_vote_min")
-    strong = [v["family"] for v in votes if float(v["score"]) >= strong_min]
-    review = [v["family"] for v in votes if float(v["score"]) >= review_min]
-    active_scores = [
-        float(v["score"]) for v in votes if float(v["score"]) >= review_min
-    ]
-    consensus_score = _mean_clamped(active_scores)
-    suspicious_family_min = _pad_int("ensemble_suspicious_family_min")
-
-    decision = STATUS_CLEAN
-    if (
-        len(strong) >= suspicious_family_min
-        and consensus_score >= _pad_float("ensemble_suspicious_score_min")
-    ):
-        decision = STATUS_SUSPICIOUS
-    elif "neural_model" in strong or (
-        len(review) >= suspicious_family_min
-        and consensus_score >= _pad_float("ensemble_review_score_min")
-    ):
-        decision = STATUS_REVIEW
-
-    return {
-        "decision": decision,
-        "score": round(consensus_score, 4),
-        "strong_families": strong,
-        "review_families": review,
-        "votes": [
-            {
-                "family": str(v["family"]),
-                "score": round(float(v["score"]), 4),
-                "signals": v["signals"],
-            }
-            for v in votes
-        ],
-    }
-
-
 def _decide(inputs: DecisionInputs) -> PadResult:
     """Single global PAD verdict (pad_v12): jury channels, neural debate, one outcome."""
     from monitoring_app.pad_global_verdict import resolve_global_verdict
@@ -1955,7 +1475,6 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             frame_global_score=inputs.frame_global_score,
             recapture_score=inputs.recapture_score,
             face_reflection_score=inputs.face_reflection_score,
-            color_hist_score=inputs.color_hist_score,
         )
     if not inputs.has_face or "no_face" in tags:
         return PadResult(
@@ -1971,7 +1490,6 @@ def _decide(inputs: DecisionInputs) -> PadResult:
             frame_global_score=inputs.frame_global_score,
             recapture_score=inputs.recapture_score,
             face_reflection_score=inputs.face_reflection_score,
-            color_hist_score=inputs.color_hist_score,
         )
 
     verdict = resolve_global_verdict(inputs, tags)
@@ -1982,7 +1500,6 @@ def _decide(inputs: DecisionInputs) -> PadResult:
     jury = verdict.jury
     rec = _clamp01(inputs.recapture_score)
     refl = _clamp01(inputs.face_reflection_score)
-    clr = _clamp01(inputs.color_hist_score)
     debate = jury.get("debate") or {}
     neural = float(debate.get("score", inputs.deepface_score))
 
@@ -2012,7 +1529,6 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         "frame_global_diag": round(inputs.frame_global_score, 4),
         "recapture": round(rec, 4),
         "face_reflection": round(refl, 4),
-        "color_histogram": round(clr, 4),
         "global_verdict": {
             "global_spoof_score": jury.get("global_spoof_score", risk),
             "jury_decision": jury.get("jury_decision"),
@@ -2028,11 +1544,13 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         f"df={neural:.3f},dev_f={inputs.device_score:.3f},"
         f"dev_bg={inputs.device_bg_score:.3f},frm_f={inputs.frame_score:.3f},"
         f"frm_gl={inputs.frame_global_score:.3f},rec={rec:.3f},"
-        f"refl={refl:.3f},clr={clr:.3f},qp={inputs.quality_penalty:.3f}"
+        f"refl={refl:.3f},qp={inputs.quality_penalty:.3f}"
     )
     tags.append(f"pad_struct:{json.dumps(struct, separators=(',', ':'))}")
     tags.append(f"pad_ensemble:{json.dumps(ensemble, separators=(',', ':'))}")
-    tags.append(f"pad_global:{json.dumps({'score': jury.get('global_spoof_score', risk), 'debate': debate}, separators=(',', ':'))}")
+    tags.append(
+        f"pad_global:{json.dumps({'score': jury.get('global_spoof_score', risk), 'debate': debate}, separators=(',', ':'))}"
+    )
     ui_reason = _pad_ui_reason_text(branch, status)
     if ui_reason:
         tags.append(f"pad_ui_reason:{ui_reason}")
@@ -2050,9 +1568,7 @@ def _decide(inputs: DecisionInputs) -> PadResult:
         frame_global_score=inputs.frame_global_score,
         recapture_score=rec,
         face_reflection_score=refl,
-        color_hist_score=clr,
     )
-
 
 
 def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadResult:
@@ -2064,9 +1580,7 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
     requested_device = normalize_device(device)
     face_bbox = _get_primary_face_bbox(img_bgr)
     glasses_mask = _try_glasses_reflection_mask(img_bgr)
-    deepface_score, deepface_tags, model_scores = _signal_deepface(
-        img_bgr, face_bbox
-    )
+    deepface_score, deepface_tags, model_scores = _signal_deepface(img_bgr, face_bbox)
     device_face, device_bg, device_tags = _signal_device(
         img_bgr, requested_device, face_bbox, glasses_mask=glasses_mask
     )
@@ -2081,11 +1595,6 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
         fw, fh = face_bbox[2], face_bbox[3]
         ih, iw = img_bgr.shape[:2]
         face_area_ratio = float(max(1, fw * fh)) / float(max(1, ih * iw))
-    color_score, color_tags = _signal_color_histogram(
-        img_bgr,
-        face_bbox,
-        face_area_ratio,
-    )
     quality_penalty, quality_tags = _signal_quality(img_bgr, face_bbox)
 
     guard_tags: list[str] = []
@@ -2106,7 +1615,6 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
                 + frame_tags
                 + recapture_tags
                 + reflection_tags
-                + color_tags
                 + quality_tags
                 + guard_tags
             ),
@@ -2115,7 +1623,6 @@ def check_photo_bgr(img_bgr: np.ndarray, device: Optional[str] = None) -> PadRes
             recapture_score=recapture_score,
             face_area_ratio=face_area_ratio,
             face_reflection_score=reflection_score,
-            color_hist_score=color_score,
             model_scores=model_scores,
         )
     )

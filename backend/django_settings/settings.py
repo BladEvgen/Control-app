@@ -1062,31 +1062,9 @@ PHOTO_PAD_NUMBERS = {
     "presentation_texture_max_quality_penalty": _float_env(
         "PHOTO_PAD_PRESENTATION_TEXTURE_MAX_QUALITY_PENALTY", 0.30
     ),
-    # --- Face ROI color histograms (YCrCb/Luv, corroborative PAD channel) ---
-    "color_hist_inner_face_scale": _float_env(
-        "PHOTO_PAD_COLOR_HIST_INNER_FACE_SCALE", 0.76
-    ),
-    "color_hist_mid": _float_env("PHOTO_PAD_COLOR_HIST_MID", 0.24),
-    "color_hist_strong": _float_env("PHOTO_PAD_COLOR_HIST_STRONG", 0.40),
-    "color_hist_low_entropy_ref": _float_env(
-        "PHOTO_PAD_COLOR_HIST_LOW_ENTROPY_REF", 0.58
-    ),
-    "color_hist_peak_mass_ref": _float_env("PHOTO_PAD_COLOR_HIST_PEAK_MASS_REF", 0.32),
-    "color_hist_sparse_occupancy_ref": _float_env(
-        "PHOTO_PAD_COLOR_HIST_SPARSE_OCCUPANCY_REF", 0.56
-    ),
-    "color_hist_flat_chroma_std": _float_env(
-        "PHOTO_PAD_COLOR_HIST_FLAT_CHROMA_STD", 13.0
-    ),
-    "color_hist_luma_std_min": _float_env("PHOTO_PAD_COLOR_HIST_LUMA_STD_MIN", 22.0),
-    "color_hist_min_face_area_ratio": _float_env(
-        "PHOTO_PAD_COLOR_HIST_MIN_FACE_AREA_RATIO", 0.034
-    ),
     "guide_face_detector_conf_min": _float_env(
         "PHOTO_PAD_GUIDE_FACE_DETECTOR_CONF_MIN", 0.50
     ),
-    "guide_color_model_mid": _float_env("PHOTO_PAD_GUIDE_COLOR_MODEL_MID", 0.50),
-    "guide_color_model_strong": _float_env("PHOTO_PAD_GUIDE_COLOR_MODEL_STRONG", 0.70),
     "minifasnet_onnx_crop_scale": _float_env(
         "PHOTO_PAD_MINIFASNET_ONNX_CROP_SCALE", 2.70
     ),
@@ -1110,17 +1088,6 @@ PHOTO_PAD_NUMBERS = {
     "ensemble_suspicious_family_min": _int_env(
         "PHOTO_PAD_ENSEMBLE_SUSPICIOUS_FAMILY_MIN", 2
     ),
-    "color_hist_heuristic_only_scale": _float_env(
-        "PHOTO_PAD_COLOR_HIST_HEURISTIC_ONLY_SCALE", 0.80
-    ),
-    "color_hist_strong_feature_min": _float_env(
-        "PHOTO_PAD_COLOR_HIST_STRONG_FEATURE_MIN", 0.48
-    ),
-    "color_hist_full_score_features_min": _int_env(
-        "PHOTO_PAD_COLOR_HIST_FULL_SCORE_FEATURES_MIN", 3
-    ),
-    "risk_weight_color_hist": _float_env("PHOTO_PAD_RISK_WEIGHT_COLOR_HIST", 0.10),
-    "shield_max_color_hist": _float_env("PHOTO_PAD_SHIELD_MAX_COLOR_HIST", 0.20),
 }
 
 CELERY_TASK_QUEUES = (Queue("control_app_queue", routing_key="control_app_queue"),)
