@@ -373,7 +373,6 @@ export function humanizeResponseFieldKey(key: string): string {
     device_score: "Признаки экрана",
     frame_score: "Рамка кадра",
     face_reflection_score: "Блики на лице",
-    color_hist_score: "Цветовой паттерн лица",
     quality_penalty: "Оценка чёткости лица",
     quality: "Качество",
     blur: "Размытие",
@@ -388,6 +387,27 @@ export function humanizeResponseFieldKey(key: string): string {
     pad: "Проверка фото",
   };
   return labels[key] ?? humanizeSnakeOrEnglishFragment(key);
+}
+
+const QUALITY_REASON_RU: Record<string, string> = {
+  low_det_score: "лицо распознано неуверенно",
+  small_face: "лицо слишком мелкое в кадре",
+  blurry_face: "кадр размыт",
+  too_dark: "слишком темно",
+  too_bright: "слишком ярко или пересвет",
+  face_yaw_too_large: "голова повёрнута в сторону",
+  face_pitch_too_large: "голова наклонена вверх или вниз",
+};
+
+export function humanizeQualityReasonCode(code: string): string {
+  return QUALITY_REASON_RU[code] ?? humanizeSnakeOrEnglishFragment(code);
+}
+
+export function humanizeQualityReasonCodes(codes: string[]): string | null {
+  if (!codes.length) return null;
+  const labels = codes.map(humanizeQualityReasonCode).filter(Boolean);
+  if (!labels.length) return null;
+  return labels.join(", ");
 }
 
 export function humanizePadFailureReason(raw: string): FriendlyError {

@@ -61,6 +61,7 @@ import {
 } from "../faceLab/faceLabCameraVoice";
 import {
   FaCamera,
+  FaChevronDown,
   FaCheckCircle,
   FaCircleNotch,
   FaExclamationTriangle,
@@ -307,13 +308,11 @@ function PrimaryStateCard({
 function ModeCard({
   active,
   title,
-  detail,
   icon,
   onClick,
 }: {
   active: boolean;
   title: string;
-  detail?: string;
   icon: React.ReactNode;
   onClick: () => void;
 }) {
@@ -322,37 +321,23 @@ function ModeCard({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`group rounded-xl border p-3 text-left transition-[background-color,border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-blue-300/70 dark:focus-visible:ring-offset-slate-950 ${
+      className={`group flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold transition-[background-color,color,box-shadow] duration-200 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-blue-300/70 dark:focus-visible:ring-offset-slate-950 ${
         active
-          ? "border-blue-400 bg-blue-50 text-blue-950 shadow-sm shadow-blue-500/15 dark:border-blue-400/70 dark:bg-[#10254a] dark:text-blue-50 dark:shadow-blue-950/40"
-          : "border-slate-200/90 bg-white/85 text-slate-900 hover:border-blue-300 hover:bg-blue-50/70 hover:shadow-sm hover:shadow-blue-500/10 dark:border-slate-700/70 dark:bg-slate-900/55 dark:text-slate-100 dark:hover:border-blue-500/60 dark:hover:bg-blue-500/10 dark:hover:shadow-blue-950/30"
+          ? "bg-white text-blue-950 shadow-sm dark:bg-slate-800 dark:text-blue-50"
+          : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
       }`}
     >
-      <div className="flex items-start gap-3">
-        <span
-          className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors ${
-            active
-              ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20 dark:bg-blue-500"
-              : "bg-slate-100 text-slate-600 group-hover:bg-blue-100 group-hover:text-blue-700 dark:bg-slate-800 dark:text-slate-300 dark:group-hover:bg-blue-500/15 dark:group-hover:text-blue-200"
-          }`}
-        >
-          {icon}
-        </span>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold">{title}</p>
-          {detail ? (
-            <p
-              className={`mt-0.5 text-xs leading-relaxed ${
-                active
-                  ? "text-blue-900/75 dark:text-blue-100/75"
-                  : "text-slate-600 group-hover:text-slate-700 dark:text-slate-400 dark:group-hover:text-slate-300"
-              }`}
-            >
-              {detail}
-            </p>
-          ) : null}
-        </div>
-      </div>
+      <span
+        className={
+          active
+            ? "text-blue-600 dark:text-blue-400"
+            : "text-slate-400 group-hover:text-slate-500 dark:text-slate-500"
+        }
+        aria-hidden
+      >
+        {icon}
+      </span>
+      {title}
     </button>
   );
 }
@@ -860,15 +845,11 @@ const FaceLabPage: React.FC = () => {
             badge: padNeedsHuman ? "Найдено, нужен новый кадр" : "Найдено",
             title: personLabel(best),
             detail: padNeedsHuman
-              ? `Кандидат ${Math.round(best.similarity * 100)}%. Лучше переснять.`
+              ? "Фото слабое — лучше переснять."
               : padCaution
-                ? `Кандидат ${Math.round(best.similarity * 100)}%. Фото принято.`
-                : `Кандидат ${Math.round(best.similarity * 100)}%.`,
-            nextStep: padNeedsHuman
-              ? "Лицо ближе, без бликов."
-              : padCaution
-                ? "Можно продолжать."
-                : "Можно продолжать.",
+                ? "Фото принято с замечаниями. Точность — в карточке ниже."
+                : "Точность совпадения — в карточке ниже.",
+            nextStep: padNeedsHuman ? "Лицо ближе, без бликов." : undefined,
           };
         }
         const retryNeeded = Boolean(padWarning) || padTrustWeak(padResult);
@@ -974,54 +955,12 @@ const FaceLabPage: React.FC = () => {
         };
       }
       if (verifyContract) {
-        const matched =
-          verifyContract.matched && verifyContract.final_decision === "YES";
-        const contractSummary = (
-          verifyContract.summary ||
-          verifyContract.decision_summary ||
-          ""
-        ).trim();
-        if (matched) {
-          return {
-            state: "found",
-            tone: "success",
-            badge: "Подтверждено",
-            title: `${selectedName}: да`,
-            detail: contractSummary || "Совпадение есть.",
-            nextStep: "Можно продолжать.",
-          };
-        }
-        if (
-          verifyContract.status === "QUALITY_FAIL" ||
-          verifyContract.status === "PAD_ERROR" ||
-          verifyContract.liveness.status === "insufficient_input_review"
-        ) {
-          return {
-            state: "retry_needed",
-            tone: "warning",
-            badge: "Нужен новый кадр",
-            title: "Кадр слабый",
-            detail: contractSummary || "Нужен новый снимок.",
-            nextStep: "Лицо ближе, свет ровный.",
-          };
-        }
-        if (verifyContract.status === "LIVENESS_FAIL") {
-          return {
-            state: "error",
-            tone: "danger",
-            badge: "Кадр отклонён",
-            title: "Фото не принято",
-            detail: contractSummary || "Снимите ещё раз.",
-            nextStep: "Лицо должно быть в рамке.",
-          };
-        }
         return {
-          state: "not_found",
-          tone: "danger",
-          badge: "Не подтверждено",
-          title: `${selectedName}: нет`,
-          detail: contractSummary || "Совпадения нет.",
-          nextStep: "При необходимости снимите ещё раз.",
+          state: "ready",
+          tone: "info",
+          badge: "Готово",
+          title: `Результат сверки с ${selectedName}`,
+          detail: "Смотрите карточку ниже.",
         };
       }
       if (verifyPayloadError) {
@@ -1187,83 +1126,62 @@ const FaceLabPage: React.FC = () => {
               transition={springLayoutMain}
               className="w-full space-y-5"
             >
-              <section className="rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-sm shadow-slate-200/30 dark:border-slate-700/80 dark:bg-slate-950/55 dark:shadow-black/25 sm:p-5">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-xs font-semibold uppercase text-slate-500">
-                      Режим
-                    </h2>
-                    <p className="mt-1 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
-                      Что делаем с новым кадром.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-4 grid gap-2.5">
-                  <ModeCard
-                    active={mode === "search"}
-                    title="Поиск по базе"
-                    detail="Проверка кадра, затем совпадения в галерее."
-                    icon={<FaSearch className="h-4 w-4" aria-hidden />}
-                    onClick={() => {
-                      setMode("search");
-                      setError(null);
-                      resetSessionFromScratch();
-                    }}
-                  />
-                  <ModeCard
-                    active={mode === "compare"}
-                    title="Сверка с эталоном"
-                    detail="Выбор сотрудника и сравнение с профилем."
-                    icon={<FaUserCheck className="h-4 w-4" aria-hidden />}
-                    onClick={() => {
-                      setMode("compare");
-                      setError(null);
-                      resetSessionFromScratch();
-                    }}
-                  />
-                  <ModeCard
-                    active={mode === "bootstrap"}
-                    title="Настройка входа"
-                    detail="Три ракурса для будущего входа."
-                    icon={<FaUserPlus className="h-4 w-4" aria-hidden />}
-                    onClick={() => {
-                      setMode("bootstrap");
-                      setError(null);
-                      resetSessionFromScratch();
-                    }}
-                  />
-                </div>
-              </section>
+              <div
+                role="tablist"
+                aria-label="Режим работы"
+                className="flex gap-1 rounded-xl border border-slate-200/90 bg-slate-100/80 p-1 dark:border-slate-700/80 dark:bg-slate-900/60"
+              >
+                <ModeCard
+                  active={mode === "search"}
+                  title="Поиск"
+                  icon={<FaSearch className="h-3.5 w-3.5" aria-hidden />}
+                  onClick={() => {
+                    setMode("search");
+                    setError(null);
+                    resetSessionFromScratch();
+                  }}
+                />
+                <ModeCard
+                  active={mode === "compare"}
+                  title="Сверка"
+                  icon={<FaUserCheck className="h-3.5 w-3.5" aria-hidden />}
+                  onClick={() => {
+                    setMode("compare");
+                    setError(null);
+                    resetSessionFromScratch();
+                  }}
+                />
+                <ModeCard
+                  active={mode === "bootstrap"}
+                  title="Настройка"
+                  icon={<FaUserPlus className="h-3.5 w-3.5" aria-hidden />}
+                  onClick={() => {
+                    setMode("bootstrap");
+                    setError(null);
+                    resetSessionFromScratch();
+                  }}
+                />
+              </div>
+              <p className="px-1 text-xs text-slate-500 dark:text-slate-500">
+                {mode === "search"
+                  ? "Проверка кадра, затем совпадения в галерее."
+                  : mode === "compare"
+                    ? "Выбор сотрудника и сравнение с профилем."
+                    : "Три ракурса для будущего входа."}
+              </p>
 
               {(mode === "compare" || mode === "bootstrap") && (
-                <section
-                  className={`rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-sm shadow-slate-200/30 dark:border-slate-700/80 dark:bg-slate-950/55 dark:shadow-black/25 sm:p-5 ${
-                    mode === "bootstrap"
-                      ? "ring-1 ring-blue-500/15 dark:ring-blue-400/20"
-                      : ""
-                  }`}
-                >
-                  {mode === "bootstrap" ? (
-                    <div className="mb-5 border-b border-slate-200/80 pb-4 dark:border-slate-600/60">
-                      <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">
-                        Настройка входа по лицу
-                      </h2>
-                      <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                        Выберите человека и сохраните три ракурса.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="mb-4">
-                      <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-50">
-                        Сверка с выбранным сотрудником
-                      </h2>
-                      <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                        Выберите сотрудника, затем сделайте новый кадр для
-                        сравнения.
-                      </p>
-                    </div>
-                  )}
+                <section>
+                  <div className="mb-3 flex items-baseline gap-2.5">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-900 text-[11px] font-bold text-white dark:bg-slate-100 dark:text-slate-900">
+                      1
+                    </span>
+                    <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-50">
+                      {mode === "bootstrap"
+                        ? "Выберите сотрудника"
+                        : "Кого сверяем"}
+                    </h2>
+                  </div>
                   {staffListError ? (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800/40 dark:bg-amber-950/20 dark:text-amber-100">
                       <p className="font-medium">
@@ -1296,36 +1214,33 @@ const FaceLabPage: React.FC = () => {
                       value={selectedPin}
                       onChange={setSelectedPin}
                       focusRequestId={staffSearchFocusTick}
-                      label={
-                        mode === "bootstrap"
-                          ? "Кого настраиваем"
-                          : "Кого сверяем"
-                      }
+                      label="ФИО, PIN или отдел"
                       emptyResultText="Ничего не нашли. Попробуйте ФИО, PIN или отдел."
                     />
                   )}
                 </section>
               )}
 
-              <motion.section
-                layout
-                transition={springLayoutMain}
-                className="rounded-2xl border border-slate-200/90 bg-white/95 p-4 shadow-sm shadow-slate-200/30 dark:border-slate-700/80 dark:bg-slate-950/55 dark:shadow-black/25 sm:p-5"
-              >
+              <motion.section layout transition={springLayoutMain}>
                 <Stack
                   direction={{ xs: "column", sm: "row" }}
                   spacing={1.5}
                   alignItems={{ sm: "center" }}
                   justifyContent="space-between"
-                  className="mb-5"
+                  className="mb-3"
                 >
-                  <div>
-                    <h2 className="text-xs font-semibold uppercase text-slate-500">
+                  <div className="flex items-baseline gap-2.5">
+                    {mode !== "search" ? (
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-900 text-[11px] font-bold text-white dark:bg-slate-100 dark:text-slate-900">
+                        2
+                      </span>
+                    ) : null}
+                    <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-50">
                       {mode === "bootstrap"
-                        ? "Кадр текущего шага"
+                        ? "Снимите кадр"
                         : mode === "search"
-                          ? "Кадр для поиска"
-                          : "Кадр для сравнения"}
+                          ? "Снимите кадр для поиска"
+                          : "Снимите кадр для сравнения"}
                     </h2>
                   </div>
                   <ToggleButtonGroup
@@ -1411,61 +1326,7 @@ const FaceLabPage: React.FC = () => {
                     <ToggleButton value="en">EN</ToggleButton>
                   </ToggleButtonGroup>
                 </Stack>
-                <Stack
-                  direction={{ xs: "column", sm: "row" }}
-                  spacing={2.5}
-                  className="w-full"
-                  sx={{ alignItems: "stretch" }}
-                >
-                  <Button
-                    variant="outlined"
-                    size="large"
-                    startIcon={<FaCamera />}
-                    onClick={() => requestOpenCamera()}
-                    fullWidth
-                    sx={(theme) => ({
-                      minHeight: 52,
-                      py: 1.35,
-                      px: 2,
-                      flex: { sm: 1 },
-                      borderRadius: 2,
-                      borderWidth: 1.5,
-                      textTransform: "none",
-                      fontWeight: 600,
-                      fontSize: "0.95rem",
-                      color:
-                        theme.palette.mode === "dark"
-                          ? "rgb(147, 197, 253)"
-                          : "rgb(37, 99, 235)",
-                      borderColor:
-                        theme.palette.mode === "dark"
-                          ? "rgba(96, 165, 250, 0.55)"
-                          : "rgba(37, 99, 235, 0.62)",
-                      backgroundColor:
-                        theme.palette.mode === "dark"
-                          ? "rgba(37, 99, 235, 0.08)"
-                          : "rgba(239, 246, 255, 0.45)",
-                      transition:
-                        "transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease",
-                      "&:hover": {
-                        borderColor:
-                          theme.palette.mode === "dark"
-                            ? "rgb(147, 197, 253)"
-                            : "rgb(29, 78, 216)",
-                        backgroundColor:
-                          theme.palette.mode === "dark"
-                            ? "rgba(37, 99, 235, 0.18)"
-                            : "rgba(219, 234, 254, 0.9)",
-                        boxShadow:
-                          theme.palette.mode === "dark"
-                            ? "0 2px 16px rgba(37, 99, 235, 0.28)"
-                            : "0 2px 14px rgba(37, 99, 235, 0.16)",
-                        transform: "translateY(-1px)",
-                      },
-                    })}
-                  >
-                    Снять камерой
-                  </Button>
+                <div className="mt-4 space-y-4">
                   <input
                     ref={fileInputRef}
                     key={fileInputKey}
@@ -1487,119 +1348,247 @@ const FaceLabPage: React.FC = () => {
                       }
                     }}
                   />
-                  <Button
-                    variant="outlined"
-                    size="large"
-                    startIcon={<FaFolderOpen />}
-                    onClick={() => requestPickFile()}
-                    fullWidth
-                    sx={(theme) => ({
-                      minHeight: 52,
-                      py: 1.35,
-                      px: 2,
-                      flex: { sm: 1 },
-                      borderRadius: 2,
-                      borderWidth: 1.5,
-                      textTransform: "none",
-                      fontWeight: 600,
-                      fontSize: "0.95rem",
-                      color:
-                        theme.palette.mode === "dark"
-                          ? "rgb(147, 197, 253)"
-                          : "rgb(37, 99, 235)",
-                      borderColor:
-                        theme.palette.mode === "dark"
-                          ? "rgba(96, 165, 250, 0.55)"
-                          : "rgba(37, 99, 235, 0.62)",
-                      backgroundColor:
-                        theme.palette.mode === "dark"
-                          ? "rgba(37, 99, 235, 0.08)"
-                          : "rgba(239, 246, 255, 0.45)",
-                      transition:
-                        "transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease",
-                      "&:hover": {
-                        borderColor:
-                          theme.palette.mode === "dark"
-                            ? "rgb(147, 197, 253)"
-                            : "rgb(29, 78, 216)",
-                        backgroundColor:
-                          theme.palette.mode === "dark"
-                            ? "rgba(37, 99, 235, 0.18)"
-                            : "rgba(219, 234, 254, 0.9)",
-                        boxShadow:
-                          theme.palette.mode === "dark"
-                            ? "0 2px 16px rgba(37, 99, 235, 0.28)"
-                            : "0 2px 14px rgba(37, 99, 235, 0.16)",
-                        transform: "translateY(-1px)",
-                      },
-                    })}
-                  >
-                    Загрузить фото
-                  </Button>
-                </Stack>
 
-                {previewUrl ? (
-                  <Box className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-600 dark:bg-slate-950/80 md:p-5">
-                    <Stack
-                      direction="row"
-                      alignItems="center"
-                      gap={1}
-                      className="mb-3 text-slate-500 dark:text-slate-400"
-                    >
-                      <FaImage className="h-4 w-4" aria-hidden />
-                      <Typography
-                        variant="caption"
-                        fontWeight={600}
-                        letterSpacing={0}
-                        textTransform="uppercase"
+                  <AnimatePresence mode="wait" initial={false}>
+                    {!previewUrl ? (
+                      <motion.div
+                        key="face-lab-pick-actions"
+                        className="w-full"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.15, ease: "easeOut" }}
                       >
-                        Превью
-                      </Typography>
-                    </Stack>
-                    <Box className="flex flex-col items-center gap-4 md:mx-auto md:max-w-3xl">
-                      <img
-                        src={previewUrl}
-                        alt="Кадр для проверки"
-                        className="h-auto w-full max-h-[min(42vh,320px)] rounded-xl border border-slate-200 bg-black/30 object-contain shadow-inner dark:border-slate-600 md:max-h-[min(52vh,420px)]"
-                      />
-                      <Stack
-                        direction="row"
-                        alignItems="center"
-                        gap={1.5}
-                        className="w-full justify-center rounded-lg border border-slate-200/90 bg-white/80 px-4 py-3 dark:border-slate-600 dark:bg-slate-900/50"
-                      >
-                        <FaImage
-                          className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300"
-                          aria-hidden
-                        />
-                        <div className="min-w-0 text-center">
-                          <Typography
-                            variant="body2"
-                            fontWeight={600}
-                            className="truncate text-slate-900 dark:text-slate-100"
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1.5}
+                          className="w-full"
+                          sx={{ alignItems: "stretch" }}
+                        >
+                          <Button
+                            variant="contained"
+                            size="large"
+                            startIcon={<FaCamera />}
+                            onClick={() => requestOpenCamera()}
+                            fullWidth
+                            sx={{
+                              minHeight: 52,
+                              py: 1.35,
+                              px: 2,
+                              flex: { sm: 1.4 },
+                              borderRadius: 2,
+                              textTransform: "none",
+                              fontWeight: 700,
+                              fontSize: "0.95rem",
+                              boxShadow: "0 4px 14px rgba(37, 99, 235, 0.3)",
+                              transition:
+                                "box-shadow 0.18s ease, transform 0.18s ease, background-color 0.18s ease",
+                              "&:hover": {
+                                boxShadow: "0 6px 18px rgba(37, 99, 235, 0.36)",
+                                transform: "translateY(-1px)",
+                              },
+                              "&:active": {
+                                transform: "translateY(0)",
+                              },
+                            }}
                           >
-                            {file?.name ?? "файл"}
-                          </Typography>
-                          {file ? (
-                            <Typography
-                              variant="caption"
-                              color="text.secondary"
-                              className="block"
-                            >
-                              {formatFileSize(file.size)}
-                            </Typography>
-                          ) : null}
+                            Снять камерой
+                          </Button>
+                          <Button
+                            variant="text"
+                            size="large"
+                            startIcon={<FaFolderOpen className="h-3.5 w-3.5" />}
+                            onClick={() => requestPickFile()}
+                            fullWidth
+                            sx={(theme) => ({
+                              minHeight: 52,
+                              px: 2,
+                              flex: { sm: 1 },
+                              borderRadius: 2,
+                              textTransform: "none",
+                              fontWeight: 600,
+                              fontSize: "0.9rem",
+                              color:
+                                theme.palette.mode === "dark"
+                                  ? "rgb(148, 163, 184)"
+                                  : "rgb(100, 116, 139)",
+                              transition:
+                                "background-color 0.18s ease, color 0.18s ease",
+                              "&:hover": {
+                                backgroundColor:
+                                  theme.palette.mode === "dark"
+                                    ? "rgba(148, 163, 184, 0.1)"
+                                    : "rgba(100, 116, 139, 0.08)",
+                                color:
+                                  theme.palette.mode === "dark"
+                                    ? "rgb(203, 213, 225)"
+                                    : "rgb(51, 65, 85)",
+                              },
+                            })}
+                          >
+                            Или загрузить фото
+                          </Button>
+                        </Stack>
+                        <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-slate-50/80 px-4 py-5 text-center text-sm text-slate-600 dark:border-slate-700/90 dark:bg-slate-950/50 dark:text-slate-500 sm:px-6">
+                          {mode === "bootstrap"
+                            ? "Сделайте снимок или выберите файл — превью появится здесь."
+                            : "Камера или файл — кадр появится здесь."}
                         </div>
-                      </Stack>
-                    </Box>
-                  </Box>
-                ) : (
-                  <div className="mt-5 rounded-xl border border-dashed border-slate-300 bg-slate-50/80 px-4 py-5 text-center text-sm text-slate-600 dark:border-slate-700/90 dark:bg-slate-950/50 dark:text-slate-500 sm:px-6">
-                    {mode === "bootstrap"
-                      ? "Сделайте снимок или выберите файл — превью появится здесь."
-                      : "Камера или файл — кадр появится здесь."}
-                  </div>
-                )}
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="face-lab-preview-actions"
+                        className="w-full"
+                        initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{
+                          type: "spring",
+                          stiffness: 380,
+                          damping: 30,
+                        }}
+                      >
+                        <Box className="relative overflow-hidden rounded-xl border border-slate-200 bg-black/5 dark:border-slate-600 dark:bg-black/40 md:mx-auto md:max-w-3xl">
+                          <img
+                            src={previewUrl}
+                            alt="Кадр для проверки"
+                            className="h-auto max-h-[min(42vh,320px)] w-full object-contain md:max-h-[min(52vh,420px)]"
+                          />
+                          <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent px-3 py-2.5">
+                            <FaImage
+                              className="h-3.5 w-3.5 shrink-0 text-white/85"
+                              aria-hidden
+                            />
+                            <div className="min-w-0 flex-1">
+                              <Typography
+                                variant="caption"
+                                fontWeight={600}
+                                className="block truncate text-white"
+                              >
+                                {file?.name ?? "файл"}
+                              </Typography>
+                            </div>
+                            {file ? (
+                              <Typography
+                                variant="caption"
+                                className="shrink-0 text-white/70"
+                              >
+                                {formatFileSize(file.size)}
+                              </Typography>
+                            ) : null}
+                          </div>
+                        </Box>
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1.25}
+                          className="mt-3 w-full md:mx-auto md:max-w-3xl"
+                          sx={{ alignItems: "stretch" }}
+                        >
+                          <Stack
+                            direction="row"
+                            spacing={1}
+                            sx={{ flexWrap: "nowrap" }}
+                          >
+                            <Button
+                              variant="outlined"
+                              size="medium"
+                              startIcon={<FaCamera className="h-3.5 w-3.5" />}
+                              onClick={() => requestOpenCamera()}
+                              sx={(theme) => ({
+                                whiteSpace: "nowrap",
+                                textTransform: "none",
+                                fontWeight: 600,
+                                borderRadius: 2,
+                                color:
+                                  theme.palette.mode === "dark"
+                                    ? "rgb(203, 213, 225)"
+                                    : "rgb(51, 65, 85)",
+                                borderColor:
+                                  theme.palette.mode === "dark"
+                                    ? "rgba(148, 163, 184, 0.4)"
+                                    : "rgba(148, 163, 184, 0.55)",
+                                transition:
+                                  "background-color 0.18s ease, border-color 0.18s ease",
+                                "&:hover": {
+                                  borderColor:
+                                    theme.palette.mode === "dark"
+                                      ? "rgba(148, 163, 184, 0.65)"
+                                      : "rgba(100, 116, 139, 0.75)",
+                                  backgroundColor:
+                                    theme.palette.mode === "dark"
+                                      ? "rgba(148, 163, 184, 0.08)"
+                                      : "rgba(100, 116, 139, 0.06)",
+                                },
+                              })}
+                            >
+                              Переснять
+                            </Button>
+                            <Button
+                              variant="text"
+                              size="medium"
+                              startIcon={
+                                <FaFolderOpen className="h-3.5 w-3.5" />
+                              }
+                              onClick={() => requestPickFile()}
+                              sx={(theme) => ({
+                                whiteSpace: "nowrap",
+                                textTransform: "none",
+                                fontWeight: 600,
+                                borderRadius: 2,
+                                color:
+                                  theme.palette.mode === "dark"
+                                    ? "rgb(148, 163, 184)"
+                                    : "rgb(100, 116, 139)",
+                                transition: "background-color 0.18s ease",
+                                "&:hover": {
+                                  backgroundColor:
+                                    theme.palette.mode === "dark"
+                                      ? "rgba(148, 163, 184, 0.1)"
+                                      : "rgba(100, 116, 139, 0.08)",
+                                },
+                              })}
+                            >
+                              Другой файл
+                            </Button>
+                          </Stack>
+                          {mode !== "bootstrap" ? (
+                            <Button
+                              variant="contained"
+                              size="medium"
+                              color="primary"
+                              disabled={busy}
+                              onClick={() => void onSubmit()}
+                              sx={{
+                                flex: { sm: 1 },
+                                borderRadius: 2,
+                                textTransform: "none",
+                                fontWeight: 700,
+                                boxShadow: "0 4px 14px rgba(37, 99, 235, 0.3)",
+                                transition:
+                                  "box-shadow 0.18s ease, transform 0.18s ease",
+                                "&:hover": {
+                                  boxShadow:
+                                    "0 6px 18px rgba(37, 99, 235, 0.36)",
+                                  transform: "translateY(-1px)",
+                                },
+                                "&:active": { transform: "translateY(0)" },
+                                "&:disabled": { boxShadow: "none" },
+                              }}
+                            >
+                              {busy
+                                ? mode === "search"
+                                  ? "Ищем по базе…"
+                                  : "Сверяем с эталоном…"
+                                : mode === "search"
+                                  ? "Запустить поиск"
+                                  : "Сверить с эталоном"}
+                            </Button>
+                          ) : null}
+                        </Stack>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
 
                 {mode === "bootstrap" ? (
                   <div className="mt-5">
@@ -1611,61 +1600,6 @@ const FaceLabPage: React.FC = () => {
                     />
                   </div>
                 ) : null}
-
-                <AnimatePresence initial={false} mode="popLayout">
-                  {file && mode !== "bootstrap" ? (
-                    <motion.div
-                      key="face-lab-submit"
-                      layout
-                      initial={{ opacity: 0, scale: 0.94, y: 14 }}
-                      animate={{ opacity: 1, scale: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.96, y: 10 }}
-                      transition={{
-                        type: "spring",
-                        stiffness: 420,
-                        damping: 30,
-                        mass: 0.88,
-                      }}
-                      className="mt-6 flex w-full flex-col items-center md:mt-7"
-                    >
-                      <Button
-                        variant="contained"
-                        size="large"
-                        color="primary"
-                        disabled={busy}
-                        onClick={() => void onSubmit()}
-                        sx={{
-                          minHeight: 56,
-                          px: 4,
-                          py: 1.5,
-                          width: "100%",
-                          maxWidth: { md: 520 },
-                          borderRadius: 2,
-                          textTransform: "none",
-                          fontSize: { xs: "1rem", md: "1.05rem" },
-                          fontWeight: 700,
-                          boxShadow: "0 4px 16px rgba(37, 99, 235, 0.32)",
-                          transition:
-                            "box-shadow 0.15s ease, transform 0.12s ease",
-                          "&:hover": {
-                            boxShadow: "0 6px 22px rgba(37, 99, 235, 0.38)",
-                          },
-                          "&:disabled": {
-                            boxShadow: "none",
-                          },
-                        }}
-                      >
-                        {busy
-                          ? mode === "search"
-                            ? "Ищем по базе…"
-                            : "Сверяем с эталоном…"
-                          : mode === "search"
-                            ? "Запустить поиск"
-                            : "Сверить с эталоном"}
-                      </Button>
-                    </motion.div>
-                  ) : null}
-                </AnimatePresence>
               </motion.section>
             </motion.div>
           </motion.div>
@@ -1680,7 +1614,9 @@ const FaceLabPage: React.FC = () => {
               transition={springLayoutMain}
               className="min-w-0 space-y-5 lg:col-span-7 xl:col-span-8"
             >
-              <PrimaryStateCard spec={primaryStateSpec} busy={busy} />
+              {mode === "compare" && verifyContract ? null : (
+                <PrimaryStateCard spec={primaryStateSpec} busy={busy} />
+              )}
 
               {padWarning && padWarningFriendly ? (
                 <motion.div
@@ -1725,9 +1661,13 @@ const FaceLabPage: React.FC = () => {
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   transition={{ type: "spring", stiffness: 320, damping: 24 }}
                 >
-                  <details className="rounded-2xl border border-slate-200/90 bg-slate-50/90 dark:border-slate-700/70 dark:bg-slate-900/40">
-                    <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 [&::-webkit-details-marker]:hidden">
+                  <details className="group rounded-2xl border border-slate-200/90 bg-slate-50/90 dark:border-slate-700/70 dark:bg-slate-900/40">
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 [&::-webkit-details-marker]:hidden">
                       Проверка фото
+                      <FaChevronDown
+                        className="h-3 w-3 shrink-0 text-slate-400 transition-transform duration-200 group-open:rotate-180"
+                        aria-hidden
+                      />
                     </summary>
                     <div className="border-t border-slate-200/80 p-3 dark:border-slate-700/70">
                       <PadResultPanel pad={padResult} />

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { FaUserCheck } from "react-icons/fa";
+
+const smoothEase = [0.22, 1, 0.36, 1] as const;
 
 export type StaffPickOption = {
   pin: string;
@@ -253,62 +256,76 @@ export function FaceLabStaffCombobox({
           </div>
         </div>
       ) : null}
-      {open && !loading && filtered.length > 0 ? (
-        <ul
-          id="face-lab-staff-listbox"
-          role="listbox"
-          className="absolute z-50 mt-1 max-h-[min(24rem,min(70vh,65dvh))] w-full overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl ring-1 ring-slate-900/10 dark:border-slate-600 dark:bg-slate-900 dark:ring-black/40"
-        >
-          {filtered.map((o, idx) => (
-            <li
-              key={`${o.pin}-${o.deptId}`}
-              role="option"
-              aria-selected={idx === highlight}
-              className={`cursor-pointer px-3 py-2.5 text-sm transition-colors ${
-                idx === highlight
-                  ? "bg-blue-50 text-blue-950 dark:bg-[#10254a] dark:text-blue-50"
-                  : "hover:bg-blue-50/70 dark:hover:bg-blue-500/10"
-              }`}
-              onMouseDown={(ev) => ev.preventDefault()}
-              onClick={() => pick(o)}
-              onMouseEnter={() => setHighlight(idx)}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <span
-                    className={`font-medium ${
-                      idx === highlight
-                        ? "text-blue-950 dark:text-blue-50"
-                        : "text-slate-900 dark:text-slate-100"
-                    }`}
-                  >
-                    {o.fio}
-                  </span>
-                  <span
-                    className={`mt-0.5 block text-xs leading-snug ${
-                      idx === highlight
-                        ? "text-blue-900/70 dark:text-blue-100/75"
-                        : "text-slate-600 dark:text-slate-400"
-                    }`}
-                  >
-                    {o.deptName}, PIN {o.pin}
-                  </span>
+      <AnimatePresence>
+        {open && !loading && filtered.length > 0 ? (
+          <motion.ul
+            id="face-lab-staff-listbox"
+            role="listbox"
+            className="absolute z-50 mt-1 max-h-[min(24rem,min(70vh,65dvh))] w-full overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl ring-1 ring-slate-900/10 dark:border-slate-600 dark:bg-slate-900 dark:ring-black/40"
+            initial={{ opacity: 0, y: -4, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.98 }}
+            transition={{ duration: 0.16, ease: smoothEase }}
+          >
+            {filtered.map((o, idx) => (
+              <li
+                key={`${o.pin}-${o.deptId}`}
+                role="option"
+                aria-selected={idx === highlight}
+                className={`cursor-pointer px-3 py-2.5 text-sm transition-colors ${
+                  idx === highlight
+                    ? "bg-blue-50 text-blue-950 dark:bg-[#10254a] dark:text-blue-50"
+                    : "hover:bg-blue-50/70 dark:hover:bg-blue-500/10"
+                }`}
+                onMouseDown={(ev) => ev.preventDefault()}
+                onClick={() => pick(o)}
+                onMouseEnter={() => setHighlight(idx)}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <span
+                      className={`font-medium ${
+                        idx === highlight
+                          ? "text-blue-950 dark:text-blue-50"
+                          : "text-slate-900 dark:text-slate-100"
+                      }`}
+                    >
+                      {o.fio}
+                    </span>
+                    <span
+                      className={`mt-0.5 block text-xs leading-snug ${
+                        idx === highlight
+                          ? "text-blue-900/70 dark:text-blue-100/75"
+                          : "text-slate-600 dark:text-slate-400"
+                      }`}
+                    >
+                      {o.deptName}, PIN {o.pin}
+                    </span>
+                  </div>
+                  {faceProfileStateLabel(o.faceProfileState) ? (
+                    <span className="shrink-0 rounded-full border border-slate-200/80 bg-white/80 px-2 py-1 text-[10px] font-semibold uppercase text-slate-600 dark:border-slate-600/60 dark:bg-slate-900/70 dark:text-slate-300">
+                      {faceProfileStateLabel(o.faceProfileState)}
+                    </span>
+                  ) : null}
                 </div>
-                {faceProfileStateLabel(o.faceProfileState) ? (
-                  <span className="shrink-0 rounded-full border border-slate-200/80 bg-white/80 px-2 py-1 text-[10px] font-semibold uppercase text-slate-600 dark:border-slate-600/60 dark:bg-slate-900/70 dark:text-slate-300">
-                    {faceProfileStateLabel(o.faceProfileState)}
-                  </span>
-                ) : null}
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {open && !loading && filtered.length === 0 && normalizeSearch(text) ? (
-        <div className="absolute z-50 mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-500 shadow-md dark:border-slate-600 dark:bg-slate-900">
-          {emptyResultText}
-        </div>
-      ) : null}
+              </li>
+            ))}
+          </motion.ul>
+        ) : null}
+      </AnimatePresence>
+      <AnimatePresence>
+        {open && !loading && filtered.length === 0 && normalizeSearch(text) ? (
+          <motion.div
+            className="absolute z-50 mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-500 shadow-md dark:border-slate-600 dark:bg-slate-900"
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.16, ease: smoothEase }}
+          >
+            {emptyResultText}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }

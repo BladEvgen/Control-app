@@ -4,8 +4,7 @@ import {
   FaExclamationTriangle,
   FaTimesCircle,
 } from "react-icons/fa";
-import { padUiDecisionFromDiagnostics } from "./faceLabPadDecision";
-import type { PadDiagnosticsPayload, PadUiDecision } from "./faceLabPadTypes";
+import type { PadUiDecision } from "./faceLabPadTypes";
 import { FaceLabBadge, FaceLabSurface } from "./faceLabDesign";
 import type { FaceLabTone } from "./faceLabDesignTokens";
 
@@ -78,13 +77,4 @@ export function PadDecisionCard({
       </motion.div>
     </FaceLabSurface>
   );
-}
-
-export function PadDiagnosticsReadout({
-  diagnostics,
-}: {
-  diagnostics: PadDiagnosticsPayload | null;
-}) {
-  const decision = padUiDecisionFromDiagnostics(diagnostics);
-  return <PadDecisionCard decision={decision} />;
 }

@@ -8,51 +8,37 @@ import {
 import { coercePadDiagnostics, type PadUiDecision } from "./faceLabPadTypes";
 import { FaceLabMetric } from "./faceLabDesign";
 import { faceLabBadgeClass, pctExact } from "./faceLabDesignTokens";
+import { humanizeQualityReasonCodes } from "./faceLabHumanMessages";
 
 function identityMargin(v: FaceVerifyApiResponse) {
   return v.diagnostics?.identity_margin ?? null;
 }
 
-function verifyDecision(v: FaceVerifyApiResponse): PadUiDecision {
-  if (v.matched && v.final_decision === "YES") return "YES";
-  if (
-    v.status === "QUALITY_FAIL" ||
-    v.status === "PAD_ERROR" ||
-    v.liveness.status === "insufficient_input_review" ||
-    v.liveness.status === "review"
-  ) {
-    return "REVIEW";
-  }
-  return "NO";
+function verifyDecision(v: FaceVerifyApiResponse): "YES" | "NO" {
+  return v.matched && v.final_decision === "YES" ? "YES" : "NO";
 }
 
-function tone(decision: PadUiDecision): "success" | "warning" | "danger" {
-  if (decision === "YES") return "success";
-  if (decision === "NO") return "danger";
-  return "warning";
+function tone(decision: "YES" | "NO"): "success" | "danger" {
+  return decision === "YES" ? "success" : "danger";
 }
 
 function titleForVerify(
   v: FaceVerifyApiResponse,
-  decision: PadUiDecision,
+  decision: "YES" | "NO",
 ): string {
   if (decision === "YES") return "Лицо подтверждено";
   if (identityMargin(v)?.impostor_ambiguous) return "Слишком похож на другого";
   if (v.status === "LIVENESS_FAIL") return "Фото не принято";
-  if (decision === "REVIEW") return "Система сомневается";
   return "Лицо не подтверждено";
 }
 
 function textForVerify(
   v: FaceVerifyApiResponse,
-  decision: PadUiDecision,
+  decision: "YES" | "NO",
 ): string {
   const summary = (v.summary || v.decision_summary || "").trim();
   if (decision === "YES") return summary || "Да, можно пропускать.";
-  if (decision === "NO") {
-    return summary || "Нет, не пропускаем: лицо или фото не прошли проверку.";
-  }
-  return summary || "Автоответа недостаточно: нужен новый кадр или оператор.";
+  return summary || "Нет, не пропускаем: лицо или фото не прошли проверку.";
 }
 
 function livenessDecision(v: FaceVerifyApiResponse): PadUiDecision {
@@ -73,6 +59,9 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
   const liveness = livenessDecision(v);
   const livenessDisplay = decision === "YES" ? "YES" : liveness;
   const displayScore = Math.max(v.score, v.max_cosine);
+  const qualityReasons = v.quality.passed
+    ? null
+    : humanizeQualityReasonCodes(v.quality.reason_codes ?? []);
 
   return (
     <motion.div
@@ -93,7 +82,7 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
         <span
           className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase ${faceLabBadgeClass(tone(decision))}`}
         >
-          {decision === "YES" ? "Да" : decision === "NO" ? "Нет" : "Сомневаюсь"}
+          {decision === "YES" ? "Да" : "Нет"}
         </span>
       </div>
 
@@ -126,6 +115,17 @@ export function VerifyContractPanel({ v }: { v: FaceVerifyApiResponse }) {
           tone={v.gallery_strength === "strong" ? "success" : "warning"}
         />
       </div>
+
+      {qualityReasons ? (
+        <div className="mt-3">
+          <FaceLabMetric
+            label="Причина: кадр"
+            value={qualityReasons}
+            tone="warning"
+            hint="Снимите новый кадр с учётом этого."
+          />
+        </div>
+      ) : null}
     </motion.div>
   );
 }
