@@ -128,11 +128,27 @@ def is_strong_gallery(breakdown: Mapping[str, int], gallery_templates: int) -> b
     """
     Strong gallery: at least FACE_VERIFY_MIN_ENROLLMENT_SOURCES distinct prototype
     origins and at least FACE_VERIFY_MIN_TEMPLATES_STRONG rows — matches product rule.
+
+    A single avatar with enough test-time-augmentation variants (different
+    lighting/glasses conditions rendered from the same source photo) also
+    counts as strong: most staff only ever upload one avatar, and refusing to
+    trust 5+ independently-rendered variants of it just because they share one
+    origin file punishes the common case instead of a real enrollment risk.
     """
     distinct = _distinct_enrollment_sources(breakdown)
     need_src = int(getattr(settings, "FACE_VERIFY_MIN_ENROLLMENT_SOURCES", 2))
     need_tpl = int(getattr(settings, "FACE_VERIFY_MIN_TEMPLATES_STRONG", 2))
-    return distinct >= need_src and gallery_templates >= need_tpl
+    if distinct >= need_src and gallery_templates >= need_tpl:
+        return True
+
+    single_source_min_templates = int(
+        getattr(settings, "FACE_VERIFY_SINGLE_SOURCE_STRONG_MIN_TEMPLATES", 5)
+    )
+    return (
+        distinct == 1
+        and int(breakdown.get("avatar_prototypes") or 0) > 0
+        and gallery_templates >= single_source_min_templates
+    )
 
 
 def decide_face_verify_binary(

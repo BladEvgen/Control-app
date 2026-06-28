@@ -244,6 +244,11 @@ FACE_VERIFY_MIN_ENROLLMENT_SOURCES = int(
 FACE_VERIFY_MIN_TEMPLATES_STRONG = int(
     os.getenv("FACE_VERIFY_MIN_TEMPLATES_STRONG", "2")
 )
+# Single-source (avatar-only) galleries count as strong once they have this
+# many TTA-rendered templates — most staff only ever upload one avatar.
+FACE_VERIFY_SINGLE_SOURCE_STRONG_MIN_TEMPLATES = int(
+    os.getenv("FACE_VERIFY_SINGLE_SOURCE_STRONG_MIN_TEMPLATES", "5")
+)
 FACE_VERIFY_MAX_COSINE_FACTOR = float(
     os.getenv("FACE_VERIFY_MAX_COSINE_FACTOR", "0.97")
 )
@@ -253,7 +258,7 @@ FACE_VERIFY_PROBE_DET_SCORE_MIN = float(
 FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN = float(
     os.getenv("FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN", "0.008")
 )
-FACE_VERIFY_PROBE_BLUR_MIN = float(os.getenv("FACE_VERIFY_PROBE_BLUR_MIN", "12.0"))
+FACE_VERIFY_PROBE_BLUR_MIN = float(os.getenv("FACE_VERIFY_PROBE_BLUR_MIN", "8.0"))
 FACE_VERIFY_PROBE_BRIGHTNESS_MIN = float(
     os.getenv("FACE_VERIFY_PROBE_BRIGHTNESS_MIN", "22.0")
 )
@@ -573,6 +578,10 @@ CORS_ALLOW_HEADERS = [
     "x-attendance-timestamp",
     "x-attendance-nonce",
     "x-attendance-signature",
+]
+
+CORS_EXPOSE_HEADERS = [
+    "x-tts-text",
 ]
 
 CORS_ALLOW_CREDENTIALS = True

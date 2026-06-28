@@ -517,6 +517,85 @@ class FaceVerifyPolicyPadMappingTests(SimpleTestCase):
         self.assertAlmostEqual(thr_applied, 0.76)
         self.assertEqual(gstr, "strong")
 
+    @override_settings(FACE_VERIFY_SINGLE_SOURCE_STRONG_MIN_TEMPLATES=5)
+    def test_single_avatar_source_counts_strong_with_enough_tta_templates(
+        self,
+    ) -> None:
+        """Most staff only ever upload one avatar; 5+ TTA-rendered variants of
+        it should not be punished as a 'weak' gallery just for sharing one
+        origin file."""
+        avatar_only_bd: dict[str, int] = {
+            "mask_prototypes": 0,
+            "avatar_prototypes": 5,
+            "condition_variant_prototypes": 3,
+            "glasses_variant_prototypes": 1,
+            "gallery_real_npy_prototypes": 0,
+        }
+        live: LivenessPayload = {
+            "checked": True,
+            "trust_confirmed": True,
+            "status": "clean",
+            "risk_score": 0.02,
+            "model_version": "pad_v3",
+            "tags": [],
+            "elapsed_ms": 1.0,
+            "deepface_score": 0.0,
+            "device_score": 0.0,
+            "frame_score": 0.0,
+            "quality_penalty": 0.0,
+            "note": "",
+        }
+        matched, fd, _summary, st, codes, thr_applied, gstr = _call(
+            quality=_QUALITY_OK,
+            live=live,
+            score=0.9,
+            gallery_templates=5,
+            breakdown=avatar_only_bd,
+            thr_v=0.76,
+        )
+        self.assertTrue(matched)
+        self.assertEqual(fd, "YES")
+        self.assertEqual(st, "VERIFIED")
+        self.assertEqual(codes, [])
+        self.assertAlmostEqual(thr_applied, 0.76)
+        self.assertEqual(gstr, "strong")
+
+    @override_settings(FACE_VERIFY_SINGLE_SOURCE_STRONG_MIN_TEMPLATES=5)
+    def test_single_avatar_source_stays_weak_below_template_floor(self) -> None:
+        avatar_only_bd: dict[str, int] = {
+            "mask_prototypes": 0,
+            "avatar_prototypes": 4,
+            "condition_variant_prototypes": 3,
+            "glasses_variant_prototypes": 1,
+            "gallery_real_npy_prototypes": 0,
+        }
+        live: LivenessPayload = {
+            "checked": True,
+            "trust_confirmed": True,
+            "status": "clean",
+            "risk_score": 0.02,
+            "model_version": "pad_v3",
+            "tags": [],
+            "elapsed_ms": 1.0,
+            "deepface_score": 0.0,
+            "device_score": 0.0,
+            "frame_score": 0.0,
+            "quality_penalty": 0.0,
+            "note": "",
+        }
+        matched, fd, _summary, st, codes, thr_applied, gstr = _call(
+            quality=_QUALITY_OK,
+            live=live,
+            score=0.7832,
+            gallery_templates=4,
+            breakdown=avatar_only_bd,
+            thr_w=0.86,
+        )
+        self.assertEqual(gstr, "weak")
+        self.assertFalse(matched)
+        self.assertEqual(fd, "NO")
+        self.assertEqual(codes, [R_SCORE_BELOW_COLD_START_THRESHOLD])
+
     @override_settings(
         FACE_VERIFY_MIN_ENROLLMENT_SOURCES=2,
         FACE_VERIFY_MIN_TEMPLATES_STRONG=2,
