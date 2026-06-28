@@ -7,36 +7,13 @@ import { faceLabLog } from "./faceLabLog";
 
 export type FaceLabVoiceLang = "off" | "ru" | "kk" | "en";
 
-const PHASE: Record<
-  string,
-  Record<Exclude<FaceLabVoiceLang, "off">, string>
-> = {
-  loading: {
-    ru: "Готовим камеру.",
-    kk: "Камера дайындалып жатыр.",
-    en: "Preparing camera.",
-  },
-  blink: {
-    ru: "Моргните один раз.",
-    kk: "Бір рет жыпылықтаңыз.",
-    en: "Blink once.",
-  },
-  yaw: {
-    ru: "Поверните голову в сторону.",
-    kk: "Басыңызды сәл бұрыңыз.",
-    en: "Turn your head slightly.",
-  },
-  smile: {
-    ru: "Слегка улыбнитесь.",
-    kk: "Аздап күлімдеңіз.",
-    en: "Smile slightly.",
-  },
-  unavailable: {
-    ru: "Автопроверка недоступна. Снимите вручную.",
-    kk: "Автотексеру жоқ. Қолмен түсіріңіз.",
-    en: "Auto check is unavailable. Capture manually.",
-  },
-};
+const LIVENESS_PHASE_KEYS = [
+  "loading",
+  "blink",
+  "yaw",
+  "smile",
+  "unavailable",
+] as const;
 
 const SETUP_TTS_PHASE_KEYS = [
   "setup_profile_photo",
@@ -45,8 +22,18 @@ const SETUP_TTS_PHASE_KEYS = [
   "setup_bootstrap_right",
 ] as const;
 
+const SETUP_CONTEXT_TO_PHASE: Record<
+  Exclude<CameraGuidanceContext, "default">,
+  string
+> = {
+  profile_photo: "setup_profile_photo",
+  bootstrap_front: "setup_bootstrap_front",
+  bootstrap_left: "setup_bootstrap_left",
+  bootstrap_right: "setup_bootstrap_right",
+};
+
 export const FACE_LAB_TTS_PHASE_KEYS: readonly string[] = Object.freeze([
-  ...Object.keys(PHASE),
+  ...LIVENESS_PHASE_KEYS,
   ...SETUP_TTS_PHASE_KEYS,
 ]);
 
@@ -69,52 +56,20 @@ function memKey(phase: string, lang: string): string {
 const memoryBlobs = new Map<string, Blob>();
 const inflightLoads = new Map<string, Promise<Blob | null>>();
 
-export function phraseForLivenessPhase(
+export function livenessPhaseHasVoice(
   phase: string,
   lang: FaceLabVoiceLang,
-): string | null {
-  if (lang === "off") return null;
-  const row = PHASE[phase];
-  if (!row) return null;
-  const line = row[lang] ?? row.ru;
-  return line.trim() ? line : null;
+): boolean {
+  if (lang === "off") return false;
+  return (LIVENESS_PHASE_KEYS as readonly string[]).includes(phase);
 }
 
-const SETUP_GUIDE: Record<
-  Exclude<CameraGuidanceContext, "default">,
-  Record<Exclude<FaceLabVoiceLang, "off">, string>
-> = {
-  profile_photo: {
-    ru: "Лицо по центру. Смотрите прямо.",
-    kk: "Бет ортада. Тік қараңыз.",
-    en: "Center your face. Look straight.",
-  },
-  bootstrap_front: {
-    ru: "Прямой кадр. Смотрите прямо.",
-    kk: "Тік кадр. Тік қараңыз.",
-    en: "Front photo. Look straight.",
-  },
-  bootstrap_left: {
-    ru: "Голова чуть влево. Не наклоняйтесь.",
-    kk: "Басыңызды сәл солға бұрыңыз. Еңкеймеңіз.",
-    en: "Head slightly left. Do not tilt.",
-  },
-  bootstrap_right: {
-    ru: "Голова чуть вправо. Не наклоняйтесь.",
-    kk: "Басыңызды сәл оңға бұрыңыз. Еңкеймеңіз.",
-    en: "Head slightly right. Do not tilt.",
-  },
-};
-
-export function phraseForSetupGuidance(
+export function setupGuidancePhaseKey(
   ctx: CameraGuidanceContext,
   lang: FaceLabVoiceLang,
 ): string | null {
   if (lang === "off" || ctx === "default") return null;
-  const row = SETUP_GUIDE[ctx];
-  if (!row) return null;
-  const line = row[lang] ?? row.ru;
-  return line.trim() ? line : null;
+  return SETUP_CONTEXT_TO_PHASE[ctx] ?? null;
 }
 
 let lastSpeakDedupeKey = "";
@@ -249,13 +204,12 @@ export async function warmFaceLabTtsVoicePack(
 
 export type SpeakFaceLabOptions = {
   phase: string;
-  text: string;
   lang: Exclude<FaceLabVoiceLang, "off">;
 };
 
 export async function speakFaceLab(opts: SpeakFaceLabOptions): Promise<void> {
-  const { phase, text, lang } = opts;
-  if (typeof window === "undefined" || !text.trim()) return;
+  const { phase, lang } = opts;
+  if (typeof window === "undefined") return;
 
   const dedupeKey = `${phase}:${lang}`;
   if (dedupeKey === lastSpeakDedupeKey) return;

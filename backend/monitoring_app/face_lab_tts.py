@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from urllib.parse import quote
 
 import edge_tts
 from django.conf import settings
@@ -57,21 +58,21 @@ FACE_LAB_TTS_PHRASES: dict[str, dict[str, str]] = {
         "en": "Front photo. Look straight.",
     },
     "setup_bootstrap_left": {
-        "ru": "Голова чуть влево. Не наклоняйтесь.",
-        "kk": "Басыңызды сәл солға бұрыңыз. Еңкеймеңіз.",
-        "en": "Head slightly left. Do not tilt.",
+        "ru": "Повернитесь левым ухом к камере. Голову не наклоняйте.",
+        "kk": "Сол құлағыңызды камераға қаратып бұрылыңыз. Басыңызды еңкейтпеңіз.",
+        "en": "Turn so your left ear faces the camera. Do not tilt your head.",
     },
     "setup_bootstrap_right": {
-        "ru": "Голова чуть вправо. Не наклоняйтесь.",
-        "kk": "Басыңызды сәл оңға бұрыңыз. Еңкеймеңіз.",
-        "en": "Head slightly right. Do not tilt.",
+        "ru": "Повернитесь правым ухом к камере. Голову не наклоняйте.",
+        "kk": "Оң құлағыңызды камераға қаратып бұрылыңыз. Басыңызды еңкейтпеңіз.",
+        "en": "Turn so your right ear faces the camera. Do not tilt your head.",
     },
 }
 
 _ALLOWED_PHASES = frozenset(FACE_LAB_TTS_PHRASES.keys())
 _ALLOWED_LANGS = frozenset({"ru", "kk", "en"})
 
-_CACHE_PREFIX = "face_lab_tts:v3"
+_CACHE_PREFIX = "face_lab_tts:v4"
 _CACHE_TTL = 60 * 60 * 24 * 30
 
 
@@ -143,4 +144,6 @@ def face_lab_tts_view(request):
 
     response = HttpResponse(audio, content_type="audio/mpeg")
     response["Cache-Control"] = "private, max-age=86400"
+    # RFC 5987 encoding: HTTP headers are latin-1, Cyrillic/Kazakh text isn't.
+    response["X-Tts-Text"] = quote(text)
     return response

@@ -30,8 +30,8 @@ import {
 } from "./camera-device";
 import type { FaceLabVoiceLang } from "../faceLabCameraVoice";
 import {
-  phraseForLivenessPhase,
-  phraseForSetupGuidance,
+  livenessPhaseHasVoice,
+  setupGuidancePhaseKey,
   speakFaceLab,
   cancelFaceLabSpeech,
   isFaceLabSpeechCancelled,
@@ -87,9 +87,11 @@ function overlayPhaseTitle(
   guidanceContext: CameraGuidanceContext,
 ): string {
   if (!requireLiveness) {
-    if (guidanceContext === "bootstrap_front") return "Лицо по центру";
-    if (guidanceContext === "bootstrap_left") return "Голова чуть влево";
-    if (guidanceContext === "bootstrap_right") return "Голова чуть вправо";
+    if (guidanceContext === "bootstrap_front") return "Смотрите прямо в камеру";
+    if (guidanceContext === "bootstrap_left")
+      return "Повернитесь левым ухом к камере";
+    if (guidanceContext === "bootstrap_right")
+      return "Повернитесь правым ухом к камере";
     if (guidanceContext === "profile_photo") return "Снимите кадр профиля";
     return "Снимите кадр";
   }
@@ -310,13 +312,11 @@ function FaceCameraOverlayInner(
       if (!openRef.current) return;
       const phNow = livenessPhaseRef.current;
       if (phNow === "idle") return;
-      const line = phraseForLivenessPhase(phNow, voiceLang);
-      if (!line) return;
+      if (!livenessPhaseHasVoice(phNow, voiceLang)) return;
       if (lastAnnouncedVoicePhaseRef.current === phNow) return;
       lastAnnouncedVoicePhaseRef.current = phNow;
       void speakFaceLab({
         phase: phNow,
-        text: line,
         lang: voiceLang,
       }).catch((e: unknown) => {
         if (!isFaceLabSpeechCancelled(e)) {
@@ -332,15 +332,13 @@ function FaceCameraOverlayInner(
 
   useEffect(() => {
     if (!open || voiceLang === "off" || requireLiveness) return;
-    const text = phraseForSetupGuidance(guidanceContext, voiceLang);
-    if (!text) return;
-    const phaseKey = `setup_${guidanceContext}`;
+    const phaseKey = setupGuidancePhaseKey(guidanceContext, voiceLang);
+    if (!phaseKey) return;
     const delay = window.setTimeout(() => {
       if (!openRef.current) return;
       cancelFaceLabSpeech();
       void speakFaceLab({
         phase: phaseKey,
-        text,
         lang: voiceLang,
       }).catch((e: unknown) => {
         if (!isFaceLabSpeechCancelled(e)) {
@@ -454,6 +452,7 @@ function FaceCameraOverlayInner(
         }
       };
 
+      let optimizeRequested = false;
       const handleVideoReady = () => {
         if (cancelled || !video.videoWidth || !video.videoHeight) return;
         if (!didLogStreamDims) {
@@ -463,6 +462,8 @@ function FaceCameraOverlayInner(
           });
         }
         bumpReady();
+        if (optimizeRequested) return;
+        optimizeRequested = true;
         void optimizeCameraTrackForFace(trackRef.current).then((after) => {
           if (
             cancelled ||
@@ -783,9 +784,9 @@ function FaceCameraOverlayInner(
               frame,
               container: c,
               shouldMirror,
-              maxWidth: 1920,
-              maxHeight: 1920,
-              quality: 0.94,
+              maxWidth: 4096,
+              maxHeight: 4096,
+              quality: 0.97,
             });
 
             if (gotBlob) {
