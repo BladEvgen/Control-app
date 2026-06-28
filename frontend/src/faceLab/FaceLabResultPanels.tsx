@@ -21,8 +21,9 @@ import {
   padUiDecisionFromDiagnostics,
   padUiDecisionFromRaw,
 } from "./faceLabPadDecision";
-import { FaceLabMetric } from "./faceLabDesign";
+import { AnimatedPercent, FaceLabMetric } from "./faceLabDesign";
 import {
+  clamp01,
   faceLabBadgeClass,
   faceLabFadeContainer,
   faceLabFadeItem,
@@ -181,16 +182,29 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
               }`}
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                    {[row.surname, row.name].filter(Boolean).join(" ") ||
-                      "Имя не указано"}
-                  </p>
-                  {row.department ? (
-                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
-                      {row.department}
+                <div className="flex min-w-0 flex-1 items-start gap-3">
+                  {row.avatar_url ? (
+                    <img
+                      src={row.avatar_url}
+                      alt=""
+                      className="h-11 w-11 shrink-0 rounded-full border border-slate-200 object-cover dark:border-slate-700"
+                    />
+                  ) : (
+                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-100 text-xs font-semibold uppercase text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
+                      {(row.surname || row.name || "?").slice(0, 1)}
+                    </span>
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      {[row.surname, row.name].filter(Boolean).join(" ") ||
+                        "Имя не указано"}
                     </p>
-                  ) : null}
+                    {row.department ? (
+                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                        {row.department}
+                      </p>
+                    ) : null}
+                  </div>
                 </div>
                 <motion.div
                   className={`rounded-full border px-3 py-1 text-right ${
@@ -204,18 +218,18 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
                     Схожесть
                   </span>
                   <span className="block tabular-nums text-xl font-bold leading-none">
-                    {pctExact(row.similarity)}
+                    <AnimatedPercent
+                      value={clamp01(row.similarity) * 100}
+                      decimals={2}
+                    />
                     <span className="text-base font-bold opacity-70">%</span>
                   </span>
                 </motion.div>
               </div>
-              <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                <span className="rounded-full border border-slate-200/80 bg-white/80 px-2.5 py-1 text-slate-600 dark:border-slate-700/60 dark:bg-slate-900/60 dark:text-slate-300">
-                  PIN: {row.pin}
-                </span>
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                 {bestMatch?.pin === row.pin &&
                 bestMatch?.similarity === row.similarity ? (
-                  <span className="rounded-full border border-emerald-200/80 bg-emerald-50 px-2.5 py-1 text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-500/10 dark:text-emerald-200">
+                  <span className="rounded-full border border-emerald-200/80 bg-emerald-50 px-2.5 py-1 font-semibold text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-500/10 dark:text-emerald-200">
                     Лучший кандидат
                   </span>
                 ) : null}
@@ -230,6 +244,9 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
                     Запас от похожих: {pctExact(row.neighbor_gap)}%
                   </span>
                 ) : null}
+                <span className="ml-auto rounded-full border border-slate-200/60 bg-transparent px-2 py-1 font-mono text-[11px] text-slate-400 dark:border-slate-700/50 dark:text-slate-500">
+                  {row.pin}
+                </span>
               </div>
             </motion.li>
           ))}

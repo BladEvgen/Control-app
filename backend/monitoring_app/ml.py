@@ -2558,6 +2558,9 @@ def _classify_runtime_gallery_matches(
                     "similarity": similarity,
                     "neighbor_gap": gap,
                     "bbox": bbox,
+                    "avatar_url": (
+                        staff_best.avatar.url if staff_best.avatar else None
+                    ),
                 }
             )
         else:

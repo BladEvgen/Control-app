@@ -26,6 +26,7 @@ export type RecognizedStaffRow = {
   similarity: number;
   neighbor_gap?: number;
   bbox: number[];
+  avatar_url?: string | null;
 };
 
 export type UnknownFaceRow = {
@@ -121,6 +122,10 @@ export function parseRecognizeResponse(
           ? normalizeScore01(row.neighbor_gap)
           : undefined,
       bbox: row.bbox as number[],
+      avatar_url:
+        row.avatar_url === null || typeof row.avatar_url === "string"
+          ? (row.avatar_url as string | null)
+          : undefined,
     });
   }
   const unknown_faces: UnknownFaceRow[] = [];
