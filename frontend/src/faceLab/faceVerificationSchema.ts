@@ -57,7 +57,6 @@ const livenessSchema = z.object({
   frame_global_score: z.number().optional(),
   recapture_score: z.number().optional(),
   face_reflection_score: z.number().optional(),
-  color_hist_score: z.number().optional(),
   diagnostics: padLivenessDiagnosticsSchema,
   note: z.string().optional(),
 });

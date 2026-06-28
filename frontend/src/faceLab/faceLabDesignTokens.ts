@@ -34,10 +34,6 @@ export function pctExact(x: number): string {
   return (clamp01(x) * 100).toFixed(2);
 }
 
-export function pctWidthPercent(x: number): string {
-  return `${(clamp01(x) * 100).toFixed(2)}%`;
-}
-
 export function faceLabToneShellClass(tone: FaceLabTone): string {
   if (tone === "success") {
     return "border-emerald-200 bg-emerald-50/95 text-emerald-950 dark:border-emerald-800/50 dark:bg-emerald-950/30 dark:text-emerald-50";

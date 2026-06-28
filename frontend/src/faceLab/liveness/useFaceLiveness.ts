@@ -324,8 +324,6 @@ export type UseFaceLivenessOptions = {
 export type UseFaceLivenessResult = {
   phase: LivenessPhase;
   hint: string;
-  allowCapture: boolean;
-  isFallback: boolean;
   reset: () => void;
 };
 
@@ -658,15 +656,9 @@ export function useFaceLiveness({
     };
   }, []);
 
-  const allowCapture = skipped || phase === "passed" || phase === "unavailable";
-
-  const isFallback = phase === "unavailable";
-
   return {
     phase,
     hint,
-    allowCapture,
-    isFallback,
     reset,
   };
 }
