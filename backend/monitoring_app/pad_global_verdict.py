@@ -344,11 +344,6 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
     jury = _build_jury(ctx)
     debate = jury["debate"]
     neural = float(debate["score"])
-    geometry = float(
-        next(
-            v["score"] for v in jury["votes"] if v["family"] == "face_display_geometry"
-        )
-    )
     background = float(
         next(
             v["score"]
@@ -365,7 +360,6 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
     )
     rec = ctx.rec
     refl = ctx.refl
-    g = float(jury["global_spoof_score"])
 
     refl_strong = _pad_float("reflection_strong")
     refl_mid = _pad_float("reflection_mid")
