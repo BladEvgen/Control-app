@@ -759,7 +759,10 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
             )
 
         fixed_now = timezone.make_aware(datetime(2026, 3, 20, 12, 0))
-        request = self.factory.get("/admin/monitoring_app/classlocation/")
+        request = self.factory.get(
+            "/admin/monitoring_app/classlocation/",
+            {"attendance_period": "6m"},
+        )
         with patch("monitoring_app.admin.timezone.now", return_value=fixed_now), patch(
             "monitoring_app.admin.timezone.localdate",
             return_value=fixed_now.date(),
@@ -768,6 +771,12 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
             location = queryset.get(pk=self.location.pk)
 
         self.assertEqual(getattr(location, "_attendance_hits_period"), 1)
+
+        reset_request = self.factory.get("/admin/monitoring_app/classlocation/")
+        reset_location = self.location_admin.get_queryset(reset_request).get(
+            pk=self.location.pk
+        )
+        self.assertEqual(getattr(reset_location, "_attendance_hits_period"), 0)
 
     def test_changelist_assigns_overlapping_visit_to_nearest_location(self):
         near_location = ClassLocation.objects.create(
@@ -803,6 +812,120 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
 
         self.assertEqual(counts_by_id[self.location.id], 1)
         self.assertEqual(counts_by_id[near_location.id], 0)
+
+    def test_export_attendance_uses_geo_counts_for_selected_period(self):
+        from io import BytesIO
+
+        from openpyxl import load_workbook
+
+        near_location = ClassLocation.objects.create(
+            name="Точка B",
+            address="Адрес B",
+            latitude=43.2389,
+            longitude=76.8910,
+            acceptance_radius_m=250,
+        )
+        empty_location = ClassLocation.objects.create(
+            name="Альфа",
+            address="Адрес C",
+            latitude=43.25,
+            longitude=76.90,
+            acceptance_radius_m=80,
+        )
+        lesson_time = timezone.make_aware(datetime(2026, 3, 10, 9, 0))
+        LessonAttendance.objects.create(
+            staff=self.staff,
+            subject_name="Nearest",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=lesson_time,
+            last_out=lesson_time + timedelta(hours=1),
+            latitude=43.2389,
+            longitude=76.8901,
+            date_at=lesson_time.date(),
+        )
+        fixed_now = timezone.make_aware(datetime(2026, 3, 20, 12, 0))
+        request = self.factory.post(
+            "/admin/monitoring_app/classlocation/"
+            "?attendance_from=2025-09-01&attendance_to=2026-07-31"
+        )
+        queryset = ClassLocation.objects.filter(
+            pk__in=[self.location.pk, near_location.pk, empty_location.pk]
+        )
+        with patch("monitoring_app.admin.timezone.now", return_value=fixed_now), patch(
+            "monitoring_app.admin.timezone.localdate",
+            return_value=fixed_now.date(),
+        ):
+            response = self.location_admin.export_attendance(request, queryset)
+
+        wb = load_workbook(BytesIO(response.content))
+        ws = wb.active
+        data_rows = [
+            row for row in ws.iter_rows(min_row=3, values_only=True) if row[0]
+        ]
+        self.assertEqual([row[0] for row in data_rows], ["Точка А", "Альфа", "Точка B"])
+        self.assertEqual([row[3] for row in data_rows], [1, 0, 0])
+        created_cell = ws.cell(row=3, column=3)
+        self.assertIsInstance(created_cell.value, datetime)
+        self.assertEqual(created_cell.number_format, "m/d/yy h:mm")
+        header_font = ws.cell(row=2, column=1).font
+        self.assertEqual(header_font.color.rgb[-6:], "FFFFFF")
+        self.assertIn("Attendance", ws.tables)
+        self.assertGreaterEqual(ws.column_dimensions["A"].width, 16)
+        self.assertEqual(ws.column_dimensions["C"].width, 20)
+
+    def test_custom_and_academic_period_windows(self):
+        lesson_in = timezone.make_aware(datetime(2025, 9, 1, 9, 0))
+        lesson_out = timezone.make_aware(datetime(2026, 8, 1, 9, 0))
+        for lesson_time in (lesson_in, lesson_out):
+            LessonAttendance.objects.create(
+                staff=self.staff,
+                subject_name=f"Range {lesson_time.date()}",
+                tutor_id=1,
+                tutor="Tutor",
+                first_in=lesson_time,
+                last_out=lesson_time + timedelta(hours=1),
+                latitude=self.location.latitude,
+                longitude=self.location.longitude,
+                date_at=lesson_time.date(),
+            )
+        fixed_now = timezone.make_aware(datetime(2026, 8, 18, 12, 0))
+        request = self.factory.get(
+            "/admin/monitoring_app/classlocation/",
+            {"attendance_from": "2025-09-01", "attendance_to": "2026-07-31"},
+        )
+        with patch("monitoring_app.admin.timezone.now", return_value=fixed_now), patch(
+            "monitoring_app.admin.timezone.localdate",
+            return_value=fixed_now.date(),
+        ):
+            custom_qs = self.location_admin.get_queryset(request)
+            academic_request = self.factory.get(
+                "/admin/monitoring_app/classlocation/",
+                {"attendance_period": "academic"},
+            )
+            academic_qs = self.location_admin.get_queryset(academic_request)
+
+        self.assertEqual(
+            getattr(custom_qs.get(pk=self.location.pk), "_attendance_hits_period"),
+            1,
+        )
+        self.assertEqual(
+            getattr(academic_qs.get(pk=self.location.pk), "_attendance_hits_period"),
+            1,
+        )
+
+    def test_period_filter_uses_active_admin_theme_template(self):
+        from django.template.loader import get_template
+        from monitoring_app.admin import _admin_theme_name
+
+        self.assertEqual(
+            ClassLocationAdmin.AttendancePeriodFilter.template,
+            "admin/attendance_period_filter.html",
+        )
+        template = get_template("admin/attendance_period_filter.html")
+        self.assertIn("Применить даты", template.template.source)
+        self.assertIn("cloc-period-apply", template.template.source)
+        self.assertEqual(_admin_theme_name(), "grappelli")
 
 
 class PublicHolidayAdminInitialDataTest(SimpleTestCase):

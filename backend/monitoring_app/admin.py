@@ -11,6 +11,7 @@ from operator import or_
 from typing import Any, cast
 from urllib.parse import quote
 
+from django.apps import apps as django_apps
 from django.conf import settings
 from django.contrib import admin, messages
 from django.contrib.admin import SimpleListFilter
@@ -117,6 +118,38 @@ def _shift_month_start(current_month_start: date, months_back: int) -> date:
         month += 12
         year -= 1
     return current_month_start.replace(year=year, month=month, day=1)
+
+
+def _parse_admin_iso_date(raw) -> date | None:
+    try:
+        return datetime.strptime(str(raw or "").strip()[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _aware_day_bounds(start_day: date, end_day: date):
+    tz = timezone.get_current_timezone()
+    return (
+        timezone.make_aware(datetime.combine(start_day, time.min), tz),
+        timezone.make_aware(datetime.combine(end_day, time.max), tz),
+    )
+
+
+def _admin_theme_name() -> str:
+    if django_apps.is_installed("unfold"):
+        return "unfold"
+    if django_apps.is_installed("grappelli"):
+        return "grappelli"
+    return "django"
+
+
+def _academic_year_bounds(today: date) -> tuple[date, date]:
+    start_year = today.year if today.month >= 9 else today.year - 1
+    return date(start_year, 9, 1), date(start_year + 1, 7, 31)
+
+
+def _excel_col_width(max_len: int, *, min_w: float, max_w: float) -> float:
+    return min(max(max_len + 2.0, min_w), max_w)
 
 
 def _radius_bbox(latitude: float, radius_m: int) -> tuple[float, float]:
@@ -3865,11 +3898,24 @@ class ClassLocationAdmin(ModelAdmin):
     class AttendancePeriodFilter(SimpleListFilter):
         title = "Период посещаемости"
         parameter_name = "attendance_period"
+        template = "admin/attendance_period_filter.html"
+
+        def __init__(self, request, params, model, model_admin):
+            raw_from = params.pop("attendance_from", None)
+            raw_to = params.pop("attendance_to", None)
+            self.date_from = (raw_from[-1] if raw_from else "") or ""
+            self.date_to = (raw_to[-1] if raw_to else "") or ""
+            super().__init__(request, params, model, model_admin)
+            self.admin_theme = _admin_theme_name()
 
         def lookups(self, request, model_admin):
             _ = request
             _ = model_admin
             return (
+                ("6m", "6 месяцев"),
+                ("academic", "Учебный год (1 сен — 31 июл)"),
+                ("this_year", "Этот год"),
+                ("this_month", "Этот месяц"),
                 ("30", "30 дней"),
                 ("90", "90 дней"),
                 ("180", "180 дней"),
@@ -3879,6 +3925,38 @@ class ClassLocationAdmin(ModelAdmin):
         def queryset(self, request, queryset):
             _ = request
             return queryset
+
+        def choices(self, changelist):
+            custom = bool(
+                _parse_admin_iso_date(self.date_from)
+                or _parse_admin_iso_date(self.date_to)
+            )
+            yield {
+                "selected": self.value() is None and not custom,
+                "query_string": changelist.get_query_string(
+                    remove=[
+                        self.parameter_name,
+                        "attendance_from",
+                        "attendance_to",
+                    ]
+                ),
+                "display": "Все",
+            }
+            if custom:
+                yield {
+                    "selected": True,
+                    "query_string": changelist.get_query_string(),
+                    "display": f"{self.date_from or '…'} — {self.date_to or '…'}",
+                }
+            for lookup, title in self.lookup_choices:
+                yield {
+                    "selected": not custom and self.value() == str(lookup),
+                    "query_string": changelist.get_query_string(
+                        {self.parameter_name: lookup},
+                        remove=["attendance_from", "attendance_to"],
+                    ),
+                    "display": title,
+                }
 
     class AttendanceVolumeFilter(SimpleListFilter):
         title = "Активность локации"
@@ -3959,7 +4037,7 @@ class ClassLocationAdmin(ModelAdmin):
         "created_at",
     )
     search_fields = ("name", "address")
-    actions = ["export_for_upload"]
+    actions = ["export_for_upload", "export_attendance"]
 
     def export_for_upload(self, request, queryset):
         """Экспорт в Excel (формат загрузки). Выберите записи или нажмите «Выбрать все»."""
@@ -3974,38 +4052,156 @@ class ClassLocationAdmin(ModelAdmin):
 
     export_for_upload.short_description = "Экспорт в Excel для загрузки"
 
-    def _resolve_attendance_period_window(self, request):
+    def export_attendance(self, request, queryset):
+        """Посещаемость за фильтр периода: LessonAttendance → ближайшая локация в радиусе."""
+        import io
+
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.styles.numbers import BUILTIN_FORMATS
+        from openpyxl.worksheet.table import Table, TableStyleInfo
+
+        period_start, period_end, period_label = self._resolve_attendance_period_window(
+            request
+        )
+        all_locations = list(
+            ClassLocation.objects.filter(
+                latitude__isnull=False,
+                longitude__isnull=False,
+            ).only("id", "latitude", "longitude", "acceptance_radius_m")
+        )
+        counts = self._get_location_attendance_period_counts(
+            all_locations,
+            period_start=period_start,
+            now=period_end,
+            period_label=period_label,
+        )
+        start_s = timezone.localtime(period_start).strftime("%Y-%m-%d")
+        end_s = timezone.localtime(period_end).strftime("%Y-%m-%d")
+        start_label = timezone.localtime(period_start).strftime("%d.%m.%Y")
+        end_label = timezone.localtime(period_end).strftime("%d.%m.%Y")
+        headers = ("Название", "Адрес", "Дата создания", "Посещений")
+        max_name, max_addr = len(headers[0]), len(headers[1])
+        rows = []
+        for loc in queryset.only("id", "name", "address", "created_at"):
+            name = loc.name or ""
+            address = loc.address or ""
+            max_name = max(max_name, len(name))
+            max_addr = max(max_addr, len(address))
+            created = _to_local_datetime(loc.created_at)
+            rows.append(
+                (
+                    name,
+                    address,
+                    created.replace(tzinfo=None) if created else None,
+                    counts.get(loc.pk, 0),
+                )
+            )
+        rows.sort(key=lambda row: (-row[3], row[0].casefold()))
+
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill("solid", fgColor="1D4ED8")
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Посещаемость"
+        ws.append([f"Период: {start_label} — {end_label}"])
+        ws.merge_cells("A1:D1")
+        ws["A1"].font = Font(bold=True, size=12)
+        ws.append(list(headers))
+        for row in rows:
+            ws.append(row)
+            ws.cell(row=ws.max_row, column=3).number_format = BUILTIN_FORMATS[22]
+        ws.column_dimensions["A"].width = _excel_col_width(max_name, min_w=16, max_w=48)
+        ws.column_dimensions["B"].width = _excel_col_width(max_addr, min_w=18, max_w=56)
+        ws.column_dimensions["C"].width = 20
+        ws.column_dimensions["D"].width = 14
+        ws.freeze_panes = "A3"
+        last_row = 2 + max(len(rows), 1)
+        if rows:
+            table = Table(displayName="Attendance", ref=f"A2:D{2 + len(rows)}")
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium9",
+                showRowStripes=True,
+            )
+            ws.add_table(table)
+        else:
+            ws.auto_filter.ref = f"A2:D{last_row}"
+        for cell in ws[2]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(
+                wrap_text=True, vertical="center", horizontal="center"
+            )
+
+        out = io.BytesIO()
+        wb.save(out)
+        filename = f"class_locations_attendance_{start_s}_{end_s}.xlsx"
+        response = HttpResponse(
+            out.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{quote(filename)}"'
+        return response
+
+    export_attendance.short_description = "Выгрузить посещаемость за период"
+
+    def _default_attendance_period_window(self):
         now = timezone.now()
+        current_month_start = timezone.localdate().replace(day=1)
+        start_date = _shift_month_start(
+            current_month_start,
+            self.ATTENDANCE_PERIOD_DEFAULT_MONTHS - 1,
+        )
+        period_start, _ = _aware_day_bounds(start_date, start_date)
+        return (
+            period_start,
+            now,
+            f"month_window_{self.ATTENDANCE_PERIOD_DEFAULT_MONTHS}",
+        )
+
+    def _resolve_attendance_period_window(self, request):
+        today = timezone.localdate()
+        now = timezone.now()
+        from_date = _parse_admin_iso_date(request.GET.get("attendance_from"))
+        to_date = _parse_admin_iso_date(request.GET.get("attendance_to"))
+        if from_date or to_date:
+            if from_date is None:
+                from_date = to_date
+            if to_date is None:
+                to_date = today
+            if from_date > to_date:
+                from_date, to_date = to_date, from_date
+            period_start, period_end = _aware_day_bounds(from_date, to_date)
+            return (
+                period_start,
+                period_end,
+                f"custom_{from_date.isoformat()}_{to_date.isoformat()}",
+            )
+
         raw_value = request.GET.get("attendance_period")
+        if raw_value in {"6m", "6"}:
+            return self._default_attendance_period_window()
+        if raw_value == "academic":
+            from_date, to_date = _academic_year_bounds(today)
+            period_start, period_end = _aware_day_bounds(from_date, to_date)
+            return period_start, period_end, f"academic_{from_date.year}"
+        if raw_value == "this_year":
+            period_start, period_end = _aware_day_bounds(date(today.year, 1, 1), today)
+            return period_start, period_end, f"year_{today.year}"
+        if raw_value == "this_month":
+            last_day = date(
+                today.year, today.month, monthrange(today.year, today.month)[1]
+            )
+            period_start, period_end = _aware_day_bounds(today.replace(day=1), last_day)
+            return period_start, period_end, f"month_{today.year}_{today.month:02d}"
         if not raw_value:
-            current_month_start = timezone.localdate().replace(day=1)
-            start_date = _shift_month_start(
-                current_month_start,
-                self.ATTENDANCE_PERIOD_DEFAULT_MONTHS - 1,
-            )
-            period_start = timezone.make_aware(
-                datetime.combine(start_date, time.min),
-                timezone.get_current_timezone(),
-            )
-            period_label = f"month_window_{self.ATTENDANCE_PERIOD_DEFAULT_MONTHS}"
-            return period_start, now, period_label
+            return self._default_attendance_period_window()
         try:
             days = int(raw_value)
         except (TypeError, ValueError):
-            current_month_start = timezone.localdate().replace(day=1)
-            start_date = _shift_month_start(
-                current_month_start,
-                self.ATTENDANCE_PERIOD_DEFAULT_MONTHS - 1,
-            )
-            period_start = timezone.make_aware(
-                datetime.combine(start_date, time.min),
-                timezone.get_current_timezone(),
-            )
-            period_label = f"month_window_{self.ATTENDANCE_PERIOD_DEFAULT_MONTHS}"
-            return period_start, now, period_label
+            return self._default_attendance_period_window()
         days = max(1, days)
-        period_start = now - timedelta(days=days)
-        return period_start, now, f"days_{days}"
+        return now - timedelta(days=days), now, f"days_{days}"
 
     def _distance_to_location_m(self, location_meta, lesson) -> float:
         return monitoring_utils.calculate_distance_haversine(
@@ -4093,13 +4289,25 @@ class ClassLocationAdmin(ModelAdmin):
         cache.set(cache_key, counts, timeout=self.ATTENDANCE_STATS_CACHE_TTL)
         return counts
 
+    def _attendance_query_active(self, request) -> bool:
+        get = request.GET
+        return any(
+            get.get(key)
+            for key in (
+                "attendance_period",
+                "attendance_from",
+                "attendance_to",
+                "attendance_volume",
+            )
+        )
+
     def _should_attach_attendance_counts(self, request) -> bool:
         resolver_name = getattr(
             getattr(request, "resolver_match", None), "url_name", ""
         )
-        if resolver_name:
-            return resolver_name.endswith("_changelist")
-        return True
+        if resolver_name and not resolver_name.endswith("_changelist"):
+            return False
+        return self._attendance_query_active(request)
 
     def get_queryset(self, request):
         queryset = (
@@ -4117,7 +4325,9 @@ class ClassLocationAdmin(ModelAdmin):
             )
         )
         if not self._should_attach_attendance_counts(request):
-            return queryset
+            return queryset.annotate(
+                _attendance_hits_period=Value(0, output_field=IntegerField())
+            )
         period_start, period_end, period_label = self._resolve_attendance_period_window(
             request
         )

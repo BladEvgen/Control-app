@@ -71,5 +71,9 @@
     "archiver": "^7.0.0",
     "minimatch": "^10.2.1",
     "glob": "^11.0.0"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "core-js": false
   }
 }

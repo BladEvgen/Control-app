@@ -1,0 +1,163 @@
+{% load i18n %}
+{% with theme=spec.admin_theme|default:"django" field=field_name|default:spec.parameter_name %}
+{% if theme == "grappelli" %}
+<style>
+	.cloc-period-module select.grp-filter-choice,
+	.cloc-period-module input[type="date"] {
+		display: block;
+		width: 100%;
+		max-width: 100%;
+		box-sizing: border-box;
+	}
+	.cloc-period-dates {
+		border: 0;
+		margin: 0;
+		padding: 0;
+		min-width: 0;
+	}
+	.cloc-period-dates legend {
+		font-size: 11px;
+		font-weight: 700;
+		padding: 0 0 6px;
+	}
+	.cloc-period-dates label { display: block; margin: 6px 0 3px; }
+	.cloc-period-module input[type="date"] {
+		min-height: 28px;
+		height: 28px;
+	}
+	/* Grappelli: button = иконка 25×25. Перебиваем до нормальной кнопки фильтра. */
+	.cloc-period-module .grp-row button.grp-button.cloc-period-apply {
+		position: relative;
+		display: block !important;
+		margin: 10px 0 0 !important;
+		padding: 7px 10px !important;
+		width: 100% !important;
+		max-width: 100%;
+		height: auto !important;
+		min-height: 28px;
+		overflow: visible !important;
+		box-sizing: border-box;
+		white-space: normal;
+		text-align: center;
+		font-size: 12px;
+		font-weight: bold;
+		line-height: 1.25;
+		color: #fff;
+		border: 1px solid #2b8aab;
+		border-radius: 5px;
+		background-image: linear-gradient(#4fb2d3, #309bbf);
+		background-color: #309bbf;
+		appearance: none;
+		-webkit-appearance: none;
+		cursor: pointer;
+	}
+	.cloc-period-module .grp-row button.grp-button.cloc-period-apply:hover,
+	.cloc-period-module .grp-row button.grp-button.cloc-period-apply:focus {
+		color: #fff;
+		border-color: #373737;
+		background-image: linear-gradient(#5e5e5e, #444);
+	}
+	@media (max-width: 768px) {
+		.cloc-period-module input[type="date"] {
+			min-height: 44px;
+			height: 44px;
+		}
+		.cloc-period-module .grp-row button.grp-button.cloc-period-apply {
+			min-height: 44px;
+			padding: 12px 10px;
+			font-size: 14px;
+		}
+	}
+</style>
+<div class="grp-module cloc-period-module">
+	<div class="grp-row">
+		<label for="id_{{ field }}_choice">{% blocktrans with title|capfirst as filter_title %}{{ filter_title }}{% endblocktrans %}</label>
+		<select id="id_{{ field }}_choice" class="grp-filter-choice" data-field-name="{{ field }}">
+			{% for choice in choices %}
+			<option value="{{ choice.query_string|iriencode }}"{% if choice.selected %} selected="selected"{% endif %}>{{ choice.display }}</option>
+			{% endfor %}
+		</select>
+	</div>
+	<div class="grp-row">
+		<fieldset class="cloc-period-dates">
+			<legend>Произвольный период</legend>
+			<label for="id_{{ field }}_from">С</label>
+			<input type="date" id="id_{{ field }}_from" value="{{ spec.date_from }}" autocomplete="off">
+			<label for="id_{{ field }}_to">По</label>
+			<input type="date" id="id_{{ field }}_to" value="{{ spec.date_to }}" autocomplete="off">
+			<button type="button" id="id_{{ field }}_apply" class="grp-button cloc-period-apply">Применить даты</button>
+		</fieldset>
+	</div>
+</div>
+{% elif theme == "unfold" %}
+<div class="mb-6">
+	<h3 class="mb-2 font-semibold text-font-important-light dark:text-font-important-dark">
+		{% blocktranslate with filter_title=title %} By {{ filter_title }} {% endblocktranslate %}
+	</h3>
+	<ul class="mb-3 flex flex-col gap-1">
+		{% for choice in choices %}
+		<li>
+			<a href="{{ choice.query_string|iriencode }}" class="block rounded-default px-3 py-2 text-sm {% if choice.selected %}bg-primary-600 text-white{% else %}hover:bg-base-100 dark:hover:bg-base-800{% endif %}">{{ choice.display }}</a>
+		</li>
+		{% endfor %}
+	</ul>
+	<fieldset class="flex flex-col gap-2 border-0 p-0">
+		<legend class="mb-1 text-xs font-semibold text-font-important-light dark:text-font-important-dark">Произвольный период</legend>
+		<label for="id_{{ field }}_from" class="text-sm">С</label>
+		<input type="date" id="id_{{ field }}_from" value="{{ spec.date_from }}" autocomplete="off" class="min-h-11 w-full rounded-default border border-base-200 bg-white px-3 py-2 text-sm dark:border-base-700 dark:bg-base-900">
+		<label for="id_{{ field }}_to" class="text-sm">По</label>
+		<input type="date" id="id_{{ field }}_to" value="{{ spec.date_to }}" autocomplete="off" class="min-h-11 w-full rounded-default border border-base-200 bg-white px-3 py-2 text-sm dark:border-base-700 dark:bg-base-900">
+		<button type="button" id="id_{{ field }}_apply" class="min-h-11 rounded-default bg-primary-600 px-3 py-2 text-sm font-semibold text-white">Применить даты</button>
+	</fieldset>
+</div>
+{% else %}
+<details data-filter-title="{{ title }}" open>
+	<summary>
+		{% blocktranslate with filter_title=title %} By {{ filter_title }} {% endblocktranslate %}
+	</summary>
+	<ul>
+		{% for choice in choices %}
+		<li{% if choice.selected %} class="selected"{% endif %}>
+			<a href="{{ choice.query_string|iriencode }}">{{ choice.display }}</a>
+		</li>
+		{% endfor %}
+	</ul>
+	<fieldset>
+		<legend>Произвольный период</legend>
+		<label for="id_{{ field }}_from">С</label>
+		<input type="date" id="id_{{ field }}_from" value="{{ spec.date_from }}" autocomplete="off">
+		<label for="id_{{ field }}_to">По</label>
+		<input type="date" id="id_{{ field }}_to" value="{{ spec.date_to }}" autocomplete="off">
+		<button type="button" id="id_{{ field }}_apply">Применить даты</button>
+	</fieldset>
+</details>
+{% endif %}
+<script>
+(function () {
+  var fromEl = document.getElementById("id_{{ field }}_from");
+  var toEl = document.getElementById("id_{{ field }}_to");
+  var applyEl = document.getElementById("id_{{ field }}_apply");
+  if (!fromEl || !toEl || !applyEl) return;
+  function applyDates() {
+    var url = new URL(window.location.href);
+    url.searchParams.delete("{{ spec.parameter_name }}");
+    url.searchParams.delete("p");
+    if (fromEl.value) url.searchParams.set("attendance_from", fromEl.value);
+    else url.searchParams.delete("attendance_from");
+    if (toEl.value) url.searchParams.set("attendance_to", toEl.value);
+    else url.searchParams.delete("attendance_to");
+    window.location.href = url.toString();
+  }
+  applyEl.addEventListener("click", function (event) {
+    event.preventDefault();
+    applyDates();
+  });
+  fromEl.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") applyDates();
+  });
+  toEl.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") applyDates();
+  });
+})();
+</script>
+{% endwith %}
