@@ -10,7 +10,6 @@ from monitoring_app.pad_diagnostics import (
     diagnostics_payload_for_lesson_attendance,
     parse_pad_ui_reason_from_tags,
 )
-from monitoring_app.photo_pad import _PAD_UI_REASON_RU
 
 
 def _html(format_string: str, *args: object, **kwargs: object) -> SafeString:
@@ -390,6 +389,7 @@ def _primary_reason_ru(
     status: str,
 ) -> Optional[str]:
     """Operator-facing reason: persisted ``pad_ui_reason`` first, then branch copy."""
+    from monitoring_app.photo_pad import _PAD_UI_REASON_RU
     ui = parse_pad_ui_reason_from_tags(_lesson_attendance_tags(obj))
     if ui:
         return ui

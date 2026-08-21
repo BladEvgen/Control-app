@@ -40,8 +40,6 @@ from drf_yasg.utils import merge_params, no_body, swagger_auto_schema
 from monitoring_app import (
     async_logic,
     attendance_fetcher,
-    face_parsing,
-    ml,
     models,
     permissions,
     serializers,
@@ -402,6 +400,7 @@ def _parse_query_bool(raw_value: Optional[str]) -> bool:
 
 def _invalidate_staff_face_caches(staff_pin: str) -> None:
     """Invalidate staff row cache, all staff-detail date windows, Face Lab options."""
+    from monitoring_app import ml
     pin = (staff_pin or "").strip()
     if not pin:
         return
@@ -10213,6 +10212,7 @@ def face_lab_staff_options(request):
 @permission_classes([IsAuthenticated])
 def face_lab_pad_test(request):
     """Run presentation-attack detection on an uploaded frame (authenticated testers)."""
+    from monitoring_app import ml
     from monitoring_app.face_verification_pad import (
         pad_operator_action_from_diagnostics,
         pad_public_decision_from_result,
@@ -10320,6 +10320,7 @@ def face_lab_save_face_sample(request):
     Returns:
         API response that keeps setup focused on usable photos, not on PAD jargon.
     """
+    from monitoring_app import face_parsing, ml
     import numpy as np
     from monitoring_app.photo_pad import check_photo_bgr
 
@@ -10493,6 +10494,7 @@ def face_lab_save_face_sample(request):
 @permission_classes([IsAuthenticated])
 def face_lab_apply_sample_avatar(request):
     """Replace staff avatar file from a saved StaffFaceSample image."""
+    from monitoring_app import ml
     pin = (request.data.get("pin") or "").strip()
     raw_sid = request.data.get("sample_id")
     try:
@@ -10551,6 +10553,7 @@ def staff_avatar_upload(request, staff_pin: str):
     Accepts PNG/JPEG uploads; **always stores canonical JPEG** (re-encoded pixels).
     Does not run PAD (trusted admin path).
     """
+    from monitoring_app import ml
     pin = (staff_pin or "").strip()
     if not pin:
         return Response(
@@ -10794,6 +10797,7 @@ def staff_avatar_upload(request, staff_pin: str):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def verify_face(request):
+    from monitoring_app import face_parsing, ml
     import numpy as np
 
     face_logger = logging.getLogger("django")
@@ -11123,6 +11127,7 @@ def verify_face(request):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def recognize_faces(request):
+    from monitoring_app import ml
     recognize_logger = logging.getLogger("django")
     recognize_logger.info("Received request to recognize faces.")
 

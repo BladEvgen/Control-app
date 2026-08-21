@@ -22,7 +22,6 @@ from typing import (
 )
 
 import numpy as np
-import pandas as pd
 import pytz
 from cryptography.fernet import Fernet
 from django.conf import settings
@@ -37,7 +36,6 @@ from monitoring_app import models
 from monitoring_app.cache_conf import get_cache
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from sklearn.neighbors import BallTree, KDTree
 
 DAYS = settings.DAYS
 
@@ -779,6 +777,7 @@ def generate_map_data(
     Returns:
         list: Список словарей с данными по локациям, готовых для отображения на карте.
     """
+    from sklearn.neighbors import KDTree
     staff_by_address = defaultdict(int)
     lesson_attendance_by_address = defaultdict(int)
 
@@ -1031,6 +1030,7 @@ class LocationSearcher:
         Args:
             locations (list): Список словарей с ключами `latitude`, `longitude`, `name`.
         """
+        from sklearn.neighbors import KDTree
         self.locations = locations
         self.location_coords = np.asarray(
             [(float(loc["latitude"]), float(loc["longitude"])) for loc in locations],
@@ -1459,6 +1459,7 @@ def _cluster_geo_items_for_excel(
         overhead; otherwise O(n log n + e), where ``e`` is the number of
         candidate neighbor edges returned by BallTree within the radius.
     """
+    from sklearn.neighbors import BallTree
     if not items:
         return []
     if len(items) == 1:
@@ -2648,6 +2649,7 @@ def generate_excel_file(
     Returns:
         Bytes data of the Excel file.
     """
+    import pandas as pd
     import io
 
     from openpyxl.styles import Border, Side
