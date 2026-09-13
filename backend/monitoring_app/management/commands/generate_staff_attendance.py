@@ -1,5 +1,5 @@
 import random
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.core.management.base import BaseCommand
 from django.utils import timezone
@@ -20,11 +20,9 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         input_date = kwargs["date_at"]
         try:
-            date_at = timezone.datetime.strptime(input_date, "%d.%m.%Y").date()
+            date_at = datetime.strptime(input_date, "%d.%m.%Y").date()
         except ValueError:
-            self.stdout.write(
-                self.style.ERROR("Неправильный формат даты. Используйте ДД.ММ.ГГГГ")
-            )
+            self.stdout.write(self.style.ERROR("Неправильный формат даты. Используйте ДД.ММ.ГГГГ"))
             return
 
         previous_day = date_at - timedelta(days=1)
@@ -40,16 +38,12 @@ class Command(BaseCommand):
                 first_in, last_out = self.generate_random_time(previous_day)
 
             attendance_records.append(
-                StaffAttendance(
-                    staff=staff, date_at=date_at, first_in=first_in, last_out=last_out
-                )
+                StaffAttendance(staff=staff, date_at=date_at, first_in=first_in, last_out=last_out)
             )
 
         StaffAttendance.objects.bulk_create(attendance_records)
         self.stdout.write(
-            self.style.SUCCESS(
-                f"Данные сгенерированы для {date_at.strftime('%d.%m.%Y')}"
-            )
+            self.style.SUCCESS(f"Данные сгенерированы для {date_at.strftime('%d.%m.%Y')}")
         )
 
     def generate_time_in_range(self, start_hour, end_hour, previous_day):
@@ -57,14 +51,10 @@ class Command(BaseCommand):
         last_out_offset = random.randint(-60, 60)
 
         base_first_in = timezone.make_aware(
-            timezone.datetime(
-                previous_day.year, previous_day.month, previous_day.day, start_hour, 0
-            )
+            datetime(previous_day.year, previous_day.month, previous_day.day, start_hour, 0)
         )
         base_last_out = timezone.make_aware(
-            timezone.datetime(
-                previous_day.year, previous_day.month, previous_day.day, end_hour, 0
-            )
+            datetime(previous_day.year, previous_day.month, previous_day.day, end_hour, 0)
         )
 
         first_in = base_first_in + timedelta(minutes=first_in_offset)
@@ -77,16 +67,12 @@ class Command(BaseCommand):
 
     def generate_random_time(self, previous_day):
         base_day = timezone.make_aware(
-            timezone.datetime(previous_day.year, previous_day.month, previous_day.day)
+            datetime(previous_day.year, previous_day.month, previous_day.day)
         )
         first_in_hour = random.randint(9, 16)
         last_out_hour = random.randint(first_in_hour + 1, 18)
 
-        first_in = base_day + timedelta(
-            hours=first_in_hour, minutes=random.randint(0, 59)
-        )
-        last_out = base_day + timedelta(
-            hours=last_out_hour, minutes=random.randint(0, 59)
-        )
+        first_in = base_day + timedelta(hours=first_in_hour, minutes=random.randint(0, 59))
+        last_out = base_day + timedelta(hours=last_out_hour, minutes=random.randint(0, 59))
 
         return first_in, last_out

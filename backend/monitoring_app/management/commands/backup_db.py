@@ -118,6 +118,7 @@ class Command(BaseCommand):
                 call_command(
                     "dumpdata",
                     *models_to_backup,
+                    "--all",
                     "--natural-foreign",
                     "--natural-primary",
                     "--indent",
@@ -209,9 +210,7 @@ class Command(BaseCommand):
                         self._create_sql_with_django(temp_file)
                 else:
                     self.stdout.write(
-                        self.style.WARNING(
-                            "ВНИМАНИЕ: Не удалось определить таблицы для бэкапа."
-                        )
+                        self.style.WARNING("ВНИМАНИЕ: Не удалось определить таблицы для бэкапа.")
                     )
                     self._create_sql_with_django(temp_file)
             else:
@@ -225,9 +224,7 @@ class Command(BaseCommand):
 
             if temp_file.stat().st_size == 0:
                 self.stdout.write(
-                    self.style.WARNING(
-                        "SQL бэкап пустой, возможно нет данных для экспорта"
-                    )
+                    self.style.WARNING("SQL бэкап пустой, возможно нет данных для экспорта")
                 )
                 temp_file.unlink()
                 if db_config and tables:
@@ -304,9 +301,7 @@ class Command(BaseCommand):
             if result.returncode != 0:
                 logger.warning(f"mysqldump завершился с ошибкой: {result.stderr}")
                 if result.stderr:
-                    self.stdout.write(
-                        self.style.ERROR(f"Ошибка mysqldump: {result.stderr[:200]}")
-                    )
+                    self.stdout.write(self.style.ERROR(f"Ошибка mysqldump: {result.stderr[:200]}"))
                 return False
 
             return True
@@ -318,9 +313,7 @@ class Command(BaseCommand):
             logger.warning(f"Ошибка при использовании mysqldump: {e}")
             return False
 
-    def _print_mysqldump_command(
-        self, db_config: dict, tables: list[str], output_path: Path
-    ):
+    def _print_mysqldump_command(self, db_config: dict, tables: list[str], output_path: Path):
         """Выводит команду mysqldump для ручного выполнения.
 
         Args:
@@ -364,9 +357,7 @@ class Command(BaseCommand):
                 f"{db_name} {tables_str} > {output_path}"
             )
 
-        self.stdout.write(
-            self.style.NOTICE("Команда для выполнения (базовый вариант):")
-        )
+        self.stdout.write(self.style.NOTICE("Команда для выполнения (базовый вариант):"))
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS(f"  {cmd_basic}"))
         self.stdout.write("")
@@ -385,9 +376,7 @@ class Command(BaseCommand):
             )
 
         self.stdout.write(
-            self.style.NOTICE(
-                "Вариант с расширенными правами (требует RELOAD/FLUSH_TABLES):"
-            )
+            self.style.NOTICE("Вариант с расширенными правами (требует RELOAD/FLUSH_TABLES):")
         )
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS(f"  {cmd_advanced}"))
@@ -398,19 +387,13 @@ class Command(BaseCommand):
             f"--routines --triggers --lock-tables=false "
             f"{db_name} {tables_str} > {output_path}"
         )
-        self.stdout.write(
-            self.style.NOTICE("Вариант с интерактивным вводом пароля (безопаснее):")
-        )
+        self.stdout.write(self.style.NOTICE("Вариант с интерактивным вводом пароля (безопаснее):"))
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS(f"  {cmd_interactive}"))
         self.stdout.write("")
 
-        self.stdout.write(
-            self.style.NOTICE("Примечание: Замените путь к файлу на нужный вам.")
-        )
-        self.stdout.write(
-            self.style.NOTICE("Для сжатия добавьте: | gzip > backup.sql.gz")
-        )
+        self.stdout.write(self.style.NOTICE("Примечание: Замените путь к файлу на нужный вам."))
+        self.stdout.write(self.style.NOTICE("Для сжатия добавьте: | gzip > backup.sql.gz"))
         self.stdout.write("")
         self.stdout.write(self.style.ERROR("=" * 80))
         self.stdout.write("")
@@ -437,6 +420,7 @@ class Command(BaseCommand):
                     call_command(
                         "dumpdata",
                         *models_to_backup,
+                        "--all",
                         "--natural-foreign",
                         "--natural-primary",
                         "--indent",

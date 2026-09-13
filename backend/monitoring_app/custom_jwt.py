@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Any, Dict, cast
+from typing import TYPE_CHECKING, Any, Dict, cast
 
 from django.utils.decorators import method_decorator
 from drf_yasg import openapi
@@ -16,6 +16,10 @@ from rest_framework_simplejwt.views import (
 )
 
 from monitoring_app import models
+
+if TYPE_CHECKING:
+    from django.contrib.auth.models import AbstractUser
+    from rest_framework_simplejwt.tokens import RefreshToken
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -40,21 +44,20 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
     def validate(self, attrs):
         data = cast(Dict[str, Any], super().validate(attrs))
-        user = self.user
-        if user is None:
+        if self.user is None:
             raise exceptions.AuthenticationFailed("User is not authenticated")
-
-        token = self.get_token(user)
+        user = cast("AbstractUser", self.user)
+        token = cast("RefreshToken", self.get_token(user))
         access_exp_seconds = float(token.access_token["exp"])
         refresh_exp_seconds = float(token["exp"])
         access_exp = datetime.fromtimestamp(access_exp_seconds, tz=timezone.utc)
         refresh_exp = datetime.fromtimestamp(refresh_exp_seconds, tz=timezone.utc)
-        data["access_token_expires"] = access_exp.isoformat(
-            timespec="milliseconds"
-        ).replace("+00:00", "Z")
-        data["refresh_token_expires"] = refresh_exp.isoformat(
-            timespec="milliseconds"
-        ).replace("+00:00", "Z")
+        data["access_token_expires"] = access_exp.isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z"
+        )
+        data["refresh_token_expires"] = refresh_exp.isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z"
+        )
         try:
             user_profile = models.UserProfile.objects.get(user=user)
             user_data = {
@@ -183,16 +186,14 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
             access_token = AccessToken(access_token_str)
             access_exp_seconds = float(access_token["exp"])
             access_exp = datetime.fromtimestamp(access_exp_seconds, tz=timezone.utc)
-            data["access_token_expires"] = access_exp.isoformat(
-                timespec="milliseconds"
-            ).replace("+00:00", "Z")
+            data["access_token_expires"] = access_exp.isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
+            )
 
             if refresh_token_str:
                 refresh_token = RefreshToken(refresh_token_str)
                 refresh_exp_seconds = float(refresh_token["exp"])
-                refresh_exp = datetime.fromtimestamp(
-                    refresh_exp_seconds, tz=timezone.utc
-                )
+                refresh_exp = datetime.fromtimestamp(refresh_exp_seconds, tz=timezone.utc)
                 data["refresh_token_expires"] = refresh_exp.isoformat(
                     timespec="milliseconds"
                 ).replace("+00:00", "Z")
@@ -202,9 +203,7 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
                     try:
                         old_refresh_token = RefreshToken(original_refresh)
                         refresh_exp_seconds = float(old_refresh_token["exp"])
-                        refresh_exp = datetime.fromtimestamp(
-                            refresh_exp_seconds, tz=timezone.utc
-                        )
+                        refresh_exp = datetime.fromtimestamp(refresh_exp_seconds, tz=timezone.utc)
                         data["refresh_token_expires"] = refresh_exp.isoformat(
                             timespec="milliseconds"
                         ).replace("+00:00", "Z")

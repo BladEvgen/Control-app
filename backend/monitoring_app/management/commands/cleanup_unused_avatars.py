@@ -34,14 +34,12 @@ class Command(BaseCommand):
         base_path = os.path.join(media_root, "user_images")
 
         if not os.path.exists(base_path):
-            self.stdout.write(
-                self.style.ERROR(f"Directory {base_path} does not exist.")
-            )
+            self.stdout.write(self.style.ERROR(f"Directory {base_path} does not exist."))
             return
 
         used_files = set(
             os.path.join(media_root, avatar)
-            for avatar in Staff.objects.filter(avatar__isnull=False).values_list(
+            for avatar in Staff.all_objects.filter(avatar__isnull=False).values_list(
                 "avatar", flat=True
             )
         )
@@ -63,9 +61,7 @@ class Command(BaseCommand):
             for file_path in unused_files:
                 os.remove(file_path)
             self.stdout.write(
-                self.style.SUCCESS(
-                    f"Successfully removed {len(unused_files)} unused .jpg files."
-                )
+                self.style.SUCCESS(f"Successfully removed {len(unused_files)} unused .jpg files.")
             )
         except Exception as e:
             self.stdout.write(self.style.ERROR(f"Error during file removal: {e}"))

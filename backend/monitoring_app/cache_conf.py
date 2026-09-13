@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, TypeVar, Union, cast
 
 from django.core.cache import caches
 from django.core.cache.backends.base import BaseCache
@@ -98,9 +98,7 @@ def register_preload(key: str, query: Callable[[], Any]) -> None:
     logger.info(f"Registered preload function for key: {key}")
 
 
-def warmup_cache(
-    keys: Optional[List[str]] = None, force: bool = False
-) -> Dict[str, Any]:
+def warmup_cache(keys: Optional[List[str]] = None, force: bool = False) -> Dict[str, Any]:
     """
     Прогревает кэш, выполняя предзагрузку для всех зарегистрированных ключей или указанных ключей.
 
@@ -185,8 +183,9 @@ def invalidate_cache_pattern(pattern: str, cache: BaseCache = Cache) -> int:
         >>> invalidate_cache_pattern("staff_detail_*")
     """
     try:
-        if hasattr(cache, "_cache") and hasattr(cache._cache, "get_client"):
-            client = cache._cache.get_client(write=True)
+        backend = cast(Any, cache)
+        if hasattr(cache, "_cache") and hasattr(backend._cache, "get_client"):
+            client = backend._cache.get_client(write=True)
             redis_pattern = f"*{pattern.rstrip('*')}*"
             keys_to_delete = list(client.scan_iter(match=redis_pattern))
             if keys_to_delete:
@@ -199,7 +198,7 @@ def invalidate_cache_pattern(pattern: str, cache: BaseCache = Cache) -> int:
                 return deleted_count or 0
             return 0
         if hasattr(cache, "keys"):
-            keys = cache.keys(pattern)
+            keys = backend.keys(pattern)
             if keys:
                 deleted = cache.delete_many(keys)
                 deleted_count = deleted if deleted is not None else 0
@@ -232,34 +231,37 @@ def invalidate_staff_detail_for_pin(staff_pin: str, cache: BaseCache = Cache) ->
     return invalidate_cache_pattern(f"staff_detail_{version}_{pin}_", cache=cache)
 
 
-def invalidate_staff_detail_for_staff_id(
-    staff_id: int, cache: BaseCache = Cache
-) -> int:
+def invalidate_staff_detail_for_staff_id(staff_id: int, cache: BaseCache = Cache) -> int:
     from monitoring_app.models import Staff
 
-    pin = Staff.objects.filter(pk=staff_id).values_list("pin", flat=True).first() or ""
+    pin = Staff.all_objects.filter(pk=staff_id).values_list("pin", flat=True).first() or ""
     return invalidate_staff_detail_for_pin(pin, cache=cache)
 
 
 def invalidate_staff_detail_for_department(
-    department_id: int, cache: BaseCache = Cache
+    department_id: Union[int, str], cache: BaseCache = Cache
 ) -> int:
+    """Сбрасывает staff_detail-кэш отдела.
+
+    department_id принимает и строку: первичный ключ ChildDepartment — CharField,
+    и в базе есть нечисловые id (например «AUP»). Значение только подставляется
+    в ключ кэша, приводить его к int не нужно и нельзя.
+    """
     version = staff_detail_cache_version()
-    return invalidate_cache_pattern(
-        f"staff_detail_{version}_{department_id}_", cache=cache
-    )
+    return invalidate_cache_pattern(f"staff_detail_{version}_{department_id}_", cache=cache)
 
 
 def invalidate_lesson_attendance_derived_caches(
     *,
     staff_pins: Optional[List[str]] = None,
     staff_ids: Optional[List[int]] = None,
-    department_ids: Optional[List[int]] = None,
+    department_ids: Optional[List[Union[int, str]]] = None,
     lesson_dates: Optional[List[Any]] = None,
     cache: BaseCache = Cache,
 ) -> None:
     """Инвалидирует кэши, зависящие от LessonAttendance (staff detail, stats, карта)."""
     from django.core.cache import cache as django_cache
+
     from monitoring_app.models import Staff
 
     _invalidate_excel_attendance_cache(cache=cache)
@@ -280,7 +282,7 @@ def invalidate_lesson_attendance_derived_caches(
 
     id_list = [int(sid) for sid in (staff_ids or []) if sid]
     if id_list:
-        for pin in Staff.objects.filter(id__in=id_list).values_list("pin", flat=True):
+        for pin in Staff.all_objects.filter(id__in=id_list).values_list("pin", flat=True):
             pin_value = (pin or "").strip()
             if pin_value:
                 resolved_pins.add(pin_value)
@@ -288,17 +290,17 @@ def invalidate_lesson_attendance_derived_caches(
     for pin in resolved_pins:
         invalidate_staff_detail_for_pin(pin, cache=cache)
 
-    resolved_dept_ids: set[int] = set()
+    resolved_dept_ids: set[str] = set()
     for dept_id in department_ids or []:
         if dept_id is not None:
-            resolved_dept_ids.add(int(dept_id))
+            resolved_dept_ids.add(str(dept_id))
 
     if id_list:
-        for dept_id in Staff.objects.filter(id__in=id_list).values_list(
+        for dept_id in Staff.all_objects.filter(id__in=id_list).values_list(
             "department_id", flat=True
         ):
             if dept_id is not None:
-                resolved_dept_ids.add(int(dept_id))
+                resolved_dept_ids.add(str(dept_id))
 
     for dept_id in resolved_dept_ids:
         invalidate_cache_pattern(f"department_confirmation_{dept_id}_*", cache=cache)

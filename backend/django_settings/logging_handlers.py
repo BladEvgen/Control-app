@@ -1,9 +1,10 @@
 import os
+import shutil
 import sys
 import time
-import shutil
-from pathlib import Path
 from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
+from typing import Any, cast
 
 
 class SafeTimedRotatingFileHandler(TimedRotatingFileHandler):
@@ -16,7 +17,7 @@ class SafeTimedRotatingFileHandler(TimedRotatingFileHandler):
             except Exception:
                 pass
             finally:
-                self.stream = None
+                self.stream = cast(Any, None)
 
         current_time = int(time.time())
         dst_now = time.localtime(current_time)[-1]

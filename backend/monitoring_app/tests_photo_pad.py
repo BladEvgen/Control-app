@@ -1,11 +1,12 @@
 import datetime
 import json
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
+
 from monitoring_app.models import LessonAttendance, Staff
 from monitoring_app.pad_diagnostics import (
     PAD_DIAGNOSTICS_VERSION,
@@ -26,12 +27,15 @@ from monitoring_app.photo_pad import (
     apply_strict_self_service_escalation,
 )
 
+if TYPE_CHECKING:
+    from django.contrib.auth.models import User
+else:
+    User = get_user_model()
+
 
 class PadStrictSelfServiceEscalationTests(SimpleTestCase):
     def _review_result(self, tags: list[str]) -> PadResult:
-        return PadResult(
-            status=STATUS_REVIEW, trust_confirmed=None, risk_score=0.38, tags=tags
-        )
+        return PadResult(status=STATUS_REVIEW, trust_confirmed=None, risk_score=0.38, tags=tags)
 
     def test_screen_bezel_plus_disagreement_escalates_to_suspicious(self):
         result = self._review_result(
@@ -47,9 +51,7 @@ class PadStrictSelfServiceEscalationTests(SimpleTestCase):
         self.assertEqual(escalated.status, STATUS_REVIEW)
 
     def test_disagreement_without_screen_bezel_stays_review(self):
-        result = self._review_result(
-            ["spoof_model_disagreement", "minifasnet_onnx_fake"]
-        )
+        result = self._review_result(["spoof_model_disagreement", "minifasnet_onnx_fake"])
         escalated = apply_strict_self_service_escalation(result)
         self.assertEqual(escalated.status, STATUS_REVIEW)
 
@@ -106,9 +108,7 @@ class PadDecisionTests(SimpleTestCase):
             )
         )
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
-        self.assertIn(
-            "pad_rule:fake_high_confidence_no_geometry_suspicious", result.tags
-        )
+        self.assertIn("pad_rule:fake_high_confidence_no_geometry_suspicious", result.tags)
 
     def test_mid_deepfake_with_mid_screen_signal_goes_to_suspicious(self):
         result = _decide(
@@ -377,9 +377,7 @@ class PadDecisionTests(SimpleTestCase):
             )
         )
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
-        self.assertIn(
-            "pad_rule:fake_mid_plus_background_display_suspicious", result.tags
-        )
+        self.assertIn("pad_rule:fake_mid_plus_background_display_suspicious", result.tags)
 
     def test_background_display_context_without_fake_weak_context_uses_uncertain_clean(
         self,
@@ -500,9 +498,7 @@ class PadDecisionTests(SimpleTestCase):
         )
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
         self.assertFalse(result.trust_confirmed)
-        self.assertIn(
-            "pad_rule:strong_screen_dual_mid_geometry_suspicious", result.tags
-        )
+        self.assertIn("pad_rule:strong_screen_dual_mid_geometry_suspicious", result.tags)
 
     def test_no_fake_dual_geometry_small_face_is_review_not_suspicious(self):
         """Background-like strong geometry on a tiny face must not auto-suspicious."""
@@ -1041,9 +1037,7 @@ class PadDecisionTests(SimpleTestCase):
         )
         self.assertEqual(result.status, STATUS_CLEAN)
         self.assertIsNone(result.trust_confirmed)
-        self.assertIn(
-            "pad_rule:recapture_isolated_single_cue_texture_clean", result.tags
-        )
+        self.assertIn("pad_rule:recapture_isolated_single_cue_texture_clean", result.tags)
 
     def test_isolated_recapture_extreme_single_channel_uncertain_clean(self):
         """Very high isolated single-channel recapture → uncertain clean (not review)."""
@@ -1082,9 +1076,7 @@ class PadDecisionTests(SimpleTestCase):
         )
         self.assertEqual(result.status, STATUS_CLEAN)
         self.assertIsNone(result.trust_confirmed)
-        self.assertIn(
-            "pad_rule:recapture_isolated_single_cue_texture_clean", result.tags
-        )
+        self.assertIn("pad_rule:recapture_isolated_single_cue_texture_clean", result.tags)
 
     def test_isolated_recapture_high_single_cue_goes_clean(self):
         """High combined recapture without dual inner cues does not alone force review."""
@@ -1102,9 +1094,7 @@ class PadDecisionTests(SimpleTestCase):
         )
         self.assertEqual(result.status, STATUS_CLEAN)
         self.assertIsNone(result.trust_confirmed)
-        self.assertIn(
-            "pad_rule:recapture_isolated_single_cue_texture_clean", result.tags
-        )
+        self.assertIn("pad_rule:recapture_isolated_single_cue_texture_clean", result.tags)
 
     def test_isolated_recapture_dual_cues_texture_ambiguous_review_without_other_channels(
         self,
@@ -1220,9 +1210,7 @@ class PadDecisionTests(SimpleTestCase):
             )
         )
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
-        self.assertIn(
-            "pad_rule:fake_high_confidence_no_geometry_suspicious", result.tags
-        )
+        self.assertIn("pad_rule:fake_high_confidence_no_geometry_suspicious", result.tags)
 
     def test_high_fake_with_blur_stays_spoof_review_not_insufficient_input(self):
         """Blur must not hide an otherwise obvious spoof-like fake score."""
@@ -1241,9 +1229,7 @@ class PadDecisionTests(SimpleTestCase):
         )
         self.assertEqual(result.status, STATUS_SUSPICIOUS)
         self.assertNotIn("pad_rule:presentation_insufficient_input_review", result.tags)
-        self.assertIn(
-            "pad_rule:fake_high_confidence_no_geometry_suspicious", result.tags
-        )
+        self.assertIn("pad_rule:fake_high_confidence_no_geometry_suspicious", result.tags)
 
     def test_mid_fake_with_blur_uses_spoof_review_not_insufficient_input(self):
         """Moderate fake evidence with blur should stay in spoof review, not input-failure review."""
@@ -1445,7 +1431,6 @@ class PadGuideModelFeatureTests(SimpleTestCase):
 
         class RealFaceOnnxSession:
             def run(self, output_names, feed):
-                # index 1 ("real") dominates: this is a live, non-spoof face.
                 return [np.array([[-3.7, 4.4, -0.7]], dtype=np.float32)]
 
         _runtime_cache["minifasnet_onnx_session"] = (
@@ -1640,7 +1625,7 @@ class LessonAttendancePhotoResetTests(TestCase):
             surname="Tester",
             department=None,
         )
-        self.user = get_user_model().objects.create_user(
+        self.user = User.objects.create_user(
             username="pad_admin",
             password="test-pass-123",
         )
@@ -1672,17 +1657,13 @@ class LessonAttendancePhotoResetTests(TestCase):
         lesson.save(update_fields=["staff_image_path"])
         lesson.refresh_from_db()
 
-        self.assertEqual(
-            lesson.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_PENDING
-        )
+        self.assertEqual(lesson.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_PENDING)
         self.assertIsNone(lesson.photo_spoof_score)
         self.assertEqual(lesson.photo_spoof_tags, [])
         self.assertIsNone(lesson.photo_spoof_checked_at)
         self.assertEqual(lesson.photo_spoof_model_version, "")
         self.assertIsNone(lesson.photo_trust_confirmed)
-        self.assertEqual(
-            lesson.photo_manual_verdict, LessonAttendance.PHOTO_MANUAL_VERDICT_NONE
-        )
+        self.assertEqual(lesson.photo_manual_verdict, LessonAttendance.PHOTO_MANUAL_VERDICT_NONE)
         self.assertEqual(lesson.photo_manual_comment, "")
         self.assertIsNone(lesson.photo_manual_by)
         self.assertIsNone(lesson.photo_manual_at)

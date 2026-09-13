@@ -4,6 +4,7 @@ import warnings
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.management.base import BaseCommand, CommandError
+
 from monitoring_app import models
 from monitoring_app.augment import run_staff_avatar_augmentation
 from monitoring_app.ml import (
@@ -16,9 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = (
-        "Create masks for staff, augment images, generate embeddings, and train models"
-    )
+    help = "Create masks for staff, augment images, generate embeddings, and train models"
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -57,10 +56,8 @@ class Command(BaseCommand):
             try:
                 dept_child = models.ChildDepartment.objects.get(id=department_id)
             except models.ChildDepartment.DoesNotExist as exc:
-                raise CommandError(
-                    f"ChildDepartment id={department_id} does not exist."
-                ) from exc
-            dept_subtree = [dept_child] + dept_child.get_all_child_departments()
+                raise CommandError(f"ChildDepartment id={department_id} does not exist.") from exc
+            dept_subtree = dept_child.subtree_ids()
 
         staffs_without_mask = models.Staff.objects.filter(avatar__isnull=False).exclude(
             face_mask__isnull=False
@@ -87,18 +84,14 @@ class Command(BaseCommand):
         for staff in staffs_without_mask:
             try:
                 if not staff.avatar or not staff.avatar.path:
-                    logger.warning(
-                        f"Staff {staff.pin} has no associated avatar file. Skipping."
-                    )
+                    logger.warning(f"Staff {staff.pin} has no associated avatar file. Skipping.")
                     continue
 
                 avatar_path = staff.avatar.path
                 encoding = create_face_encoding(avatar_path)
 
                 if encoding is None:
-                    logger.warning(
-                        f"Failed to create encoding for {staff.pin}. Skipping."
-                    )
+                    logger.warning(f"Failed to create encoding for {staff.pin}. Skipping.")
                     continue
 
                 models.StaffFaceMask.objects.create(staff=staff, mask_encoding=encoding)
@@ -106,9 +99,7 @@ class Command(BaseCommand):
                 success_count += 1
 
             except ObjectDoesNotExist:
-                logger.error(
-                    f"Avatar not found for staff {staff.pin}\n{traceback.format_exc()}"
-                )
+                logger.error(f"Avatar not found for staff {staff.pin}\n{traceback.format_exc()}")
                 error_count += 1
             except Exception as e:
                 logger.error(
@@ -118,9 +109,7 @@ class Command(BaseCommand):
 
         if success_count > 0:
             self.stdout.write(
-                self.style.SUCCESS(
-                    f"Successfully created {total_created} masks for staff members."
-                )
+                self.style.SUCCESS(f"Successfully created {total_created} masks for staff members.")
             )
 
         if error_count > 0:
@@ -133,10 +122,8 @@ class Command(BaseCommand):
         staff_needing_training = models.Staff.objects.filter(
             needs_training=True, avatar__isnull=False
         )
-        if dept_subtree is not None:
-            staff_needing_training = staff_needing_training.filter(
-                department__in=dept_subtree
-            )
+        if dept_subtree is not None and dept_child is not None:
+            staff_needing_training = staff_needing_training.filter(department__in=dept_subtree)
             self.stdout.write(
                 self.style.NOTICE(
                     f"Training scope: id={department_id} ({dept_child.name}), "
@@ -145,13 +132,9 @@ class Command(BaseCommand):
             )
 
         if staff_needing_training.exists():
-            self.stdout.write(
-                self.style.SUCCESS("Starting image augmentation and training...")
-            )
+            self.stdout.write(self.style.SUCCESS("Starting image augmentation and training..."))
             try:
-                train_pks = list(
-                    staff_needing_training.order_by("pk").values_list("pk", flat=True)
-                )
+                train_pks = list(staff_needing_training.order_by("pk").values_list("pk", flat=True))
                 run_staff_avatar_augmentation(
                     staff_queryset=models.Staff.objects.filter(pk__in=train_pks)
                 )
@@ -181,9 +164,7 @@ class Command(BaseCommand):
                     )
                     try:
                         train_face_recognition_model(staff)
-                        updated = models.Staff.objects.filter(pk=pk).update(
-                            needs_training=False
-                        )
+                        updated = models.Staff.objects.filter(pk=pk).update(needs_training=False)
                         if updated:
                             logger.info(
                                 "Successfully trained model for %s; needs_training=False",
@@ -209,9 +190,7 @@ class Command(BaseCommand):
                             f"Error training model for {staff.pin}: {str(e)}\n{traceback.format_exc()}"
                         )
                         self.stdout.write(
-                            self.style.ERROR(
-                                f"Error training model for {staff.pin}: {str(e)}"
-                            )
+                            self.style.ERROR(f"Error training model for {staff.pin}: {str(e)}")
                         )
                 self.stdout.write(
                     self.style.NOTICE(
@@ -219,15 +198,11 @@ class Command(BaseCommand):
                         f"пропуск {train_skip}, ошибки {train_err}."
                     )
                 )
-                self.stdout.write(
-                    self.style.SUCCESS("Image augmentation and training completed.")
-                )
+                self.stdout.write(self.style.SUCCESS("Image augmentation and training completed."))
 
                 if skip_general:
                     self.stdout.write(
-                        self.style.WARNING(
-                            "Skipping general model (--skip-general-model)."
-                        )
+                        self.style.WARNING("Skipping general model (--skip-general-model).")
                     )
                 else:
                     self.stdout.write(
@@ -236,26 +211,18 @@ class Command(BaseCommand):
                     try:
                         train_general_model()
                         self.stdout.write(
-                            self.style.SUCCESS(
-                                "General model successfully trained and saved."
-                            )
+                            self.style.SUCCESS("General model successfully trained and saved.")
                         )
                     except Exception as e:
                         logger.error(
                             f"Error training the general model: {str(e)}\n{traceback.format_exc()}"
                         )
                         self.stdout.write(
-                            self.style.ERROR(
-                                f"Error training the general model: {str(e)}"
-                            )
+                            self.style.ERROR(f"Error training the general model: {str(e)}")
                         )
             except Exception as e:
-                logger.error(
-                    f"Error during augmentation: {str(e)}\n{traceback.format_exc()}"
-                )
-                self.stdout.write(
-                    self.style.ERROR(f"Error during augmentation: {str(e)}")
-                )
+                logger.error(f"Error during augmentation: {str(e)}\n{traceback.format_exc()}")
+                self.stdout.write(self.style.ERROR(f"Error during augmentation: {str(e)}"))
         else:
             self.stdout.write(
                 self.style.WARNING(

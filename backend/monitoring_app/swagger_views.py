@@ -1,3 +1,8 @@
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from django.contrib.auth.models import AbstractUser
+
 import logging
 import traceback
 from pathlib import Path
@@ -7,7 +12,6 @@ from django.contrib.auth import authenticate, get_user, login
 from django.http import HttpResponse, JsonResponse
 from django.template.loader import render_to_string
 from django.views.decorators.csrf import csrf_exempt
-from monitoring_app.permissions import IsAuthenticatedOrAPIKey
 from rest_framework import status
 from rest_framework.decorators import (
     api_view,
@@ -17,6 +21,8 @@ from rest_framework.decorators import (
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
+
+from monitoring_app.permissions import IsAuthenticatedOrAPIKey
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +74,7 @@ def swagger_session_login(request):
     user = authenticate(request, username=username, password=password)
     if user is not None:
         login(request, user)
-        return Response({"success": True, "username": user.username})
+        return Response({"success": True, "username": cast("AbstractUser", user).username})
     else:
         return Response(
             {"detail": "Invalid username or password."},
@@ -119,16 +125,15 @@ def swagger_ui_with_login(request, schema_view, ui="swagger"):
             request.user = user
 
     permission = IsAuthenticatedOrAPIKey()
-    has_permission = permission.has_permission(request, None)
+    # view в этой проверке не используется: стаб DRF требует APIView.
+    has_permission = permission.has_permission(request, cast(Any, None))
 
     # Запрос схемы в формате openapi (Swagger UI запрашивает /swagger/?format=openapi)
     if request.GET.get("format") == "openapi":
         return swagger_json_with_login(request, schema_view, format_param=".json")
 
     if not has_permission:
-        return HttpResponse(
-            LOGIN_HTML.encode("utf-8"), content_type="text/html; charset=utf-8"
-        )
+        return HttpResponse(LOGIN_HTML.encode("utf-8"), content_type="text/html; charset=utf-8")
 
     response = schema_view.with_ui(ui)(request)
 
@@ -146,7 +151,7 @@ def swagger_ui_with_login(request, schema_view, ui="swagger"):
 (function() {
     let isLoggingOut = false;
     const processedElements = new WeakSet();
-    
+
     fetch('/api/swagger-login/', {
         method: 'GET',
         credentials: 'include'
@@ -157,19 +162,19 @@ def swagger_ui_with_login(request, schema_view, ui="swagger"):
     }).catch(err => {
         console.error('Session check failed:', err);
     });
-    
+
     function handleLogout(e) {
         if (isLoggingOut) {
             e.preventDefault();
             e.stopPropagation();
             return false;
         }
-        
+
         e.preventDefault();
         e.stopPropagation();
-        
+
         isLoggingOut = true;
-        
+
         fetch('/api/swagger-logout/', {
             method: 'POST',
             credentials: 'include',
@@ -181,10 +186,10 @@ def swagger_ui_with_login(request, schema_view, ui="swagger"):
         }).catch(() => {
             window.location.href = window.location.pathname;
         });
-        
+
         return false;
     }
-    
+
 
     function overrideLogout() {
         const logoutLinks = document.querySelectorAll('a[href*="logout"], a[href*="/accounts/logout/"]');
@@ -194,7 +199,7 @@ def swagger_ui_with_login(request, schema_view, ui="swagger"):
                 link.addEventListener('click', handleLogout, { once: true });
             }
         });
-        
+
         const logoutButtons = document.querySelectorAll('.logout, [class*="logout"]');
         logoutButtons.forEach(btn => {
             if (!processedElements.has(btn)) {
@@ -203,18 +208,18 @@ def swagger_ui_with_login(request, schema_view, ui="swagger"):
             }
         });
     }
-    
+
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', overrideLogout);
     } else {
         overrideLogout();
     }
-    
+
 
     const observer = new MutationObserver(function(mutations) {
         overrideLogout();
     });
-    
+
     observer.observe(document.body, {
         childList: true,
         subtree: true
@@ -224,9 +229,7 @@ def swagger_ui_with_login(request, schema_view, ui="swagger"):
 """
             script_bytes = script_content.encode("utf-8")
             if b"</body>" in response.content:
-                response.content = response.content.replace(
-                    b"</body>", script_bytes + b"</body>"
-                )
+                response.content = response.content.replace(b"</body>", script_bytes + b"</body>")
             else:
                 response.content = response.content + script_bytes
 
@@ -256,7 +259,8 @@ def swagger_json_with_login(request, schema_view, format_param=None):
             request.user = user
 
     permission = IsAuthenticatedOrAPIKey()
-    has_permission = permission.has_permission(request, None)
+    # view в этой проверке не используется: стаб DRF требует APIView.
+    has_permission = permission.has_permission(request, cast(Any, None))
 
     if not has_permission:
         empty_schema = {
@@ -274,9 +278,9 @@ def swagger_json_with_login(request, schema_view, format_param=None):
                 import yaml
 
                 return HttpResponse(
-                    yaml.dump(
-                        empty_schema, default_flow_style=False, allow_unicode=True
-                    ).encode("utf-8"),
+                    yaml.dump(empty_schema, default_flow_style=False, allow_unicode=True).encode(
+                        "utf-8"
+                    ),
                     content_type="application/x-yaml",
                 )
             except ImportError:

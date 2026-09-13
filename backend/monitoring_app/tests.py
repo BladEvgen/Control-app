@@ -8,7 +8,7 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
@@ -20,6 +20,10 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework import status
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APITestCase
+
 from monitoring_app import ml
 from monitoring_app import signals as lesson_signals
 from monitoring_app import tasks as monitoring_tasks
@@ -52,11 +56,11 @@ from monitoring_app.models import (
     StaffAttendance,
 )
 from monitoring_app.views import get_staff_detail
-from rest_framework import status
-from rest_framework.authtoken.models import Token
-from rest_framework.test import APITestCase
 
-User = get_user_model()
+if TYPE_CHECKING:
+    from django.contrib.auth.models import User
+else:
+    User = get_user_model()
 
 
 class FaceRecognitionRuntimeScoringTest(SimpleTestCase):
@@ -66,12 +70,8 @@ class FaceRecognitionRuntimeScoringTest(SimpleTestCase):
         FACE_RECOGNITION_MIN_NEIGHBOR_GAP=0.055,
     )
     def test_neighbor_gap_uses_nearest_other_staff_not_same_staff_proto(self):
-        staff_a = SimpleNamespace(
-            pk=1, pin="A1", name="Ann", surname="One", department=None
-        )
-        staff_b = SimpleNamespace(
-            pk=2, pin="B1", name="Bob", surname="Two", department=None
-        )
+        staff_a = SimpleNamespace(pk=1, pin="A1", name="Ann", surname="One", department=None)
+        staff_b = SimpleNamespace(pk=2, pin="B1", name="Bob", surname="Two", department=None)
         face = SimpleNamespace(bbox=np.asarray([0, 0, 10, 10]))
 
         probe = np.asarray([[1.0, 0.0]], dtype=np.float64)
@@ -99,14 +99,10 @@ class FaceRecognitionRuntimeScoringTest(SimpleTestCase):
 class RemoteWorkAdminTest(TestCase):
     def setUp(self):
         self.staff = Staff.objects.create(name="John", surname="Doe")
-        self.remote_work = RemoteWork.objects.create(
-            staff=self.staff, permanent_remote=True
-        )
+        self.remote_work = RemoteWork.objects.create(staff=self.staff, permanent_remote=True)
 
     def test_get_remote_status(self):
-        self.assertEqual(
-            self.remote_work.get_remote_status(), "Постоянная дистанционная работа"
-        )
+        self.assertEqual(self.remote_work.get_remote_status(), "Постоянная дистанционная работа")
 
 
 class StaffDetailTest(TestCase):
@@ -458,9 +454,7 @@ class LessonAttendanceDayLevelApiFiltersTest(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        attendance_entry = response.data["results"][0][self.target_day.isoformat()][
-            "attendance"
-        ][0]
+        attendance_entry = response.data["results"][0][self.target_day.isoformat()]["attendance"][0]
         self.assertIsNone(attendance_entry["first_in"])
         self.assertIsNone(attendance_entry["last_out"])
 
@@ -484,9 +478,7 @@ class LessonTaskStatusTest(APITestCase):
         url = reverse("check_lesson_task_status", args=[self.task_id])
         self.client.credentials(HTTP_X_API_KEY=self.api_key.key)
         response = self.client.get(url)
-        self.assertIn(
-            response.status_code, [status.HTTP_200_OK, status.HTTP_202_ACCEPTED]
-        )
+        self.assertIn(response.status_code, [status.HTTP_200_OK, status.HTTP_202_ACCEPTED])
         if response.status_code == status.HTTP_200_OK:
             self.assertIn("status", response.data)
         elif response.status_code == status.HTTP_202_ACCEPTED:
@@ -524,33 +516,25 @@ class LessonAttendanceAutoCloseTaskTest(TestCase):
     def test_update_lesson_attendance_last_out_uses_time_bands_and_caps_day_end(self):
         target_day = timezone.localdate() - timedelta(days=1)
         day_lesson = self._create_lesson(
-            timezone.make_aware(
-                datetime.combine(target_day, datetime.min.time())
-            ).replace(
+            timezone.make_aware(datetime.combine(target_day, datetime.min.time())).replace(
                 hour=14,
                 minute=0,
             )
         )
         evening_lesson = self._create_lesson(
-            timezone.make_aware(
-                datetime.combine(target_day, datetime.min.time())
-            ).replace(
+            timezone.make_aware(datetime.combine(target_day, datetime.min.time())).replace(
                 hour=18,
                 minute=0,
             )
         )
         late_lesson = self._create_lesson(
-            timezone.make_aware(
-                datetime.combine(target_day, datetime.min.time())
-            ).replace(
+            timezone.make_aware(datetime.combine(target_day, datetime.min.time())).replace(
                 hour=20,
                 minute=30,
             )
         )
         end_of_day_lesson = self._create_lesson(
-            timezone.make_aware(
-                datetime.combine(target_day, datetime.min.time())
-            ).replace(
+            timezone.make_aware(datetime.combine(target_day, datetime.min.time())).replace(
                 hour=23,
                 minute=30,
             )
@@ -683,9 +667,12 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
         )
 
         fixed_now = timezone.make_aware(datetime(2026, 3, 20, 12, 0))
-        with patch("monitoring_app.admin.timezone.now", return_value=fixed_now), patch(
-            "monitoring_app.admin.timezone.localdate",
-            return_value=fixed_now.date(),
+        with (
+            patch("monitoring_app.admin.timezone.now", return_value=fixed_now),
+            patch(
+                "monitoring_app.admin.timezone.localdate",
+                return_value=fixed_now.date(),
+            ),
         ):
             html = str(self.location_admin.attendance_stats(self.location))
 
@@ -763,9 +750,12 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
             "/admin/monitoring_app/classlocation/",
             {"attendance_period": "6m"},
         )
-        with patch("monitoring_app.admin.timezone.now", return_value=fixed_now), patch(
-            "monitoring_app.admin.timezone.localdate",
-            return_value=fixed_now.date(),
+        with (
+            patch("monitoring_app.admin.timezone.now", return_value=fixed_now),
+            patch(
+                "monitoring_app.admin.timezone.localdate",
+                return_value=fixed_now.date(),
+            ),
         ):
             queryset = self.location_admin.get_queryset(request)
             location = queryset.get(pk=self.location.pk)
@@ -773,9 +763,7 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
         self.assertEqual(getattr(location, "_attendance_hits_period"), 1)
 
         reset_request = self.factory.get("/admin/monitoring_app/classlocation/")
-        reset_location = self.location_admin.get_queryset(reset_request).get(
-            pk=self.location.pk
-        )
+        reset_location = self.location_admin.get_queryset(reset_request).get(pk=self.location.pk)
         self.assertEqual(getattr(reset_location, "_attendance_hits_period"), 0)
 
     def test_changelist_assigns_overlapping_visit_to_nearest_location(self):
@@ -852,17 +840,19 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
         queryset = ClassLocation.objects.filter(
             pk__in=[self.location.pk, near_location.pk, empty_location.pk]
         )
-        with patch("monitoring_app.admin.timezone.now", return_value=fixed_now), patch(
-            "monitoring_app.admin.timezone.localdate",
-            return_value=fixed_now.date(),
+        with (
+            patch("monitoring_app.admin.timezone.now", return_value=fixed_now),
+            patch(
+                "monitoring_app.admin.timezone.localdate",
+                return_value=fixed_now.date(),
+            ),
         ):
             response = self.location_admin.export_attendance(request, queryset)
 
         wb = load_workbook(BytesIO(response.content))
         ws = wb.active
-        data_rows = [
-            row for row in ws.iter_rows(min_row=3, values_only=True) if row[0]
-        ]
+        assert ws is not None
+        data_rows = [row for row in ws.iter_rows(min_row=3, values_only=True) if row[0]]
         self.assertEqual([row[0] for row in data_rows], ["Точка А", "Альфа", "Точка B"])
         self.assertEqual([row[3] for row in data_rows], [1, 0, 0])
         created_cell = ws.cell(row=3, column=3)
@@ -894,9 +884,12 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
             "/admin/monitoring_app/classlocation/",
             {"attendance_from": "2025-09-01", "attendance_to": "2026-07-31"},
         )
-        with patch("monitoring_app.admin.timezone.now", return_value=fixed_now), patch(
-            "monitoring_app.admin.timezone.localdate",
-            return_value=fixed_now.date(),
+        with (
+            patch("monitoring_app.admin.timezone.now", return_value=fixed_now),
+            patch(
+                "monitoring_app.admin.timezone.localdate",
+                return_value=fixed_now.date(),
+            ),
         ):
             custom_qs = self.location_admin.get_queryset(request)
             academic_request = self.factory.get(
@@ -916,6 +909,7 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
 
     def test_period_filter_uses_active_admin_theme_template(self):
         from django.template.loader import get_template
+
         from monitoring_app.admin import _admin_theme_name
 
         self.assertEqual(
@@ -923,8 +917,8 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
             "admin/attendance_period_filter.html",
         )
         template = get_template("admin/attendance_period_filter.html")
-        self.assertIn("Применить даты", template.template.source)
-        self.assertIn("cloc-period-apply", template.template.source)
+        self.assertIn("Применить даты", cast(Any, template).template.source)
+        self.assertIn("cloc-period-apply", cast(Any, template).template.source)
         self.assertEqual(_admin_theme_name(), "grappelli")
 
 
@@ -1015,9 +1009,7 @@ class FetcherViewTest(APITestCase):
         "monitoring_app.views.attendance_fetcher.AsyncAttendanceFetcher.get_all_attendance",
         new_callable=AsyncMock,
     )
-    def test_fetcher_success_response_contains_summary_and_duration(
-        self, mock_get_all_attendance
-    ):
+    def test_fetcher_success_response_contains_summary_and_duration(self, mock_get_all_attendance):
         mock_get_all_attendance.return_value = {
             "days": 2,
             "source_date": "2026-02-06",
@@ -1117,9 +1109,7 @@ class FetcherViewTest(APITestCase):
         "monitoring_app.views.attendance_fetcher.AsyncAttendanceFetcher.get_all_attendance",
         new_callable=AsyncMock,
     )
-    def test_fetcher_response_includes_ambiguous_exit_counters(
-        self, mock_get_all_attendance
-    ):
+    def test_fetcher_response_includes_ambiguous_exit_counters(self, mock_get_all_attendance):
         mock_get_all_attendance.return_value = {
             "days": 1,
             "source_date": "2026-03-01",
@@ -1161,7 +1151,7 @@ class AppVersionEndpointTest(SimpleTestCase):
                 head_response = self.client.head("/mediapipe-models/face.task")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(b"".join(response.streaming_content), b"face-model")
+        self.assertEqual(b"".join(cast(Any, response).streaming_content), b"face-model")
         self.assertEqual(response["Content-Type"], "application/octet-stream")
         self.assertIn("public", response["Cache-Control"])
         self.assertEqual(head_response.status_code, status.HTTP_200_OK)
@@ -1182,12 +1172,10 @@ class AppVersionEndpointTest(SimpleTestCase):
             wasm_path.write_bytes(b"wasm")
 
             with override_settings(FRONTEND_DIR=frontend_dir):
-                response = self.client.get(
-                    "/mediapipe/tasks-vision/wasm/vision_wasm_internal.wasm"
-                )
+                response = self.client.get("/mediapipe/tasks-vision/wasm/vision_wasm_internal.wasm")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(b"".join(response.streaming_content), b"wasm")
+        self.assertEqual(b"".join(cast(Any, response).streaming_content), b"wasm")
         self.assertEqual(response["Content-Type"], "application/wasm")
 
     def test_frontend_public_asset_rejects_missing_files(self):
@@ -1258,9 +1246,7 @@ class SuspiciousLocationPatternsApiTest(APITestCase):
         self.client.credentials(HTTP_X_API_KEY=self.api_key.key)
         self.url = reverse("suspicious-location-patterns")
 
-    def _create_department(
-        self, dept_id: str, name: str = "Test Group"
-    ) -> ChildDepartment:
+    def _create_department(self, dept_id: str, name: str = "Test Group") -> ChildDepartment:
         return ChildDepartment.objects.create(id=dept_id, name=name)
 
     def _create_staff(self, pin_short: str, department: ChildDepartment) -> Staff:
@@ -1400,9 +1386,7 @@ class SuspiciousLocationPatternsApiTest(APITestCase):
                 (43.2324280, 76.9129510),
             ],
         }
-        staff_members = [
-            self._create_staff(str(25900 + index), department) for index in range(10)
-        ]
+        staff_members = [self._create_staff(str(25900 + index), department) for index in range(10)]
         for target_date, coords in coordinates_by_day.items():
             for staff, (lat, lon) in zip(staff_members, coords):
                 self._create_lesson(
@@ -1811,8 +1795,8 @@ class AttendanceFetcherExitResolutionTest(TestCase):
             self._event(9, 0, "CN3R230260010", "Главный вход"),
             self._event(12, 0, "QJT3244400440", "Переход в пристройку"),
         ]
-        _, _, effective, area_sequence, intervals, _, _, stats = (
-            _compute_attendance_from_events(events)
+        _, _, effective, area_sequence, intervals, _, _, stats = _compute_attendance_from_events(
+            events
         )
         qjt_item = self._find_item(area_sequence, "QJT3244400440", "exit")
 
@@ -1912,9 +1896,7 @@ class LessonAttendanceCreateThenPutPhotoTest(APITestCase):
     LON = 76.93992733955383
 
     def setUp(self):
-        self.user = (
-            User.objects.filter(is_staff=True, is_active=True).order_by("id").first()
-        )
+        self.user = User.objects.filter(is_staff=True, is_active=True).order_by("id").first()
         if self.user is None:
             self.user = User.objects.create_user(
                 username="lesson-photo-admin",
@@ -1924,9 +1906,7 @@ class LessonAttendanceCreateThenPutPhotoTest(APITestCase):
             self.user.is_active = True
             self.user.save(update_fields=["is_staff", "is_active"])
         self.api_key = (
-            APIKey.objects.filter(is_active=True, created_by=self.user)
-            .order_by("id")
-            .first()
+            APIKey.objects.filter(is_active=True, created_by=self.user).order_by("id").first()
             or APIKey.objects.filter(is_active=True).order_by("id").first()
         )
         if self.api_key is None:
@@ -1934,14 +1914,15 @@ class LessonAttendanceCreateThenPutPhotoTest(APITestCase):
                 key_name="Lesson Photo Test Key",
                 created_by=self.user,
             )
-        self.staff = Staff.objects.filter(pin__iexact="T861T").first()
-        if self.staff is None:
-            self.staff = Staff.objects.create(
+        staff = Staff.objects.filter(pin__iexact="T861T").first()
+        if staff is None:
+            staff = Staff.objects.create(
                 pin="T861T",
                 name="Matrix",
                 surname="Student",
             )
-        if self.staff and self.staff.avatar:
+        self.staff = staff
+        if self.staff.avatar:
             with self.staff.avatar.open("rb") as f:
                 self._photo_bytes = f.read()
         elif _FIXTURE_PHOTO.exists():
@@ -1973,9 +1954,7 @@ class LessonAttendanceCreateThenPutPhotoTest(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED, response.data)
         task_id = response.data["task_id"]
-        task_status_url = reverse(
-            "check_lesson_task_status", kwargs={"task_id": task_id}
-        )
+        task_status_url = reverse("check_lesson_task_status", kwargs={"task_id": task_id})
         for _ in range(10):
             response = self.client.get(task_status_url)
             if (
@@ -2000,7 +1979,7 @@ class LessonAttendanceCreateThenPutPhotoTest(APITestCase):
                     .order_by("-id")
                     .first()
                 )
-                self.assertIsNotNone(lesson)
+                assert lesson is not None
                 return lesson.id
             self.fail(f"task_id={task_id} не перешёл в Success за отведённое время")
 
@@ -2097,9 +2076,7 @@ class PhotoConsumerProtocolTest(SimpleTestCase):
         self.assertEqual(len(batch_ids), 1)
         self.assertEqual([payload["chunkIndex"] for payload in payloads], [1, 2, 3])
         self.assertTrue(all(payload["totalChunks"] == 3 for payload in payloads))
-        self.assertTrue(
-            all(payload["protocol"] == PHOTO_WS_PROTOCOL for payload in payloads)
-        )
+        self.assertTrue(all(payload["protocol"] == PHOTO_WS_PROTOCOL for payload in payloads))
 
     def test_deleted_event_is_sent_without_photo_payload(self):
         consumer = TestablePhotoConsumer()
@@ -2499,9 +2476,7 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
         channel_layer.group_send.assert_awaited_once()
 
         group_name, payload = channel_layer.group_send.await_args.args
-        self.assertEqual(
-            group_name, f"photos_{lesson.date_at.isoformat()}".replace("-", "_")
-        )
+        self.assertEqual(group_name, f"photos_{lesson.date_at.isoformat()}".replace("-", "_"))
         self.assertEqual(payload["type"], "new_photo")
         self.assertEqual(payload["op"], "updated")
         self.assertEqual(payload["stateCode"], "UPDATED_META")
@@ -2545,9 +2520,7 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
             image_path="/tmp/hourly-pad-old-pending.jpg",
             date_at=yesterday,
         )
-        today_lesson = self._create_lesson(
-            image_path="/tmp/hourly-pad-today-pending.jpg"
-        )
+        today_lesson = self._create_lesson(image_path="/tmp/hourly-pad-today-pending.jpg")
 
         mock_check_photo.return_value = self._mock_pad_result(
             status_value=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
@@ -2569,12 +2542,8 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
         today_lesson.refresh_from_db()
 
         self.assertEqual(result["checked"], 1)
-        self.assertEqual(
-            today_lesson.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN
-        )
-        self.assertEqual(
-            old_lesson.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_PENDING
-        )
+        self.assertEqual(today_lesson.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN)
+        self.assertEqual(old_lesson.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_PENDING)
 
     @patch("monitoring_app.photo_ws_broadcast.get_channel_layer")
     @patch("monitoring_app.photo_pad.check_photo")
@@ -2616,12 +2585,8 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
         today_pending.refresh_from_db()
 
         self.assertEqual(result["checked"], 2)
-        self.assertEqual(
-            old_pending.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN
-        )
-        self.assertEqual(
-            old_error.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN
-        )
+        self.assertEqual(old_pending.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN)
+        self.assertEqual(old_error.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN)
         self.assertEqual(
             today_pending.photo_spoof_status,
             LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
@@ -3018,9 +2983,7 @@ class DepartmentConfirmationCacheRotationTaskTest(SimpleTestCase):
 
 class BackupDbTaskTest(SimpleTestCase):
     @patch("django.core.management.call_command")
-    def test_backup_db_task_runs_management_command_with_expected_defaults(
-        self, mock_call_command
-    ):
+    def test_backup_db_task_runs_management_command_with_expected_defaults(self, mock_call_command):
         result = monitoring_tasks.backup_db_task()
 
         self.assertEqual(
@@ -3044,6 +3007,7 @@ class BackupDbTaskTest(SimpleTestCase):
 class CeleryBeatScheduleTest(SimpleTestCase):
     def test_build_celery_beat_schedule_includes_weekly_backup_entry(self):
         from celery.schedules import crontab
+
         from django_settings import settings as project_settings
 
         schedule = project_settings.build_celery_beat_schedule(debug=False)
@@ -3124,7 +3088,7 @@ class LessonAttendanceMediaAccessTest(SimpleTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.get("Content-Type"), "image/jpeg")
         self.assertEqual(response.get("Cache-Control"), "private, max-age=300")
-        self.assertEqual(b"".join(response.streaming_content), expected_content)
+        self.assertEqual(b"".join(cast(Any, response).streaming_content), expected_content)
 
     def test_attendance_media_endpoint_returns_404_for_missing_photo(self):
         response = self.client.get(
@@ -3179,9 +3143,7 @@ class SignedAttendanceWriteApiTest(APITestCase):
         )
 
     def _json_body(self, payload: dict[str, Any]) -> bytes:
-        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode(
-            "utf-8"
-        )
+        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
     def _signed_headers(
         self,

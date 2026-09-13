@@ -26,4 +26,3 @@ class SessionAuthenticationAllowTokenOrApiKey(SessionAuthentication):
         if self._has_bearer_or_api_key(request):
             return None
         return super().authenticate(request)
-

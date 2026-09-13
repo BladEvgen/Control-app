@@ -76,9 +76,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         """Запуск экспорта: фильтрация по датам, сбор строк и фото, запись XLSX и ZIP."""
-        date_from, date_to = self._parse_dates(
-            options.get("date_from"), options.get("date_to")
-        )
+        date_from, date_to = self._parse_dates(options.get("date_from"), options.get("date_to"))
 
         qs = (
             models.LessonAttendance.objects.filter(
@@ -96,14 +94,12 @@ class Command(BaseCommand):
         radius = int(options.get("radius") or 200)
 
         rows = []
-        archive_records = []  # (rec, staff_pin_short) для архива с фото
+        archive_records = []
         for rec in qs:
             staff = rec.staff
             fio = self._fio(staff)
             staff_pin = utils.pin_to_external_format(staff.pin) if staff.pin else ""
-            department = (
-                staff.department.name if staff.department else ""
-            )
+            department = staff.department.name if staff.department else ""
             date_str = rec.date_at.strftime(CIS_DATE_FORMAT) if rec.date_at else ""
             if rec.latitude is not None and rec.longitude is not None:
                 location = location_searcher.find_nearest(
@@ -116,14 +112,16 @@ class Command(BaseCommand):
                 time_str = local_first_in.strftime("%H:%M:%S")
             else:
                 time_str = ""
-            rows.append({
-                "department": department,
-                "fio": fio,
-                "student_id_tutor_id": staff_pin,
-                "date": date_str,
-                "time": time_str,
-                "location": location,
-            })
+            rows.append(
+                {
+                    "department": department,
+                    "fio": fio,
+                    "student_id_tutor_id": staff_pin,
+                    "date": date_str,
+                    "time": time_str,
+                    "location": location,
+                }
+            )
             if rec.staff_image_path and str(rec.staff_image_path).strip():
                 archive_records.append((rec, staff_pin or "unknown"))
 
@@ -160,22 +158,14 @@ class Command(BaseCommand):
         date_to = None
         if date_from_raw:
             try:
-                date_from = datetime.datetime.strptime(
-                    date_from_raw.strip(), "%Y-%m-%d"
-                ).date()
+                date_from = datetime.datetime.strptime(date_from_raw.strip(), "%Y-%m-%d").date()
             except ValueError as e:
-                raise CommandError(
-                    f"Invalid --date-from, use YYYY-MM-DD: {e}"
-                ) from e
+                raise CommandError(f"Invalid --date-from, use YYYY-MM-DD: {e}") from e
         if date_to_raw:
             try:
-                date_to = datetime.datetime.strptime(
-                    date_to_raw.strip(), "%Y-%m-%d"
-                ).date()
+                date_to = datetime.datetime.strptime(date_to_raw.strip(), "%Y-%m-%d").date()
             except ValueError as e:
-                raise CommandError(
-                    f"Invalid --date-to, use YYYY-MM-DD: {e}"
-                ) from e
+                raise CommandError(f"Invalid --date-to, use YYYY-MM-DD: {e}") from e
         if date_from is not None and date_to is not None and date_from > date_to:
             raise CommandError("date_from must be <= date_to")
         return date_from, date_to
@@ -252,7 +242,10 @@ class Command(BaseCommand):
         p = Path(raw)
         if p.is_absolute() and p.exists():
             return p
-        for root in (getattr(settings, "ATTENDANCE_ROOT", None), getattr(settings, "MEDIA_ROOT", None)):
+        for root in (
+            getattr(settings, "ATTENDANCE_ROOT", None),
+            getattr(settings, "MEDIA_ROOT", None),
+        ):
             if not root:
                 continue
             candidate = Path(root) / raw.lstrip("/")
@@ -349,8 +342,8 @@ class Command(BaseCommand):
         path.parent.mkdir(parents=True, exist_ok=True)
         wb = Workbook()
         ws = wb.active
+        assert ws is not None
         ws.title = "Suspicious"
-        # Порядок: отдел → кто (ФИО, ID) → когда/где (дата, время, локация)
         headers = ["Отдел", "ФИО", "student_id / tutor_id", "Дата", "Время", "Локация"]
         header_font = Font(bold=True)
         for col, h in enumerate(headers, start=1):

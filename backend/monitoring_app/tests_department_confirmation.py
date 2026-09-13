@@ -1,10 +1,14 @@
 import datetime
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase
 from django.urls import reverse
 from django.utils import timezone
+from rest_framework import status
+from rest_framework.test import APITestCase
+
 from monitoring_app.cache_conf import Cache
 from monitoring_app.models import (
     APIKey,
@@ -18,16 +22,18 @@ from monitoring_app.views import (
     get_confirmable_threshold,
     is_main_location_confirmable,
 )
-from rest_framework import status
-from rest_framework.test import APITestCase
+
+if TYPE_CHECKING:
+    from django.contrib.auth.models import User
+else:
+    User = get_user_model()
 
 
 class DepartmentAttendanceConfirmationPinsModeTests(APITestCase):
     def setUp(self):
         super().setUp()
         Cache.clear()
-        user_model = get_user_model()
-        self.user = user_model.objects.create_user(
+        self.user = User.objects.create_user(
             username="department_confirmation_user",
             password="test-pass-123",
         )
@@ -213,8 +219,7 @@ class DepartmentAttendanceConfirmationLessonDayTests(APITestCase):
     def setUp(self):
         super().setUp()
         Cache.clear()
-        user_model = get_user_model()
-        self.user = user_model.objects.create_user(
+        self.user = User.objects.create_user(
             username="department_confirmation_lesson_day_user",
             password="test-pass-123",
         )

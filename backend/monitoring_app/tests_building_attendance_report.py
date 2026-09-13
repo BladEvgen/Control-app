@@ -2,12 +2,17 @@ import datetime
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
+from openpyxl import load_workbook
+from rest_framework import status
+from rest_framework.test import APITestCase
+
 from monitoring_app.cache_conf import Cache
 from monitoring_app.models import (
     APIKey,
@@ -19,9 +24,11 @@ from monitoring_app.models import (
     StaffAttendance,
 )
 from monitoring_app.services import building_attendance_report
-from openpyxl import load_workbook
-from rest_framework import status
-from rest_framework.test import APITestCase
+
+if TYPE_CHECKING:
+    from django.contrib.auth.models import User
+else:
+    User = get_user_model()
 
 ABILAI_ADDRESS = "Проспект Абылай хана, 51/53"
 TOREKULOVA_ADDRESS = "Улица Торекулова, 71"
@@ -137,9 +144,7 @@ class BuildingAttendanceReportServiceTests(TestCase):
         staff.positions.add(self.student_position)
         return staff
 
-    def _create_sa(
-        self, staff: Staff, event_day: datetime.date, area_name: str
-    ) -> None:
+    def _create_sa(self, staff: Staff, event_day: datetime.date, area_name: str) -> None:
         StaffAttendance.objects.create(
             staff=staff,
             date_at=event_day + datetime.timedelta(days=1),
@@ -387,8 +392,6 @@ class BuildingAttendanceReportServiceTests(TestCase):
         student = self._create_student("S104B", self.dept_a)
         target_day = datetime.date(2026, 3, 14)
 
-        # Point is within ~161m by Haversine, but lon-delta can miss KDTree
-        # query_radius in degree space.
         self._create_la(
             student,
             target_day,
@@ -482,8 +485,7 @@ class BuildingAttendanceReportApiAndCommandTests(APITestCase):
             area_name_out="цос",
         )
 
-        user_model = get_user_model()
-        self.user = user_model.objects.create_user(
+        self.user = User.objects.create_user(
             username="report-user",
             password="strong-pass-123",
         )
@@ -589,8 +591,7 @@ class DepartmentAttendanceExcelTests(APITestCase):
         )
         self.target_day = datetime.date(2026, 3, 10)
 
-        user_model = get_user_model()
-        self.user = user_model.objects.create_user(
+        self.user = User.objects.create_user(
             username="department-excel-user",
             password="strong-pass-123",
         )
@@ -898,9 +899,7 @@ class DepartmentAttendanceExcelTests(APITestCase):
         for index, point in enumerate(repeated_points):
             lesson_kwargs = {}
             if index == 1:
-                lesson_kwargs["auto_status"] = (
-                    LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS
-                )
+                lesson_kwargs["auto_status"] = LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS
             self._create_lesson(
                 hour=9,
                 event_day=start_day + datetime.timedelta(days=index),
@@ -932,9 +931,7 @@ class DepartmentAttendanceExcelTests(APITestCase):
         excel_bytes = self._download_excel()
         snapshot = _workbook_snapshot(excel_bytes)["Отчет посещаемости"]
         legend_labels = {
-            row[1]
-            for row in snapshot[4:13]
-            if len(row) > 1 and isinstance(row[1], str) and row[1]
+            row[1] for row in snapshot[4:13] if len(row) > 1 and isinstance(row[1], str) and row[1]
         }
 
         self.assertIn("Активность в выходной день", legend_labels)
@@ -1063,9 +1060,7 @@ class SuspiciousLessonAttendanceExportCommandTests(TestCase):
         )
 
     def test_suspicious_export_command_keeps_only_truly_suspicious_rows(self):
-        self._create_lesson(
-            hour=9, auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN
-        )
+        self._create_lesson(hour=9, auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN)
         self._create_lesson(
             hour=11,
             auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,

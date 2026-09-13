@@ -8,10 +8,11 @@ from typing import Any, Optional
 
 from django.db.models import Prefetch
 from django.utils import timezone
-from monitoring_app import models, utils
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import Alignment, Font
+
+from monitoring_app import models, utils
 
 DEFAULT_DAYS_WITH_DATA = 7
 UNKNOWN_LOCATION_NAME = "Неизвестная локация"
@@ -113,9 +114,7 @@ def build_building_attendance_report_excel(
     """Build report rows and Excel bytes for building attendance by departments."""
     staff_candidates = list(
         models.Staff.objects.select_related("department")
-        .prefetch_related(
-            Prefetch("positions", queryset=models.Position.objects.only("name"))
-        )
+        .prefetch_related(Prefetch("positions", queryset=models.Position.objects.only("name")))
         .only("id", "pin", "department_id", "department__name")
     )
     students = [staff for staff in staff_candidates if _is_student_staff(staff)]
@@ -346,18 +345,14 @@ def _collect_daily_and_summary_rows(
 
     holidays = {
         holiday.date: holiday.is_working_day
-        for holiday in models.PublicHoliday.objects.filter(
-            date__range=(date_from, date_to)
-        )
+        for holiday in models.PublicHoliday.objects.filter(date__range=(date_from, date_to))
     }
 
     daily_bucket: dict[tuple[datetime.date, str], dict[str, Any]] = defaultdict(
         lambda: {"staff_ids": set(), "buildings": defaultdict(set)}
     )
     global_day_staff_ids: dict[datetime.date, set[int]] = defaultdict(set)
-    global_location_day_staff: dict[tuple[datetime.date, str, str], set[int]] = (
-        defaultdict(set)
-    )
+    global_location_day_staff: dict[tuple[datetime.date, str, str], set[int]] = defaultdict(set)
 
     all_keys = set(sa_by_key.keys()) | set(la_by_key.keys())
     for event_date, staff_id in all_keys:
@@ -383,9 +378,7 @@ def _collect_daily_and_summary_rows(
         bucket["staff_ids"].add(staff_id)
         bucket["buildings"][(location_name, location_address)].add(staff_id)
         global_day_staff_ids[event_date].add(staff_id)
-        global_location_day_staff[(event_date, location_name, location_address)].add(
-            staff_id
-        )
+        global_location_day_staff[(event_date, location_name, location_address)].add(staff_id)
 
     daily_rows: list[dict[str, Any]] = []
     summary_acc: dict[tuple[str, str], dict[str, Any]] = defaultdict(
@@ -436,11 +429,7 @@ def _collect_daily_and_summary_rows(
     ):
         day_total_students = len(global_day_staff_ids.get(event_date, set()))
         students_count = len(staff_set)
-        pct = (
-            round((students_count / day_total_students) * 100, 2)
-            if day_total_students
-            else 0.0
-        )
+        pct = round((students_count / day_total_students) * 100, 2) if day_total_students else 0.0
         summary_key = (building_name, building_address)
         summary_acc[summary_key]["total_visits"] += students_count
         summary_acc[summary_key]["days"] += 1
@@ -473,9 +462,9 @@ def _collect_daily_and_summary_rows(
 
 def _build_location_maps() -> tuple[dict[str, str], list[dict[str, Any]]]:
     class_locations = list(
-        models.ClassLocation.objects.only(
+        models.ClassLocation.objects.only("name", "address", "latitude", "longitude").values(
             "name", "address", "latitude", "longitude"
-        ).values("name", "address", "latitude", "longitude")
+        )
     )
 
     address_to_name: dict[str, str] = {}
@@ -588,6 +577,7 @@ def _build_excel_file(
 ) -> bytes:
     workbook = Workbook()
     ws_daily = workbook.active
+    assert ws_daily is not None
     ws_daily.title = "Дневной_срез"
 
     daily_headers = [
@@ -612,11 +602,7 @@ def _build_excel_file(
                 row["day_of_week"],
                 row["is_weekend"],
                 row["is_public_holiday"],
-                (
-                    ""
-                    if row["is_working_day_override"] is None
-                    else row["is_working_day_override"]
-                ),
+                ("" if row["is_working_day_override"] is None else row["is_working_day_override"]),
                 row["department_name"],
                 row["building_name"],
                 row["building_address"],
@@ -652,9 +638,7 @@ def _build_excel_file(
     ws_graph = workbook.create_sheet("Графики")
     ws_graph.append(["Как читать график"])
     ws_graph.append(
-        [
-            "Столбцы ниже показывают среднюю долю посещаемости по локациям за выбранный период."
-        ]
+        ["Столбцы ниже показывают среднюю долю посещаемости по локациям за выбранный период."]
     )
     ws_graph.append([])
     graph_headers = [

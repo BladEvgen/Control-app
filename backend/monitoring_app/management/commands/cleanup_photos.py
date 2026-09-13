@@ -1,7 +1,9 @@
 import os
+from datetime import timedelta
 
 from django.core.management.base import BaseCommand
 from django.utils import timezone
+
 from monitoring_app.models import LessonAttendance
 
 
@@ -9,7 +11,7 @@ class Command(BaseCommand):
     help = "Удаляет фотографии старше 31 дня"
 
     def handle(self, *args, **kwargs):
-        cutoff_date = timezone.now().date() - timezone.timedelta(days=31)
+        cutoff_date = timezone.now().date() - timedelta(days=31)
         records = LessonAttendance.objects.filter(date_at__lt=cutoff_date).only(
             "id", "date_at", "staff_image_path"
         )

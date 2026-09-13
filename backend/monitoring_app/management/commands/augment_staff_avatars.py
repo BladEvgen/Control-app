@@ -83,9 +83,7 @@ class Command(BaseCommand):
             help="Полный вывод (InsightFace/onnx, предупреждения).",
         )
 
-    def _write_augment_report(
-        self, qs, pin_notes: Optional[Dict[str, str]] = None
-    ) -> None:
+    def _write_augment_report(self, qs, pin_notes: Optional[Dict[str, str]] = None) -> None:
         pin_notes = pin_notes or {}
         self.stdout.write("")
         self.stdout.write("Каталоги аугментации (после прогона):")
@@ -96,17 +94,14 @@ class Command(BaseCommand):
                 n_files = sum(
                     1
                     for name in os.listdir(root)
-                    if not name.startswith(".")
-                    and os.path.isfile(os.path.join(root, name))
+                    if not name.startswith(".") and os.path.isfile(os.path.join(root, name))
                 )
             line = f"  PIN {staff.pin}: {n_files} файлов → {root}"
             if n_files == 0:
                 self.stdout.write(self.style.WARNING(line))
                 reason = pin_notes.get(staff.pin)
                 if reason:
-                    self.stdout.write(
-                        self.style.WARNING(f"    причина: {reason}")
-                    )
+                    self.stdout.write(self.style.WARNING(f"    причина: {reason}"))
             else:
                 self.stdout.write(line)
 
@@ -130,9 +125,7 @@ class Command(BaseCommand):
             try:
                 staff = models.Staff.objects.get(pin__iexact=staff_pin_arg)
             except models.Staff.DoesNotExist as exc:
-                raise CommandError(
-                    f"Сотрудник с PIN «{staff_pin_arg}» не найден."
-                ) from exc
+                raise CommandError(f"Сотрудник с PIN «{staff_pin_arg}» не найден.") from exc
             if not staff.avatar or not staff.avatar.name:
                 raise CommandError(f"У сотрудника {staff.pin} нет файла аватара.")
             if not staff.needs_training and not force:
@@ -141,9 +134,8 @@ class Command(BaseCommand):
                     "Включите «Требуется обучение» в админке или добавьте --force."
                 )
             qs = models.Staff.objects.filter(pk=staff.pk)
-            scope_label = (
-                f"staff pin={staff.pin} (single)"
-                + (" [force]" if force and not staff.needs_training else "")
+            scope_label = f"staff pin={staff.pin} (single)" + (
+                " [force]" if force and not staff.needs_training else ""
             )
         elif options.get("all"):
             qs = base_qs
@@ -153,11 +145,8 @@ class Command(BaseCommand):
             try:
                 child = models.ChildDepartment.objects.get(id=department_id)
             except models.ChildDepartment.DoesNotExist as exc:
-                raise CommandError(
-                    f"ChildDepartment id={department_id} does not exist."
-                ) from exc
-            subtree = [child] + child.get_all_child_departments()
-            qs = base_qs.filter(department__in=subtree)
+                raise CommandError(f"ChildDepartment id={department_id} does not exist.") from exc
+            qs = base_qs.filter(department_id__in=child.subtree_ids())
             scope_label = f"department id={department_id} ({child.name})"
 
         count = qs.count()

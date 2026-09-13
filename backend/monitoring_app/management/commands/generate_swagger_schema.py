@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 from django.core.management.base import BaseCommand
 from django.test import RequestFactory
 
@@ -10,7 +12,7 @@ class Command(BaseCommand):
 
         request_factory = RequestFactory()
         request = request_factory.get("/swagger.json/")
-        request.user = None
+        setattr(request, "user", None)
 
         schema_view = _get_schema_view()
         without_ui = schema_view.without_ui()
@@ -18,7 +20,7 @@ class Command(BaseCommand):
         try:
             response = without_ui(request, format=".json")
             if hasattr(response, "render") and not getattr(response, "_is_rendered", True):
-                response.render()
+                cast(Any, response).render()
             self.stdout.write(
                 self.style.SUCCESS(
                     f"OK: status={response.status_code}, "
