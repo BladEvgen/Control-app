@@ -92,8 +92,17 @@ const LoginPage = () => {
     const from = (location.state as { from?: { pathname?: string } })?.from;
     const pathname = from?.pathname;
     if (!pathname || pathname === "/app/login") return "/";
-    if (pathname.startsWith("/app")) return pathname.slice(4) || "/";
-    return pathname || "/";
+
+    const candidate = pathname.startsWith("/app")
+      ? pathname.slice(4) || "/"
+      : pathname;
+
+    const isInternal =
+      candidate.startsWith("/") &&
+      candidate[1] !== "/" &&
+      candidate[1] !== "\\" &&
+      !candidate.includes(":");
+    return isInternal ? candidate : "/";
   }, [location]);
 
   useEffect(() => {
