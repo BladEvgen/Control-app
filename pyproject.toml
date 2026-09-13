@@ -1,0 +1,119 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["backend"]
+
+extend-exclude = [
+    "backend/monitoring_app/migrations",
+    "backend/graphify-out",
+    "backend/media",
+    "frontend/graphify-out",
+    "graphify-out",
+    "control_image",
+]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "C90"]
+ignore = [
+    "E265",
+    "C901",
+    "E501",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.per-file-ignores]
+"backend/django_settings/asgi.py" = ["E402"]
+"backend/monitoring_app/tests*.py" = ["E501"]
+"backend/monitoring_app/swagger_views.py" = ["W293"]
+
+# Секции [tool.ruff.format] здесь намеренно нет: форматирование в проекте
+# делают isort + black (см. ниже и flake_check.sh --fix). ruff format на
+# части файлов расходится с black в переносах импортов, поэтому второй
+# форматтер не подключаем — иначе они переписывают код друг за другом.
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+extend-exclude = '''
+/(
+    \.git
+  | venv
+  | node_modules
+  | backend/monitoring_app/migrations
+  | backend/staticroot
+  | backend/out
+  | graphify-out
+)/
+'''
+
+[tool.pyright]
+venvPath = "."
+venv = "venv"
+pythonVersion = "3.11"
+pythonPlatform = "Linux"
+include = ["backend"]
+extraPaths = ["backend"]
+exclude = [
+    "**/node_modules",
+    "**/__pycache__",
+    "venv",
+    "backend/monitoring_app/migrations",
+    "backend/staticroot",
+    "backend/static",
+    "backend/graphify-out",
+    "backend/media",
+    "backend/out",
+    "backend/models",
+    "control_image",
+]
+
+typeCheckingMode = "basic"
+
+reportAttributeAccessIssue = "warning"
+reportIncompatibleVariableOverride = "none"
+reportUntypedFunctionDecorator = "none"
+reportPrivateImportUsage = "none"
+reportMissingImports = "error"
+reportUndefinedVariable = "error"
+reportCallIssue = "error"
+reportReturnType = "error"
+reportIndexIssue = "error"
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "backend"
+plugins = ["mypy_django_plugin.main"]
+explicit_package_bases = true
+namespace_packages = true
+ignore_missing_imports = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+warn_unused_ignores = false
+exclude = [
+    "^backend/monitoring_app/migrations/",
+    "^backend/staticroot/",
+    "^backend/out/",
+    "^venv/",
+]
+
+[tool.django-stubs]
+django_settings_module = "django_settings.settings"
+
+# ─────────────────────────────── isort ────────────────────────────────
+# Запускается вручную: isort --profile black. Секция нужна, чтобы профиль
+# и ширина совпадали с black и ruff format даже без флагов в команде,
+# а migrations не переписывались.
+[tool.isort]
+profile = "black"
+line_length = 100
+py_version = 311
+src_paths = ["backend"]
+extend_skip_glob = [
+    "*/migrations/*",
+    "venv/*",
+    "*/node_modules/*",
+    "*/staticroot/*",
+    "*/graphify-out/*",
+]

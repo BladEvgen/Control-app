@@ -1,11 +1,27 @@
 [flake8]
-max-complexity = 15
 max-line-length = 100
-ignore = E265,W503
+
+extend-ignore =
+    E265,
+    E501,
+    E203,
+    W503,
+
+per-file-ignores =
+    django_settings/asgi.py:E402
+    django_settings/settings.py:E402
+    graph_models.py:E402
+
+
 exclude =
-    __pycache__/,
-    ./monitoring_app/migrations/*,
-    tests.py,
-    ./backend,
+    __pycache__,
+    .git,
     ./venv/,
-    .\monitoring_app\mtest.py
+    ./node_modules/,
+    ./monitoring_app/migrations/,
+    ./staticroot/,
+    ./static/,
+    ./out/,
+    ./media/,
+    ./graphify-out/,
+    ./models/

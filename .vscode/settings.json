@@ -1,0 +1,59 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/venv/bin/python",
+
+  "ruff.importStrategy": "fromEnvironment",
+  "ruff.interpreter": ["${workspaceFolder}/venv/bin/python"],
+  "ruff.configuration": "${workspaceFolder}/pyproject.toml",
+  "ruff.nativeServer": "on",
+
+  "flake8.enabled": false,
+  "pylint.enabled": false,
+  "python.linting.enabled": false,
+  "python.linting.flake8Enabled": false,
+  "python.linting.pylintEnabled": false,
+
+  "python.languageServer": "Pylance",
+  "python.analysis.diagnosticMode": "openFilesOnly",
+
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": false,
+  "python.terminal.activateEnvironment": true,
+
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": false,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "never"
+    }
+  },
+  "black-formatter.importStrategy": "fromEnvironment",
+  "black-formatter.interpreter": ["${workspaceFolder}/venv/bin/python"],
+  "isort.importStrategy": "fromEnvironment",
+  "isort.interpreter": ["${workspaceFolder}/venv/bin/python"],
+  "isort.args": ["--profile", "black"],
+
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true
+  },
+  "search.exclude": {
+    "venv": true,
+    "**/node_modules": true,
+    "backend/staticroot": true,
+    "backend/out": true,
+    "backend/media": true,
+    "backend/graphify-out": true,
+    "frontend/graphify-out": true,
+    "graphify-out": true,
+    "control_image": true,
+    "DB": true
+  },
+  "files.watcherExclude": {
+    "**/venv/**": true,
+    "**/node_modules/**": true,
+    "**/staticroot/**": true,
+    "**/control_image/**": true,
+    "**/graphify-out/**": true,
+    "**/DB/**": true
+  }
+}
