@@ -12,6 +12,7 @@ from channels.db import database_sync_to_async
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+
 from monitoring_app import models
 from monitoring_app.cache_conf import invalidate_cache, invalidate_cache_pattern
 
@@ -98,9 +99,7 @@ class AsyncAttendanceFetcher:
         timeout = aiohttp.ClientTimeout(total=30)
         conn = aiohttp.TCPConnector(limit_per_host=20)
         self.session = aiohttp.ClientSession(timeout=timeout, connector=conn)
-        logger.info(
-            "Created aiohttp session with timeout=30s and TCPConnector(limit_per_host=20)"
-        )
+        logger.info("Created aiohttp session with timeout=30s and TCPConnector(limit_per_host=20)")
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -141,9 +140,7 @@ class AsyncAttendanceFetcher:
             "startDate": start_date.strftime("%Y-%m-%d %H:%M:%S"),
             "access_token": settings.API_KEY,
         }
-        request_url = (
-            f"{settings.API_URL.rstrip('/')}/api/transaction/listAttTransaction"
-        )
+        request_url = f"{settings.API_URL.rstrip('/')}/api/transaction/listAttTransaction"
         logger.debug("Fetching attendance for PIN %s", pin)
 
         try:
@@ -284,9 +281,7 @@ class AsyncAttendanceFetcher:
         work_day_date = local_now.date() - timedelta(days=days_to_subtract)
         next_day_date = work_day_date + timedelta(days=1)
         start_date = timezone.make_aware(dt.combine(work_day_date, time.min))
-        end_date = timezone.make_aware(
-            dt.combine(work_day_date, time(23, 59, 59, 999999))
-        )
+        end_date = timezone.make_aware(dt.combine(work_day_date, time(23, 59, 59, 999999)))
         next_day = timezone.make_aware(dt.combine(next_day_date, time.min))
 
         logger.info(
@@ -329,15 +324,21 @@ class AsyncAttendanceFetcher:
             for pin in pins:
                 queue.put_nowait(pin)
 
-            results: list[dict[str, Any]] = []
-            results_lock = asyncio.Lock()
+            computed: dict[str, tuple] = {}
+            errors: list[dict[str, Any]] = []
+            failed_pins: list[str] = []
+            stats = {
+                "pins_with_events": 0,
+                "event_time_parse_errors": 0,
+                "ambiguous_exit_candidates": 0,
+                "ambiguous_resolved_as_exit": 0,
+                "ambiguous_resolved_as_transfer": 0,
+            }
             processed_counter = 0
 
             async def process_pin(pin: str) -> dict[str, Any]:
                 try:
-                    data, error = await fetcher.fetch_attendance(
-                        pin, start_date, end_date
-                    )
+                    data, error = await fetcher.fetch_attendance(pin, start_date, end_date)
                 except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as exc:
                     logger.error(
                         "Attendance fetch failed after retries for PIN %s: %s",
@@ -357,13 +358,9 @@ class AsyncAttendanceFetcher:
                     return {"pin": pin, "data": [], "error": error}
 
                 if data:
-                    logger.debug(
-                        "Retrieved %d attendance records for PIN %s", len(data), pin
-                    )
+                    logger.debug("Retrieved %d attendance records for PIN %s", len(data), pin)
                 else:
-                    logger.info(
-                        "No attendance events for PIN %s in requested period", pin
-                    )
+                    logger.info("No attendance events for PIN %s in requested period", pin)
 
                 return {"pin": pin, "data": data, "error": None}
 
@@ -376,63 +373,55 @@ class AsyncAttendanceFetcher:
                         return
 
                     result = await process_pin(pin)
-                    async with results_lock:
-                        results.append(result)
-                        processed_counter += 1
-                        if (
-                            processed_counter % 100 == 0
-                            or processed_counter == total_pins
-                        ):
-                            logger.info(
-                                "Attendance fetch progress: %d/%d pins processed",
-                                processed_counter,
-                                total_pins,
-                            )
+                    if result["error"] is not None:
+                        errors.append(result["error"])
+                        failed_pins.append(pin)
+                    else:
+                        data = result["data"]
+                        if data:
+                            stats["pins_with_events"] += 1
+                        computed[pin] = _aggregate_pin_events(data, stats)
+
+                    processed_counter += 1
+                    if processed_counter % 100 == 0 or processed_counter == total_pins:
+                        logger.info(
+                            "Attendance fetch progress: %d/%d pins processed",
+                            processed_counter,
+                            total_pins,
+                        )
                     queue.task_done()
 
-            workers = [
-                asyncio.create_task(worker())
-                for _ in range(self.max_concurrent_requests)
-            ]
+            workers = [asyncio.create_task(worker()) for _ in range(self.max_concurrent_requests)]
             await asyncio.gather(*workers)
             logger.info("Completed fetching attendance data for all pins")
 
-        successful_results = [result for result in results if result["error"] is None]
-        failed_results = [result for result in results if result["error"] is not None]
-
-        attendance_data = {
-            result["pin"]: result["data"] for result in successful_results
-        }
-
-        db_update_result = {
-            "created_records": 0,
-            "updated_records": 0,
-            "event_time_parse_errors": 0,
-            "ambiguous_exit_candidates": 0,
-            "ambiguous_resolved_as_exit": 0,
-            "ambiguous_resolved_as_transfer": 0,
-        }
-        if attendance_data:
+        db_update_result = {"created_records": 0, "updated_records": 0}
+        if computed:
             db_update_result = await database_sync_to_async(update_attendance_records)(
-                attendance_data, next_day
+                computed, next_day
             )
         else:
             logger.warning(
                 "Skipping DB update because no successful responses were received from external API."
             )
 
-        pins_with_events = sum(
-            1 for result in successful_results if bool(result["data"])
+        successful_count = len(computed)
+        pins_with_events = stats["pins_with_events"]
+        pins_without_events = successful_count - pins_with_events
+        db_update_result.update(
+            {
+                "event_time_parse_errors": stats["event_time_parse_errors"],
+                "ambiguous_exit_candidates": stats["ambiguous_exit_candidates"],
+                "ambiguous_resolved_as_exit": stats["ambiguous_resolved_as_exit"],
+                "ambiguous_resolved_as_transfer": stats["ambiguous_resolved_as_transfer"],
+            }
         )
-        pins_without_events = len(successful_results) - pins_with_events
-        errors = [result["error"] for result in failed_results if result["error"]]
-        failed_pins = [result["pin"] for result in failed_results]
 
         logger.info(
             "Attendance fetch summary: total=%d, successful=%d, failed=%d, with_events=%d, without_events=%d, created=%d, updated=%d, parse_errors=%d, ambiguous_candidates=%d, ambiguous_exit=%d, ambiguous_transfer=%d",
             total_pins,
-            len(successful_results),
-            len(failed_results),
+            successful_count,
+            len(failed_pins),
             pins_with_events,
             pins_without_events,
             db_update_result["created_records"],
@@ -454,20 +443,16 @@ class AsyncAttendanceFetcher:
             "source_date": start_date.date().isoformat(),
             "save_date": next_day.date().isoformat(),
             "total_pins": total_pins,
-            "successful_requests": len(successful_results),
-            "failed_requests": len(failed_results),
+            "successful_requests": successful_count,
+            "failed_requests": len(failed_pins),
             "pins_with_events": pins_with_events,
             "pins_without_events": pins_without_events,
             "created_records": db_update_result["created_records"],
             "updated_records": db_update_result["updated_records"],
             "event_time_parse_errors": db_update_result["event_time_parse_errors"],
             "ambiguous_exit_candidates": db_update_result["ambiguous_exit_candidates"],
-            "ambiguous_resolved_as_exit": db_update_result[
-                "ambiguous_resolved_as_exit"
-            ],
-            "ambiguous_resolved_as_transfer": db_update_result[
-                "ambiguous_resolved_as_transfer"
-            ],
+            "ambiguous_resolved_as_exit": db_update_result["ambiguous_resolved_as_exit"],
+            "ambiguous_resolved_as_transfer": db_update_result["ambiguous_resolved_as_transfer"],
             "failed_pins": failed_pins,
             "errors": errors,
         }
@@ -619,9 +604,7 @@ def _compute_attendance_from_events(
     for idx, (_, t_dt, area, dev_sn) in enumerate(parsed_events):
         if t_dt is None:
             continue
-        is_exit, is_exit_candidate, exit_resolution = resolve_exit_state(
-            idx, t_dt, dev_sn
-        )
+        is_exit, is_exit_candidate, exit_resolution = resolve_exit_state(idx, t_dt, dev_sn)
         item: Dict[str, str] = {"t": t_dt.strftime("%H:%M"), "area": area}
         if dev_sn:
             item["devSn"] = dev_sn
@@ -660,12 +643,8 @@ def _compute_attendance_from_events(
         if t1:
             last_out_dt = t1
 
-    area_name_in = (
-        sorted_events[0].get("areaName") or "Unknown" if sorted_events else "Unknown"
-    )
-    area_name_out = (
-        sorted_events[-1].get("areaName") or "Unknown" if sorted_events else "Unknown"
-    )
+    area_name_in = sorted_events[0].get("areaName") or "Unknown" if sorted_events else "Unknown"
+    area_name_out = sorted_events[-1].get("areaName") or "Unknown" if sorted_events else "Unknown"
     effective = total_seconds if total_seconds > 0 else None
     effective_work_intervals: Optional[List[Dict[str, str]]] = None
     if intervals_raw:
@@ -684,129 +663,116 @@ def _compute_attendance_from_events(
     )
 
 
-def update_attendance_records(
-    attendance_data: Dict[str, List[Dict[str, Any]]], next_day: dt
-) -> Dict[str, int]:
+def _aggregate_pin_events(data: List[Dict[str, Any]], stats: Dict[str, int]) -> tuple:
+    """Сводит события одного сотрудника в строку для StaffAttendance."""
+    if not data:
+        return (None, None, None, None, None, "Unknown", "Unknown")
+
+    (
+        first_in,
+        last_out,
+        effective_work_seconds,
+        area_sequence,
+        effective_work_intervals,
+        area_name_in,
+        area_name_out,
+        resolution_stats,
+    ) = _compute_attendance_from_events(data)
+
+    if first_in is None:
+        stats["event_time_parse_errors"] += 1
+    for key in (
+        "ambiguous_exit_candidates",
+        "ambiguous_resolved_as_exit",
+        "ambiguous_resolved_as_transfer",
+    ):
+        stats[key] += resolution_stats.get(key, 0)
+
+    return (
+        first_in,
+        last_out,
+        effective_work_seconds,
+        area_sequence,
+        effective_work_intervals,
+        area_name_in,
+        area_name_out,
+    )
+
+
+def update_attendance_records(computed_by_pin: Dict[str, tuple], next_day: dt) -> Dict[str, int]:
     """Обновляет или создаёт записи StaffAttendance в БД в одной транзакции.
 
-    Ключ записи — next_day.date() (дата выгрузки). По сырым событиям СКУД для
-    каждого сотрудника вычисляются first_in, last_out, effective_work_seconds,
-    area_sequence и effective_work_intervals через _compute_attendance_from_events.
+    Ключ записи — next_day.date() (дата выгрузки). На вход идут уже сведённые
+    строки из _aggregate_pin_events, а не сырые события: агрегация выполняется
+    в момент получения ответа, поэтому сырые данные в памяти не копятся.
 
     Args:
-        attendance_data: Словарь {pin: [события API]} по всем сотрудникам за день.
+        computed_by_pin: {pin: кортеж полей записи из _aggregate_pin_events}.
         next_day: datetime даты выгрузки (следующий день после рабочего).
 
     Returns:
-        Словарь с ключами created_records, updated_records,
-        event_time_parse_errors и счетчиками ambiguous_*.
+        Словарь с created_records и updated_records.
     """
+    attendance_date = next_day.date()
     updates = []
     creates = []
-    event_time_parse_errors = 0
-    ambiguous_exit_candidates = 0
-    ambiguous_resolved_as_exit = 0
-    ambiguous_resolved_as_transfer = 0
 
     logger.info("Beginning atomic transaction for database updates")
     with atomic_block():
-        existing_qs = models.StaffAttendance.objects.filter(
-            date_at=next_day.date()
-        ).only(
-            "id",
-            "staff_id",
-            "date_at",
-            "first_in",
-            "last_out",
-            "area_name_in",
-            "area_name_out",
-            "effective_work_seconds",
-            "area_sequence",
-            "effective_work_intervals",
+        staff_ids = dict(
+            models.Staff.objects.filter(pin__in=list(computed_by_pin)).values_list("pin", "id")
         )
-        existing_records = {(att.staff_id, att.date_at): att for att in existing_qs}
+        existing_ids = dict(
+            models.StaffAttendance.objects.filter(
+                date_at=attendance_date, staff_id__in=list(staff_ids.values())
+            ).values_list("staff_id", "id")
+        )
         logger.info(
             "Found %d existing attendance records for date %s",
-            len(existing_records),
-            next_day.date(),
+            len(existing_ids),
+            attendance_date,
         )
 
-        staff_queryset = models.Staff.objects.filter(pin__in=attendance_data.keys())
-        for staff in staff_queryset:
-            data = attendance_data.get(staff.pin, [])
-            if data:
-                (
-                    first_event_time,
-                    last_event_time,
-                    effective_work_seconds,
-                    area_sequence,
-                    effective_work_intervals,
-                    area_name_in,
-                    area_name_out,
-                    resolution_stats,
-                ) = _compute_attendance_from_events(data)
-                ambiguous_exit_candidates += resolution_stats.get(
-                    "ambiguous_exit_candidates", 0
-                )
-                ambiguous_resolved_as_exit += resolution_stats.get(
-                    "ambiguous_resolved_as_exit", 0
-                )
-                ambiguous_resolved_as_transfer += resolution_stats.get(
-                    "ambiguous_resolved_as_transfer", 0
-                )
-                if first_event_time is None and data:
-                    event_time_parse_errors += 1
-            else:
-                first_event_time = None
-                last_event_time = None
-                effective_work_seconds = None
-                area_sequence = None
-                effective_work_intervals = None
-                area_name_in = "Unknown"
-                area_name_out = "Unknown"
-                logger.debug(
-                    "No data available for staff PIN %s; using default values.",
-                    staff.pin,
-                )
-
-            key = (staff.id, next_day.date())
-            if key in existing_records:
-                att_obj = existing_records[key]
-                att_obj.first_in = first_event_time
-                att_obj.last_out = last_event_time
-                att_obj.area_name_in = area_name_in
-                att_obj.area_name_out = area_name_out
-                att_obj.effective_work_seconds = effective_work_seconds
-                att_obj.area_sequence = area_sequence
-                att_obj.effective_work_intervals = effective_work_intervals
-                updates.append(att_obj)
-                logger.debug(
-                    "Scheduled update for attendance record of staff id %s on %s",
-                    staff.id,
-                    next_day.date(),
+        for pin, row in computed_by_pin.items():
+            staff_id = staff_ids.get(pin)
+            if staff_id is None:
+                continue
+            (
+                first_in,
+                last_out,
+                effective_work_seconds,
+                area_sequence,
+                effective_work_intervals,
+                area_name_in,
+                area_name_out,
+            ) = row
+            fields = {
+                "first_in": first_in,
+                "last_out": last_out,
+                "area_name_in": area_name_in,
+                "area_name_out": area_name_out,
+                "effective_work_seconds": effective_work_seconds,
+                "area_sequence": area_sequence,
+                "effective_work_intervals": effective_work_intervals,
+            }
+            record_id = existing_ids.get(staff_id)
+            if record_id is not None:
+                updates.append(
+                    models.StaffAttendance(
+                        id=record_id,
+                        staff_id=staff_id,
+                        date_at=attendance_date,
+                        **fields,
+                    )
                 )
             else:
-                new_att = models.StaffAttendance(
-                    staff=staff,
-                    date_at=next_day.date(),
-                    first_in=first_event_time,
-                    last_out=last_event_time,
-                    area_name_in=area_name_in,
-                    area_name_out=area_name_out,
-                    effective_work_seconds=effective_work_seconds,
-                    area_sequence=area_sequence,
-                    effective_work_intervals=effective_work_intervals,
-                )
-                creates.append(new_att)
-                logger.debug(
-                    "Scheduled creation for attendance record of staff id %s on %s",
-                    staff.id,
-                    next_day.date(),
+                creates.append(
+                    models.StaffAttendance(staff_id=staff_id, date_at=attendance_date, **fields)
                 )
 
         if creates:
             logger.info("Creating %d new attendance records", len(creates))
-            models.StaffAttendance.objects.bulk_create(creates)
+            models.StaffAttendance.objects.bulk_create(creates, batch_size=1000)
         if updates:
             logger.info("Updating %d existing attendance records", len(updates))
             models.StaffAttendance.objects.bulk_update(
@@ -820,11 +786,12 @@ def update_attendance_records(
                     "area_sequence",
                     "effective_work_intervals",
                 ],
+                batch_size=1000,
             )
         logger.info("Completed atomic transaction for attendance records update")
 
         if creates or updates:
-            work_day = next_day.date() - timedelta(days=1)
+            work_day = attendance_date - timedelta(days=1)
             work_day_str = work_day.strftime("%Y-%m-%d")
             invalidate_cache_pattern(f"staff_attendance_stats_{work_day_str}*")
             invalidate_cache_pattern(f"map_location_{work_day_str}*")
@@ -834,14 +801,7 @@ def update_attendance_records(
             logger.info(
                 "Invalidated attendance cache for work_day=%s (date_at=%s)",
                 work_day_str,
-                next_day.date(),
+                attendance_date,
             )
 
-    return {
-        "created_records": len(creates),
-        "updated_records": len(updates),
-        "event_time_parse_errors": event_time_parse_errors,
-        "ambiguous_exit_candidates": ambiguous_exit_candidates,
-        "ambiguous_resolved_as_exit": ambiguous_resolved_as_exit,
-        "ambiguous_resolved_as_transfer": ambiguous_resolved_as_transfer,
-    }
+    return {"created_records": len(creates), "updated_records": len(updates)}

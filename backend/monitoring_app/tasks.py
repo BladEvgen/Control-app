@@ -9,6 +9,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
+
 from monitoring_app import models, utils
 from monitoring_app.photo_ws_broadcast import (
     broadcast_lesson_attendance_photo_meta_updates,
@@ -29,9 +30,7 @@ def lesson_attendance_pad_lock_key(attendance_id: int) -> str:
     return f"{PAD_SCAN_LOCK_KEY_PREFIX}:{int(attendance_id)}"
 
 
-def acquire_lesson_attendance_pad_lock(
-    attendance_id: int, *, ttl: Optional[int] = None
-) -> bool:
+def acquire_lesson_attendance_pad_lock(attendance_id: int, *, ttl: Optional[int] = None) -> bool:
     timeout = _get_lesson_attendance_pad_lock_ttl() if ttl is None else max(10, ttl)
     return bool(
         cache.add(
@@ -89,17 +88,11 @@ def _lesson_attendance_pad_candidate_queryset(
     q_non_empty = cast(Q, ~Q(staff_image_path=""))
     q_manual_none = cast(Q, Q(photo_manual_verdict=MANUAL_NONE))
     qs = models.LessonAttendance.objects.filter(
-        cast(
-            Q, cast(Q, cast(Q, q_has_path & q_non_empty) & q_manual_none) & q_needs_scan
-        )
+        cast(Q, cast(Q, cast(Q, q_has_path & q_non_empty) & q_manual_none) & q_needs_scan)
     )
     today = timezone.localdate()
     if only_today:
-        return (
-            qs.filter(date_at=today)
-            .only("id", "date_at", "staff_image_path")
-            .order_by("id")
-        )
+        return qs.filter(date_at=today).only("id", "date_at", "staff_image_path").order_by("id")
     if backlog_only:
         return (
             qs.filter(date_at__lt=today)
@@ -170,9 +163,7 @@ def _run_lesson_attendance_pad_scan(
                     )
                 )
                 if updated_rows:
-                    updated_records_by_date.setdefault(record.date_at, []).append(
-                        record.id
-                    )
+                    updated_records_by_date.setdefault(record.date_at, []).append(record.id)
                 status_counts["error"] += 1
                 checked_count += 1
                 continue
@@ -207,9 +198,7 @@ def _run_lesson_attendance_pad_scan(
                     photo_manual_verdict=MANUAL_NONE,
                 ).update(**update_kwargs)
                 if updated_rows:
-                    updated_records_by_date.setdefault(record.date_at, []).append(
-                        record.id
-                    )
+                    updated_records_by_date.setdefault(record.date_at, []).append(record.id)
                 else:
                     logger.warning(
                         "%s pad_update_no_rows mode=%s pk=%s path=%s",
@@ -510,9 +499,7 @@ def update_lesson_attendance_last_out():
                     skipped_not_due += 1
                     continue
 
-                lesson.first_in = _normalize_lesson_datetime(
-                    lesson.first_in, current_tz
-                )
+                lesson.first_in = _normalize_lesson_datetime(lesson.first_in, current_tz)
                 lesson.last_out = last_out
                 updates.append(lesson)
                 logger.debug(
@@ -524,9 +511,7 @@ def update_lesson_attendance_last_out():
                 )
 
             if updates:
-                models.LessonAttendance.objects.bulk_update(
-                    updates, ["last_out"], batch_size=100
-                )
+                models.LessonAttendance.objects.bulk_update(updates, ["last_out"], batch_size=100)
                 total_updated += len(updates)
                 from monitoring_app.cache_conf import (
                     invalidate_lesson_attendance_derived_caches,
@@ -820,9 +805,7 @@ def prepare_lesson_attendance_admin_pad_full_rescan(
     if not normalized_ids:
         return [], skipped
 
-    records = list(
-        la.objects.filter(id__in=normalized_ids).only("id", "staff_image_path")
-    )
+    records = list(la.objects.filter(id__in=normalized_ids).only("id", "staff_image_path"))
     by_id = {row.id: row for row in records}
     photo_ids: list[int] = []
     for aid in normalized_ids:
@@ -1201,6 +1184,7 @@ def warmup_class_location_buffers():
     Один запрос к БД для списка, радиусы считаются из тех же данных.
     """
     from django.core.cache import caches
+
     from monitoring_app.lesson_locations_conf import (
         ACCEPTANCE_R_CLUSTER,
         ACCEPTANCE_R_SAME_POINT,
@@ -1326,3 +1310,142 @@ def rotate_department_confirmation_cache_epoch():
         deleted_count,
     )
     return {"epoch": epoch_hour, "deleted_keys": deleted_count}
+
+
+UPLOAD_LOCK_KEY_PREFIX = "upload_file_lock"
+UPLOAD_LOCK_TTL = 6 * 60 * 60
+
+
+def upload_lock_key(category: str) -> str:
+    return f"{UPLOAD_LOCK_KEY_PREFIX}:{category}"
+
+
+def acquire_upload_lock(category: str) -> bool:
+    """Один импорт на категорию одновременно.
+
+    Два параллельных импорта сотрудников гонялись бы за одни и те же строки
+    и за through-таблицу должностей. Лок тот же по механике, что и у
+    ``acquire_lesson_attendance_pad_lock`` — ``cache.add`` атомарен в Redis.
+    """
+    return bool(
+        cache.add(
+            upload_lock_key(category),
+            timezone.now().isoformat(),
+            timeout=UPLOAD_LOCK_TTL,
+        )
+    )
+
+
+def release_upload_lock(category: str) -> None:
+    cache.delete(upload_lock_key(category))
+
+
+@shared_task(bind=True, name="monitoring_app.tasks.process_uploaded_file")
+def process_uploaded_file(
+    self,
+    path: str,
+    category: str,
+    options: Optional[dict] = None,
+) -> dict:
+    """Обрабатывает загруженный файл в воркере, а не в процессе Django.
+
+    Прогресс публикуется через ``update_state``, его читает эндпоинт
+    ``upload_task_status``. Временный файл удаляется в ``finally`` при любом
+    исходе, включая ошибку и отзыв задачи.
+
+    Args:
+        path: Абсолютный путь к сохранённому файлу.
+        category: Слаг категории из ``FileCategory``.
+        options: Параметры категории (``parent_department``, ``archive_missing``,
+            ``force``, ``departments_path``).
+
+    Returns:
+        Словарь со сводкой: ``{"category", "summary", "detail"}``.
+    """
+    from monitoring_app.services import staff_csv_import, upload_processing
+
+    options = options or {}
+
+    def progress(stage: str, processed: int, total: int) -> None:
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "stage": stage,
+                "processed": processed,
+                "total": total,
+                "category": category,
+            },
+        )
+
+    if not acquire_upload_lock(category):
+        raise RuntimeError(
+            f"Импорт категории «{category}» уже выполняется. "
+            f"Дождитесь его завершения и повторите."
+        )
+
+    try:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Загруженный файл не найден: {path}")
+
+        logger.info(
+            "process_uploaded_file: категория=%s файл=%s размер=%s",
+            category,
+            os.path.basename(path),
+            os.path.getsize(path),
+        )
+
+        if category == "departments":
+            stats = staff_csv_import.run_import(departments_path=path, progress=progress)
+            detail = stats.as_dict()
+            summary = stats.summary_lines()
+        elif category == "staff":
+            stats = staff_csv_import.run_import(
+                humans_path=path,
+                progress=progress,
+                archive_missing=bool(options.get("archive_missing")),
+                force=bool(options.get("force")),
+            )
+            detail = stats.as_dict()
+            summary = stats.summary_lines()
+        elif category == "photo":
+            detail = upload_processing.import_photos_zip(path, progress=progress)
+            summary = [
+                f"Фото обновлено: {detail['updated']}",
+                f"Неизвестных pin: {detail['skipped_unknown_pin']}",
+                f"Отклонено файлов: "
+                f"{detail['skipped_bad_member'] + detail['skipped_too_large']}",
+            ]
+        elif category == "public_holidays":
+            detail = upload_processing.import_public_holidays(path, progress=progress)
+            summary = [f"Праздники: создано {detail['created']}, обновлено {detail['updated']}"]
+        elif category == "load_geo":
+            detail = upload_processing.import_class_locations(path, progress=progress)
+            summary = [
+                f"Точки занятий: создано {detail['created']}, " f"обновлено {detail['updated']}"
+            ]
+        elif category == "delete_staff":
+            detail = upload_processing.delete_staff_by_parent(
+                path,
+                str(options.get("parent_department") or ""),
+                progress=progress,
+            )
+            summary = [
+                f"Удалено записей: {detail['deleted']} "
+                f"(отдел {detail['parent']}, оставлено pin {detail['kept_pins']})"
+            ]
+        else:
+            raise ValueError(f"Неизвестная категория загрузки: {category}")
+
+        errors = detail.get("errors") or []
+        if errors:
+            summary.append(f"Ошибок в строках: {len(errors)}")
+
+        logger.info("process_uploaded_file: категория=%s готово — %s", category, summary)
+        return {"category": category, "summary": summary, "detail": detail}
+    finally:
+        release_upload_lock(category)
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError as error:
+            logger.warning("process_uploaded_file: не удалось удалить %s — %s", path, error)

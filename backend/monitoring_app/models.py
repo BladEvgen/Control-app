@@ -2,10 +2,10 @@ import os
 import shutil
 import uuid
 from contextlib import AbstractContextManager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 from django.conf import settings
 from django.contrib import messages
@@ -58,21 +58,19 @@ class PasswordResetTokenManager(models.Manager):
 
 
 class PasswordResetToken(models.Model):
-    user = models.ForeignKey(
-        User, on_delete=models.CASCADE, verbose_name="Пользователь"
-    )
+    user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
     token = models.CharField(max_length=64, unique=True, verbose_name="Токен")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     _used = boolean_field(False, verbose_name="Статус использования")
 
-    objects = PasswordResetTokenManager()
+    objects: "PasswordResetTokenManager" = PasswordResetTokenManager()
 
     @property
     def used(self):
         return self._used
 
     def is_valid(self):
-        expiration_time = timezone.now() - timezone.timedelta(hours=1)
+        expiration_time = timezone.now() - timedelta(hours=1)
         return self.created_at > expiration_time and not self._used
 
     @used.setter
@@ -106,7 +104,7 @@ class PasswordResetRequestLog(models.Model):
 
     @staticmethod
     def is_recent_request(user, ip_address):
-        five_minutes_ago = timezone.now() - timezone.timedelta(minutes=5)
+        five_minutes_ago = timezone.now() - timedelta(minutes=5)
         return PasswordResetRequestLog.objects.filter(
             user=user, ip_address=ip_address, requested_at__gte=five_minutes_ago
         ).exists()
@@ -126,12 +124,10 @@ class PasswordResetRequestLog(models.Model):
 
     @staticmethod
     def can_request_again(user, ip_address):
-        last_request_time = PasswordResetRequestLog.get_last_request_time(
-            user, ip_address
-        )
+        last_request_time = PasswordResetRequestLog.get_last_request_time(user, ip_address)
         if not last_request_time:
             return True
-        return timezone.now() >= last_request_time + timezone.timedelta(minutes=5)
+        return timezone.now() >= last_request_time + timedelta(minutes=5)
 
     class Meta:
         verbose_name = "Лог запросов на сброс пароля"
@@ -139,6 +135,8 @@ class PasswordResetRequestLog(models.Model):
 
 
 class APIKey(models.Model):
+    if TYPE_CHECKING:
+        id: int
 
     key_name = models.CharField(
         max_length=100, null=False, blank=False, verbose_name="Название ключа"
@@ -241,9 +239,7 @@ class FileCategory(models.Model):
 class ParentDepartment(models.Model):
     id = models.CharField(primary_key=True, verbose_name="Номер отдела", max_length=10)
     name = models.CharField(max_length=255, unique=True, verbose_name="Название отдела")
-    date_of_creation = models.DateTimeField(
-        auto_now_add=True, verbose_name="Дата создания"
-    )
+    date_of_creation = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
 
     def __str__(self) -> str:
         return str(self.name)
@@ -258,11 +254,13 @@ class ParentDepartment(models.Model):
 
 
 class ChildDepartment(models.Model):
+    if TYPE_CHECKING:
+        parent_id: Optional[str]
+        children: "models.Manager[ChildDepartment]"
+
     id = models.CharField(primary_key=True, verbose_name="Номер отдела", max_length=10)
     name = models.CharField(max_length=255, verbose_name="Название отдела")
-    date_of_creation = models.DateTimeField(
-        auto_now_add=True, verbose_name="Дата создания"
-    )
+    date_of_creation = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     parent = models.ForeignKey(
         "self",
         on_delete=models.SET_NULL,
@@ -281,21 +279,39 @@ class ChildDepartment(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.id:
-            existing_child_department = ChildDepartment.objects.filter(
-                name=self.name
-            ).first()
+            existing_child_department = ChildDepartment.objects.filter(name=self.name).first()
             if existing_child_department:
                 self.id = existing_child_department.id
                 self.parent = existing_child_department.parent
 
         super().save(*args, **kwargs)
 
+    def subtree_ids(self, include_self: bool = True) -> list:
+        """Id всего поддерева одним запросом."""
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH RECURSIVE subtree AS (
+                    SELECT id FROM monitoring_app_childdepartment WHERE id = %s
+                    UNION ALL
+                    SELECT cd.id
+                    FROM monitoring_app_childdepartment cd
+                    JOIN subtree s ON cd.parent_id = s.id
+                )
+                SELECT id FROM subtree
+                """,
+                [self.pk],
+            )
+            ids = [row[0] for row in cursor.fetchall()]
+        return ids if include_self else [i for i in ids if i != self.pk]
+
     def get_all_child_departments(self):
-        children = self.children.all()
-        all_children = list(children)
-        for child in children:
-            all_children.extend(child.get_all_child_departments())
-        return all_children
+        descendant_ids = self.subtree_ids(include_self=False)
+        if not descendant_ids:
+            return []
+        return list(ChildDepartment.objects.filter(id__in=descendant_ids))
 
     class Meta:
         verbose_name = "Подотдел"
@@ -307,10 +323,14 @@ class ChildDepartment(models.Model):
 
 
 class Position(models.Model):
+    if TYPE_CHECKING:
+        id: int
+
     name = models.CharField(
         max_length=255,
         blank=False,
         null=False,
+        unique=True,
         verbose_name="Профессия",
         default="Сотрудник",
     )
@@ -330,7 +350,28 @@ def user_avatar_path(instance, filename):
     return f"user_images/{instance.pin}/{instance.pin}.{filename.split('.')[-1]}"
 
 
+class StaffQuerySet(models.QuerySet):
+    def active(self) -> "StaffQuerySet":
+        return self.filter(archived_at__isnull=True)
+
+    def archived(self) -> "StaffQuerySet":
+        return self.filter(archived_at__isnull=False)
+
+
+class StaffManager(models.Manager.from_queryset(StaffQuerySet)):  # type: ignore[misc]
+    """Менеджер по умолчанию: отдаёт только неархивных сотрудников.
+    """
+
+    def get_queryset(self) -> StaffQuerySet:
+        qs = cast(StaffQuerySet, super().get_queryset())
+        return qs.filter(archived_at__isnull=True)
+
+
 class Staff(models.Model):
+    if TYPE_CHECKING:
+        id: int
+        department_id: Optional[str]
+
     pin = models.CharField(
         max_length=100,
         blank=False,
@@ -340,9 +381,7 @@ class Staff(models.Model):
         editable=False,
     )
     name = models.CharField(max_length=255, blank=False, null=False, verbose_name="Имя")
-    surname = models.CharField(
-        max_length=255, blank=False, null=False, verbose_name="Фамилия"
-    )
+    surname = models.CharField(max_length=255, blank=False, null=False, verbose_name="Фамилия")
     department = models.ForeignKey(
         ChildDepartment, on_delete=models.SET_NULL, null=True, verbose_name="Отдел"
     )
@@ -358,9 +397,7 @@ class Staff(models.Model):
         verbose_name="Фото Пользователя",
         validators=[FileExtensionValidator(allowed_extensions=["jpg", "jpeg", "png"])],
     )
-    needs_training = boolean_field(
-        True, verbose_name="Требуется обучение модели распознавания лиц"
-    )
+    needs_training = boolean_field(True, verbose_name="Требуется обучение модели распознавания лиц")
     FACE_PROFILE_STATE_READY = "ready"
     FACE_PROFILE_STATE_WEAK_GALLERY = "weak_gallery"
     FACE_PROFILE_STATE_BOOTSTRAP_REQUIRED = "bootstrap_required"
@@ -376,13 +413,31 @@ class Staff(models.Model):
         verbose_name="Состояние профиля Face ID",
         db_index=True,
     )
+    archived_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name="Исключён из выгрузки",
+        help_text=(
+            "Дата, когда сотрудник перестал приходить во внешней выгрузке. "
+            "Пока поле заполнено, запись заморожена: импорт её не обновляет, "
+            "посещаемость не загружается, в API и отчёты она не попадает."
+        ),
+    )
+
+    objects = StaffManager()
+    all_objects = models.Manager()
+
+    @property
+    def is_active(self) -> bool:
+        return self.archived_at is None
 
     def __str__(self):
         return f"{self.surname} {self.name}"
 
     def save(self, *args, **kwargs):
         if self.pk:
-            old_avatar = Staff.objects.filter(pk=self.pk).values("avatar").first()
+            old_avatar = Staff.all_objects.filter(pk=self.pk).values("avatar").first()
             avatar_field = cast(Optional[FieldFile], self.avatar)
             if (
                 old_avatar
@@ -391,9 +446,7 @@ class Staff(models.Model):
                 and old_avatar["avatar"] != avatar_field.name
             ):
                 try:
-                    old_avatar_path = os.path.join(
-                        settings.MEDIA_ROOT, old_avatar["avatar"]
-                    )
+                    old_avatar_path = os.path.join(settings.MEDIA_ROOT, old_avatar["avatar"])
                     if os.path.exists(old_avatar_path):
                         os.remove(old_avatar_path)
                 except Exception as e:
@@ -411,7 +464,7 @@ class Staff(models.Model):
                         shutil.rmtree(avatar_dir)
                     except Exception as e:
                         print(f"Ошибка при удалении директории с аватаркой: {e}")
-        super().delete(*args, **kwargs)
+        return super().delete(*args, **kwargs)
 
     class Meta:
         verbose_name = "Сотрудник"
@@ -419,6 +472,7 @@ class Staff(models.Model):
         indexes = [
             models.Index(fields=["department"]),
             models.Index(fields=["pin"]),
+            models.Index(fields=["department", "archived_at"]),
         ]
 
 
@@ -446,10 +500,7 @@ def staff_face_sample_upload_to(instance: models.Model, filename: str) -> str:
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
     if ext not in ("jpg", "jpeg", "png"):
         ext = "jpg"
-    return (
-        f"user_images/{sample.staff.pin}/face_samples/"
-        f"{sample.staff.pin}_fs_{uuid.uuid4().hex[:12]}.{ext}"
-    )
+    return f"user_images/{sample.staff.pin}/face_samples/{sample.staff.pin}_fs_{uuid.uuid4().hex[:12]}.{ext}"
 
 
 class StaffFaceSample(models.Model):
@@ -505,12 +556,9 @@ class StaffFaceSample(models.Model):
     with_glasses = boolean_field(
         False,
         verbose_name="На кадре видны очки",
-        help_text="Включите, если в этот момент сотрудник в очках — так эталон "
-        "лучше совпадает с реальными проходами.",
+        help_text="Включите, если в этот момент сотрудник в очках — так эталон лучше совпадает с реальными проходами.",
     )
-    pad_status = models.CharField(
-        max_length=32, blank=True, default="", verbose_name="PAD статус"
-    )
+    pad_status = models.CharField(max_length=32, blank=True, default="", verbose_name="PAD статус")
     quality_passed = boolean_field(False, verbose_name="Качество пройдено")
     is_trusted = boolean_field(True, verbose_name="Доверенный")
     is_active = boolean_field(True, verbose_name="Активен", db_index=True)
@@ -539,12 +587,8 @@ class StaffFaceSample(models.Model):
 
 
 class StaffFaceMask(models.Model):
-    staff = models.OneToOneField(
-        Staff, on_delete=models.CASCADE, related_name="face_mask"
-    )
-    mask_encoding = models.JSONField(
-        verbose_name="Вектор лица", blank=False, null=False
-    )
+    staff = models.OneToOneField(Staff, on_delete=models.CASCADE, related_name="face_mask")
+    mask_encoding = models.JSONField(verbose_name="Вектор лица", blank=False, null=False)
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Дата обновления")
 
@@ -557,6 +601,10 @@ class StaffFaceMask(models.Model):
 
 
 class AbsentReason(models.Model):
+    if TYPE_CHECKING:
+        id: int
+
+        def get_reason_display(self) -> str: ...
 
     ABSENT_REASON_CHOICES = [
         ("business_trip", "Командировка"),
@@ -580,9 +628,7 @@ class AbsentReason(models.Model):
         upload_to="absence_documents/",
         null=True,
         blank=True,
-        validators=[
-            FileExtensionValidator(allowed_extensions=["pdf", "jpg", "jpeg", "png"])
-        ],
+        validators=[FileExtensionValidator(allowed_extensions=["pdf", "jpg", "jpeg", "png"])],
         verbose_name="Документ",
     )
 
@@ -620,17 +666,13 @@ class RemoteWork(models.Model):
     )
     start_date = models.DateField(verbose_name="Дата начала", null=True, blank=True)
     end_date = models.DateField(verbose_name="Дата окончания", null=True, blank=True)
-    permanent_remote = boolean_field(
-        False, verbose_name="Постоянная дистанционная работа"
-    )
+    permanent_remote = boolean_field(False, verbose_name="Постоянная дистанционная работа")
 
     def clean(self):
         if self.start_date and self.end_date and self.start_date > self.end_date:
             raise ValidationError("Дата начала не может быть больше даты окончания.")
         if self.permanent_remote and (self.start_date or self.end_date):
-            raise ValidationError(
-                "Постоянная дистанционная работа не требует указания дат."
-            )
+            raise ValidationError("Постоянная дистанционная работа не требует указания дат.")
 
     def __str__(self):
         return f"{self.staff} - {self.get_remote_status()}"
@@ -660,6 +702,10 @@ class StaffAttendance(models.Model):
     за рабочий день (date_at - 1). Пример: запись с date_at=28.02 содержит
     first_in/last_out за 27.02 (например 09:00 и 18:00 27.02).
     """
+
+    if TYPE_CHECKING:
+        id: int
+        staff_id: int
 
     staff = models.ForeignKey(
         Staff,
@@ -738,9 +784,7 @@ class StaffAttendance(models.Model):
             if (
                 self.first_in != orig.first_in or self.last_out != orig.last_out
             ) and "admin" in kwargs:
-                raise ValidationError(
-                    "Нельзя изменять поля first_in и last_out через админку."
-                )
+                raise ValidationError("Нельзя изменять поля first_in и last_out через админку.")
 
         super().save(*args, **kwargs)
 
@@ -767,6 +811,11 @@ class StaffAttendance(models.Model):
 
 
 class LessonAttendance(models.Model, GeoItem):
+    if TYPE_CHECKING:
+        id: int
+        staff_id: int
+        photo_manual_by_id: Optional[int]
+
     PHOTO_SPOOF_STATUS_PENDING = "pending"
     PHOTO_SPOOF_STATUS_CLEAN = "clean"
     PHOTO_SPOOF_STATUS_REVIEW = "review"
@@ -792,14 +841,7 @@ class LessonAttendance(models.Model, GeoItem):
     ]
     REPORT_FILTER_CACHE_VERSION = "lesson_day_ban_v1"
 
-    # For attendance reports we exclude only definitively rejected photos:
-    # - manual suspicious verdicts;
-    # - auto suspicious when no manual verdict yet.
-    # pending/review/error remain included to avoid false absences while
-    # staff are still waiting for manual confirmation.
-    PHOTO_SUSPICIOUS_FOR_REPORTS_Q = Q(
-        photo_manual_verdict=PHOTO_MANUAL_VERDICT_SUSPICIOUS
-    ) | (
+    PHOTO_SUSPICIOUS_FOR_REPORTS_Q = Q(photo_manual_verdict=PHOTO_MANUAL_VERDICT_SUSPICIOUS) | (
         Q(photo_manual_verdict=PHOTO_MANUAL_VERDICT_NONE)
         & Q(photo_spoof_status=PHOTO_SPOOF_STATUS_SUSPICIOUS)
     )
@@ -817,9 +859,7 @@ class LessonAttendance(models.Model, GeoItem):
         if queryset is None:
             queryset = cls.objects.all()
         return queryset.annotate(
-            _report_has_invalid_lesson_day=Exists(
-                cls.suspicious_for_reports_day_subquery()
-            )
+            _report_has_invalid_lesson_day=Exists(cls.suspicious_for_reports_day_subquery())
         ).filter(_report_has_invalid_lesson_day=False)
 
     staff = models.ForeignKey(
@@ -835,9 +875,7 @@ class LessonAttendance(models.Model, GeoItem):
     tutor_id = models.IntegerField(verbose_name="Id преподавателя")
     tutor = models.CharField(verbose_name="ФИО преподавателя", max_length=300)
     first_in = models.DateTimeField(verbose_name="Время начала занятия", null=False)
-    last_out = models.DateTimeField(
-        verbose_name="Время окончания занятия", null=True, blank=True
-    )
+    last_out = models.DateTimeField(verbose_name="Время окончания занятия", null=True, blank=True)
     latitude = models.FloatField(
         verbose_name="Широта",
         help_text="Примерные координаты в радиусе 300 метров",
@@ -947,9 +985,7 @@ class LessonAttendance(models.Model, GeoItem):
                 )
                 return f"{settings.MEDIA_URL.rstrip('/')}/{media_relative}"
             except (OSError, RuntimeError, ValueError):
-                media_tail = (
-                    str(path_value).replace("\\", "/").rsplit("media/", maxsplit=1)[-1]
-                )
+                media_tail = str(path_value).replace("\\", "/").rsplit("media/", maxsplit=1)[-1]
                 return f"{settings.MEDIA_URL.rstrip('/')}/{media_tail.lstrip('/')}"
         return "/static/media/images/no-avatar.png"
 
@@ -1027,11 +1063,7 @@ class LessonAttendance(models.Model, GeoItem):
 
         photo_path_changed = False
         if self.pk and not self._state.adding:
-            original = (
-                LessonAttendance.objects.filter(pk=self.pk)
-                .only("staff_image_path")
-                .first()
-            )
+            original = LessonAttendance.objects.filter(pk=self.pk).only("staff_image_path").first()
             photo_path_changed = bool(
                 original and original.staff_image_path != self.staff_image_path
             )
@@ -1085,9 +1117,10 @@ class LessonAttendance(models.Model, GeoItem):
 
 
 class ClassLocation(models.Model, GeoItem):
-    name = models.CharField(
-        max_length=255, verbose_name="Название учебного места", editable=True
-    )
+    if TYPE_CHECKING:
+        id: int
+
+    name = models.CharField(max_length=255, verbose_name="Название учебного места", editable=True)
     address = models.CharField(max_length=255, verbose_name="Адрес", editable=True)
     latitude = models.FloatField(
         verbose_name="Широта",
@@ -1108,9 +1141,7 @@ class ClassLocation(models.Model, GeoItem):
     created_at = models.DateTimeField(
         auto_now_add=True, verbose_name="Дата создания", editable=False
     )
-    updated_at = models.DateTimeField(
-        auto_now=True, verbose_name="Дата обновления", editable=False
-    )
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Дата обновления", editable=False)
 
     class Meta:
         verbose_name = "Локация для занятий"
@@ -1176,9 +1207,7 @@ class Salary(models.Model):
         verbose_name_plural = "Зарплаты"
 
     def clean(self):
-        total_rate = sum(
-            position.rate for position in Position.objects.filter(staff=self.staff)
-        )
+        total_rate = sum(position.rate for position in Position.objects.filter(staff=self.staff))
         if total_rate > 1.5:
             raise ValidationError(
                 "Суммарная ставка не может превышать 1.5. Пожалуйста, измените ставки должностей."
@@ -1190,9 +1219,7 @@ class Salary(models.Model):
 
     def calculate_salaries(self):
         self.clean()
-        total_rate = sum(
-            position.rate for position in Position.objects.filter(staff=self.staff)
-        )
+        total_rate = sum(position.rate for position in Position.objects.filter(staff=self.staff))
         self.total_salary = self.calculate_total_salary(self.net_salary, total_rate)
 
     def save(self, *args, **kwargs):
@@ -1238,6 +1265,9 @@ def update_salary_on_position_change(sender, instance, action, **kwargs):
 
 
 class PublicHoliday(models.Model):
+    if TYPE_CHECKING:
+        id: int
+
     date = models.DateField(unique=True, verbose_name="Дата праздника")
     name = models.CharField(max_length=255, verbose_name="Название праздника")
     is_working_day = boolean_field(False, verbose_name="Рабочий день")
@@ -1251,12 +1281,8 @@ class PublicHoliday(models.Model):
 
 
 class PerformanceBonusRule(models.Model):
-    min_days = models.PositiveIntegerField(
-        verbose_name="Минимальное количество рабочих дней"
-    )
-    max_days = models.PositiveIntegerField(
-        verbose_name="Максимальное количество рабочих дней"
-    )
+    min_days = models.PositiveIntegerField(verbose_name="Минимальное количество рабочих дней")
+    max_days = models.PositiveIntegerField(verbose_name="Максимальное количество рабочих дней")
     min_attendance_percent = models.DecimalField(
         max_digits=5, decimal_places=2, verbose_name="Минимальный процент посещаемости"
     )

@@ -102,11 +102,7 @@ def bump_suspicious_location_patterns_epoch() -> str:
 
 def _resolve_state_code(instance, *, created, update_fields):
     if created:
-        return (
-            STATE_PHOTO_ATTACHED
-            if instance.staff_image_path
-            else STATE_CREATED_NO_PHOTO
-        )
+        return STATE_PHOTO_ATTACHED if instance.staff_image_path else STATE_CREATED_NO_PHOTO
     if update_fields and "staff_image_path" in update_fields:
         return STATE_PHOTO_ATTACHED if instance.staff_image_path else STATE_UPDATED_META
     return STATE_UPDATED_META
@@ -187,7 +183,7 @@ def invalidate_attendance_cache(sender, instance, **kwargs):
             invalidate_staff_detail_for_pin(instance.staff.pin)
         logger.info(f"Invalidated attendance cache for work_day: {work_day_str}")
     dept_id = (
-        Staff.objects.filter(pk=instance.staff_id)
+        Staff.all_objects.filter(pk=instance.staff_id)
         .values_list("department_id", flat=True)
         .first()
     )
@@ -232,7 +228,7 @@ def invalidate_department_cache(sender, instance, **kwargs):
     dept_id = str(instance.id)
     invalidate_cache(f"department_summary_v2_{dept_id}")
     invalidate_cache(f"child_department_detail_v2_{dept_id}")
-    invalidate_staff_detail_for_department(int(instance.id))
+    invalidate_staff_detail_for_department(dept_id)
     invalidate_cache("parent_department_ids")
     invalidate_cache("root_departments_batch")
     invalidate_cache("department_hierarchy_lookups")
@@ -304,9 +300,7 @@ def invalidate_public_holiday_cache_impl():
     invalidate_cache("public_holidays_for_excel")
     try:
         list_data = list(
-            PublicHoliday.objects.order_by("date").values(
-                "id", "date", "name", "is_working_day"
-            )
+            PublicHoliday.objects.order_by("date").values("id", "date", "name", "is_working_day")
         )
         Cache.set(
             PUBLIC_HOLIDAY_LIST_CACHE_KEY,

@@ -57,6 +57,8 @@ export interface IChildDepartment {
   date_of_creation: string;
   parent: string | number;
   has_child_departments: boolean;
+  direct_staff_count?: number;
+  own_staff_only?: boolean;
 }
 
 export interface IBreadcrumbPathItem {
@@ -201,11 +203,7 @@ export interface PhotoData {
 }
 
 export type PhotoSpoofStatus =
-  | "pending"
-  | "clean"
-  | "review"
-  | "suspicious"
-  | "error";
+  "pending" | "clean" | "review" | "suspicious" | "error";
 
 export type PhotoManualVerdict = "none" | "clean" | "suspicious";
 

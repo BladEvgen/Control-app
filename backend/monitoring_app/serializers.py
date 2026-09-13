@@ -3,8 +3,9 @@ import logging
 from typing import Any
 
 from django.contrib.auth import get_user_model
-from monitoring_app import models
 from rest_framework import serializers
+
+from monitoring_app import models
 
 User = get_user_model()
 
@@ -17,9 +18,7 @@ class UserSerializer(serializers.ModelSerializer):
     last_login = serializers.SerializerMethodField()
 
     def get_date_joined(self, obj):
-        return (
-            obj.date_joined.strftime("%Y-%m-%d %H:%M:%S") if obj.date_joined else None
-        )
+        return obj.date_joined.strftime("%Y-%m-%d %H:%M:%S") if obj.date_joined else None
 
     def get_last_login(self, obj):
         return obj.last_login.strftime("%Y-%m-%d %H:%M:%S") if obj.last_login else None
@@ -66,9 +65,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "last_name": user_obj.last_name,
             "date_joined": user_obj.date_joined.strftime("%Y-%m-%d %H:%M:%S"),
             "last_login": (
-                user_obj.last_login.strftime("%Y-%m-%d %H:%M:%S")
-                if user_obj.last_login
-                else None
+                user_obj.last_login.strftime("%Y-%m-%d %H:%M:%S") if user_obj.last_login else None
             ),
             "is_superuser": user_obj.is_superuser,
             "is_staff": user_obj.is_staff,
@@ -114,15 +111,14 @@ class ParentDepartmentSerializer(serializers.ModelSerializer):
             child_departments = models.ChildDepartment.objects.all()
             return ChildDepartmentSerializer(child_departments, many=True).data
         else:
-            child_departments = models.ChildDepartment.objects.filter(
-                parent=parent_department
-            )
+            child_departments = models.ChildDepartment.objects.filter(parent=parent_department)
             return ChildDepartmentSerializer(child_departments, many=True).data
 
 
 class ChildDepartmentSerializer(serializers.ModelSerializer):
     child_id = serializers.CharField(source="id")
     has_child_departments = serializers.SerializerMethodField()
+    direct_staff_count = serializers.SerializerMethodField()
 
     class Meta:
         model = models.ChildDepartment
@@ -132,10 +128,22 @@ class ChildDepartmentSerializer(serializers.ModelSerializer):
             "date_of_creation",
             "parent",
             "has_child_departments",
+            "direct_staff_count",
         ]
 
-    def get_has_child_departments(self, obj):
+    def get_has_child_departments(self, obj) -> bool:
+        child_count = getattr(obj, "annotated_child_count", None)
+        if child_count is not None:
+            return child_count > 0
         return models.ChildDepartment.objects.filter(parent=obj).exists()
+
+    def get_direct_staff_count(self, obj) -> int:
+        """Сотрудники, привязанные к самому отделу, без вложенных.
+        """
+        staff_count = getattr(obj, "annotated_direct_staff", None)
+        if staff_count is not None:
+            return staff_count
+        return models.Staff.objects.filter(department=obj).count()
 
 
 class StaffSerializer(serializers.ModelSerializer):
@@ -184,7 +192,9 @@ class StaffAttendanceDetailSerializer(serializers.Serializer):
             department_id = obj.staff.department_id
 
         staff_attendance = (
-            models.StaffAttendance.objects.filter(staff__department_id=department_id)
+            models.StaffAttendance.objects.filter(
+                staff__department_id=department_id, staff__archived_at__isnull=True
+            )
             .select_related("staff")
             .only(
                 "id",
@@ -259,9 +269,7 @@ class StaffAttendanceByDateSerializer(serializers.Serializer):
 
 
 class AbsentReasonSerializer(serializers.ModelSerializer):
-    staff = serializers.SlugRelatedField(
-        queryset=models.Staff.objects.all(), slug_field="pin"
-    )
+    staff = serializers.SlugRelatedField(queryset=models.Staff.objects.all(), slug_field="pin")
     reason = serializers.ChoiceField(choices=models.AbsentReason.ABSENT_REASON_CHOICES)
 
     class Meta:

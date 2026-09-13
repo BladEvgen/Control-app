@@ -1,6 +1,7 @@
 import logging
 import re
-from asyncio import gather, run as asyncio_run
+from asyncio import gather
+from asyncio import run as asyncio_run
 from contextlib import AbstractContextManager
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple, cast
 
@@ -40,7 +41,6 @@ def is_excluded_staff(name: str, surname: str) -> bool:
     if full and EXCLUDED_FIO_PATTERN.match(full):
         return True
     return False
-
 
 
 _FETCH_BATCH_SIZE = 80
@@ -122,10 +122,7 @@ async def _fetch_persons_by_pins_async(
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         for chunk in _chunked(pins, batch_size):
-            tasks = [
-                _fetch_one_person(session, base_url, api_key, pin)
-                for pin in chunk
-            ]
+            tasks = [_fetch_one_person(session, base_url, api_key, pin) for pin in chunk]
             results = await gather(*tasks, return_exceptions=True)
             for pin, res in zip(chunk, results):
                 if isinstance(res, Exception):
@@ -163,9 +160,7 @@ def fetch_persons_by_pins(
         return [], set(), None
     try:
         persons, pins_404 = asyncio_run(
-            _fetch_persons_by_pins_async(
-                pins, base_url, api_key, batch_size=batch_size
-            )
+            _fetch_persons_by_pins_async(pins, base_url, api_key, batch_size=batch_size)
         )
     except Exception as e:
         logger.exception("Загрузка персон по pin: %s", e)
@@ -217,10 +212,7 @@ def _bulk_create_staff(
             dept_codes.add(str(person["deptCode"]).strip())
     dept_map: Dict[str, models.ChildDepartment] = {}
     if dept_codes:
-        dept_map = {
-            d.id: d
-            for d in models.ChildDepartment.objects.filter(id__in=dept_codes)
-        }
+        dept_map = {d.id: d for d in models.ChildDepartment.objects.filter(id__in=dept_codes)}
     staff_list: List[models.Staff] = []
     for pin in to_add_pins:
         person = external_by_pin.get(pin)
@@ -246,10 +238,7 @@ def _bulk_create_staff(
         created = models.Staff.objects.bulk_create(staff_list)
         through_model = models.Staff.positions.through
         through_model.objects.bulk_create(
-            [
-                through_model(staff_id=s.pk, position_id=position.pk)
-                for s in created
-            ]
+            [through_model(staff_id=s.pk, position_id=position.pk) for s in created]
         )
         result["created"] = len(created)
         logger.info("Staff sync: bulk created %s staff", len(created))

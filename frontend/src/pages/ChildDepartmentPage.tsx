@@ -8,7 +8,7 @@ import {
   lazy,
   Suspense,
 } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
 import { IChildDepartmentData } from "../schemas/IData";
@@ -49,6 +49,8 @@ class BaseAction<T> {
 
 const ChildDepartmentPage = () => {
   const { id } = useParams<{ id: string }>();
+  const directOnly =
+    new URLSearchParams(useLocation().search).get("direct") === "1";
   const [data, setData] = useState<IChildDepartmentData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +95,7 @@ const ChildDepartmentPage = () => {
     const fetchData = async (forceRefresh = false) => {
       if (!id) return;
 
-      const cacheKey = `child_department_${id}`;
+      const cacheKey = `child_department_${id}${directOnly ? "_direct" : ""}`;
       if (!forceRefresh) {
         const cachedData = cacheManager.get<IChildDepartmentData>(cacheKey);
         if (cachedData) {
@@ -107,7 +109,7 @@ const ChildDepartmentPage = () => {
       dispatch(new BaseAction(BaseAction.SET_LOADING, true));
       try {
         const res = await axiosInstance.get(
-          `${apiUrl}/api/child_department/${id}/`,
+          `${apiUrl}/api/child_department/${id}/${directOnly ? "?direct=1" : ""}`,
         );
         cacheManager.set(cacheKey, res.data);
         dispatch(new BaseAction(BaseAction.SET_DATA, res.data));
@@ -122,7 +124,7 @@ const ChildDepartmentPage = () => {
       }
     };
     if (id) fetchData();
-  }, [id]);
+  }, [id, directOnly]);
 
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newStartDate = e.target.value;

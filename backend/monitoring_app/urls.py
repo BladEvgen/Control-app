@@ -1,5 +1,6 @@
 from django.urls import path, re_path
 from django.views.generic import RedirectView
+
 from monitoring_app import custom_jwt, face_lab_tts, views
 from monitoring_app.swagger import urlpatterns as doc_urls
 from monitoring_app.swagger_views import swagger_session_login, swagger_session_logout
@@ -14,6 +15,11 @@ urlpatterns = [
     path("login_view/", views.login_view, name="login_view"),
     path("logout/", views.logout_view, name="logout"),
     path("upload/", views.UploadFileView.as_view(), name="uploadFile"),
+    path(
+        "upload/status/<str:task_id>/",
+        views.upload_task_status,
+        name="upload-task-status",
+    ),
     path("fetcher/", views.fetch_data_view, name="fetcher"),
     path("api/app-version/", views.app_version, name="app-version"),
     path(
@@ -199,9 +205,7 @@ urlpatterns = [
     ),
     path("verify-face/", views.verify_face, name="verify-face"),
     path("recognize-faces/", views.recognize_faces, name="recognize-faces"),
-    path(
-        "download/examples/", views.download_examples_zip, name="download_examples_zip"
-    ),
+    path("download/examples/", views.download_examples_zip, name="download_examples_zip"),
     path(
         "attendance_media/<path:path>",
         views.serve_attendance_media,

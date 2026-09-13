@@ -18,14 +18,14 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, List, Optional, Tuple, cast
 
-import monitoring_app.tasks as tasks
 from celery.result import AsyncResult
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import authenticate, get_user_model, login, logout
+from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.cache import cache
 from django.core.files.base import ContentFile
-from django.db import IntegrityError, connection, transaction
+from django.db import connection, transaction
 from django.db.models import Count, Prefetch, Q
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -37,6 +37,20 @@ from django.views.generic import View
 from drf_yasg import openapi
 from drf_yasg.inspectors import SwaggerAutoSchema
 from drf_yasg.utils import merge_params, no_body, swagger_auto_schema
+from rest_framework import status
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+)
+from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.authentication import JWTAuthentication
+
+import monitoring_app.tasks as tasks
 from monitoring_app import (
     async_logic,
     attendance_fetcher,
@@ -76,19 +90,6 @@ from monitoring_app.signals import (
     invalidate_class_location_cache_impl,
     invalidate_public_holiday_cache_impl,
 )
-from openpyxl import load_workbook
-from rest_framework import status
-from rest_framework.decorators import (
-    api_view,
-    authentication_classes,
-    permission_classes,
-)
-from rest_framework.exceptions import ValidationError
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.views import APIView
-from rest_framework_simplejwt.authentication import JWTAuthentication
 
 
 def _db_atomic() -> AbstractContextManager[None]:
@@ -172,9 +173,7 @@ def _verify_attendance_write_signature(
         return None, _attendance_write_auth_failed()
 
     try:
-        ttl_seconds = max(
-            1, int(getattr(settings, "ATTENDANCE_WRITE_HMAC_TTL_SECONDS", 300))
-        )
+        ttl_seconds = max(1, int(getattr(settings, "ATTENDANCE_WRITE_HMAC_TTL_SECONDS", 300)))
     except (TypeError, ValueError):
         ttl_seconds = 300
     if abs(int(time.time()) - request_timestamp) > ttl_seconds:
@@ -298,14 +297,10 @@ class FormOnlySwaggerAutoSchema(SwaggerAutoSchema):
     """
 
     def add_manual_parameters(self, parameters):
-        manual = _get_manual_parameters_for_inspector(
-            self.view, self.method, self.overrides
-        )
+        manual = _get_manual_parameters_for_inspector(self.view, self.method, self.overrides)
         has_form = any(getattr(p, "in_", None) == openapi.IN_FORM for p in manual)
         if has_form:
-            parameters = [
-                p for p in parameters if getattr(p, "in_", None) != openapi.IN_BODY
-            ]
+            parameters = [p for p in parameters if getattr(p, "in_", None) != openapi.IN_BODY]
             return merge_params(parameters, manual)
         return super().add_manual_parameters(parameters)
 
@@ -346,12 +341,10 @@ SUSPICIOUS_LOCATION_PERSON_REPEAT_MIN_ACTIVE_DAYS = 7
 SUSPICIOUS_LOCATION_PERSON_REPEAT_MIN_PCT = 0.70
 SUSPICIOUS_LOCATION_REASON_LEGEND = {
     "shared_point": (
-        "В эту дату несколько людей переиспользовали одну и ту же "
-        "микроточку или микрозону."
+        "В эту дату несколько людей переиспользовали одну и ту же " "микроточку или микрозону."
     ),
     "person_repeat": (
-        "Один и тот же человек слишком стабильно повторяет одну и ту же "
-        "микрозону по дням."
+        "Один и тот же человек слишком стабильно повторяет одну и ту же " "микрозону по дням."
     ),
     "multi_day_pattern": "Такой же паттерн повторялся в несколько разных дней.",
 }
@@ -401,6 +394,7 @@ def _parse_query_bool(raw_value: Optional[str]) -> bool:
 def _invalidate_staff_face_caches(staff_pin: str) -> None:
     """Invalidate staff row cache, all staff-detail date windows, Face Lab options."""
     from monitoring_app import ml
+
     pin = (staff_pin or "").strip()
     if not pin:
         return
@@ -456,8 +450,7 @@ def _build_department_confirmation_cache_key(
     pins_hash = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()
     if use_range:
         return (
-            f"department_confirmation_pins_{pins_hash}_{date_from_str}_"
-            f"{date_to_str}_{suffix}"
+            f"department_confirmation_pins_{pins_hash}_{date_from_str}_" f"{date_to_str}_{suffix}"
         )
     return f"department_confirmation_pins_{pins_hash}_{date_str}_{suffix}"
 
@@ -560,8 +553,7 @@ def get_class_location_cache():
     """
     now = timezone.now()
     cache_expired = (
-        CLASS_LOCATION_CACHE["expires_at"] is None
-        or CLASS_LOCATION_CACHE["expires_at"] <= now
+        CLASS_LOCATION_CACHE["expires_at"] is None or CLASS_LOCATION_CACHE["expires_at"] <= now
     )
 
     if cache_expired:
@@ -603,23 +595,17 @@ def get_class_location_cache():
                     logger.warning(f"LocationSearcher initialization failed: {exc}")
 
             locs_with_coords = [
-                loc
-                for loc in locations
-                if loc.latitude is not None and loc.longitude is not None
+                loc for loc in locations if loc.latitude is not None and loc.longitude is not None
             ]
-            location_acceptance_radius_m = Cache.get(
-                CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY
-            )
+            location_acceptance_radius_m = Cache.get(CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY)
             if location_acceptance_radius_m is None:
-                location_acceptance_radius_m = (
-                    utils.compute_class_location_acceptance_radii(
-                        locs_with_coords,
-                        r_same_point=ACCEPTANCE_R_SAME_POINT,
-                        r_cluster=ACCEPTANCE_R_CLUSTER,
-                        r_standalone=ACCEPTANCE_R_STANDALONE,
-                        same_point_threshold=SAME_POINT_THRESHOLD_M,
-                        cluster_threshold=CLUSTER_THRESHOLD_M,
-                    )
+                location_acceptance_radius_m = utils.compute_class_location_acceptance_radii(
+                    locs_with_coords,
+                    r_same_point=ACCEPTANCE_R_SAME_POINT,
+                    r_cluster=ACCEPTANCE_R_CLUSTER,
+                    r_standalone=ACCEPTANCE_R_STANDALONE,
+                    same_point_threshold=SAME_POINT_THRESHOLD_M,
+                    cluster_threshold=CLUSTER_THRESHOLD_M,
                 )
                 Cache.set(
                     CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
@@ -788,12 +774,8 @@ def _cluster_geo_items(
                 item.get(sort_id_key, 0),
             )
         )
-        center_lat = sum(float(item[lat_key]) for item in group_items) / len(
-            group_items
-        )
-        center_lon = sum(float(item[lon_key]) for item in group_items) / len(
-            group_items
-        )
+        center_lat = sum(float(item[lat_key]) for item in group_items) / len(group_items)
+        center_lon = sum(float(item[lon_key]) for item in group_items) / len(group_items)
         clusters.append(
             {
                 "items": group_items,
@@ -910,9 +892,7 @@ def _build_day_anchor(records: list[dict[str, Any]]) -> Optional[dict[str, Any]]
     )[0][0]
     exact_latitude, exact_longitude = map(float, dominant_signature.split("|"))
 
-    attendance_ids = sorted(
-        {int(item["record"]["id"]) for item in dominant_cluster["items"]}
-    )
+    attendance_ids = sorted({int(item["record"]["id"]) for item in dominant_cluster["items"]})
     first_in = dominant_cluster["items"][0]["record"].get("first_in")
     base_record = dominant_cluster["items"][0]["record"]
     return {
@@ -941,9 +921,7 @@ def _build_person_repeat_profile(
             "lat": float(anchor["center_lat"]),
             "lon": float(anchor["center_lon"]),
             "sort_time": anchor["date"],
-            "sort_id": (
-                int(anchor["attendance_ids"][0]) if anchor["attendance_ids"] else 0
-            ),
+            "sort_id": (int(anchor["attendance_ids"][0]) if anchor["attendance_ids"] else 0),
             "anchor": anchor,
         }
         for anchor in anchors
@@ -952,9 +930,7 @@ def _build_person_repeat_profile(
         repeat_items,
         SUSPICIOUS_LOCATION_PERSON_REPEAT_RADIUS_M,
     )[0]
-    repeat_dates = sorted(
-        {item["anchor"]["date"].isoformat() for item in repeat_cluster["items"]}
-    )
+    repeat_dates = sorted({item["anchor"]["date"].isoformat() for item in repeat_cluster["items"]})
     attendance_ids = sorted(
         {
             attendance_id
@@ -1006,13 +982,9 @@ def _build_suspicious_location_patterns_cache_key(
     if staff_pins:
         normalized_pins = sorted({pin for pin in staff_pins if pin})
         pins_hash = hashlib.sha1(",".join(normalized_pins).encode("utf-8")).hexdigest()
-        return (
-            "suspicious_location_patterns_"
-            f"pins_{pins_hash}_{int(include_medium)}_{suffix}"
-        )
+        return "suspicious_location_patterns_" f"pins_{pins_hash}_{int(include_medium)}_{suffix}"
     return (
-        "suspicious_location_patterns_"
-        f"dept_{child_department_id}_{int(include_medium)}_{suffix}"
+        "suspicious_location_patterns_" f"dept_{child_department_id}_{int(include_medium)}_{suffix}"
     )
 
 
@@ -1185,9 +1157,7 @@ def _merge_attendance_for_date(sa_records, la_records, kd_tree, class_names):
         if fi is not None and lo is not None and lo > fi:
             intervals.append((fi, lo))
     total_effective = utils.merge_work_intervals_to_total_seconds(intervals)
-    combined["effective_work_seconds"] = (
-        total_effective if total_effective > 0 else None
-    )
+    combined["effective_work_seconds"] = total_effective if total_effective > 0 else None
     if (
         combined["first_in_source"] != "staff_attendance"
         or combined["last_out_source"] != "staff_attendance"
@@ -1372,25 +1342,17 @@ class StaffAttendanceStatsView(APIView):
                     properties={
                         "department_name": openapi.Schema(type=openapi.TYPE_STRING),
                         "total_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "present_staff_count": openapi.Schema(
-                            type=openapi.TYPE_INTEGER
-                        ),
+                        "present_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
                         "absent_staff_count": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "present_between_9_to_18": openapi.Schema(
-                            type=openapi.TYPE_INTEGER
-                        ),
+                        "present_between_9_to_18": openapi.Schema(type=openapi.TYPE_INTEGER),
                         "present_data": openapi.Schema(
                             type=openapi.TYPE_ARRAY,
                             items=openapi.Schema(
                                 type=openapi.TYPE_OBJECT,
                                 properties={
-                                    "staff_pin": openapi.Schema(
-                                        type=openapi.TYPE_STRING
-                                    ),
+                                    "staff_pin": openapi.Schema(type=openapi.TYPE_STRING),
                                     "name": openapi.Schema(type=openapi.TYPE_STRING),
-                                    "minutes_present": openapi.Schema(
-                                        type=openapi.TYPE_NUMBER
-                                    ),
+                                    "minutes_present": openapi.Schema(type=openapi.TYPE_NUMBER),
                                     "individual_percentage": openapi.Schema(
                                         type=openapi.TYPE_NUMBER
                                     ),
@@ -1439,9 +1401,7 @@ class StaffAttendanceStatsView(APIView):
     def get(self, request):
         logger.info("Received request for staff attendance stats.")
 
-        date_param = request.query_params.get(
-            "date", timezone.now().date().strftime("%Y-%m-%d")
-        )
+        date_param = request.query_params.get("date", timezone.now().date().strftime("%Y-%m-%d"))
         date_param = datetime.datetime.strptime(date_param, "%Y-%m-%d").date()
         pin_param = request.query_params.get("pin", None)
 
@@ -1470,9 +1430,7 @@ class StaffAttendanceStatsView(APIView):
 
         except Exception as e:
             logger.error(f"Error while processing request: {str(e)}")
-            return Response(
-                {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def get_last_working_day(self, date: datetime.date) -> datetime.date:
         """
@@ -1494,13 +1452,9 @@ class StaffAttendanceStatsView(APIView):
             )
             or []
         )
-        holiday_dates = {
-            holiday.date: holiday.is_working_day for holiday in holidays if holiday
-        }
+        holiday_dates = {holiday.date: holiday.is_working_day for holiday in holidays if holiday}
 
-        while date.weekday() >= 5 or (
-            date in holiday_dates and not holiday_dates[date]
-        ):
+        while date.weekday() >= 5 or (date in holiday_dates and not holiday_dates[date]):
             logger.debug(f"{date} is not a working day, moving to previous day.")
             date -= datetime.timedelta(days=1)
 
@@ -1524,22 +1478,16 @@ class StaffAttendanceStatsView(APIView):
         Returns:
             dict: Данные о сотрудниках, их посещаемости и статистике.
         """
-        logger.info(
-            f"Querying data for target_date: {target_date}, pin_param: {pin_param}"
-        )
+        logger.info(f"Querying data for target_date: {target_date}, pin_param: {pin_param}")
 
         department_name = "Unknown Department"
         staff_queryset = None
 
         parent_department = (
-            models.ParentDepartment.objects.filter(id=pin_param)
-            .only("id", "name")
-            .first()
+            models.ParentDepartment.objects.filter(id=pin_param).only("id", "name").first()
         )
         child_department = (
-            models.ChildDepartment.objects.filter(id=pin_param)
-            .only("id", "name")
-            .first()
+            models.ChildDepartment.objects.filter(id=pin_param).only("id", "name").first()
         )
 
         match (parent_department, child_department):
@@ -1555,9 +1503,9 @@ class StaffAttendanceStatsView(APIView):
                     department_name,
                 )
             case (None, child) if child:
-                staff_queryset = models.Staff.objects.filter(
-                    department=child
-                ).select_related("department")
+                staff_queryset = models.Staff.objects.filter(department=child).select_related(
+                    "department"
+                )
                 department_name = child.name
                 logger.info(
                     "StaffAttendanceStatsView: pin_param=%s → ChildDepartment id=%s, name=%s",
@@ -1633,9 +1581,7 @@ class StaffAttendanceStatsView(APIView):
             )
         )
         present_staff_records = list(staff_attendance_queryset)
-        attendance_by_pin = {
-            record.staff.pin: record for record in present_staff_records
-        }
+        attendance_by_pin = {record.staff.pin: record for record in present_staff_records}
 
         lesson_staff_ids = set(
             models.LessonAttendance.exclude_report_invalid_days(
@@ -1691,9 +1637,7 @@ class StaffAttendanceStatsView(APIView):
         )
         absent_staff_count = total_staff_count - len(present_data)
 
-        present_from_sa = sum(
-            1 for p in present_data if attendance_by_pin.get(p["staff_pin"])
-        )
+        present_from_sa = sum(1 for p in present_data if attendance_by_pin.get(p["staff_pin"]))
         present_from_la_only = len(present_data) - present_from_sa
         logger.info(
             "StaffAttendanceStatsView: present_data=%s (from SA=%s, from LA only=%s), absent_data=%s, department=%s",
@@ -1887,9 +1831,7 @@ def map_location(request):
 
         logger.info(f"Using date: {date_at}")
 
-        cache_key = (
-            f"map_location_{LESSON_REPORT_CACHE_VERSION}_{date_at}_{employees_required}"
-        )
+        cache_key = f"map_location_{LESSON_REPORT_CACHE_VERSION}_{date_at}_{employees_required}"
 
         def generate_map_data():
             locations = models.ClassLocation.objects.only(
@@ -1976,15 +1918,11 @@ def _build_one_day_confirmation(
         location_searcher = location_cache.get("searcher")
         if location_searcher is None and location_cache.get("searcher_payload"):
             try:
-                location_searcher = utils.LocationSearcher(
-                    location_cache["searcher_payload"]
-                )
+                location_searcher = utils.LocationSearcher(location_cache["searcher_payload"])
             except Exception:
                 location_searcher = None
         class_locations = list(
-            models.ClassLocation.objects.only("name", "address").values(
-                "name", "address"
-            )
+            models.ClassLocation.objects.only("name", "address").values("name", "address")
         )
         name_to_address = {loc["name"]: loc["address"] for loc in class_locations}
         address_to_name = {loc["address"]: loc["name"] for loc in class_locations}
@@ -2030,9 +1968,7 @@ def _build_one_day_confirmation(
     data_available = bool(staff_to_location) or bool(la_records)
     if not data_available:
         data_available = (
-            models.StaffAttendance.objects.filter(date_at=data_insert_date)
-            .only("id")
-            .exists()
+            models.StaffAttendance.objects.filter(date_at=data_insert_date).only("id").exists()
         )
 
     total_with_attendance = sum(len(pins) for _, pins in location_counts.items())
@@ -2046,19 +1982,13 @@ def _build_one_day_confirmation(
     confirmable_main_address = (
         main_address
         if main_address
-        and is_main_location_confirmable(
-            first_count, total_group, total_with_attendance
-        )
+        and is_main_location_confirmable(first_count, total_group, total_with_attendance)
         else None
     )
 
     locations_payload = []
     for addr, pins in locations_sorted:
-        pct = (
-            round(100.0 * len(pins) / total_with_attendance, 2)
-            if total_with_attendance
-            else 0
-        )
+        pct = round(100.0 * len(pins) / total_with_attendance, 2) if total_with_attendance else 0
         pins_short = [utils.pin_to_external_format(p) for p in pins]
         locations_payload.append(
             {
@@ -2088,9 +2018,7 @@ def _build_one_day_confirmation(
                 confirmed = False
 
         fi = staff_first_in.get(s.id)
-        first_in_iso = (
-            fi.astimezone(timezone.get_current_timezone()).isoformat() if fi else None
-        )
+        first_in_iso = fi.astimezone(timezone.get_current_timezone()).isoformat() if fi else None
         pin_short = utils.pin_to_external_format(s.pin)
         location_name = (address_to_name.get(addr) or addr) if addr else None
         by_pin_short[pin_short] = {
@@ -2188,9 +2116,7 @@ def _build_one_day_from_records(
     if dates_with_any_sa is not None:
         data_insert_date = target_date + datetime.timedelta(days=1)
         data_available = (
-            bool(staff_to_location)
-            or bool(la_records)
-            or (data_insert_date in dates_with_any_sa)
+            bool(staff_to_location) or bool(la_records) or (data_insert_date in dates_with_any_sa)
         )
     elif data_available is None:
         data_available = False
@@ -2206,19 +2132,13 @@ def _build_one_day_from_records(
     confirmable_main_address = (
         main_address
         if main_address
-        and is_main_location_confirmable(
-            first_count, total_group, total_with_attendance
-        )
+        and is_main_location_confirmable(first_count, total_group, total_with_attendance)
         else None
     )
 
     locations_payload = []
     for addr, pins in locations_sorted:
-        pct = (
-            round(100.0 * len(pins) / total_with_attendance, 2)
-            if total_with_attendance
-            else 0
-        )
+        pct = round(100.0 * len(pins) / total_with_attendance, 2) if total_with_attendance else 0
         pins_short = [utils.pin_to_external_format(p) for p in pins]
         locations_payload.append(
             {
@@ -2248,9 +2168,7 @@ def _build_one_day_from_records(
                 confirmed = False
 
         fi = staff_first_in.get(s.id)
-        first_in_iso = (
-            fi.astimezone(timezone.get_current_timezone()).isoformat() if fi else None
-        )
+        first_in_iso = fi.astimezone(timezone.get_current_timezone()).isoformat() if fi else None
         pin_short = utils.pin_to_external_format(s.pin)
         location_name = (address_to_name.get(addr) or addr) if addr else None
         by_pin_short[pin_short] = {
@@ -2481,9 +2399,7 @@ def department_attendance_confirmation(request):
 
     if use_staff_pins_mode:
         staff_list = list(
-            models.Staff.objects.filter(pin__in=staff_pins).only(
-                "id", "pin", "name", "surname"
-            )
+            models.Staff.objects.filter(pin__in=staff_pins).only("id", "pin", "name", "surname")
         )
     else:
         staff_list = list(
@@ -2536,15 +2452,11 @@ def department_attendance_confirmation(request):
         location_searcher = location_cache.get("searcher")
         if location_searcher is None and location_cache.get("searcher_payload"):
             try:
-                location_searcher = utils.LocationSearcher(
-                    location_cache["searcher_payload"]
-                )
+                location_searcher = utils.LocationSearcher(location_cache["searcher_payload"])
             except Exception:
                 location_searcher = None
         class_locations = list(
-            models.ClassLocation.objects.only("name", "address").values(
-                "name", "address"
-            )
+            models.ClassLocation.objects.only("name", "address").values("name", "address")
         )
         name_to_address = {loc["name"]: loc["address"] for loc in class_locations}
         address_to_name = {loc["address"]: loc["name"] for loc in class_locations}
@@ -2611,8 +2523,7 @@ def department_attendance_confirmation(request):
             "staff_pins",
             openapi.IN_QUERY,
             description=(
-                "CSV список PIN. Поддерживает short-формат (25812) и wrapped "
-                "формат (S25812S)."
+                "CSV список PIN. Поддерживает short-формат (25812) и wrapped " "формат (S25812S)."
             ),
             type=openapi.TYPE_STRING,
             required=False,
@@ -2679,13 +2590,9 @@ def department_attendance_confirmation(request):
 def suspicious_location_patterns(request):
     date_from_str = str(request.query_params.get("date_from") or "").strip()
     date_to_str = str(request.query_params.get("date_to") or "").strip()
-    child_department_id = str(
-        request.query_params.get("child_department_id") or ""
-    ).strip()
+    child_department_id = str(request.query_params.get("child_department_id") or "").strip()
     query_staff_pins = _parse_staff_pins_csv(request.query_params.get("staff_pins"))
-    header_staff_pins = _parse_staff_pins_header(
-        request.headers.get(STAFF_PINS_HEADER_NAME)
-    )
+    header_staff_pins = _parse_staff_pins_header(request.headers.get(STAFF_PINS_HEADER_NAME))
     staff_pins = query_staff_pins or header_staff_pins
     include_medium = _parse_query_bool(request.query_params.get("include_medium"))
 
@@ -2720,9 +2627,7 @@ def suspicious_location_patterns(request):
             .order_by("pin")
         )
     else:
-        department = models.ChildDepartment.objects.filter(
-            id=child_department_id
-        ).first()
+        department = models.ChildDepartment.objects.filter(id=child_department_id).first()
         if department is None:
             return Response(
                 {"error": f"ChildDepartment {child_department_id} not found"},
@@ -2790,8 +2695,8 @@ def suspicious_location_patterns(request):
         .order_by("date_at", "staff_id", "first_in", "id")
     )
 
-    lesson_rows_by_staff_day: dict[tuple[int, datetime.date], list[dict[str, Any]]] = (
-        defaultdict(list)
+    lesson_rows_by_staff_day: dict[tuple[int, datetime.date], list[dict[str, Any]]] = defaultdict(
+        list
     )
     for row in lesson_rows:
         lesson_rows_by_staff_day[(int(row["staff_id"]), row["date_at"])].append(row)
@@ -2875,9 +2780,7 @@ def suspicious_location_patterns(request):
                 "lat": float(anchor["center_lat"]),
                 "lon": float(anchor["center_lon"]),
                 "sort_time": day,
-                "sort_id": (
-                    anchor["attendance_ids"][0] if anchor["attendance_ids"] else 0
-                ),
+                "sort_id": (anchor["attendance_ids"][0] if anchor["attendance_ids"] else 0),
                 "anchor": anchor,
             }
             for anchor in day_anchors
@@ -2887,9 +2790,7 @@ def suspicious_location_patterns(request):
             SUSPICIOUS_LOCATION_GROUP_CLUSTER_RADIUS_M,
         ):
             cluster_anchors = [item["anchor"] for item in near_cluster["items"]]
-            distinct_staff_count = len(
-                {anchor["staff_id"] for anchor in cluster_anchors}
-            )
+            distinct_staff_count = len({anchor["staff_id"] for anchor in cluster_anchors})
             share = distinct_staff_count / total_with_attendance
             if distinct_staff_count < min_group_count or share < min_group_share:
                 continue
@@ -3019,9 +2920,7 @@ def suspicious_location_patterns(request):
         for signal in pattern["signals"]:
             date_value = str(signal["date"])
             for staff_id in signal["staff_ids"]:
-                dates_for_staff = sorted(
-                    pattern["staff_dates"].get(int(staff_id), set())
-                )
+                dates_for_staff = sorted(pattern["staff_dates"].get(int(staff_id), set()))
                 group_days = len(dates_for_staff)
                 severity = "critical" if group_days >= 2 else "high"
                 reason_codes = {"shared_point"}
@@ -3037,9 +2936,7 @@ def suspicious_location_patterns(request):
                         "dates": [date_value],
                         "lat": round(float(signal["center_lat"]), 7),
                         "lon": round(float(signal["center_lon"]), 7),
-                        "location_name": signal["location_context"].get(
-                            "location_name"
-                        ),
+                        "location_name": signal["location_context"].get("location_name"),
                         "reason": _sort_reason_codes(reason_codes),
                     }
                 )
@@ -3048,9 +2945,7 @@ def suspicious_location_patterns(request):
         for signal in pattern["signals"]:
             date_value = str(signal["date"])
             for staff_id in signal["staff_ids"]:
-                dates_for_staff = sorted(
-                    pattern["staff_dates"].get(int(staff_id), set())
-                )
+                dates_for_staff = sorted(pattern["staff_dates"].get(int(staff_id), set()))
                 group_days = len(dates_for_staff)
                 severity = "critical" if group_days >= 2 else "high"
                 reason_codes = {"shared_point"}
@@ -3066,9 +2961,7 @@ def suspicious_location_patterns(request):
                         "dates": [date_value],
                         "lat": round(float(signal["center_lat"]), 7),
                         "lon": round(float(signal["center_lon"]), 7),
-                        "location_name": signal["location_context"].get(
-                            "location_name"
-                        ),
+                        "location_name": signal["location_context"].get("location_name"),
                         "reason": _sort_reason_codes(reason_codes),
                     }
                 )
@@ -3120,9 +3013,7 @@ def suspicious_location_patterns(request):
     user_groups: dict[str, dict[str, Any]] = {}
     highest_severity_by_pin: dict[str, int] = {}
 
-    for (staff_id, date_value), selected in sorted(
-        best_candidates_by_staff_date.items()
-    ):
+    for (staff_id, date_value), selected in sorted(best_candidates_by_staff_date.items()):
         candidate = selected["candidate"]
         staff = staff_by_id[staff_id]
         pin_short = utils.pin_to_external_format(staff.pin)
@@ -3161,9 +3052,7 @@ def suspicious_location_patterns(request):
             },
         )
         user_payload["datesByDate"][date_value] = user_date_entry
-        if severity_rank[candidate["severity"]] >= highest_severity_by_pin.get(
-            pin_short, 0
-        ):
+        if severity_rank[candidate["severity"]] >= highest_severity_by_pin.get(pin_short, 0):
             highest_severity_by_pin[pin_short] = severity_rank[candidate["severity"]]
             user_payload["highestSeverity"] = candidate["severity"]
 
@@ -3817,9 +3706,7 @@ def class_location_list_create(request):
             "address": openapi.Schema(type=openapi.TYPE_STRING),
             "latitude": openapi.Schema(type=openapi.TYPE_NUMBER),
             "longitude": openapi.Schema(type=openapi.TYPE_NUMBER),
-            "acceptance_radius_m": openapi.Schema(
-                type=openapi.TYPE_INTEGER, nullable=True
-            ),
+            "acceptance_radius_m": openapi.Schema(type=openapi.TYPE_INTEGER, nullable=True),
         },
     ),
     responses={
@@ -3869,9 +3756,7 @@ def class_location_detail(request, pk):
             status=status.HTTP_200_OK,
         )
     if request.method == "PATCH":
-        serializer = serializers.ClassLocationSerializer(
-            loc, data=request.data, partial=True
-        )
+        serializer = serializers.ClassLocationSerializer(loc, data=request.data, partial=True)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         serializer.save()
@@ -3893,9 +3778,7 @@ _classlocation_bulk_update_schema = openapi.Schema(
             "address": openapi.Schema(type=openapi.TYPE_STRING),
             "latitude": openapi.Schema(type=openapi.TYPE_NUMBER),
             "longitude": openapi.Schema(type=openapi.TYPE_NUMBER),
-            "acceptance_radius_m": openapi.Schema(
-                type=openapi.TYPE_INTEGER, nullable=True
-            ),
+            "acceptance_radius_m": openapi.Schema(type=openapi.TYPE_INTEGER, nullable=True),
         },
     ),
 )
@@ -3969,11 +3852,7 @@ def class_location_bulk_update(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
     unique_ids = list(dict.fromkeys(ids))
-    qs = list(
-        models.ClassLocation.objects.only(*_CLASSLOCATION_FIELDS).filter(
-            id__in=unique_ids
-        )
-    )
+    qs = list(models.ClassLocation.objects.only(*_CLASSLOCATION_FIELDS).filter(id__in=unique_ids))
     found_ids = {o.id for o in qs}
     missing = [i for i in unique_ids if i not in found_ids]
     if missing:
@@ -4307,9 +4186,7 @@ def public_holiday_list_create(request):
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         properties={
-            "date": openapi.Schema(
-                type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE
-            ),
+            "date": openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
             "name": openapi.Schema(type=openapi.TYPE_STRING),
             "is_working_day": openapi.Schema(type=openapi.TYPE_BOOLEAN),
         },
@@ -4354,17 +4231,13 @@ def public_holiday_detail(request, pk):
     if request.method == "GET":
         return Response(_publicholiday_row(holiday), status=status.HTTP_200_OK)
     if request.method == "PUT":
-        serializer = serializers.PublicHolidaySerializer(
-            holiday, data=request.data, partial=False
-        )
+        serializer = serializers.PublicHolidaySerializer(holiday, data=request.data, partial=False)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
     if request.method == "PATCH":
-        serializer = serializers.PublicHolidaySerializer(
-            holiday, data=request.data, partial=True
-        )
+        serializer = serializers.PublicHolidaySerializer(holiday, data=request.data, partial=True)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         serializer.save()
@@ -4382,9 +4255,7 @@ _publicholiday_bulk_update_schema = openapi.Schema(
         required=["id"],
         properties={
             "id": openapi.Schema(type=openapi.TYPE_INTEGER, description="ID праздника"),
-            "date": openapi.Schema(
-                type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE
-            ),
+            "date": openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
             "name": openapi.Schema(type=openapi.TYPE_STRING),
             "is_working_day": openapi.Schema(type=openapi.TYPE_BOOLEAN),
         },
@@ -4460,11 +4331,7 @@ def public_holiday_bulk_update(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
     unique_ids = list(dict.fromkeys(ids))
-    qs = list(
-        models.PublicHoliday.objects.only(*_PUBLICHOLIDAY_FIELDS).filter(
-            id__in=unique_ids
-        )
-    )
+    qs = list(models.PublicHoliday.objects.only(*_PUBLICHOLIDAY_FIELDS).filter(id__in=unique_ids))
     found_ids = {o.id for o in qs}
     missing = [i for i in unique_ids if i not in found_ids]
     if missing:
@@ -4565,9 +4432,7 @@ def get_parent_id(request):
         )
 
         if not root_ids:
-            return Response(
-                {"error": "Корни не найдены"}, status=status.HTTP_404_NOT_FOUND
-            )
+            return Response({"error": "Корни не найдены"}, status=status.HTTP_404_NOT_FOUND)
         return Response(root_ids, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
@@ -4588,6 +4453,34 @@ def _get_breadcrumb_path(dept_id: str) -> list[dict]:
     return path
 
 
+def _department_ids_with_active_staff() -> set:
+    """Id отделов, у которых в поддереве есть хотя бы один активный сотрудник.
+
+    Идём снизу вверх: от отделов, где есть неархивные сотрудники, к их
+    родителям. Отделы, которых здесь нет, целиком заархивированы и наружу
+    не отдаются ни в одном API.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            WITH RECURSIVE with_staff AS (
+                SELECT d.id, d.parent_id
+                FROM monitoring_app_childdepartment d
+                WHERE EXISTS (
+                    SELECT 1 FROM monitoring_app_staff s
+                    WHERE s.department_id = d.id AND s.archived_at IS NULL
+                )
+                UNION
+                SELECT p.id, p.parent_id
+                FROM monitoring_app_childdepartment p
+                JOIN with_staff w ON w.parent_id = p.id
+            )
+            SELECT DISTINCT id FROM with_staff
+            """
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
 def _build_department_summary_data(parent_department_id: str):
     """Строит данные для department_summary. Используется в API и warmup."""
 
@@ -4604,18 +4497,31 @@ def _build_department_summary_data(parent_department_id: str):
                 )
                 SELECT COUNT(DISTINCT st.id) FROM monitoring_app_staff st
                 INNER JOIN subtree s ON st.department_id = s.id
+                WHERE st.archived_at IS NULL
                 """,
                 [dept_id],
             )
             row = cursor.fetchone()
             return row[0] if row else 0
 
-    parent_department = get_object_or_404(
-        models.ChildDepartment, id=parent_department_id
-    )
+    parent_department = get_object_or_404(models.ChildDepartment, id=parent_department_id)
     total_staff_count = get_subtree_staff_count(parent_department.id)
-    child_departments_data = models.ChildDepartment.objects.filter(
-        parent=parent_department
+    # Аннотации читает ChildDepartmentSerializer: без них он делал по запросу
+    # на каждый подотдел (у «деканата» это 54 лишних запроса).
+    active_ids = _department_ids_with_active_staff()
+    child_departments_data = (
+        models.ChildDepartment.objects.filter(parent=parent_department)
+        # Полностью заархивированные подотделы наружу не отдаём.
+        .filter(id__in=active_ids).annotate(
+            # Считаем только тех детей, которые сами не скрыты: иначе
+            # has_child_departments повёл бы в пустой список.
+            annotated_child_count=Count(
+                "children", filter=Q(children__id__in=active_ids), distinct=True
+            ),
+            annotated_direct_staff=Count(
+                "staff", filter=Q(staff__archived_at__isnull=True), distinct=True
+            ),
+        )
     )
     child_departments_data_serialized = serializers.ChildDepartmentSerializer(
         child_departments_data, many=True
@@ -4626,6 +4532,7 @@ def _build_department_summary_data(parent_department_id: str):
         "date_of_creation": parent_department.date_of_creation,
         "child_departments": child_departments_data_serialized,
         "total_staff_count": total_staff_count,
+        "direct_staff_count": models.Staff.objects.filter(department=parent_department).count(),
         "breadcrumb_path": breadcrumb_path,
     }
 
@@ -4699,9 +4606,7 @@ def _build_department_summary_data(parent_department_id: str):
 @permission_classes([IsAuthenticated])
 def department_summary(request, parent_department_id):
     cache_key = f"department_summary_v2_{parent_department_id}"
-    logger.info(
-        f"Request received for department summary with ID {parent_department_id}"
-    )
+    logger.info(f"Request received for department summary with ID {parent_department_id}")
 
     if not models.ChildDepartment.objects.filter(id=parent_department_id).exists():
         logger.warning(f"Department with ID {parent_department_id} not found")
@@ -4786,9 +4691,7 @@ def _fetch_root_departments_data():
         .annotate(count=Count("id", distinct=True))
     )
 
-    staff_count_by_dept = {
-        item["department_id"]: item["count"] for item in staff_counts
-    }
+    staff_count_by_dept = {item["department_id"]: item["count"] for item in staff_counts}
 
     all_child_dept_ids = []
     for children in children_by_parent.values():
@@ -4796,51 +4699,102 @@ def _fetch_root_departments_data():
 
     child_depts_by_parent = {}
     if all_child_dept_ids:
-        child_depts = models.ChildDepartment.objects.filter(
-            id__in=all_child_dept_ids
-        ).only("id", "name", "date_of_creation", "parent_id")
+        child_depts = models.ChildDepartment.objects.filter(id__in=all_child_dept_ids).only(
+            "id", "name", "date_of_creation", "parent_id"
+        )
 
         for child in child_depts:
             parent_id = child.parent_id
             if parent_id:
                 child_depts_by_parent.setdefault(parent_id, []).append(child)
 
-    departments_data = []
-    total_staff_count = 0
+    subtree_staff_cache = {}
 
-    for root_id in root_ids:
-        dept = dept_by_id[root_id]
-        subtree_ids = subtree_ids_by_root[root_id]
-        dept_total = sum(staff_count_by_dept.get(dept_id, 0) for dept_id in subtree_ids)
-        total_staff_count += dept_total
+    def subtree_staff(dept_id):
+        """Сотрудники в поддереве отдела, включая сам отдел.
 
-        has_children = bool(children_by_parent.get(root_id))
+        Считается по children_by_parent, а не по subtree_ids_by_root: при
+        свёрнутом корне показываются его дети, а для них поддеревья заранее
+        не построены.
+        """
+        cached = subtree_staff_cache.get(dept_id)
+        if cached is not None:
+            return cached
+        total = 0
+        visited = set()
+        stack = [dept_id]
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            total += staff_count_by_dept.get(cur, 0)
+            stack.extend(children_by_parent.get(cur, []))
+        subtree_staff_cache[dept_id] = total
+        return total
 
-        child_depts = child_depts_by_parent.get(root_id, [])
-        child_departments_serialized = [
-            {
-                "child_id": str(child.id),
-                "name": child.name,
-                "date_of_creation": child.date_of_creation,
-                "parent": str(root_id),
-            }
-            for child in child_depts
+    def visible_children(dept_id):
+        """Подотделы, в поддереве которых есть хотя бы один активный сотрудник."""
+        return [
+            child_id
+            for child_id in children_by_parent.get(dept_id, [])
+            if subtree_staff(child_id) > 0
         ]
 
-        departments_data.append(
-            {
-                "child_id": str(root_id),
-                "name": dept["name"],
-                "date_of_creation": dept["date_of_creation"],
-                "parent": "",
-                "has_child_departments": has_children,
-                "total_staff_count": dept_total,
-                "child_departments": child_departments_serialized,
+    def serialize(dept_id, parent_id):
+        dept = dept_by_id[dept_id]
+        shown = set(visible_children(dept_id))
+        child_depts = [c for c in child_depts_by_parent.get(dept_id, []) if c.id in shown]
+        return {
+            "child_id": str(dept_id),
+            "name": dept["name"],
+            "date_of_creation": dept["date_of_creation"],
+            "parent": str(parent_id or ""),
+            "has_child_departments": bool(shown),
+            "total_staff_count": subtree_staff(dept_id),
+            "direct_staff_count": staff_count_by_dept.get(dept_id, 0),
+            "child_departments": [
+                {
+                    "child_id": str(child.id),
+                    "name": child.name,
+                    "date_of_creation": child.date_of_creation,
+                    "parent": str(dept_id),
+                    "has_child_departments": bool(visible_children(child.id)),
+                    "direct_staff_count": staff_count_by_dept.get(child.id, 0),
+                }
+                for child in child_depts
+            ],
+        }
+
+    # Единственный корень — это не уровень навигации: страница из одной карточки
+    # заставляет кликать в неё, чтобы попасть к настоящим отделам. В этом случае
+    # отдаём детей корня, а сам корень уходит в display_root — фронт берёт
+    # оттуда заголовок и ссылку на сотрудников, привязанных к корню напрямую.
+    # При двух и более корнях поведение прежнее: показываем сами корни.
+    display_root = None
+    if len(root_ids) == 1:
+        only_root = root_ids[0]
+        children = visible_children(only_root)
+        if children:
+            display_root = {
+                "child_id": str(only_root),
+                "name": dept_by_id[only_root]["name"],
+                "direct_staff_count": staff_count_by_dept.get(only_root, 0),
             }
-        )
+            displayed = [(child_id, only_root) for child_id in sorted(children)]
+        else:
+            displayed = [(only_root, None)]
+    else:
+        displayed = [(root_id, None) for root_id in root_ids if subtree_staff(root_id) > 0]
+
+    departments_data = [serialize(dept_id, parent_id) for dept_id, parent_id in displayed]
+    # Счётчик на странице должен совпадать с суммой карточек плюс сотрудники
+    # самого корня, иначе «в КРМУ 11658, а внутри 8072».
+    total_staff_count = sum(subtree_staff(root_id) for root_id in root_ids)
 
     return {
         "departments": departments_data,
+        "display_root": display_root,
         "total_staff_count": total_staff_count,
     }
 
@@ -4900,19 +4854,13 @@ def _fetch_root_departments_data():
                                     items=openapi.Schema(
                                         type=openapi.TYPE_OBJECT,
                                         properties={
-                                            "child_id": openapi.Schema(
-                                                type=openapi.TYPE_STRING
-                                            ),
-                                            "name": openapi.Schema(
-                                                type=openapi.TYPE_STRING
-                                            ),
+                                            "child_id": openapi.Schema(type=openapi.TYPE_STRING),
+                                            "name": openapi.Schema(type=openapi.TYPE_STRING),
                                             "date_of_creation": openapi.Schema(
                                                 type=openapi.TYPE_STRING,
                                                 format="date-time",
                                             ),
-                                            "parent": openapi.Schema(
-                                                type=openapi.TYPE_STRING
-                                            ),
+                                            "parent": openapi.Schema(type=openapi.TYPE_STRING),
                                         },
                                     ),
                                     description="Список дочерних подразделений",
@@ -4950,9 +4898,7 @@ def root_departments_batch(request):
         return Response(cached_data, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Error while generating root departments batch: {str(e)}")
-        return Response(
-            data={"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        return Response(data={"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @swagger_auto_schema(
@@ -5035,26 +4981,26 @@ def child_department_detail(request, child_department_id):
     Raises:
     Http404: Если дочерний отдел не существует.
     """
-    logger.info(
-        f"Request received for child department detail with ID {child_department_id}"
-    )
+    logger.info(f"Request received for child department detail with ID {child_department_id}")
 
-    cache_key = f"child_department_detail_v2_{child_department_id}"
+    # direct=1 — только сотрудники самого отдела, без подотделов. Нужен для
+    # отделов, где есть и подотделы, и свои люди (КРМУ, деканат): иначе ссылка
+    # на «своих» тянула бы всё поддерево — для корня это 8072 записи.
+    direct_only = request.GET.get("direct") == "1"
+    cache_key = f"child_department_detail_v2_{child_department_id}_{int(direct_only)}"
 
     def fetch_child_department_data():
         try:
-            child_department = models.ChildDepartment.objects.get(
-                id=child_department_id
-            )
+            child_department = models.ChildDepartment.objects.get(id=child_department_id)
         except models.ChildDepartment.DoesNotExist:
             logger.warning(f"Child department with ID {child_department_id} not found")
             return None
 
-        all_departments = [
-            child_department
-        ] + child_department.get_all_child_departments()
-        staff_in_department = (
-            models.Staff.objects.filter(department__in=all_departments)
+        # subtree_ids вместо обхода на Python: для корня прежняя версия
+        # делала 1236 запросов, из-за чего страница не открывалась.
+        department_ids = [child_department.pk] if direct_only else child_department.subtree_ids()
+        staff_in_department = list(
+            models.Staff.objects.filter(department_id__in=department_ids)
             .select_related("department")
             .prefetch_related("positions")
         )
@@ -5072,15 +5018,11 @@ def child_department_detail(request, child_department_id):
                 "positions": [p.name for p in staff_member.positions.all()],
             }
 
-        sorted_staff_data = dict(
-            sorted(staff_data.items(), key=lambda item: item[1]["FIO"])
-        )
+        sorted_staff_data = dict(sorted(staff_data.items(), key=lambda item: item[1]["FIO"]))
         breadcrumb_path = _get_breadcrumb_path(child_department_id)
         return {
-            "child_department": serializers.ChildDepartmentSerializer(
-                child_department
-            ).data,
-            "staff_count": staff_in_department.count(),
+            "child_department": serializers.ChildDepartmentSerializer(child_department).data,
+            "staff_count": len(staff_in_department),
             "staff_data": sorted_staff_data,
             "breadcrumb_path": breadcrumb_path,
         }
@@ -5095,9 +5037,7 @@ def child_department_detail(request, child_department_id):
         if data is None:
             return Response(status=status.HTTP_404_NOT_FOUND)
 
-        logger.info(
-            f"Returning detailed data for child department ID {child_department_id}"
-        )
+        logger.info(f"Returning detailed data for child department ID {child_department_id}")
         return Response(data, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Error in child_department_detail: {str(e)}")
@@ -5294,9 +5234,7 @@ def child_department_detail(request, child_department_id):
                                         "(антифрод фото). Дублирует запись из lesson_attendance_audit."
                                     ),
                                     properties={
-                                        "has_lessons": openapi.Schema(
-                                            type=openapi.TYPE_BOOLEAN
-                                        ),
+                                        "has_lessons": openapi.Schema(type=openapi.TYPE_BOOLEAN),
                                         "lesson_day_status": openapi.Schema(
                                             type=openapi.TYPE_STRING,
                                             description=(
@@ -5447,8 +5385,7 @@ def staff_detail(request, staff_pin):
         )
 
     cache_key = (
-        f"staff_detail_{LESSON_REPORT_CACHE_VERSION}_{staff_pin}_"
-        f"{start_date}_{end_date}"
+        f"staff_detail_{LESSON_REPORT_CACHE_VERSION}_{staff_pin}_" f"{start_date}_{end_date}"
     )
     logger.debug(f"Generated cache key: {cache_key}")
 
@@ -5504,9 +5441,7 @@ def get_date_range(request):
     Returns:
         Кортеж (start_date, end_date) типа datetime.date.
     """
-    end_date_str = request.query_params.get(
-        "end_date", timezone.now().strftime("%Y-%m-%d")
-    )
+    end_date_str = request.query_params.get("end_date", timezone.now().strftime("%Y-%m-%d"))
     start_date_str = request.query_params.get(
         "start_date", (timezone.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
     )
@@ -5517,9 +5452,7 @@ def get_date_range(request):
     return start_date, end_date
 
 
-def _lesson_row_rejects_merged_attendance_report(
-    manual_verdict: str, spoof_status: str
-) -> bool:
+def _lesson_row_rejects_merged_attendance_report(manual_verdict: str, spoof_status: str) -> bool:
     """Совпадает с LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q по одной строке."""
     la = models.LessonAttendance
     if manual_verdict == la.PHOTO_MANUAL_VERDICT_SUSPICIOUS:
@@ -5536,9 +5469,7 @@ def _staff_api_format_datetime(dt: Optional[datetime.datetime]) -> Optional[str]
     return timezone.localtime(dt, timezone.get_current_timezone()).isoformat()
 
 
-def _lesson_day_summary_ru(
-    *, fraud_attempted: bool, awaiting_manual_review: bool
-) -> str:
+def _lesson_day_summary_ru(*, fraud_attempted: bool, awaiting_manual_review: bool) -> str:
     if fraud_attempted:
         return "Подозрительное фото — день не в сводке."
     if awaiting_manual_review:
@@ -5598,12 +5529,8 @@ def build_lesson_attendance_audit_for_staff(
 
     out: dict[str, dict[str, Any]] = {}
     for date_key, lessons in by_dd_mm.items():
-        fraud_attempted = any(
-            lesson["rejected_in_merged_attendance_report"] for lesson in lessons
-        )
-        awaiting_manual_review = any(
-            lesson["awaits_manual_review"] for lesson in lessons
-        )
+        fraud_attempted = any(lesson["rejected_in_merged_attendance_report"] for lesson in lessons)
+        awaiting_manual_review = any(lesson["awaits_manual_review"] for lesson in lessons)
         if fraud_attempted:
             lesson_day_status = "rejected_fraud"
         elif awaiting_manual_review:
@@ -5659,9 +5586,7 @@ def get_staff_detail(staff, start_date, end_date):
     if kd_tree and class_names:
         logger.debug(f"KDTree initialized with {len(class_names)} locations")
 
-    all_event_dates = sorted(
-        set(sa_by_event_date.keys()) | set(la_by_event_date.keys())
-    )
+    all_event_dates = sorted(set(sa_by_event_date.keys()) | set(la_by_event_date.keys()))
     combined_attendance = {}
     for event_date in all_event_dates:
         combined_attendance[event_date] = _merge_attendance_for_date(
@@ -5676,9 +5601,9 @@ def get_staff_detail(staff, start_date, end_date):
 
     logger.debug(f"Объединенные данные посещаемости: {combined_attendance}")
 
-    holidays = models.PublicHoliday.objects.filter(
-        date__range=[start_date, end_date]
-    ).values_list("date", "is_working_day")
+    holidays = models.PublicHoliday.objects.filter(date__range=[start_date, end_date]).values_list(
+        "date", "is_working_day"
+    )
     logger.debug(f"Государственные праздники в периоде: {len(holidays)}")
 
     holiday_dict = dict(holidays)
@@ -5708,15 +5633,9 @@ def get_staff_detail(staff, start_date, end_date):
                 remote_dates.extend(attendance_dates)
             else:
                 rw_start = (
-                    remote_work.start_date
-                    if remote_work.start_date is not None
-                    else start_date
+                    remote_work.start_date if remote_work.start_date is not None else start_date
                 )
-                rw_end = (
-                    remote_work.end_date
-                    if remote_work.end_date is not None
-                    else end_date
-                )
+                rw_end = remote_work.end_date if remote_work.end_date is not None else end_date
                 remote_start = max(rw_start, start_date)
                 remote_end = min(rw_end, end_date)
                 if remote_start <= remote_end:
@@ -5753,9 +5672,7 @@ def get_staff_detail(staff, start_date, end_date):
             "name": staff.name,
             "surname": staff.surname if staff.surname != "Нет фамилии" else "",
             "positions": [position.name for position in staff.positions.all()],
-            "avatar": (
-                staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"
-            ),
+            "avatar": (staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"),
             "department": staff.department.name if staff.department else "N/A",
             "department_id": staff.department.id if staff.department else "N/A",
             "attendance": {},
@@ -5778,9 +5695,7 @@ def get_staff_detail(staff, start_date, end_date):
 
     num_days = len(date_set)
     cost_per_day = 100 / num_days
-    logger.debug(
-        f"Количество дней с данными: {num_days}, стоимость дня: {cost_per_day}"
-    )
+    logger.debug(f"Количество дней с данными: {num_days}, стоимость дня: {cost_per_day}")
 
     average_attendance = get_average_attendance_for_period(staff, start_date, end_date)
     logger.debug(f"Средняя посещаемость за период: {average_attendance}%")
@@ -5839,9 +5754,7 @@ def get_staff_detail(staff, start_date, end_date):
                     "lesson_attendance_day": lesson_attendance_audit[date_key],
                 }
             attendance_data[date_key] = attendance_record
-            logger.debug(
-                f"Добавлена запись посещаемости для {event_date}: {attendance_record}"
-            )
+            logger.debug(f"Добавлена запись посещаемости для {event_date}: {attendance_record}")
 
     if total_days_with_data > 0:
         percent_for_period /= total_days_with_data
@@ -5875,9 +5788,7 @@ def get_staff_detail(staff, start_date, end_date):
         "salary": salary_qs.total_salary if salary_qs else None,
     }
 
-    logger.info(
-        f"Генерация деталей сотрудника завершена для {staff.name} (PIN: {staff.pin})"
-    )
+    logger.info(f"Генерация деталей сотрудника завершена для {staff.name} (PIN: {staff.pin})")
     return staff_detail_payload
 
 
@@ -5927,9 +5838,7 @@ def get_average_attendance_for_period(staff, start_date, end_date):
         if attendance.effective_work_seconds is not None:
             minutes_present = attendance.effective_work_seconds / 60.0
         elif attendance.first_in and attendance.last_out:
-            minutes_present = (
-                attendance.last_out - attendance.first_in
-            ).total_seconds() / 60
+            minutes_present = (attendance.last_out - attendance.first_in).total_seconds() / 60
         else:
             minutes_present = 0
         if minutes_present > 0:
@@ -5961,9 +5870,7 @@ def get_average_attendance_for_period(staff, start_date, end_date):
         )
         return 1.0
 
-    logger.info(
-        f"Calculated average attendance for previous period: {average_attendance}%"
-    )
+    logger.info(f"Calculated average attendance for previous period: {average_attendance}%")
     return average_attendance
 
 
@@ -6043,9 +5950,7 @@ def process_attendance(
     area_name_out = attendance.get("area_name_out") if attendance else None
     first_in_source = attendance.get("first_in_source") if attendance else None
     last_out_source = attendance.get("last_out_source") if attendance else None
-    effective_work_seconds = (
-        attendance.get("effective_work_seconds") if attendance else None
-    )
+    effective_work_seconds = attendance.get("effective_work_seconds") if attendance else None
     area_sequence = attendance.get("area_sequence") if attendance else None
 
     if is_off_day:
@@ -6053,9 +5958,7 @@ def process_attendance(
             total_minutes_worked = effective_work_seconds / 60.0
             percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
         elif first_in and last_out:
-            total_minutes_worked = calculate_effective_minutes_with_lunch(
-                first_in, last_out
-            )
+            total_minutes_worked = calculate_effective_minutes_with_lunch(first_in, last_out)
             percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
             logger.info(
                 f"Сотрудник работал в выходной день {event_date}. Данные отображаются, но не влияют на расчеты."
@@ -6063,20 +5966,14 @@ def process_attendance(
         else:
             total_minutes_worked = 0
             percent_day = 0
-            logger.info(
-                f"Выходной день {event_date} без данных о посещаемости. Пропускаем."
-            )
+            logger.info(f"Выходной день {event_date} без данных о посещаемости. Пропускаем.")
 
         attendance_record = {
             "first_in": (
-                first_in.astimezone(timezone.get_current_timezone())
-                if first_in
-                else None
+                first_in.astimezone(timezone.get_current_timezone()) if first_in else None
             ),
             "last_out": (
-                last_out.astimezone(timezone.get_current_timezone())
-                if last_out
-                else None
+                last_out.astimezone(timezone.get_current_timezone()) if last_out else None
             ),
             "area_name_in": area_name_in,
             "area_name_out": area_name_out,
@@ -6099,8 +5996,7 @@ def process_attendance(
         )
 
     is_remote_work = remote_work_qs.filter(
-        Q(permanent_remote=True)
-        | Q(start_date__lte=event_date, end_date__gte=event_date)
+        Q(permanent_remote=True) | Q(start_date__lte=event_date, end_date__gte=event_date)
     ).exists()
 
     is_absent_approved = False
@@ -6114,9 +6010,7 @@ def process_attendance(
             if effective_work_seconds is not None:
                 total_minutes_worked = effective_work_seconds / 60.0
             else:
-                total_minutes_worked = calculate_effective_minutes_with_lunch(
-                    first_in, last_out
-                )
+                total_minutes_worked = calculate_effective_minutes_with_lunch(first_in, last_out)
             percent_day = (
                 total_minutes_worked / total_minutes_expected_per_day * 100
                 if total_minutes_expected_per_day
@@ -6134,26 +6028,18 @@ def process_attendance(
             total_minutes_for_period += total_minutes_worked
             total_days_with_data += 1
             percent_for_period += percent_day
-            logger.info(
-                f"{event_date} отмечен как день дистанционной работы (без явки)."
-            )
+            logger.info(f"{event_date} отмечен как день дистанционной работы (без явки).")
     elif absent_reason:
         is_absent_approved = absent_reason.approved
         absent_reason_display = absent_reason.get_reason_display()
         if is_absent_approved:
-            logger.info(
-                f"{event_date} утвержденная причина отсутствия: {absent_reason_display}."
-            )
+            logger.info(f"{event_date} утвержденная причина отсутствия: {absent_reason_display}.")
             attendance_record = {
                 "first_in": (
-                    first_in.astimezone(timezone.get_current_timezone())
-                    if first_in
-                    else None
+                    first_in.astimezone(timezone.get_current_timezone()) if first_in else None
                 ),
                 "last_out": (
-                    last_out.astimezone(timezone.get_current_timezone())
-                    if last_out
-                    else None
+                    last_out.astimezone(timezone.get_current_timezone()) if last_out else None
                 ),
                 "area_name_in": area_name_in,
                 "area_name_out": area_name_out,
@@ -6188,9 +6074,7 @@ def process_attendance(
             total_minutes_worked = effective_work_seconds / 60.0
             percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
         elif first_in and last_out:
-            total_minutes_worked = calculate_effective_minutes_with_lunch(
-                first_in, last_out
-            )
+            total_minutes_worked = calculate_effective_minutes_with_lunch(first_in, last_out)
             percent_day = (total_minutes_worked / total_minutes_expected_per_day) * 100
         else:
             percent_day = 0
@@ -6200,9 +6084,7 @@ def process_attendance(
             total_minutes_for_period += total_minutes_worked
             total_days_with_data += 1
             percent_for_period += percent_day
-            logger.debug(
-                f"Отработано минут: {total_minutes_worked}, Процент дня: {percent_day}"
-            )
+            logger.debug(f"Отработано минут: {total_minutes_worked}, Процент дня: {percent_day}")
         else:
             total_days_with_data += 1
             penalty = penalty_rate * cost_per_day
@@ -6212,12 +6094,8 @@ def process_attendance(
             )
 
     attendance_record = {
-        "first_in": (
-            first_in.astimezone(timezone.get_current_timezone()) if first_in else None
-        ),
-        "last_out": (
-            last_out.astimezone(timezone.get_current_timezone()) if last_out else None
-        ),
+        "first_in": (first_in.astimezone(timezone.get_current_timezone()) if first_in else None),
+        "last_out": (last_out.astimezone(timezone.get_current_timezone()) if last_out else None),
         "area_name_in": area_name_in,
         "area_name_out": area_name_out,
         "first_in_source": first_in_source,
@@ -6231,9 +6109,7 @@ def process_attendance(
         "is_absent_approved": is_absent_approved,
         "absent_reason": absent_reason_display,
     }
-    logger.info(
-        f"Обработана запись посещаемости за дату {event_date}: {attendance_record}"
-    )
+    logger.info(f"Обработана запись посещаемости за дату {event_date}: {attendance_record}")
 
     return (
         attendance_record,
@@ -6594,9 +6470,7 @@ ATTENDANCE_WRITE_COMMON_RESPONSES = {
         "Интеграционная аутентификация не пройдена.",
         ATTENDANCE_WRITE_ERROR_SCHEMA,
     ),
-    404: openapi.Response(
-        "Staff или ClassLocation не найдены.", ATTENDANCE_WRITE_ERROR_SCHEMA
-    ),
+    404: openapi.Response("Staff или ClassLocation не найдены.", ATTENDANCE_WRITE_ERROR_SCHEMA),
     500: openapi.Response(
         "Ошибка конфигурации терминалов или сервера.", ATTENDANCE_WRITE_ERROR_SCHEMA
     ),
@@ -6693,12 +6567,8 @@ SIGNED_STAFF_ATTENDANCE_RESPONSE_SCHEMA = openapi.Schema(
         "staff_pin": openapi.Schema(type=openapi.TYPE_STRING),
         "building": openapi.Schema(type=openapi.TYPE_STRING),
         "date_at": openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE),
-        "first_in": openapi.Schema(
-            type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME
-        ),
-        "last_out": openapi.Schema(
-            type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME
-        ),
+        "first_in": openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME),
+        "last_out": openapi.Schema(type=openapi.TYPE_STRING, format=openapi.FORMAT_DATETIME),
         "area_name_in": openapi.Schema(type=openapi.TYPE_STRING),
         "area_name_out": openapi.Schema(type=openapi.TYPE_STRING),
         "effective_work_seconds": openapi.Schema(type=openapi.TYPE_INTEGER),
@@ -6740,21 +6610,15 @@ def create_signed_lesson_attendance(request):
     tutor = str(data.get("tutor") or "").strip()
     subject_name = str(data.get("subject_name") or "").strip()
     if not staff_pin:
-        return _attendance_write_error(
-            "staff_pin is required", status.HTTP_400_BAD_REQUEST
-        )
+        return _attendance_write_error("staff_pin is required", status.HTTP_400_BAD_REQUEST)
     if location_id in (None, ""):
-        return _attendance_write_error(
-            "location_id is required", status.HTTP_400_BAD_REQUEST
-        )
+        return _attendance_write_error("location_id is required", status.HTTP_400_BAD_REQUEST)
     if not tutor:
         return _attendance_write_error("tutor is required", status.HTTP_400_BAD_REQUEST)
     try:
         tutor_id = int(data.get("tutor_id"))
     except (TypeError, ValueError):
-        return _attendance_write_error(
-            "tutor_id must be an integer", status.HTTP_400_BAD_REQUEST
-        )
+        return _attendance_write_error("tutor_id must be an integer", status.HTTP_400_BAD_REQUEST)
 
     first_in, first_error = _parse_attendance_datetime(data.get("first_in"), "first_in")
     if first_error is not None:
@@ -6778,9 +6642,7 @@ def create_signed_lesson_attendance(request):
     try:
         location = models.ClassLocation.objects.get(pk=location_id)
     except (models.ClassLocation.DoesNotExist, ValueError, TypeError):
-        return _attendance_write_error(
-            "ClassLocation not found", status.HTTP_404_NOT_FOUND
-        )
+        return _attendance_write_error("ClassLocation not found", status.HTTP_404_NOT_FOUND)
 
     radii = get_class_location_cache().get("location_acceptance_radius_m", {})
     radius_m = utils.get_location_radius(location, radii)
@@ -6844,13 +6706,9 @@ def upsert_signed_staff_attendance(request):
     building_raw = str(data.get("building") or "")
     building = utils.resolve_area_family(building_raw) or building_raw.strip().lower()
     if not staff_pin:
-        return _attendance_write_error(
-            "staff_pin is required", status.HTTP_400_BAD_REQUEST
-        )
+        return _attendance_write_error("staff_pin is required", status.HTTP_400_BAD_REQUEST)
     if not building:
-        return _attendance_write_error(
-            "building is required", status.HTTP_400_BAD_REQUEST
-        )
+        return _attendance_write_error("building is required", status.HTTP_400_BAD_REQUEST)
 
     first_in, first_error = _parse_attendance_datetime(data.get("first_in"), "first_in")
     if first_error is not None:
@@ -6916,9 +6774,7 @@ def upsert_signed_staff_attendance(request):
             "is_exit": "1",
         },
     ]
-    effective_work_intervals = [
-        {"start": first_in.isoformat(), "end": last_out.isoformat()}
-    ]
+    effective_work_intervals = [{"start": first_in.isoformat(), "end": last_out.isoformat()}]
     with _db_atomic():
         attendance, created = models.StaffAttendance.objects.update_or_create(
             staff=staff,
@@ -6941,12 +6797,8 @@ def upsert_signed_staff_attendance(request):
             "staff_pin": staff.pin,
             "building": building,
             "date_at": attendance.date_at.isoformat(),
-            "first_in": (
-                attendance.first_in.isoformat() if attendance.first_in else None
-            ),
-            "last_out": (
-                attendance.last_out.isoformat() if attendance.last_out else None
-            ),
+            "first_in": (attendance.first_in.isoformat() if attendance.first_in else None),
+            "last_out": (attendance.last_out.isoformat() if attendance.last_out else None),
             "area_name_in": attendance.area_name_in,
             "area_name_out": attendance.area_name_out,
             "effective_work_seconds": attendance.effective_work_seconds,
@@ -7070,9 +6922,9 @@ def create_lesson_attendance(request):
     try:
         ct = (getattr(request, "content_type") or "") or ""
         if "multipart" in ct or "form-data" in ct:
-            attendance_data_raw = request.POST.get(
+            attendance_data_raw = request.POST.get("attendance_data") or request.data.get(
                 "attendance_data"
-            ) or request.data.get("attendance_data")
+            )
             image_base64 = request.POST.get("image") or request.data.get("image")
         else:
             attendance_data_raw = request.data.get("attendance_data")
@@ -7080,9 +6932,7 @@ def create_lesson_attendance(request):
         has_file = bool(request.FILES.get("image"))
 
         if not attendance_data_raw:
-            _data_keys = (
-                list(request.data.keys()) if getattr(request, "data", None) else []
-            )
+            _data_keys = list(request.data.keys()) if getattr(request, "data", None) else []
             _post_keys = list(request.POST.keys()) if hasattr(request, "POST") else []
             lesson_attendance_logger.warning(
                 "%s BAD_REQUEST attendance_data_missing ip=%s data_keys=%s post_keys=%s",
@@ -7247,27 +7097,17 @@ _lesson_attendance_json_schema = openapi.Schema(
                     "longitude",
                 ],
                 properties={
-                    "staff_pin": openapi.Schema(
-                        type=openapi.TYPE_STRING, example="s00260"
-                    ),
+                    "staff_pin": openapi.Schema(type=openapi.TYPE_STRING, example="s00260"),
                     "tutor_id": openapi.Schema(type=openapi.TYPE_INTEGER, example=1),
-                    "tutor": openapi.Schema(
-                        type=openapi.TYPE_STRING, example="Иванов И.И."
-                    ),
+                    "tutor": openapi.Schema(type=openapi.TYPE_STRING, example="Иванов И.И."),
                     "first_in": openapi.Schema(
                         type=openapi.TYPE_STRING,
                         format=openapi.FORMAT_DATETIME,
                         example="2024-10-06T14:24:24+05:00",
                     ),
-                    "latitude": openapi.Schema(
-                        type=openapi.TYPE_NUMBER, example=43.207674
-                    ),
-                    "longitude": openapi.Schema(
-                        type=openapi.TYPE_NUMBER, example=76.851377
-                    ),
-                    "subject_name": openapi.Schema(
-                        type=openapi.TYPE_STRING, example="Математика"
-                    ),
+                    "latitude": openapi.Schema(type=openapi.TYPE_NUMBER, example=43.207674),
+                    "longitude": openapi.Schema(type=openapi.TYPE_NUMBER, example=76.851377),
+                    "subject_name": openapi.Schema(type=openapi.TYPE_STRING, example="Математика"),
                 },
             ),
         ),
@@ -7536,9 +7376,7 @@ def update_lesson_attendance(request, attendance_id=None, **kwargs):
             attendance_id,
             ip_address,
         )
-        return Response(
-            {"error": "LessonAttendance not found."}, status=status.HTTP_404_NOT_FOUND
-        )
+        return Response({"error": "LessonAttendance not found."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         lesson_attendance_logger.exception(
             "%s PUT EXCEPTION id=%s ip=%s error=%s",
@@ -7704,9 +7542,7 @@ def _serialize_lesson_attendance_photo(
         else None
     )
     manual_at = (
-        timezone.localtime(record.photo_manual_at).isoformat()
-        if record.photo_manual_at
-        else None
+        timezone.localtime(record.photo_manual_at).isoformat() if record.photo_manual_at else None
     )
     manual_by_username = ""
     manual_by = getattr(record, "photo_manual_by", None)
@@ -7719,9 +7555,7 @@ def _serialize_lesson_attendance_photo(
         "hasPhoto": bool(record.staff_image_path),
         "staffPin": record.staff.pin,
         "staffFullName": f"{record.staff.surname} {record.staff.name}",
-        "department": (
-            record.staff.department.name if record.staff.department else "Unknown"
-        ),
+        "department": (record.staff.department.name if record.staff.department else "Unknown"),
         "photoUrl": record.image_url,
         "attendanceTime": timezone.localtime(record.first_in).isoformat(),
         "tutorInfo": record.tutor_info,
@@ -7798,9 +7632,8 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
     """GET — список/детали PAD статусов; POST/PUT/PATCH — ручные и bulk-вердикты."""
     attendance_id = int(attendance_id) if attendance_id is not None else None
     base_qs = (
-        models.LessonAttendance.objects.select_related(
-            "staff__department", "photo_manual_by"
-        )
+        models.LessonAttendance.objects.filter(staff__archived_at__isnull=True)
+        .select_related("staff__department", "photo_manual_by")
         .only(*PHOTO_VERDICT_ONLY_FIELDS)
         .order_by("-first_in", "-id")
     )
@@ -7819,9 +7652,7 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
                     "count": len(ordered),
                     "limit": len(ordered),
                     "offset": 0,
-                    "results": [
-                        _serialize_lesson_attendance_photo(record) for record in ordered
-                    ],
+                    "results": [_serialize_lesson_attendance_photo(record) for record in ordered],
                 },
                 status=status.HTTP_200_OK,
             )
@@ -7849,44 +7680,31 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
                 raise ValidationError(f"Некорректный photo_spoof_status={auto_status}.")
             qs = qs.filter(photo_spoof_status=auto_status)
 
-        manual_verdict = str(
-            request.query_params.get("photo_manual_verdict") or ""
-        ).strip()
+        manual_verdict = str(request.query_params.get("photo_manual_verdict") or "").strip()
         if manual_verdict:
             allowed_manual_verdicts = {
-                value
-                for value, _ in models.LessonAttendance.PHOTO_MANUAL_VERDICT_CHOICES
+                value for value, _ in models.LessonAttendance.PHOTO_MANUAL_VERDICT_CHOICES
             }
             if manual_verdict not in allowed_manual_verdicts:
-                raise ValidationError(
-                    f"Некорректный photo_manual_verdict={manual_verdict}."
-                )
+                raise ValidationError(f"Некорректный photo_manual_verdict={manual_verdict}.")
             qs = qs.filter(photo_manual_verdict=manual_verdict)
 
-        effective_status = str(
-            request.query_params.get("photo_effective_status") or ""
-        ).strip()
+        effective_status = str(request.query_params.get("photo_effective_status") or "").strip()
         if effective_status:
             allowed_effective_statuses = {
                 value for value, _ in models.LessonAttendance.PHOTO_SPOOF_STATUS_CHOICES
             }
             if effective_status not in allowed_effective_statuses:
-                raise ValidationError(
-                    f"Некорректный photo_effective_status={effective_status}."
-                )
+                raise ValidationError(f"Некорректный photo_effective_status={effective_status}.")
             qs = qs.filter(_effective_status_filter(effective_status))
 
         has_photo_param = request.query_params.get("has_photo")
         if has_photo_param is not None:
             has_photo = _parse_bool(has_photo_param, default=True)
             if has_photo:
-                qs = qs.filter(staff_image_path__isnull=False).exclude(
-                    staff_image_path=""
-                )
+                qs = qs.filter(staff_image_path__isnull=False).exclude(staff_image_path="")
             else:
-                qs = qs.filter(
-                    Q(staff_image_path__isnull=True) | Q(staff_image_path="")
-                )
+                qs = qs.filter(Q(staff_image_path__isnull=True) | Q(staff_image_path=""))
 
         limit = _parse_positive_int(
             request.query_params.get("limit"),
@@ -7909,9 +7727,7 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
                 "count": total,
                 "limit": limit,
                 "offset": offset,
-                "results": [
-                    _serialize_lesson_attendance_photo(record) for record in records
-                ],
+                "results": [_serialize_lesson_attendance_photo(record) for record in records],
             },
             status=status.HTTP_200_OK,
         )
@@ -7933,8 +7749,7 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
 
     if action not in PHOTO_VERDICT_ACTIONS:
         raise ValidationError(
-            "Некорректный action. Используй one of: "
-            f"{', '.join(sorted(PHOTO_VERDICT_ACTIONS))}."
+            "Некорректный action. Используй one of: " f"{', '.join(sorted(PHOTO_VERDICT_ACTIONS))}."
         )
 
     records = list(base_qs.filter(id__in=ids))
@@ -7963,9 +7778,7 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
         PHOTO_VERDICT_ACTION_MANUAL_RESET,
     }:
         now_dt = timezone.now()
-        actor = (
-            request.user if getattr(request.user, "is_authenticated", False) else None
-        )
+        actor = request.user if getattr(request.user, "is_authenticated", False) else None
         actor_id = actor.id if actor is not None else None
         manual_comment = str(payload.get("manual_comment") or "").strip()
 
@@ -7990,9 +7803,7 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
             PHOTO_VERDICT_ACTION_MANUAL_SUSPICIOUS,
         }:
             updatable_records = [
-                record
-                for record in ordered_records
-                if record.photo_can_set_manual_verdict
+                record for record in ordered_records if record.photo_can_set_manual_verdict
             ]
             for record in ordered_records:
                 if not record.photo_can_set_manual_verdict:
@@ -8038,9 +7849,7 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
                 continue
             if not force_manual and record.photo_manual_verdict != MANUAL_NONE:
                 skipped_ids.append(record.id)
-                skipped_reasons.append(
-                    {"id": record.id, "reason": "rescan_skipped_has_verdict"}
-                )
+                skipped_reasons.append({"id": record.id, "reason": "rescan_skipped_has_verdict"})
                 photo_verdict_logger.warning(
                     "rescan skipped attendance_id=%s reason=rescan_skipped_has_verdict "
                     "photo_manual_verdict=%s",
@@ -8066,9 +7875,7 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
             record.photo_spoof_score = update_kwargs["photo_spoof_score"]
             record.photo_spoof_tags = update_kwargs["photo_spoof_tags"]
             record.photo_spoof_checked_at = update_kwargs["photo_spoof_checked_at"]
-            record.photo_spoof_model_version = update_kwargs[
-                "photo_spoof_model_version"
-            ]
+            record.photo_spoof_model_version = update_kwargs["photo_spoof_model_version"]
             changed_records.append(record)
 
     _invalidate_photo_cache_for_records(changed_records)
@@ -8081,9 +7888,7 @@ def lesson_attendance_photo_verdicts(request, attendance_id=None):
             "skipped_ids": skipped_ids,
             "skipped_reasons": skipped_reasons,
             "errors": error_items,
-            "results": [
-                _serialize_lesson_attendance_photo(record) for record in changed_records
-            ],
+            "results": [_serialize_lesson_attendance_photo(record) for record in changed_records],
             "choices": _photo_verdict_choices_payload(),
         },
         status=status.HTTP_200_OK,
@@ -8192,9 +7997,7 @@ def staff_detail_by_department_id(request, department_id):
     - 404: Подразделение не найдено или данные о посещаемости не найдены.
     - 500: Внутренняя ошибка сервера.
     """
-    logger.info(
-        f"Request received for staff attendance by department ID {department_id}"
-    )
+    logger.info(f"Request received for staff attendance by department ID {department_id}")
 
     try:
         end_date_str = request.query_params.get("end_date")
@@ -8211,9 +8014,7 @@ def staff_detail_by_department_id(request, department_id):
         try:
             start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
             end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
-            logger.info(
-                f"Parsed date range: start_date={start_date}, end_date={end_date}"
-            )
+            logger.info(f"Parsed date range: start_date={start_date}, end_date={end_date}")
         except ValueError as ve:
             logger.warning(f"Invalid date format {ve}")
             return Response(
@@ -8336,15 +8137,11 @@ def staff_detail_by_department_id(request, department_id):
             location_cache = get_class_location_cache()
             location_searcher = location_cache["searcher"]
             if location_searcher is None:
-                location_searcher = utils.LocationSearcher(
-                    location_cache["searcher_payload"] or []
-                )
+                location_searcher = utils.LocationSearcher(location_cache["searcher_payload"] or [])
 
             staff_attendance_map = defaultdict(lambda: defaultdict(list))
             for sa in staff_attendance_qs:
-                date_key = (sa["date_at"] - datetime.timedelta(days=1)).strftime(
-                    "%Y-%m-%d"
-                )
+                date_key = (sa["date_at"] - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
                 staff_attendance_map[sa["staff_id"]][date_key].append(sa)
 
             lesson_attendance_map = defaultdict(lambda: defaultdict(list))
@@ -8388,17 +8185,11 @@ def staff_detail_by_department_id(request, department_id):
                 for staff_id, staff in staff_dict.items():
                     staff_fio = f"{staff.surname} {staff.name}"
                     department_name = (
-                        staff.department.name
-                        if staff.department
-                        else "Unknown Department"
+                        staff.department.name if staff.department else "Unknown Department"
                     )
 
-                    sa_records = staff_attendance_map.get(staff_id, {}).get(
-                        date_key, []
-                    )
-                    la_records = lesson_attendance_map.get(staff_id, {}).get(
-                        date_key, []
-                    )
+                    sa_records = staff_attendance_map.get(staff_id, {}).get(date_key, [])
+                    la_records = lesson_attendance_map.get(staff_id, {}).get(date_key, [])
 
                     first_in = None
                     last_out = None
@@ -8406,34 +8197,24 @@ def staff_detail_by_department_id(request, department_id):
 
                     for sa in sa_records:
                         if sa["first_in"]:
-                            sa_first_in = sa["first_in"].astimezone(
-                                timezone.get_default_timezone()
-                            )
+                            sa_first_in = sa["first_in"].astimezone(timezone.get_default_timezone())
                             if not first_in or sa_first_in < first_in:
                                 first_in = sa_first_in
                         if sa["last_out"]:
-                            sa_last_out = sa["last_out"].astimezone(
-                                timezone.get_default_timezone()
-                            )
+                            sa_last_out = sa["last_out"].astimezone(timezone.get_default_timezone())
                             if not last_out or sa_last_out > last_out:
                                 last_out = sa_last_out
-                        area_address = utils.resolve_area_address(
-                            sa.get("area_name_in")
-                        )
+                        area_address = utils.resolve_area_address(sa.get("area_name_in"))
                         if area_address:
                             area_names.append(area_address)
 
                     for la in la_records:
                         if la["first_in"]:
-                            la_first_in = la["first_in"].astimezone(
-                                timezone.get_default_timezone()
-                            )
+                            la_first_in = la["first_in"].astimezone(timezone.get_default_timezone())
                             if not first_in or la_first_in < first_in:
                                 first_in = la_first_in
                         if la["last_out"]:
-                            la_last_out = la["last_out"].astimezone(
-                                timezone.get_default_timezone()
-                            )
+                            la_last_out = la["last_out"].astimezone(timezone.get_default_timezone())
                             if not last_out or la_last_out > last_out:
                                 last_out = la_last_out
 
@@ -8461,13 +8242,13 @@ def staff_detail_by_department_id(request, department_id):
                     department_attendance_map[department_name].append(attendance_entry)
 
                 for dept, attendance in department_attendance_map.items():
-                    date_result = {
-                        date_key: {"department": dept, "attendance": attendance}
-                    }
+                    date_result = {date_key: {"department": dept, "attendance": attendance}}
                     results.append(date_result)
 
             paginator = StaffAttendancePagination()
-            result_page = paginator.paginate_queryset(results, request)
+            # paginate_queryset работает с любой последовательностью;
+            # стаб DRF объявляет только QuerySet.
+            result_page = paginator.paginate_queryset(cast(Any, results), request)
             return paginator.get_paginated_response(result_page).data
 
         cached_data = get_cache(cache_key, query=query, timeout=1 * 60 * 60)
@@ -8653,9 +8434,7 @@ def login_view(request):
             in_=openapi.IN_QUERY,
             type=openapi.TYPE_INTEGER,
             required=False,
-            description=(
-                "Максимум одновременных запросов к внешнему API (1..30, по умолчанию 6)."
-            ),
+            description=("Максимум одновременных запросов к внешнему API (1..30, по умолчанию 6)."),
         ),
     ],
     responses={
@@ -8697,27 +8476,13 @@ def login_view(request):
                                 description="Дата, в которую сохранялись записи.",
                             ),
                             "total_pins": openapi.Schema(type=openapi.TYPE_INTEGER),
-                            "successful_requests": openapi.Schema(
-                                type=openapi.TYPE_INTEGER
-                            ),
-                            "failed_requests": openapi.Schema(
-                                type=openapi.TYPE_INTEGER
-                            ),
-                            "pins_with_events": openapi.Schema(
-                                type=openapi.TYPE_INTEGER
-                            ),
-                            "pins_without_events": openapi.Schema(
-                                type=openapi.TYPE_INTEGER
-                            ),
-                            "created_records": openapi.Schema(
-                                type=openapi.TYPE_INTEGER
-                            ),
-                            "updated_records": openapi.Schema(
-                                type=openapi.TYPE_INTEGER
-                            ),
-                            "event_time_parse_errors": openapi.Schema(
-                                type=openapi.TYPE_INTEGER
-                            ),
+                            "successful_requests": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "failed_requests": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "pins_with_events": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "pins_without_events": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "created_records": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "updated_records": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "event_time_parse_errors": openapi.Schema(type=openapi.TYPE_INTEGER),
                             "ambiguous_exit_candidates": openapi.Schema(
                                 type=openapi.TYPE_INTEGER,
                                 description="Количество неоднозначных кандидатов на выход (ambiguous exit devices).",
@@ -8758,7 +8523,9 @@ def login_view(request):
     },
 )
 @async_logic.async_drf_view(["GET"])
-@permission_classes([permissions.IsAuthenticatedOrAPIKey])
+# permission_classes типизирован под sync-вьюхи; в рантайме он лишь ставит
+# атрибут, поэтому с async_drf_view работает.
+@permission_classes([permissions.IsAuthenticatedOrAPIKey])  # type: ignore[arg-type]
 async def fetch_data_view(request):
     """
     Асинхронный обработчик запросов на получение данных о посещаемости.
@@ -8771,9 +8538,7 @@ async def fetch_data_view(request):
     lock_acquired = cache.add(lock_key, "running", timeout=lock_ttl_seconds)
 
     if not lock_acquired:
-        logger.warning(
-            "%s: rejected because another fetcher run is in progress", function_name
-        )
+        logger.warning("%s: rejected because another fetcher run is in progress", function_name)
         return Response(
             status=status.HTTP_429_TOO_MANY_REQUESTS,
             data={
@@ -8813,11 +8578,7 @@ async def fetch_data_view(request):
         has_api_key_header = bool(
             request.headers.get("X-API-KEY") or request.headers.get("x-api-key")
         )
-        if (
-            request.user.is_authenticated
-            and not request.user.is_staff
-            and not has_api_key_header
-        ):
+        if request.user.is_authenticated and not request.user.is_staff and not has_api_key_header:
             logger.warning(
                 "%s: forbidden for non-staff authenticated user id=%s",
                 function_name,
@@ -8835,9 +8596,7 @@ async def fetch_data_view(request):
             max_value=365,
         )
         if days_error:
-            return Response(
-                status=status.HTTP_400_BAD_REQUEST, data={"error": days_error}
-            )
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"error": days_error})
 
         max_concurrent_requests, concurrency_error = parse_int_query_param(
             "max_concurrent_requests",
@@ -8892,15 +8651,9 @@ async def fetch_data_view(request):
             "pins_without_events": int(fetch_summary.get("pins_without_events", 0)),
             "created_records": int(fetch_summary.get("created_records", 0)),
             "updated_records": int(fetch_summary.get("updated_records", 0)),
-            "event_time_parse_errors": int(
-                fetch_summary.get("event_time_parse_errors", 0)
-            ),
-            "ambiguous_exit_candidates": int(
-                fetch_summary.get("ambiguous_exit_candidates", 0)
-            ),
-            "ambiguous_resolved_as_exit": int(
-                fetch_summary.get("ambiguous_resolved_as_exit", 0)
-            ),
+            "event_time_parse_errors": int(fetch_summary.get("event_time_parse_errors", 0)),
+            "ambiguous_exit_candidates": int(fetch_summary.get("ambiguous_exit_candidates", 0)),
+            "ambiguous_resolved_as_exit": int(fetch_summary.get("ambiguous_resolved_as_exit", 0)),
             "ambiguous_resolved_as_transfer": int(
                 fetch_summary.get("ambiguous_resolved_as_transfer", 0)
             ),
@@ -9027,16 +8780,12 @@ def download_building_attendance_report(request):
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        report_result = (
-            building_attendance_report.build_building_attendance_report_excel(
-                date_from=params.date_from,
-                date_to=params.date_to,
-                days_with_data=params.days_with_data,
-            )
+        report_result = building_attendance_report.build_building_attendance_report_excel(
+            date_from=params.date_from,
+            date_to=params.date_to,
+            days_with_data=params.days_with_data,
         )
-        filename = building_attendance_report.build_report_filename(
-            report_result.selected_dates
-        )
+        filename = building_attendance_report.build_report_filename(report_result.selected_dates)
 
         response = HttpResponse(
             report_result.excel_bytes,
@@ -9131,9 +8880,7 @@ def sent_excel(request, department_id):
     start_date_str = request.query_params.get("startDate")
 
     if not all([end_date_str, start_date_str]):
-        logger.warning(
-            f"Missing startDate or endDate in request for department ID {department_id}"
-        )
+        logger.warning(f"Missing startDate or endDate in request for department ID {department_id}")
         return Response(
             {"error": "Missing startDate or endDate"},
             status=status.HTTP_400_BAD_REQUEST,
@@ -9171,17 +8918,14 @@ def sent_excel(request, department_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    all_departments = utils.get_all_child_departments(department)
-    department_ids = [dept.id for dept in all_departments]
+    department_ids = department.subtree_ids()
     logger.info(f"Found {len(department_ids)} departments in hierarchy")
 
-    staff_list = models.Staff.objects.filter(
-        department_id__in=department_ids
-    ).select_related("department")
+    staff_list = models.Staff.objects.filter(department_id__in=department_ids).select_related(
+        "department"
+    )
     if not staff_list.exists():
-        logger.warning(
-            f"No staff found for department ID {department_id} or its children"
-        )
+        logger.warning(f"No staff found for department ID {department_id} or its children")
         return Response(
             {"error": "No staff found for this department"},
             status=status.HTTP_404_NOT_FOUND,
@@ -9216,691 +8960,184 @@ def sent_excel(request, department_id):
         )
 
 
-class UploadFileView(View):
-    """
-    Класс представления для обработки действий по загрузке файлов.
+class UploadFileView(LoginRequiredMixin, View):
+    """Приём файла и постановка его в очередь на обработку.
 
-    Отображает форму загрузки файла (upload_file.html)
-    и обрабатывает POST-запросы для импорта данных из файла.
+    Раньше вся обработка (xlsx, zip, отделы, сотрудники) выполнялась прямо
+    в POST-обработчике — см. ``monitoring_app.tasks.process_uploaded_file``
+    и ``monitoring_app.services``, куда она переехала.
     """
 
     template_name = "upload_file.html"
 
+    ALLOWED_EXTENSIONS = {
+        "departments": {".csv", ".xlsx"},
+        "staff": {".csv", ".xlsx"},
+        "public_holidays": {".csv", ".xlsx"},
+        "load_geo": {".csv", ".xlsx"},
+        "delete_staff": {".csv", ".xlsx"},
+        "photo": {".zip"},
+    }
+
     def get(self, request, *args, **kwargs):
-        """
-        Обрабатывает GET-запросы.
-
-        Args:
-            request (HttpRequest): Объект запроса.
-            *args: Дополнительные позиционные аргументы.
-            **kwargs: Дополнительные именованные аргументы.
-
-        Returns:
-            HttpResponse: Отрисовывает шаблон upload_file.html
-            с контекстом, содержащим список всех категорий файлов (categories) и список родительских отделов (parent_departments).
-        """
-        logger.info("GET request received for file upload view")
+        _ = args, kwargs
         categories = models.FileCategory.objects.all()
         parent_departments = models.ParentDepartment.objects.exclude(id=1)
-        context = {"categories": categories, "parent_departments": parent_departments}
-        logger.debug(f"Rendering template with context: {context}")
-        return render(request, self.template_name, context=context)
+        return render(
+            request,
+            self.template_name,
+            context={
+                "categories": categories,
+                "parent_departments": parent_departments,
+                "task_id": request.session.pop("upload_task_id", None),
+                "max_upload_mb": upload_max_bytes() // (1024 * 1024),
+            },
+        )
 
     def post(self, request, *args, **kwargs):
-        """
-        Обрабатывает POST-запросы.
+        _ = args, kwargs
+        uploaded = request.FILES.get("file")
+        category = (request.POST.get("category") or "").strip()
 
-        Args:
-            request (HttpRequest): Объект запроса.
-            *args: Дополнительные позиционные аргументы.
-            **kwargs: Дополнительные именованные аргументы.
-
-        Returns:
-            HttpResponse: Возвращает редирект на страницу загрузки файла или
-            рендеринг upload_file.html с соответствующим контекстом.
-
-        Raises:
-            Exception: Если произошла ошибка при обработке файла.
-        """
-        logger.info("POST request received for file upload view")
-        file_path = request.FILES.get("file")
-        category_slug = request.POST.get("category")
-        parent_department_id = request.POST.get("parent_department")
-
-        if file_path and category_slug:
-            logger.debug(f"File received: {file_path.name}, Category: {category_slug}")
-            try:
-                if file_path.name.endswith(".xlsx"):
-                    logger.info("Processing Excel file")
-                    rows = self.handle_excel(file_path)
-                    if category_slug == "delete_staff":
-                        logger.info("Deleting staff based on Excel data")
-                        self.delete_staff(request, rows, parent_department_id)
-                    elif category_slug == "staff":
-                        logger.info("Processing staff data from Excel")
-                        self.process_staff(request, rows)
-                    elif category_slug == "departments":
-                        logger.info("Processing departments data from Excel")
-                        self.process_departments(request, rows)
-                    elif category_slug == "public_holidays":
-                        logger.info("Processing public holidays data from Excel")
-                        self.process_public_holidays(request, rows)
-                    elif category_slug == "load_geo":
-                        rows = rows[1:]
-                        logger.info("Processing ClassLocation data from Excel")
-                        self.process_class_locations(request, rows)
-                    messages.success(
-                        request, "Файл успешно обработан и данные обновлены."
-                    )
-                elif file_path.name.endswith(".zip") and category_slug == "photo":
-                    logger.info("Processing ZIP file for photos")
-                    self.handle_zip(request, file_path)
-                    messages.success(request, "Фото успешно загружены.")
-                else:
-                    logger.warning("Invalid file format or category")
-                    messages.error(request, "Неверный формат файла или категория.")
-                    return render(request, self.template_name)
-
-                return redirect("uploadFile")
-            except Exception as error:
-                logger.error(f"Error processing file: {str(error)}")
-                messages.error(request, f"Ошибка при обработке файла: {str(error)}")
-        else:
-            logger.warning("File or category missing in the POST request")
-            messages.error(
-                request,
-                "Проверьте правильность заполненных данных или неверный формат файла.",
-            )
-
-        return render(request, self.template_name)
-
-    def handle_excel(self, file_path) -> List[ExcelRow]:
-        """
-        Обрабатывает загрузку и импорт данных из файла Excel.
-
-        Args:
-            file_path (File): Путь к загруженному файлу.
-            category_slug (str): Категория файла для обработки.
-
-        Raises:
-            Exception: Если произошла ошибка при обработке файла Excel.
-        """
-        logger.info("Handling Excel file")
-        try:
-            with atomic_block():
-                wb = load_workbook(file_path)
-                ws = wb.active
-                ws.delete_rows(1, 2)
-                rows = list(ws.iter_rows())
-                logger.debug(f"Rows before sorting: {[row[0].value for row in rows]}")
-
-                rows.sort(
-                    key=lambda row: (
-                        not str(row[0].value).isdigit(),
-                        str(row[0].value).zfill(10),
-                    ),
-                    reverse=False,
-                )
-                logger.debug(f"Rows after sorting: {[row[0].value for row in rows]}")
-                logger.debug(f"Excel file processed, number of rows: {len(rows)}")
-                return rows
-        except Exception as e:
-            logger.error(f"Error processing Excel file: {str(e)}")
-            raise
-
-    def process_class_locations(self, request, rows):
-        """
-        Processes a list of Excel file rows to populate the ClassLocation model using bulk_create and bulk_update.
-
-        This method processes rows containing class location data, extracting details such as
-        name, address, latitude, and longitude. It then either creates new ClassLocation records
-        or updates existing ones based on matching name and address. Records with missing or invalid
-        data are skipped, and errors are logged.
-
-        Args:
-            request (HttpRequest): The request object.
-            rows (list): A list of Excel rows, where each row contains data in the format
-                [name, address, geo].
-
-        Raises:
-            ValueError: If the 'geo' column value is missing or invalid.
-
-        Returns:
-            None: Populates the ClassLocation model and sends success or error messages
-            to the request user regarding records that were created, updated, or skipped due to errors.
-
-        Logs:
-            Logs details of processed rows, including created, updated, and skipped rows. If errors
-            occur, they are logged and the user is notified.
-        """
-        with transaction.atomic():  # type: ignore[reportGeneralTypeIssues]
-            to_create = []
-            to_update = []
-            existing_locations = {
-                (loc.name, loc.address): loc
-                for loc in models.ClassLocation.objects.only(
-                    "id",
-                    "name",
-                    "address",
-                    "latitude",
-                    "longitude",
-                    "acceptance_radius_m",
-                )
-            }
-
-            error_count = 0
-            error_details = []
-            max_error_details = 10
-
-            for index, row in enumerate(rows):
-                try:
-                    name = str(row[0].value or "").strip()
-                    address = str(row[1].value or "").strip()
-                    geo_data = str(row[2].value or "") if len(row) > 2 else ""
-                    radius_val = row[3].value if len(row) > 3 else None
-
-                    if not geo_data or geo_data.lower() == "none":
-                        raise ValueError("Отсутствует значение в столбце 'geo'.")
-
-                    latitude, longitude = utils.extract_coordinates(geo_data)
-
-                    if not all([name, address, latitude, longitude]):
-                        raise ValueError("Отсутствуют необходимые данные.")
-
-                    try:
-                        if latitude is None or str(latitude).strip() == "":
-                            raise ValueError("Latitude is missing or empty")
-                        if longitude is None or str(longitude).strip() == "":
-                            raise ValueError("Longitude is missing or empty")
-
-                        lat_str = (
-                            latitude
-                            if isinstance(latitude, (int, float))
-                            else str(latitude).strip().replace(",", ".")
-                        )
-                        lon_str = (
-                            longitude
-                            if isinstance(longitude, (int, float))
-                            else str(longitude).strip().replace(",", ".")
-                        )
-
-                        latitude = float(lat_str)
-                        longitude = float(lon_str)
-                    except (TypeError, ValueError) as e:
-                        raise ValueError(f"Invalid coordinates: {e}")
-
-                    acceptance_radius_m = None
-                    if radius_val is not None and str(radius_val).strip() != "":
-                        try:
-                            acceptance_radius_m = int(float(str(radius_val).strip()))
-                            if acceptance_radius_m <= 0:
-                                acceptance_radius_m = None
-                        except (TypeError, ValueError):
-                            pass
-
-                    if (name, address) in existing_locations:
-                        location = existing_locations[(name, address)]
-                        location.latitude = latitude
-                        location.longitude = longitude
-                        if acceptance_radius_m is not None:
-                            location.acceptance_radius_m = acceptance_radius_m
-                        to_update.append(location)
-                    else:
-                        loc_kw = dict(
-                            name=name,
-                            address=address,
-                            latitude=latitude,
-                            longitude=longitude,
-                        )
-                        if acceptance_radius_m is not None:
-                            loc_kw["acceptance_radius_m"] = acceptance_radius_m
-                        to_create.append(models.ClassLocation(**loc_kw))
-                except Exception as e:
-                    logger.error(f"Error processing row {index} for ClassLocation: {e}")
-                    error_count += 1
-                    if len(error_details) < max_error_details:
-                        error_details.append(f"Строка {index + 2}: {e}")
-                    continue
-
-            if to_create:
-                try:
-                    models.ClassLocation.objects.bulk_create(to_create)
-                    logger.info(f"Создано новых записей: {len(to_create)}")
-                except Exception as e:
-                    logger.error(f"Error during bulk_create: {e}")
-                    messages.error(
-                        request, "Не удалось создать новые записи ClassLocation."
-                    )
-
-            if to_update:
-                try:
-                    models.ClassLocation.objects.bulk_update(
-                        to_update, ["latitude", "longitude", "acceptance_radius_m"]
-                    )
-                    logger.info(f"Обновлено существующих записей: {len(to_update)}")
-                except Exception as e:
-                    logger.error(f"Error during bulk_update: {e}")
-                    messages.error(
-                        request,
-                        "Не удалось обновить существующие записи ClassLocation.",
-                    )
-
-            if to_create or to_update:
-                try:
-                    invalidate_class_location_cache_impl()
-                except Exception as inv_err:
-                    logger.warning(f"Cache invalidation after bulk ops: {inv_err}")
-
-            success_message = f"Успешно добавлено {len(to_create)} новых записей и обновлено {len(to_update)} записей."
-            if error_count > 0:
-                success_message += f" Пропущено {error_count} записей из-за ошибок."
-            messages.success(request, success_message)
-
-            if error_details:
-                error_message = (
-                    "Некоторые записи были пропущены из-за ошибок:\n"
-                    + "\n".join(error_details)
-                )
-                if error_count > max_error_details:
-                    error_message += (
-                        f"\n...и ещё {error_count - max_error_details} ошибок."
-                    )
-                messages.warning(request, error_message)
-
-    def delete_staff(self, request, rows, parent_department_id):
-        """
-        Удаляет сотрудников дочерних отделов, отсутствующих в переданном списке PIN-кодов.
-
-        Метод получает родительский отдел по `parent_department_id` и находит все связанные
-        дочерние отделы. Затем проверяет, какие PIN-коды сотрудников из базы данных
-        отсутствуют в списке, переданном в `rows`, и удаляет таких сотрудников.
-
-        Args:
-            request: HTTP-запрос для отправки сообщений об успешном или неудачном удалении.
-            rows: Список строк с PIN-кодами сотрудников, которых нужно оставить.
-            parent_department_id: ID родительского отдела для поиска связанных дочерних отделов.
-
-        Exceptions:
-            ValueError: Если не передан `parent_department_id` или не найдены дочерние отделы.
-            models.ParentDepartment.DoesNotExist: Если родительский отдел с данным ID не найден.
-            Exception: Любая другая ошибка, возникшая при удалении сотрудников.
-        """
-        logger.info(f"Deleting staff for parent department ID: {parent_department_id}")
-        try:
-            if not parent_department_id:
-                raise ValueError("ID родительского отдела не был передан.")
-
-            parent_department = models.ParentDepartment.objects.get(
-                id=parent_department_id
-            )
-
-            child_departments = models.ChildDepartment.objects.filter(
-                parent__name=parent_department.name
-            )
-            if not child_departments.exists():
-                raise ValueError(
-                    f"Для родительского отдела {parent_department.name} не найдены дочерние отделы."
-                )
-
-            pin_list_from_file = [row[0].value for row in rows if row[0].value]
-
-            staff_in_db = models.Staff.objects.filter(department__in=child_departments)
-
-            staff_to_delete = staff_in_db.exclude(pin__in=pin_list_from_file)
-
-            deleted_count, _ = staff_to_delete.delete()
-            logger.info(f"Deleted {deleted_count} staff members")
-            messages.success(
-                request, f"Успешно удалено {deleted_count} сотрудника(ов)."
-            )
-
-        except models.ParentDepartment.DoesNotExist:
-            error_message = f"Родительский отдел с ID {parent_department_id} не найден."
-            logger.error(error_message)
-            messages.error(request, error_message)
-        except ValueError as ve:
-            logger.warning(f"ValueError during staff deletion: {str(ve)}")
-            messages.error(request, str(ve))
-        except Exception as e:
-            logger.error(f"Unexpected error during staff deletion: {str(e)}")
-            messages.error(
-                request, f"Произошла ошибка при удалении сотрудников: {str(e)}"
-            )
-
-    def process_departments(self, request, rows):
-        """
-        Обрабатывает данные для категории "departments" из Excel файла.
-        Args:
-            rows (list): Список строк из файла Excel.
-        Raises:
-            Exception: Если произошла ошибка при обработке строки.
-        """
-        logger.info("Processing departments data")
-
-        created_parent_departments = []
-        created_child_departments = []
+        error = self._validate(uploaded, category)
+        if error:
+            logger.warning("UploadFileView: отклонено — %s", error)
+            messages.error(request, error)
+            return redirect("uploadFile")
 
         try:
-            for row in rows:
-                parent_department_id_value = row[2].value
-                parent_department_name = row[3].value
-                child_department_name = row[1].value
-                child_department_id_value = row[0].value
+            stored_path = self._store(uploaded)
+        except OSError as exc:
+            logger.error("UploadFileView: не удалось сохранить файл — %s", exc)
+            messages.error(request, f"Не удалось сохранить файл: {exc}")
+            return redirect("uploadFile")
 
-                parent_department_id = (
-                    utils.normalize_id(str(parent_department_id_value).strip())
-                    if parent_department_id_value
-                    else None
-                )
-                child_department_id = (
-                    utils.normalize_id(str(child_department_id_value).strip())
-                    if child_department_id_value
-                    else None
-                )
-
-                if not parent_department_id or not child_department_id:
-                    logger.debug("Skipping row due to missing or invalid ID")
-                    continue
-
-                if parent_department_name:
-                    (
-                        parent_department,
-                        parent_created,
-                    ) = models.ParentDepartment.objects.get_or_create(
-                        id=parent_department_id,
-                        defaults={"name": parent_department_name},
-                    )
-                    if parent_created:
-                        created_parent_departments.append(parent_department_name)
-                        logger.info(
-                            f"Created new parent department: {parent_department_name}"
-                        )
-
-                    (
-                        parent_department_as_child,
-                        child_created,
-                    ) = models.ChildDepartment.objects.get_or_create(
-                        id=parent_department.id,
-                        defaults={"name": parent_department.name, "parent": None},
-                    )
-                else:
-                    parent_department_as_child = models.ChildDepartment.objects.get(
-                        id="1"
-                    )
-
-                (
-                    _child_department,
-                    child_created,
-                ) = models.ChildDepartment.objects.get_or_create(
-                    id=child_department_id,
-                    defaults={
-                        "name": child_department_name,
-                        "parent": parent_department_as_child,
-                    },
-                )
-                if child_created:
-                    created_child_departments.append(child_department_name)
-                    logger.info(
-                        f"Created new child department: {child_department_name}"
-                    )
-
-            if created_parent_departments or created_child_departments:
-                messages.success(
-                    request,
-                    f"Создано родительских отделов: {len(created_parent_departments)}, "
-                    f"дочерних отделов: {len(created_child_departments)}.",
-                )
-
-        except Exception as error:
-            logger.error(f"Error processing departments: {str(error)}")
-            messages.error(request, f"Ошибка при обработке отдела: {str(error)}")
-
-    def process_staff(self, request, rows):
-        """
-        Обрабатывает данные для категории "staff" из Excel файла.
-        except Exception as error:
-            messages.error(request, f"Ошибка при обработке отдела: {str(error)}")
-
-        Args:
-            rows (list): Список строк из файла Excel.
-
-        Raises:
-            Exception: Если произошла ошибка при обработке строки.
-        """
-        logger.info("Processing staff data")
-        staff_instances = []
-        departments_cache = {}
-
-        try:
-            for row in rows:
-                pin = row[0].value
-                name = row[1].value
-                surname = row[2].value or "Нет фамилии"
-                department_id = str(row[3].value) if row[3].value else None
-                position_name = (
-                    row[5].value or "Сотрудник" if len(row) > 5 else "Сотрудник"
-                )
-
-                position, _ = models.Position.objects.get_or_create(name=position_name)
-
-                if department_id:
-                    if department_id in departments_cache:
-                        department = departments_cache[department_id]
-                    else:
-                        try:
-                            department = models.ChildDepartment.objects.get(
-                                id=department_id
-                            )
-                            departments_cache[department_id] = department
-                        except models.ChildDepartment.DoesNotExist:
-                            department = None
-                else:
-                    department = None
-
-                staff_instance = models.Staff(
-                    pin=pin,
-                    name=name,
-                    surname=surname,
-                    department=department,
-                )
-
-                staff_instances.append((staff_instance, position))
-
-            pin_list = [staff[0].pin for staff in staff_instances]
-            existing_staff = models.Staff.objects.filter(pin__in=pin_list)
-            existing_staff_dict = {staff.pin: staff for staff in existing_staff}
-
-            staff_to_create = []
-            staff_to_update = []
-
-            for staff_instance, position in staff_instances:
-                if staff_instance.pin in existing_staff_dict:
-                    existing = existing_staff_dict[staff_instance.pin]
-                    if staff_instance.name and staff_instance.name != existing.name:
-                        existing.name = staff_instance.name
-                    if (
-                        staff_instance.surname
-                        and staff_instance.surname != existing.surname
-                    ):
-                        existing.surname = staff_instance.surname
-                    if (
-                        staff_instance.department
-                        and staff_instance.department != existing.department
-                    ):
-                        existing.department = staff_instance.department
-                    if position.name and position.name != "Сотрудник":
-                        if not existing.positions.filter(name=position.name).exists():
-                            existing.positions.add(position)
-                    staff_to_update.append(existing)
-                else:
-                    try:
-                        staff_instance.save()
-                        staff_instance.positions.add(position)
-                        staff_to_create.append(staff_instance)
-                    except IntegrityError:
-                        logger.warning(
-                            f"Duplicate entry for pin {staff_instance.pin}, skipping."
-                        )
-                        continue
-
-            for staff in staff_to_update:
-                staff.save()
-
-            logger.info(f"Updated {len(staff_to_update)} staff members")
-            logger.info(f"Created {len(staff_to_create)} new staff members")
-            messages.success(
-                request, f"Успешно обновлено {len(staff_to_update)} сотрудников."
-            )
-            messages.success(
-                request, f"Успешно добавлено {len(staff_to_create)} новых сотрудников."
-            )
-
-        except Exception as e:
-            logger.error(f"Error processing staff data: {str(e)}")
-            messages.error(request, f"Ошибка при обработке сотрудников: {str(e)}")
-
-    def process_public_holidays(self, request, rows):
-        """
-        Обрабатывает данные для категории "public_holidays" из Excel файла.
-
-        Args:
-            request (HttpRequest): Объект запроса.
-            rows (list): Список строк из файла Excel.
-
-        Raises:
-            Exception: Если произошла ошибка при обработке строки.
-        """
-        logger.info("Processing public holidays data")
-
-        created_holidays = 0
-        updated_holidays = 0
-        errors = []
-        max_error_details = 10
-
-        working_day_mapping = {
-            "да": True,
-            "нет": False,
-            "yes": True,
-            "no": False,
-            "true": True,
-            "false": False,
-            "рабочий": True,
-            "не рабочий": False,
+        options = {
+            "parent_department": request.POST.get("parent_department") or "",
+            "archive_missing": request.POST.get("archive_missing") == "on",
+            "force": request.POST.get("force_archive") == "on",
         }
 
-        with atomic_block():
-            for index, row in enumerate(rows):
-                try:
-                    date_cell = row[0].value
-                    name_cell = row[1].value
-                    is_working_day_cell = row[2].value
-
-                    if not date_cell or not name_cell:
-                        raise ValueError(
-                            "Отсутствуют обязательные поля 'Дата праздника' или 'Название праздника'."
-                        )
-
-                    if isinstance(date_cell, datetime.datetime) or isinstance(
-                        date_cell, datetime.date
-                    ):
-                        date = (
-                            date_cell.date()
-                            if isinstance(date_cell, datetime.datetime)
-                            else date_cell
-                        )
-                    else:
-                        try:
-                            date = datetime.datetime.strptime(
-                                str(date_cell), "%d.%m.%Y"
-                            ).date()
-                        except ValueError:
-                            try:
-                                date = datetime.datetime.strptime(
-                                    str(date_cell), "%Y-%m-%d"
-                                ).date()
-                            except ValueError:
-                                raise ValueError(
-                                    "Неверный формат даты. Ожидается DD.MM.YYYY или YYYY-MM-DD."
-                                )
-
-                    if isinstance(is_working_day_cell, bool):
-                        is_working_day = is_working_day_cell
-                    else:
-                        is_working_day_str = str(is_working_day_cell).strip().lower()
-                        is_working_day = working_day_mapping.get(is_working_day_str)
-                        if is_working_day is None:
-                            raise ValueError(
-                                "Неверное значение в поле 'Рабочий день'. Ожидается 'Да' или 'Нет'."
-                            )
-
-                    _holiday, created = models.PublicHoliday.objects.update_or_create(
-                        date=date,
-                        defaults={
-                            "name": name_cell.strip(),
-                            "is_working_day": is_working_day,
-                        },
-                    )
-
-                    if created:
-                        created_holidays += 1
-                    else:
-                        updated_holidays += 1
-
-                except Exception as e:
-                    logger.error(
-                        f"Error processing row {index + 2} for PublicHoliday: {e}"
-                    )
-                    errors.append(f"Строка {index + 2}: {e}")
-                    if len(errors) >= max_error_details:
-                        break
-                    continue
-
-        success_message = f"Успешно создано {created_holidays} праздников и обновлено {updated_holidays} праздников."
-        messages.success(request, success_message)
-
-        if errors:
-            error_message = (
-                "Некоторые записи не были обработаны из-за ошибок:\n"
-                + "\n".join(errors)
-            )
-            if len(errors) > max_error_details:
-                error_message += f"\n...и ещё {len(errors) - max_error_details} ошибок."
-            messages.warning(request, error_message)
-
-    def handle_zip(self, request, file_path):
-        """
-        Обрабатывает загрузку и импорт данных из ZIP архива для Staff.
-        Args:
-            file_path (File): Путь к загруженному файлу.
-
-        Raises:
-            Exception: Если произошла ошибка при обработке ZIP файла.
-        """
-        logger.info("Processing ZIP file for staff photos")
         try:
-            with zipfile.ZipFile(file_path, "r") as zip_file:
-                zip_file.extractall("/tmp")
-                for filename in zip_file.namelist():
-                    pin = os.path.splitext(filename)[0]
-                    staff_member = models.Staff.objects.filter(pin=pin).first()
-                    if staff_member:
-                        with zip_file.open(filename) as file:
-                            new_avatar = ContentFile(file.read())
-                            new_avatar.name = filename
-                            if new_avatar:
-                                if staff_member.avatar:
-                                    staff_member.avatar.delete(save=False)
-                                staff_member.avatar.save(
-                                    new_avatar.name, new_avatar, save=False
-                                )
-                                staff_member.save()
-            logger.info("Staff photos updated successfully")
-            messages.success(request, "Фотографии успешно обновлены.")
-        except Exception as e:
-            logger.error(f"Error processing ZIP file: {str(e)}")
+            queue_task = cast(Any, tasks.process_uploaded_file)
+            task = queue_task.delay(stored_path, category, options)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("UploadFileView: не удалось поставить задачу — %s", exc)
+            self._discard(stored_path)
             messages.error(
-                request, f"Ошибка при обработке архива с фотографиями: {str(e)}"
+                request,
+                "Не удалось поставить файл в очередь обработки. "
+                "Проверьте, что Celery и Redis запущены.",
             )
+            return redirect("uploadFile")
+
+        request.session["upload_task_id"] = task.id
+        logger.info(
+            "UploadFileView: категория=%s файл=%s задача=%s",
+            category,
+            uploaded.name,
+            task.id,
+        )
+        messages.success(
+            request,
+            "Файл принят и поставлен в очередь. Обработка идёт в фоне — " "прогресс показан ниже.",
+        )
+        return redirect("uploadFile")
+
+    def _validate(self, uploaded, category: str) -> Optional[str]:
+        """Проверки до записи на диск: нечего сохранять, если запрос невалиден."""
+        if not uploaded or not category:
+            return "Выберите шаблон и файл."
+        if not models.FileCategory.objects.filter(slug=category).exists():
+            return f"Неизвестный шаблон: {category}."
+
+        extension = os.path.splitext(uploaded.name or "")[1].lower()
+        allowed = self.ALLOWED_EXTENSIONS.get(category, set())
+        if extension not in allowed:
+            return (
+                f"Для шаблона «{category}» допустимы файлы "
+                f"{', '.join(sorted(allowed))}, а получен «{extension or 'без расширения'}»."
+            )
+
+        limit = upload_max_bytes()
+        if uploaded.size and uploaded.size > limit:
+            return (
+                f"Файл больше допустимых {limit // (1024 * 1024)} МБ "
+                f"({uploaded.size // (1024 * 1024)} МБ)."
+            )
+        return None
+
+    def _store(self, uploaded) -> str:
+        """Кладёт загрузку на диск потоком: содержимое целиком в память не попадает."""
+        target_dir = Path(settings.MEDIA_ROOT) / "uploads"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        extension = os.path.splitext(uploaded.name or "")[1].lower()
+        target = target_dir / f"{uuid.uuid4().hex}{extension}"
+        with open(target, "wb") as handle:
+            for chunk in uploaded.chunks():
+                handle.write(chunk)
+        return str(target)
+
+    @staticmethod
+    def _discard(path: str) -> None:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def upload_max_bytes() -> int:
+    """Предел размера загрузки. Настраивается через ``UPLOAD_MAX_BYTES``."""
+    return int(getattr(settings, "UPLOAD_MAX_BYTES", 2 * 1024 * 1024 * 1024))
+
+
+@never_cache
+def upload_task_status(request, task_id: str):
+    """Статус фоновой обработки загруженного файла.
+
+    Отдаёт состояние Celery-задачи и прогресс, который публикует
+    ``process_uploaded_file``. Шаблон опрашивает этот эндпоинт, пока
+    состояние не станет терминальным.
+    """
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "Требуется авторизация."}, status=403)
+
+    result = AsyncResult(task_id)
+    payload = {
+        "task_id": task_id,
+        "state": result.state,
+        "stage": None,
+        "processed": 0,
+        "total": 0,
+        "message": "",
+        "summary": [],
+        "ready": result.ready(),
+    }
+
+    if result.state == "PROGRESS" and isinstance(result.info, dict):
+        payload.update(
+            {
+                "stage": result.info.get("stage"),
+                "processed": result.info.get("processed", 0),
+                "total": result.info.get("total", 0),
+            }
+        )
+        total = payload["total"]
+        payload["message"] = (
+            f"{payload['stage']}: {payload['processed']} из {total}"
+            if total
+            else f"{payload['stage']}: {payload['processed']}"
+        )
+    elif result.state == "SUCCESS":
+        data = result.result if isinstance(result.result, dict) else {}
+        payload["summary"] = data.get("summary", [])
+        payload["message"] = "Обработка завершена."
+    elif result.state == "FAILURE":
+        payload["message"] = str(result.info)
+    elif result.state == "PENDING":
+        payload["message"] = "Задача в очереди."
+
+    return JsonResponse(payload)
 
 
 class APIKeyCheckView(APIView):
@@ -10029,20 +9266,16 @@ def password_reset_request_view(request):
             if not models.PasswordResetRequestLog.can_request_again(user, ip_address):
                 if last_request_time:
                     next_possible_time = timezone.localtime(
-                        last_request_time + timezone.timedelta(minutes=5),
+                        last_request_time + datetime.timedelta(minutes=5),
                         user_timezone,
                     )
-                    last_request_time_local = timezone.localtime(
-                        last_request_time, user_timezone
-                    )
+                    last_request_time_local = timezone.localtime(last_request_time, user_timezone)
                     messages.warning(
                         request,
                         f"Запрос уже был отправлен. Повторный запрос возможен в {next_possible_time.strftime('%H:%M:%S %Z')} ({next_possible_time.tzinfo}). Последний запрос был в {last_request_time_local.strftime('%H:%M:%S %Z')} ({last_request_time_local.tzinfo}).",
                     )
                 else:
-                    current_time_local = timezone.localtime(
-                        timezone.now(), user_timezone
-                    )
+                    current_time_local = timezone.localtime(timezone.now(), user_timezone)
                     messages.warning(
                         request,
                         f"Запрос уже был отправлен. Повторный запрос возможен в ближайшее время. Последний запрос: неизвестен. Текущее время {current_time_local.strftime('%H:%M:%S %Z')} ({current_time_local.tzinfo}).",
@@ -10272,9 +9505,7 @@ def face_lab_bootstrap_status(request):
         ).get(pin=pin)
     except models.Staff.DoesNotExist:
         return Response({"error": "Staff not found."}, status=status.HTTP_404_NOT_FOUND)
-    qs = models.StaffFaceSample.objects.filter(
-        staff=staff, is_active=True, is_trusted=True
-    )
+    qs = models.StaffFaceSample.objects.filter(staff=staff, is_active=True, is_trusted=True)
     angles = list(qs.values_list("angle", flat=True).distinct())
     max_n = int(getattr(settings, "FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES", 5))
     req = (
@@ -10285,9 +9516,7 @@ def face_lab_bootstrap_status(request):
     present_l = {str(a).strip().lower() for a in angles}
     missing = [a for a in req if a not in present_l]
     next_angle = missing[0] if missing else None
-    has_avatar = bool(
-        getattr(staff, "avatar", None) and getattr(staff.avatar, "name", "")
-    )
+    has_avatar = bool(getattr(staff, "avatar", None) and getattr(staff.avatar, "name", ""))
     return Response(
         {
             "pin": pin,
@@ -10320,8 +9549,9 @@ def face_lab_save_face_sample(request):
     Returns:
         API response that keeps setup focused on usable photos, not on PAD jargon.
     """
-    from monitoring_app import face_parsing, ml
     import numpy as np
+
+    from monitoring_app import face_parsing, ml
     from monitoring_app.photo_pad import check_photo_bgr
 
     pin = (request.data.get("pin") or "").strip()
@@ -10338,9 +9568,7 @@ def face_lab_save_face_sample(request):
     )
     allowed_src = {c[0] for c in models.StaffFaceSample.SOURCE_CHOICES}
     source = (
-        raw_source
-        if raw_source in allowed_src
-        else models.StaffFaceSample.SOURCE_BOOTSTRAP_CAPTURE
+        raw_source if raw_source in allowed_src else models.StaffFaceSample.SOURCE_BOOTSTRAP_CAPTURE
     )
     if not pin or not uploaded or uploaded.size == 0:
         return Response(
@@ -10429,9 +9657,9 @@ def face_lab_save_face_sample(request):
     max_active = int(getattr(settings, "FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES", 5))
     fname = f"{staff.pin}_face_{angle}_{uuid.uuid4().hex[:10]}.jpg"
     with _db_atomic():
-        models.StaffFaceSample.objects.filter(
-            staff=staff, angle=angle, is_active=True
-        ).update(is_active=False)
+        models.StaffFaceSample.objects.filter(staff=staff, angle=angle, is_active=True).update(
+            is_active=False
+        )
         sample = models.StaffFaceSample(
             staff=staff,
             source=source,
@@ -10441,9 +9669,7 @@ def face_lab_save_face_sample(request):
             quality_passed=True,
             is_trusted=True,
             is_active=True,
-            probe_eyeglasses_likely=(
-                glasses_probe if isinstance(glasses_probe, bool) else None
-            ),
+            probe_eyeglasses_likely=(glasses_probe if isinstance(glasses_probe, bool) else None),
         )
         # pylint: disable-next=no-member
         sample.image.save(fname, ContentFile(jpeg_bytes), save=False)
@@ -10462,8 +9688,7 @@ def face_lab_save_face_sample(request):
                 )
 
         if (
-            staff.face_profile_state
-            == models.Staff.FACE_PROFILE_STATE_BOOTSTRAP_REQUIRED
+            staff.face_profile_state == models.Staff.FACE_PROFILE_STATE_BOOTSTRAP_REQUIRED
             and models.StaffFaceSample.objects.filter(
                 staff=staff, is_active=True, is_trusted=True
             ).count()
@@ -10480,9 +9705,7 @@ def face_lab_save_face_sample(request):
             "angle": angle,
             "saved_as": fname,
             "stored_format": "jpeg",
-            "glasses_detected": (
-                glasses_probe if isinstance(glasses_probe, bool) else None
-            ),
+            "glasses_detected": (glasses_probe if isinstance(glasses_probe, bool) else None),
             "message": "Образец сохранён.",
         },
         status=status.HTTP_200_OK,
@@ -10495,6 +9718,7 @@ def face_lab_save_face_sample(request):
 def face_lab_apply_sample_avatar(request):
     """Replace staff avatar file from a saved StaffFaceSample image."""
     from monitoring_app import ml
+
     pin = (request.data.get("pin") or "").strip()
     raw_sid = request.data.get("sample_id")
     try:
@@ -10515,9 +9739,7 @@ def face_lab_apply_sample_avatar(request):
             pk=sample_id, staff=staff, is_active=True, is_trusted=True
         )
     except models.StaffFaceSample.DoesNotExist:
-        return Response(
-            {"error": "Sample not found."}, status=status.HTTP_404_NOT_FOUND
-        )
+        return Response({"error": "Sample not found."}, status=status.HTTP_404_NOT_FOUND)
     path = getattr(sample.image, "path", "") or ""
     if not path or not os.path.isfile(path):
         return Response(
@@ -10554,6 +9776,7 @@ def staff_avatar_upload(request, staff_pin: str):
     Does not run PAD (trusted admin path).
     """
     from monitoring_app import ml
+
     pin = (staff_pin or "").strip()
     if not pin:
         return Response(
@@ -10797,8 +10020,9 @@ def staff_avatar_upload(request, staff_pin: str):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def verify_face(request):
-    from monitoring_app import face_parsing, ml
     import numpy as np
+
+    from monitoring_app import face_parsing, ml
 
     face_logger = logging.getLogger("django")
     face_logger.info("Received request to verify face.")
@@ -10816,9 +10040,7 @@ def verify_face(request):
 
     if staff_image.size == 0:
         face_logger.warning("Uploaded image is empty.")
-        return Response(
-            {"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         staff = models.Staff.objects.get(pin=staff_pin)
@@ -10853,9 +10075,7 @@ def verify_face(request):
         liveness_payload: LivenessPayload = liveness_payload_from_pad_result(pad_result)
 
         thr_strong = float(getattr(settings, "FACE_VERIFY_THRESHOLD_VERIFIED", 0.76))
-        thr_weak_gal = float(
-            getattr(settings, "FACE_VERIFY_THRESHOLD_VERIFIED_WEAK_GALLERY", 0.86)
-        )
+        thr_weak_gal = float(getattr(settings, "FACE_VERIFY_THRESHOLD_VERIFIED_WEAK_GALLERY", 0.86))
         thr_cold = float(getattr(settings, "FACE_VERIFY_THRESHOLD_COLD_START", 0.835))
 
         def _gallery_snapshot() -> tuple[int, dict[str, int]]:
@@ -10891,20 +10111,14 @@ def verify_face(request):
         ) -> QualityPayload:
             if reason_codes is None:
                 _qraw = probe_meta.get("quality_reason_codes")
-                reason_codes = (
-                    [str(x) for x in _qraw] if isinstance(_qraw, list) else []
-                )
+                reason_codes = [str(x) for x in _qraw] if isinstance(_qraw, list) else []
             return {
                 "passed": (
-                    bool(probe_meta.get("quality_pass"))
-                    if passed is None
-                    else bool(passed)
+                    bool(probe_meta.get("quality_pass")) if passed is None else bool(passed)
                 ),
                 "det_score": _optional_float(probe_meta.get("det_score")),
                 "face_area_ratio": _optional_float(probe_meta.get("face_area_ratio")),
-                "blur_laplacian_var": _optional_float(
-                    probe_meta.get("blur_laplacian_var")
-                ),
+                "blur_laplacian_var": _optional_float(probe_meta.get("blur_laplacian_var")),
                 "brightness_mean": _optional_float(probe_meta.get("brightness_mean")),
                 "pose_yaw": _optional_float(probe_meta.get("pose_yaw")),
                 "pose_pitch": _optional_float(probe_meta.get("pose_pitch")),
@@ -10972,9 +10186,7 @@ def verify_face(request):
             parsing_meta = face_parsing.probe_bgr(new_image)
             body["face_parsing_active"] = parsing_meta.get("face_parsing_active", False)
             body["probe_eyeglasses_likely"] = parsing_meta.get("eyeglasses_likely")
-            body["probe_eyeglasses_area_frac"] = parsing_meta.get(
-                "eyeglasses_area_frac"
-            )
+            body["probe_eyeglasses_area_frac"] = parsing_meta.get("eyeglasses_area_frac")
             if parsing_meta.get("face_parsing_error"):
                 body["face_parsing_error"] = parsing_meta["face_parsing_error"]
             return body
@@ -11002,8 +10214,7 @@ def verify_face(request):
             return Response(
                 {
                     "error": (
-                        "Нет эталона лица: нужен файл аватара и/или запись маски "
-                        "с эмбеддингом."
+                        "Нет эталона лица: нужен файл аватара и/или запись маски " "с эмбеддингом."
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -11058,17 +10269,13 @@ def verify_face(request):
         return Response(body, status=status.HTTP_200_OK)
 
     except ValidationError as ve:
-        face_logger.warning(
-            "verify_face validation: %s", _drf_validation_error_text(ve)
-        )
+        face_logger.warning("verify_face validation: %s", _drf_validation_error_text(ve))
         return Response(
             {"error": _drf_validation_error_text(ve)},
             status=status.HTTP_400_BAD_REQUEST,
         )
     except Exception as e:
-        face_logger.error(
-            f"Error during face verification for PIN {staff_pin}: {str(e)}"
-        )
+        face_logger.error(f"Error during face verification for PIN {staff_pin}: {str(e)}")
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -11128,6 +10335,7 @@ def verify_face(request):
 @permission_classes([AllowAny])
 def recognize_faces(request):
     from monitoring_app import ml
+
     recognize_logger = logging.getLogger("django")
     recognize_logger.info("Received request to recognize faces.")
 
@@ -11135,9 +10343,7 @@ def recognize_faces(request):
 
     if not staff_image:
         recognize_logger.warning("No image provided in the request.")
-        return Response(
-            {"error": "Image is required."}, status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({"error": "Image is required."}, status=status.HTTP_400_BAD_REQUEST)
 
     if not staff_image.name.lower().endswith((".png", ".jpg", ".jpeg")):
         recognize_logger.warning("Invalid image format provided.")
@@ -11148,9 +10354,7 @@ def recognize_faces(request):
 
     if staff_image.size == 0:
         recognize_logger.warning("Uploaded image is empty.")
-        return Response(
-            {"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({"error": "Uploaded image is empty."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         recognized_staff, unknown_faces = ml.recognize_faces_in_image(staff_image)
@@ -11207,14 +10411,10 @@ class AbsentReasonView(APIView):
 
         if start_date_str:
             try:
-                query_start = datetime.datetime.strptime(
-                    start_date_str, "%Y-%m-%d"
-                ).date()
+                query_start = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
             except ValueError as e:
                 logger.error(f"Неверный формат start_date: {start_date_str}")
-                raise ValueError(
-                    "Неверный формат start_date. Ожидается YYYY-MM-DD."
-                ) from e
+                raise ValueError("Неверный формат start_date. Ожидается YYYY-MM-DD.") from e
         else:
             query_start = default_start
 
@@ -11223,9 +10423,7 @@ class AbsentReasonView(APIView):
                 query_end = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
             except ValueError as e:
                 logger.error(f"Неверный формат end_date: {end_date_str}")
-                raise ValueError(
-                    "Неверный формат end_date. Ожидается YYYY-MM-DD."
-                ) from e
+                raise ValueError("Неверный формат end_date. Ожидается YYYY-MM-DD.") from e
         else:
             query_end = today
 
@@ -11350,12 +10548,8 @@ class AbsentReasonView(APIView):
                             new_filename = f"{staff.pin}_{fio}_{absence.id}{ext}"
                             zf.write(file_path, arcname=new_filename)
             in_memory.seek(0)
-            logger.info(
-                f"Возвращается ZIP-архив документов за период {query_start} - {query_end}."
-            )
-            response = HttpResponse(
-                in_memory.getvalue(), content_type="application/zip"
-            )
+            logger.info(f"Возвращается ZIP-архив документов за период {query_start} - {query_end}.")
+            response = HttpResponse(in_memory.getvalue(), content_type="application/zip")
             response["Content-Disposition"] = (
                 f'attachment; filename="documents_{query_start}_{query_end}.zip"'
             )
@@ -11427,9 +10621,7 @@ class AbsentReasonView(APIView):
           - **HTTP 400 BAD REQUEST**: Если входные данные неверны.
         """
         if not request.user.is_authenticated:
-            logger.warning(
-                "Пользователь не аутентифицирован для POST /api/absent_staff/"
-            )
+            logger.warning("Пользователь не аутентифицирован для POST /api/absent_staff/")
             return Response(
                 {"error": "Требуется аутентификация"},
                 status=status.HTTP_403_FORBIDDEN,
@@ -11439,7 +10631,7 @@ class AbsentReasonView(APIView):
 
         if serializer.is_valid():
             try:
-                instance = serializer.save()
+                instance = cast(models.AbsentReason, serializer.save())
                 logger.info(
                     f"Запись отсутствия создана. ID: {instance.id}, "
                     f"Сотрудник: {instance.staff.pin if hasattr(instance, 'staff') and hasattr(instance.staff, 'pin') else 'N/A'}, "
@@ -11450,9 +10642,7 @@ class AbsentReasonView(APIView):
                     status=status.HTTP_201_CREATED,
                 )
             except Exception as e:
-                logger.error(
-                    f"Ошибка при сохранении записи отсутствия: {str(e)}", exc_info=True
-                )
+                logger.error(f"Ошибка при сохранении записи отсутствия: {str(e)}", exc_info=True)
                 return Response(
                     {"error": f"Ошибка при сохранении: {str(e)}"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -1,7 +1,7 @@
 import { useState, ChangeEvent, useMemo, memo, useCallback } from "react";
 import { IData } from "../schemas/IData";
 import { useNavigate } from "../RouterUtils";
-import { formatDepartmentName } from "../utils/utils";
+import { formatDepartmentName, formatDateRu } from "../utils/utils";
 import { motion } from "framer-motion";
 import SearchInput from "../components/SearchInput";
 import {
@@ -25,7 +25,15 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
   const [searchQuery, setSearchQuery] = useState<string>("");
 
   const handleRowClick = useCallback(
-    (departmentId: string, hasChildDepartments: boolean) => {
+    (
+      departmentId: string,
+      hasChildDepartments: boolean,
+      ownStaffOnly = false,
+    ) => {
+      if (ownStaffOnly) {
+        navigate(`/childDepartment/${departmentId}?direct=1`);
+        return;
+      }
       const path = hasChildDepartments
         ? `/department/${departmentId}`
         : `/childDepartment/${departmentId}`;
@@ -176,6 +184,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
                   handleRowClick(
                     String(department.child_id),
                     hasChildDepartments,
+                    department.own_staff_only,
                   )
                 }
               >
@@ -198,7 +207,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
                 <div className="flex items-center text-sm text-gray-600 dark:text-gray-400 ml-8">
                   <FaCalendarAlt className="mr-2 text-gray-500 dark:text-gray-500" />
                   <span className="font-mono">
-                    {new Date(department.date_of_creation).toLocaleDateString()}
+                    {formatDateRu(department.date_of_creation)}
                   </span>
                 </div>
               </motion.div>
@@ -261,6 +270,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
                         handleRowClick(
                           String(department.child_id),
                           hasChildDepartments,
+                          department.own_staff_only,
                         )
                       }
                     >
@@ -283,9 +293,7 @@ const DepartmentTable: React.FC<DepartmentTableProps> = ({ data }) => {
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400 font-mono">
-                        {new Date(
-                          department.date_of_creation,
-                        ).toLocaleDateString()}
+                        {formatDateRu(department.date_of_creation)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
                         <span className="badge-primary px-3 py-1.5 rounded-lg">

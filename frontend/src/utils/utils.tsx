@@ -25,7 +25,7 @@ export const formatDepartmentName = (string: string) => {
   ];
 
   const abbreviations = ["крму", "ппс", "ауп"].map((abbr) =>
-    abbr.toLowerCase()
+    abbr.toLowerCase(),
   );
 
   const stringWithSpaces = string.replace(/_/g, " ");
@@ -64,8 +64,11 @@ export const formatDepartmentName = (string: string) => {
     .join(" ");
 };
 
-export const formatDateRu = (dateString: string) => {
+export const formatDateRu = (dateString: string | null | undefined) => {
+  if (!dateString) return "—";
   const date = new Date(dateString);
+  // Без этой проверки пустая или битая дата печаталась как "Invalid Date".
+  if (Number.isNaN(date.getTime())) return "—";
   const day = date.getDate().toString().padStart(2, "0");
   const month = (date.getMonth() + 1).toString().padStart(2, "0");
   const year = date.getFullYear();
@@ -119,7 +122,7 @@ export const declensionDays = (daysCount: number) => {
 export const extractTimezone = (isoString: string | null): string => {
   if (!isoString) return "+00:00";
   const timezoneMatch = isoString.match(/[+-]\d{2}:\d{2}$/);
-  return timezoneMatch ? timezoneMatch[0] : "+00:00"; 
+  return timezoneMatch ? timezoneMatch[0] : "+00:00";
 };
 
 /**
@@ -199,7 +202,7 @@ export const formatMinutes = (totalMinutes: number) => {
  */
 export const formatISOWithTimezone = (
   isoString: string | null,
-  format: "time" | "date" | "datetime" = "time"
+  format: "time" | "date" | "datetime" = "time",
 ): string => {
   if (!isoString) return "Нет данных";
 
@@ -257,7 +260,7 @@ export const convertTimezoneFormat = (timezone: string): string => {
  */
 export const formatTimeRange = (
   firstInISO: string | null,
-  lastOutISO: string | null
+  lastOutISO: string | null,
 ): string => {
   if (!firstInISO || !lastOutISO) return "Нет данных";
 

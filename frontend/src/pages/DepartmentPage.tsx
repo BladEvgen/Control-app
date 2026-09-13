@@ -88,6 +88,34 @@ const shouldRenderLink = (hasDepartmentId: boolean): boolean => {
   return Boolean(hasDepartmentId);
 };
 
+type OwnStaff = { direct_staff_count?: number };
+
+const withOwnStaffCard = (
+  data: IData & OwnStaff,
+  departmentId: string,
+): IData => {
+  const own = data.direct_staff_count ?? 0;
+  const children = data.child_departments ?? [];
+  if (own <= 0 || children.length === 0) {
+    return data;
+  }
+  return {
+    ...data,
+    child_departments: [
+      ...children,
+      {
+        child_id: departmentId,
+        name: `${data.name} — сотрудники без подотдела`,
+        date_of_creation: "",
+        parent: departmentId,
+        has_child_departments: false,
+        direct_staff_count: own,
+        own_staff_only: true,
+      },
+    ],
+  };
+};
+
 const DepartmentPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const departmentId = id ?? null;
@@ -140,16 +168,24 @@ const DepartmentPage: React.FC = () => {
         parent: string;
         has_child_departments: boolean;
         total_staff_count: number;
+        direct_staff_count: number;
         child_departments: Array<{
           child_id: string;
           name: string;
           date_of_creation: string;
           parent: string;
+          has_child_departments: boolean;
+          direct_staff_count: number;
         }>;
       }
 
       interface RootDepartmentResponse {
         departments: RootDepartmentItem[];
+        display_root: {
+          child_id: string;
+          name: string;
+          direct_staff_count: number;
+        } | null;
         total_staff_count: number;
       }
 
@@ -163,11 +199,25 @@ const DepartmentPage: React.FC = () => {
           date_of_creation: d.date_of_creation ?? "",
           parent: "",
           has_child_departments: d.has_child_departments ?? false,
+          direct_staff_count: d.direct_staff_count ?? 0,
         }),
       );
 
+      const displayRoot = batchData.display_root;
+      if (displayRoot && displayRoot.direct_staff_count > 0) {
+        virtualChildren.push({
+          child_id: displayRoot.child_id,
+          name: `${displayRoot.name} — сотрудники без подотдела`,
+          date_of_creation: "",
+          parent: "",
+          has_child_departments: false,
+          direct_staff_count: displayRoot.direct_staff_count,
+          own_staff_only: true,
+        });
+      }
+
       const virtualRoot: IData = {
-        name: "Структура Университета",
+        name: displayRoot?.name ?? "Структура Университета",
         date_of_creation: "",
         child_departments: virtualChildren,
         total_staff_count: batchData.total_staff_count || 0,
@@ -205,8 +255,9 @@ const DepartmentPage: React.FC = () => {
         const res = await axiosInstance.get(`${apiUrl}/api/department/${id}/`, {
           timeout: 30000,
         });
-        cacheManager.set(cacheKey, res.data);
-        dispatch(new DepartmentAction(DepartmentAction.SET_DATA, res.data));
+        const payload = withOwnStaffCard(res.data as IData & OwnStaff, id);
+        cacheManager.set(cacheKey, payload);
+        dispatch(new DepartmentAction(DepartmentAction.SET_DATA, payload));
       } catch (err) {
         console.error(`Error: ${err}`);
         dispatch(

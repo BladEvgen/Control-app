@@ -1,14 +1,14 @@
 export interface CacheEntry<T> {
   readonly data: T;
   readonly timestamp: number;
-  readonly cacheDate: string; 
-  readonly expiresAt: number; 
+  readonly cacheDate: string;
+  readonly expiresAt: number;
 }
 
 export type CacheKey = string;
 export type CacheResult<T> = T | null;
 
-const CACHE_PREFIX = "dept_cache_";
+const CACHE_PREFIX = "dept_cache_v2_";
 
 const getEndOfDayTimestamp = (date: Date = new Date()): number => {
   const endOfDay = new Date(date);
@@ -113,9 +113,7 @@ export const cacheManager = {
       const entry: CacheEntry<unknown> = JSON.parse(cached);
       const now = Date.now();
 
-      return (
-        isCacheValidForToday(entry.cacheDate) && now <= entry.expiresAt
-      );
+      return isCacheValidForToday(entry.cacheDate) && now <= entry.expiresAt;
     } catch {
       return false;
     }
@@ -162,8 +160,10 @@ if (typeof window !== "undefined") {
     cacheManager.clear();
   });
 
-  setInterval(() => {
-    cacheManager.clearStale();
-  }, 60 * 60 * 1000); 
+  setInterval(
+    () => {
+      cacheManager.clearStale();
+    },
+    60 * 60 * 1000,
+  );
 }
-

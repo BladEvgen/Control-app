@@ -32,10 +32,11 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
-from monitoring_app import models
-from monitoring_app.cache_conf import get_cache
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+
+from monitoring_app import models
+from monitoring_app.cache_conf import get_cache
 
 DAYS = settings.DAYS
 
@@ -50,9 +51,7 @@ def get_lesson_attendance_photo_path(staff_pin: str):
     date_path = timezone.now().strftime("%Y-%m-%d")
     timestamp = int(timezone.now().timestamp())
     if settings.DEBUG:
-        base_dir = os.path.join(
-            settings.MEDIA_ROOT, "control_image", staff_pin, date_path
-        )
+        base_dir = os.path.join(settings.MEDIA_ROOT, "control_image", staff_pin, date_path)
     else:
         base_dir = os.path.join(settings.ATTENDANCE_ROOT, staff_pin, date_path)
     filename = f"{staff_pin}_{timestamp}.jpg"
@@ -311,16 +310,12 @@ class HierarchicalDepartmentFilter(SimpleListFilter):
         base = models.ChildDepartment.objects.only("id", "name", "parent_id")
         dept_q = (request.GET.get("dept_name_q") or "").strip()
         if dept_q:
-            match_ids = set(
-                base.filter(name__icontains=dept_q).values_list("id", flat=True)
-            )
+            match_ids = set(base.filter(name__icontains=dept_q).values_list("id", flat=True))
             if not match_ids:
                 lookup_list = []
                 cache.set(cache_key, lookup_list, self._lookups_cache_ttl)
                 return lookup_list
-            parent_by_id = dict(
-                models.ChildDepartment.objects.values_list("id", "parent_id")
-            )
+            parent_by_id = dict(models.ChildDepartment.objects.values_list("id", "parent_id"))
             needed = set(match_ids)
             for mid in list(match_ids):
                 pid = parent_by_id.get(mid)
@@ -357,9 +352,7 @@ class HierarchicalDepartmentFilter(SimpleListFilter):
             descendant_ids = cache.get(cache_key)
             if descendant_ids is None:
                 try:
-                    department = models.ChildDepartment.objects.only("id").get(
-                        pk=self.value()
-                    )
+                    department = models.ChildDepartment.objects.only("id").get(pk=self.value())
                 except models.ChildDepartment.DoesNotExist:
                     return queryset
                 descendant_ids = self.get_all_descendant_ids(department.id)
@@ -455,9 +448,7 @@ def password_check(password: str) -> bool:
         bool: True, если пароль соответствует всем требованиям сложности, в противном случае — False
     """
     return bool(
-        re.match(
-            r"^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$", password
-        )
+        re.match(r"^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$", password)
     )
 
 
@@ -646,7 +637,7 @@ def send_password_reset_email(user, request):
             logger.info(f"Password reset email sent for user ID: {user.id}")
 
             if hasattr(models, "SecurityAuditLog"):
-                models.SecurityAuditLog.objects.create(
+                models.SecurityAuditLog.objects.create(  # type: ignore[attr-defined]
                     user=user,
                     action_type="password_reset_request",
                     ip_address=request.META.get("REMOTE_ADDR", ""),
@@ -762,9 +753,7 @@ def clean_address(address):
     return address
 
 
-def generate_map_data(
-    locations, date_at, search_staff_attendance=True, filter_empty=False
-):
+def generate_map_data(locations, date_at, search_staff_attendance=True, filter_empty=False):
     """
     Генерирует данные по локациям, включая посещения сотрудников и занятия.
 
@@ -778,6 +767,7 @@ def generate_map_data(
         list: Список словарей с данными по локациям, готовых для отображения на карте.
     """
     from sklearn.neighbors import KDTree
+
     staff_by_address = defaultdict(int)
     lesson_attendance_by_address = defaultdict(int)
 
@@ -790,16 +780,16 @@ def generate_map_data(
 
             staff_attendances = (
                 models.StaffAttendance.objects.filter(
-                    date_at=data_insert_date, first_in__isnull=False
+                    date_at=data_insert_date,
+                    first_in__isnull=False,
+                    staff__archived_at__isnull=True,
                 )
                 .values("area_name_in")
                 .annotate(count=Count("id"))
             )
 
             if not staff_attendances:
-                logger.warning(
-                    f"Нет записей StaffAttendance для даты вставки {data_insert_date}"
-                )
+                logger.warning(f"Нет записей StaffAttendance для даты вставки {data_insert_date}")
             else:
                 for attendance in staff_attendances:
                     area_name_in = attendance.get("area_name_in")
@@ -821,9 +811,7 @@ def generate_map_data(
                         )
                         if matched_location:
                             original_address = matched_location.address.strip()
-                            staff_by_address[original_address] += attendance.get(
-                                "count", 0
-                            )
+                            staff_by_address[original_address] += attendance.get("count", 0)
                         else:
                             logger.warning(
                                 f"Оригинальный адрес для '{area_name_in}' не найден в ClassLocation"
@@ -836,7 +824,9 @@ def generate_map_data(
                 logger.info(f"Обработано StaffAttendance: {dict(staff_by_address)}")
 
             staff_with_attendance_qs = models.StaffAttendance.objects.filter(
-                date_at=data_insert_date, first_in__isnull=False
+                date_at=data_insert_date,
+                first_in__isnull=False,
+                staff__archived_at__isnull=True,
             ).values_list("staff_id", flat=True)
             staff_with_attendance = list(staff_with_attendance_qs)
             staff_count = len(staff_with_attendance)
@@ -845,7 +835,9 @@ def generate_map_data(
             logger.info(f"Начинаем обработку LessonAttendance для даты: {date_at}")
 
             lesson_attendances_qs = models.LessonAttendance.exclude_report_invalid_days(
-                models.LessonAttendance.objects.filter(date_at=date_at)
+                models.LessonAttendance.objects.filter(
+                    date_at=date_at, staff__archived_at__isnull=True
+                )
             ).exclude(staff_id__in=staff_with_attendance)
 
             lesson_count = lesson_attendances_qs.count()
@@ -853,23 +845,17 @@ def generate_map_data(
 
             if lesson_count > 0:
                 lesson_attendances_list = list(
-                    lesson_attendances_qs.values_list(
-                        "id", "latitude", "longitude", flat=False
-                    )
+                    lesson_attendances_qs.values_list("id", "latitude", "longitude", flat=False)
                 )
 
                 class_locations = list(
-                    models.ClassLocation.objects.only(
-                        "id", "name", "latitude", "longitude"
-                    )
+                    models.ClassLocation.objects.only("id", "name", "latitude", "longitude")
                 )
                 if not class_locations:
                     logger.warning("Нет записей ClassLocation.")
                     return []
 
-                class_coords = [
-                    (loc.latitude, loc.longitude) for loc in class_locations
-                ]
+                class_coords = [(loc.latitude, loc.longitude) for loc in class_locations]
 
                 kd_tree = KDTree(class_coords, metric="euclidean")
                 logger.info("KDTree успешно построен.")
@@ -877,9 +863,7 @@ def generate_map_data(
                 nearest_addresses = []
                 for lesson_id, lesson_lat, lesson_lon in lesson_attendances_list:
                     if lesson_lat is None or lesson_lon is None:
-                        logger.warning(
-                            f"LessonAttendance {lesson_id} не имеет координат"
-                        )
+                        logger.warning(f"LessonAttendance {lesson_id} не имеет координат")
                         continue
 
                     k_candidates = min(5, len(class_locations))
@@ -890,10 +874,7 @@ def generate_map_data(
                     candidate_list = []
                     if hasattr(candidate_indices, "flatten"):
                         candidate_list = candidate_indices.flatten().tolist()
-                    elif (
-                        hasattr(candidate_indices, "__len__")
-                        and len(candidate_indices) > 0
-                    ):
+                    elif hasattr(candidate_indices, "__len__") and len(candidate_indices) > 0:
                         if (
                             hasattr(candidate_indices[0], "__len__")
                             and len(candidate_indices[0]) > 0
@@ -941,15 +922,11 @@ def generate_map_data(
                 address_counts = Counter(nearest_addresses)
                 lesson_attendance_by_address = defaultdict(int, address_counts)
 
-                logger.info(
-                    f"Обработано LessonAttendance: {dict(lesson_attendance_by_address)}"
-                )
+                logger.info(f"Обработано LessonAttendance: {dict(lesson_attendance_by_address)}")
             else:
                 logger.info("Нет записей LessonAttendance для обработки.")
         except Exception as e:
-            logger.error(
-                f"Ошибка при обработке данных посещений: {str(e)}", exc_info=True
-            )
+            logger.error(f"Ошибка при обработке данных посещений: {str(e)}", exc_info=True)
             raise
 
     try:
@@ -984,9 +961,7 @@ def generate_map_data(
             result_list.append(location_data)
         logger.info(f"Сформирован список результатов с {len(result_list)} локациями.")
     except Exception as e:
-        logger.error(
-            f"Ошибка при формировании списка результатов: {str(e)}", exc_info=True
-        )
+        logger.error(f"Ошибка при формировании списка результатов: {str(e)}", exc_info=True)
         raise
 
     try:
@@ -1010,9 +985,7 @@ def generate_map_data(
             result_list.sort(key=lambda x: x["name"])
             logger.info("Основная локация не найдена. Список отсортирован по имени.")
     except Exception as e:
-        logger.error(
-            f"Ошибка при сортировке списка результатов: {str(e)}", exc_info=True
-        )
+        logger.error(f"Ошибка при сортировке списка результатов: {str(e)}", exc_info=True)
 
     return result_list
 
@@ -1031,6 +1004,7 @@ class LocationSearcher:
             locations (list): Список словарей с ключами `latitude`, `longitude`, `name`.
         """
         from sklearn.neighbors import KDTree
+
         self.locations = locations
         self.location_coords = np.asarray(
             [(float(loc["latitude"]), float(loc["longitude"])) for loc in locations],
@@ -1088,9 +1062,7 @@ class LocationSearcher:
             return None
 
         meters_to_degrees = radius / 111000
-        candidate_indices = self.kd_tree.query_radius(
-            [[lat, lon]], r=meters_to_degrees
-        )[0]
+        candidate_indices = self.kd_tree.query_radius([[lat, lon]], r=meters_to_degrees)[0]
 
         if len(candidate_indices) == 0:
             return None
@@ -1250,8 +1222,7 @@ def compute_class_location_acceptance_radii(
     locs = [
         o
         for o in locations
-        if getattr(o, "latitude", None) is not None
-        and getattr(o, "longitude", None) is not None
+        if getattr(o, "latitude", None) is not None and getattr(o, "longitude", None) is not None
     ]
     out = {}
     for loc in locs:
@@ -1303,15 +1274,12 @@ def compute_neighbor_color_index(locations, neighbor_threshold_m=30):
     locs = [
         o
         for o in locations
-        if getattr(o, "latitude", None) is not None
-        and getattr(o, "longitude", None) is not None
+        if getattr(o, "latitude", None) is not None and getattr(o, "longitude", None) is not None
     ]
     neighbors = {o.id: [] for o in locs}
     for i, a in enumerate(locs):
         for b in locs[i + 1 :]:
-            d = calculate_distance_haversine(
-                a.latitude, a.longitude, b.latitude, b.longitude
-            )
+            d = calculate_distance_haversine(a.latitude, a.longitude, b.latitude, b.longitude)
             if d < thr:
                 neighbors[a.id].append(b.id)
                 neighbors[b.id].append(a.id)
@@ -1460,6 +1428,7 @@ def _cluster_geo_items_for_excel(
         candidate neighbor edges returned by BallTree within the radius.
     """
     from sklearn.neighbors import BallTree
+
     if not items:
         return []
     if len(items) == 1:
@@ -1787,7 +1756,7 @@ def _normalize_excel_lesson_rows(
         location_name = "Неизвестная локация"
         location_id_raw = location_payload.get("id") if location_payload else None
         class_location_id = _coerce_int_or_none(location_id_raw)
-        if class_location_id is not None:
+        if location_payload is not None and class_location_id is not None:
             location_name = str(location_payload.get("name") or location_name)
 
         normalized_rows.append(
@@ -1975,6 +1944,7 @@ def export_class_locations_to_excel(queryset=None) -> bytes:
 
     wb = Workbook()
     ws = wb.active
+    assert ws is not None
     ws.title = "Локации"
 
     ws.append(["Экспорт локаций для редактирования"])
@@ -2031,22 +2001,9 @@ def get_bonus_percentage(num_days, percent_for_period):
 
 
 def get_all_child_departments(department):
-    """
-    Recursively get all child departments of a given department.
 
-    Args:
-        department: The parent department
-
-    Returns:
-        List of departments including the parent and all children
-    """
-    result = [department]
-    children = models.ChildDepartment.objects.filter(parent=department)
-
-    for child in children:
-        result.extend(get_all_child_departments(child))
-
-    return result
+    ids = department.subtree_ids()
+    return list(models.ChildDepartment.objects.filter(id__in=ids))
 
 
 def collect_attendance_data(
@@ -2070,7 +2027,7 @@ def collect_attendance_data(
         cache; O(1) on a warm cache aside from cache backend overhead.
     """
     if hasattr(staff_list, "select_related"):
-        staff_list = list(staff_list.select_related("department"))
+        staff_list = list(cast(Any, staff_list).select_related("department"))
     else:
         staff_list = list(staff_list)
 
@@ -2082,16 +2039,10 @@ def collect_attendance_data(
         end_str = end_date.strftime("%Y-%m-%d")
 
         dept_ids = sorted(
-            set(
-                staff.department_id
-                for staff in staff_list
-                if staff.department_id is not None
-            )
+            set(staff.department_id for staff in staff_list if staff.department_id is not None)
         )
         if dept_ids:
-            dept_str = hashlib.sha1(
-                "|".join(map(str, dept_ids)).encode("utf-8")
-            ).hexdigest()[:16]
+            dept_str = hashlib.sha1("|".join(map(str, dept_ids)).encode("utf-8")).hexdigest()[:16]
         else:
             dept_str = "no_dept"
 
@@ -2142,8 +2093,7 @@ def _collect_attendance_data_impl(
     from django.db.models import Q
 
     date_range = [
-        start_date + datetime.timedelta(days=i)
-        for i in range((end_date - start_date).days + 1)
+        start_date + datetime.timedelta(days=i) for i in range((end_date - start_date).days + 1)
     ]
 
     staff_list = list(staff_list)
@@ -2218,17 +2168,12 @@ def _collect_attendance_data_impl(
         location_searcher,
         local_tz=local_tz,
     )
-    faceid_alert_dates, invalid_lesson_days = _detect_excel_faceid_alerts(
-        normalized_lesson_rows
-    )
+    faceid_alert_dates, invalid_lesson_days = _detect_excel_faceid_alerts(normalized_lesson_rows)
     gps_spoof_alert_dates = _detect_excel_gps_spoof_alerts(normalized_lesson_rows)
 
     remote_work_qs = models.RemoteWork.objects.filter(
         Q(staff_id__in=staff_ids)
-        & (
-            Q(start_date__lte=end_date, end_date__gte=start_date)
-            | Q(permanent_remote=True)
-        )
+        & (Q(start_date__lte=end_date, end_date__gte=start_date) | Q(permanent_remote=True))
     ).values("id", "staff_id", "permanent_remote", "start_date", "end_date")
 
     absence_qs = models.AbsentReason.objects.filter(
@@ -2243,12 +2188,8 @@ def _collect_attendance_data_impl(
         date_at = att.get("date_at")
         area_name_in = att.get("area_name_in")
         area_name_out = att.get("area_name_out")
-        first_in_local_full = (
-            _convert_to_local_with_tz(first_in, local_tz) if first_in else None
-        )
-        last_out_local_full = (
-            _convert_to_local_with_tz(last_out, local_tz) if last_out else None
-        )
+        first_in_local_full = _convert_to_local_with_tz(first_in, local_tz) if first_in else None
+        last_out_local_full = _convert_to_local_with_tz(last_out, local_tz) if last_out else None
 
         if first_in_local_full:
             local_date = first_in_local_full
@@ -2296,8 +2237,7 @@ def _collect_attendance_data_impl(
         else:
             current_rec = attendance_map[date_key][staff_id]
             if use_first_in and (
-                not current_rec["first_in"]
-                or first_in_local_full < current_rec["first_in"]
+                not current_rec["first_in"] or first_in_local_full < current_rec["first_in"]
             ):
                 current_rec["first_in"] = first_in_local_full
                 current_rec["source"] = (
@@ -2310,8 +2250,7 @@ def _collect_attendance_data_impl(
                     current_rec["area_name"] = area_name_in
 
             if use_last_out and (
-                not current_rec["last_out"]
-                or last_out_local_full > current_rec["last_out"]
+                not current_rec["last_out"] or last_out_local_full > current_rec["last_out"]
             ):
                 current_rec["last_out"] = last_out_local_full
                 current_rec["source"] = (
@@ -2605,9 +2544,7 @@ def _collect_attendance_data_impl(
                     absence_info = date_absence[staff_id][0]
                     status_info = absence_info["reason"]
                     meta = (
-                        "absence_reason_approved"
-                        if absence_info["approved"]
-                        else "absence_reason"
+                        "absence_reason_approved" if absence_info["approved"] else "absence_reason"
                     )
                 else:
                     status_info = "Отсутствие"
@@ -2625,15 +2562,11 @@ def _collect_attendance_data_impl(
                 ]
             )
 
-    logger.info(
-        f"Collected {len(results)} attendance records with combined status information"
-    )
+    logger.info(f"Collected {len(results)} attendance records with combined status information")
     return results
 
 
-def generate_excel_file(
-    attendance_data, department_name, user_start_date, user_end_date
-):
+def generate_excel_file(attendance_data, department_name, user_start_date, user_end_date):
     """
     Generate an Excel file from attendance data with improved formatting and filtering.
 
@@ -2649,9 +2582,9 @@ def generate_excel_file(
     Returns:
         Bytes data of the Excel file.
     """
-    import pandas as pd
     import io
 
+    import pandas as pd
     from openpyxl.styles import Border, Side
     from openpyxl.utils import get_column_letter
 
@@ -2659,6 +2592,7 @@ def generate_excel_file(
 
     wb = Workbook()
     ws = wb.active
+    assert ws is not None
     ws.title = "Отчет посещаемости"
 
     title_font = Font(name="Arial", size=16, bold=True)
@@ -2667,36 +2601,16 @@ def generate_excel_file(
     data_font = Font(name="Arial", size=10, color="000000")
 
     center_wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    header_fill = PatternFill(
-        start_color="0070C0", end_color="0070C0", fill_type="solid"
-    )
-    fill_holiday = PatternFill(
-        start_color="F59E0B", end_color="F59E0B", fill_type="solid"
-    )
-    fill_holiday_work = PatternFill(
-        start_color="34D399", end_color="34D399", fill_type="solid"
-    )
-    fill_remote = PatternFill(
-        start_color="38BDF8", end_color="38BDF8", fill_type="solid"
-    )
-    fill_approved = PatternFill(
-        start_color="A78BFA", end_color="A78BFA", fill_type="solid"
-    )
-    fill_not_approved = PatternFill(
-        start_color="FB7185", end_color="FB7185", fill_type="solid"
-    )
-    fill_elevator = PatternFill(
-        start_color="9CA3AF", end_color="9CA3AF", fill_type="solid"
-    )
-    fill_faceid = PatternFill(
-        start_color="DC2626", end_color="DC2626", fill_type="solid"
-    )
-    fill_gps_spoof = PatternFill(
-        start_color="1D4ED8", end_color="1D4ED8", fill_type="solid"
-    )
-    fill_faceid_gps = PatternFill(
-        start_color="7E22CE", end_color="7E22CE", fill_type="solid"
-    )
+    header_fill = PatternFill(start_color="0070C0", end_color="0070C0", fill_type="solid")
+    fill_holiday = PatternFill(start_color="F59E0B", end_color="F59E0B", fill_type="solid")
+    fill_holiday_work = PatternFill(start_color="34D399", end_color="34D399", fill_type="solid")
+    fill_remote = PatternFill(start_color="38BDF8", end_color="38BDF8", fill_type="solid")
+    fill_approved = PatternFill(start_color="A78BFA", end_color="A78BFA", fill_type="solid")
+    fill_not_approved = PatternFill(start_color="FB7185", end_color="FB7185", fill_type="solid")
+    fill_elevator = PatternFill(start_color="9CA3AF", end_color="9CA3AF", fill_type="solid")
+    fill_faceid = PatternFill(start_color="DC2626", end_color="DC2626", fill_type="solid")
+    fill_gps_spoof = PatternFill(start_color="1D4ED8", end_color="1D4ED8", fill_type="solid")
+    fill_faceid_gps = PatternFill(start_color="7E22CE", end_color="7E22CE", fill_type="solid")
     thin_border = Border(
         left=Side(style="thin"),
         right=Side(style="thin"),
@@ -2705,9 +2619,7 @@ def generate_excel_file(
     )
 
     ws.merge_cells("A1:E1")
-    title_cell = ws.cell(
-        row=1, column=1, value=f"Отчет посещаемости: {department_name}"
-    )
+    title_cell = ws.cell(row=1, column=1, value=f"Отчет посещаемости: {department_name}")
     title_cell.font = title_font
     title_cell.alignment = center_wrap
 
@@ -2786,7 +2698,8 @@ def generate_excel_file(
     attendance_lookup = {}
     meta_lookup = {}
     alert_lookup = {}
-    for row in df.itertuples(index=False):
+    for raw_row in df.itertuples(index=False):
+        row = cast(Any, raw_row)
         key = (row.ФИО, row.Отдел, row.Дата)
         attendance_lookup[key] = row.Посещаемость
         meta_lookup[key] = row.meta
@@ -2833,9 +2746,7 @@ def generate_excel_file(
             data_cell.alignment = center_wrap
             data_cell.border = thin_border
 
-            is_working_holiday = (
-                date_str in public_holidays and public_holidays[date_str]
-            )
+            is_working_holiday = date_str in public_holidays and public_holidays[date_str]
 
             if alert_code == EXCEL_ALERT_FACEID_GPS:
                 data_cell.fill = fill_faceid_gps

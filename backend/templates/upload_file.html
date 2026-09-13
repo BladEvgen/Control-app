@@ -51,15 +51,48 @@
         </div>
       </div>
 
+      <div id="archive-container" class="hidden rounded-2xl border border-amber-200 bg-amber-50 p-4">
+        <label class="flex items-start gap-3 cursor-pointer">
+          <input type="checkbox" name="archive_missing" id="archive_missing" class="mt-1" />
+          <span class="text-sm text-amber-900">
+            <span class="font-semibold">Пометить отсутствующих в выгрузке</span>
+            <span class="block text-amber-700 mt-0.5">
+              Сотрудники, которых нет в файле, получат отметку «исключён из выгрузки»: они
+              перестанут попадать в API, отчёты и загрузку посещаемости. Записи не удаляются.
+              Если отметить предстоит больше половины активных, импорт остановится.
+            </span>
+          </span>
+        </label>
+        <label class="flex items-start gap-3 cursor-pointer mt-3 pl-7">
+          <input type="checkbox" name="force_archive" id="force_archive" class="mt-1" />
+          <span class="text-sm text-amber-800">Разрешить, даже если затронуто больше половины</span>
+        </label>
+      </div>
+
       <div>
         <label for="file" class="block text-sm font-semibold text-gray-700 mb-2">Файл</label>
         <div id="drop-area"
           class="drop-zone border-2 border-dashed border-gray-200 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer bg-gray-50 hover:bg-primary-50 hover:border-primary-300 transition-all duration-200">
-          <input type="file" name="file" id="file" accept=".xlsx, .zip" class="hidden" />
+          <input type="file" name="file" id="file" accept=".csv, .xlsx, .zip" class="hidden" />
           <i class="fas fa-file-excel text-4xl text-gray-400 mb-3"></i>
           <p id="drop-text" class="text-center text-gray-500 font-medium">Перетащите файл сюда или нажмите для выбора</p>
-          <p class="text-xs text-gray-400 mt-1">Поддерживаются .xlsx и .zip</p>
+          <p class="text-xs text-gray-400 mt-1">Поддерживаются .csv, .xlsx и .zip — до {{ max_upload_mb }} МБ</p>
         </div>
+      </div>
+
+      {{ task_id|json_script:"upload-task-id" }}
+      <script type="application/json" id="upload-status-url">"{% url 'upload-task-status' 'TASK_ID_PLACEHOLDER' %}"</script>
+
+      <div id="progress-card" class="hidden rounded-2xl border border-primary-200 bg-primary-50 p-5">
+        <div class="flex items-center gap-3 mb-3">
+          <i class="fas fa-circle-notch fa-spin text-primary-600"></i>
+          <span id="progress-state" class="font-semibold text-primary-900">Задача в очереди</span>
+        </div>
+        <div class="w-full h-2 bg-primary-100 rounded-full overflow-hidden">
+          <div id="progress-bar" class="h-full bg-primary-600 rounded-full transition-all duration-300" style="width:0%"></div>
+        </div>
+        <p id="progress-message" class="text-sm text-primary-800 mt-2"></p>
+        <ul id="progress-summary" class="text-sm text-primary-900 mt-3 space-y-1 hidden"></ul>
       </div>
 
       <div class="flex flex-col sm:flex-row gap-4">
@@ -115,10 +148,77 @@
     var dropArea = document.getElementById('drop-area');
     var dropText = document.getElementById('drop-text');
 
+    var archiveContainer = document.getElementById('archive-container');
+
     if (categorySelect) {
       categorySelect.addEventListener('change', function() {
         parentDepartmentContainer.classList.toggle('hidden', categorySelect.value !== 'delete_staff');
+        archiveContainer.classList.toggle('hidden', categorySelect.value !== 'staff');
       });
+    }
+
+    // Опрос статуса фоновой задачи. Пока задача не в терминальном состоянии,
+    // раз в 1.5 с дёргаем эндпоинт и обновляем полосу прогресса.
+    var taskNode = document.getElementById('upload-task-id');
+    var initialTaskId = taskNode ? JSON.parse(taskNode.textContent) : null;
+    var statusUrlTemplate = JSON.parse(document.getElementById('upload-status-url').textContent);
+    if (initialTaskId) {
+      trackTask(initialTaskId);
+    }
+
+    function trackTask(id) {
+      var card = document.getElementById('progress-card');
+      var bar = document.getElementById('progress-bar');
+      var stateEl = document.getElementById('progress-state');
+      var msgEl = document.getElementById('progress-message');
+      var summaryEl = document.getElementById('progress-summary');
+      card.classList.remove('hidden');
+
+      var timer = setInterval(poll, 1500);
+      poll();
+
+      function poll() {
+        fetch(statusUrlTemplate.replace('TASK_ID_PLACEHOLDER', encodeURIComponent(id)), { credentials: 'same-origin' })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            if (data.error) { stop('Ошибка: ' + data.error, true); return; }
+            msgEl.textContent = data.message || '';
+
+            if (data.state === 'PROGRESS') {
+              stateEl.textContent = 'Обработка';
+              var pct = data.total ? Math.round((data.processed / data.total) * 100) : 0;
+              bar.style.width = Math.min(100, pct) + '%';
+            } else if (data.state === 'SUCCESS') {
+              bar.style.width = '100%';
+              if (data.summary && data.summary.length) {
+                summaryEl.innerHTML = '';
+                data.summary.forEach(function(line) {
+                  var li = document.createElement('li');
+                  li.textContent = '• ' + line;
+                  summaryEl.appendChild(li);
+                });
+                summaryEl.classList.remove('hidden');
+              }
+              stop('Готово', false);
+            } else if (data.state === 'FAILURE') {
+              stop('Ошибка', true);
+            }
+          })
+          .catch(function(e) { stop('Не удалось получить статус: ' + e, true); });
+      }
+
+      function stop(label, isError) {
+        clearInterval(timer);
+        stateEl.textContent = label;
+        var spinner = card.querySelector('.fa-circle-notch');
+        if (spinner) { spinner.classList.remove('fa-spin', 'fa-circle-notch'); spinner.classList.add(isError ? 'fa-times-circle' : 'fa-check-circle'); }
+        if (isError) {
+          card.classList.remove('border-primary-200', 'bg-primary-50');
+          card.classList.add('border-red-200', 'bg-red-50');
+          bar.classList.remove('bg-primary-600');
+          bar.classList.add('bg-red-500');
+        }
+      }
     }
 
     if (dropArea && fileInput) {

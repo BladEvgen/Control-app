@@ -8,7 +8,11 @@ from contextlib import AbstractContextManager
 from datetime import date, datetime, time, timedelta
 from functools import reduce
 from operator import or_
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from django.contrib.auth.models import AbstractUser
+
 from urllib.parse import quote
 
 from django.apps import apps as django_apps
@@ -34,6 +38,7 @@ from django.utils.formats import date_format
 from django.utils.html import escape, format_html, format_html_join
 from django.utils.safestring import mark_safe
 from django_admin_geomap import ModelAdmin
+
 from monitoring_app import utils as monitoring_utils
 from monitoring_app.group_match import childdepartment_pks_for_group_style_search
 from monitoring_app.lesson_locations_conf import (
@@ -169,9 +174,7 @@ def _admin_badge(label: str, *, background: str, color: str = "#fff"):
     )
 
 
-def _staff_attendance_history_legend_badge(
-    label: str, *, background: str, color: str = "#fff"
-):
+def _staff_attendance_history_legend_badge(label: str, *, background: str, color: str = "#fff"):
     """Бейдж в блоке легенды истории посещаемости (отступы задаются в CSS)."""
     return format_html(
         '<span class="staff-attendance-history__badge" style="display:inline-flex; align-items:center; '
@@ -301,9 +304,10 @@ class MonitoringAdminSite(admin.AdminSite):
 
     def each_context(self, request):
         context = super().each_context(request)
+        user = cast("AbstractUser", request.user)
         context.update(
             {
-                "has_permission": request.user.is_active and request.user.is_staff,
+                "has_permission": user.is_active and user.is_staff,
             }
         )
         return context
@@ -347,18 +351,14 @@ class MonitoringAdminSite(admin.AdminSite):
 
         context["staff_count"] = Staff.objects.count()
         context["today_attendance"] = StaffAttendance.objects.filter(
-            date_at=_staff_attendance_db_date_for_calendar_work_day(
-                timezone.now().date()
-            )
+            date_at=_staff_attendance_db_date_for_calendar_work_day(timezone.now().date())
         ).count()
 
-        context["recent_logs"] = LogEntry.objects.select_related(
-            "content_type", "user"
-        )[:10]
+        context["recent_logs"] = LogEntry.objects.select_related("content_type", "user")[:10]
 
-        departments = ChildDepartment.objects.annotate(
-            staff_count=Count("staff")
-        ).order_by("-staff_count")[:5]
+        departments = ChildDepartment.objects.annotate(staff_count=Count("staff")).order_by(
+            "-staff_count"
+        )[:5]
 
         context["departments"] = departments
 
@@ -380,9 +380,7 @@ class MonitoringAdminSite(admin.AdminSite):
 
         return JsonResponse(
             {
-                "labels": [
-                    str(item["date_at"] - timedelta(days=1)) for item in attendance_data
-                ],
+                "labels": [str(item["date_at"] - timedelta(days=1)) for item in attendance_data],
                 "data": [item["count"] for item in attendance_data],
             }
         )
@@ -490,9 +488,9 @@ class DepartmentHierarchyFilter(SimpleListFilter):
             descendants = set(queue)
             while queue:
                 current = queue.pop(0)
-                children = ChildDepartment.objects.filter(
-                    parent_id=current
-                ).values_list("id", flat=True)
+                children = ChildDepartment.objects.filter(parent_id=current).values_list(
+                    "id", flat=True
+                )
                 queue.extend(children)
                 descendants.update(children)
             cache.set(cache_key, descendants, 3600)
@@ -547,12 +545,8 @@ class DateRangeFilter(admin.SimpleListFilter):
             start_wd = today - timedelta(days=13)
             if is_skud:
                 return queryset.filter(
-                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
-                        start_wd
-                    ),
-                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
-                        end_wd
-                    ),
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(start_wd),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(end_wd),
                 )
             return queryset.filter(date_at__gte=start_wd, date_at__lte=end_wd)
         if self.value() == "last_30":
@@ -560,20 +554,12 @@ class DateRangeFilter(admin.SimpleListFilter):
             start_wd = today - timedelta(days=29)
             if is_skud:
                 return queryset.filter(
-                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
-                        start_wd
-                    ),
-                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
-                        end_wd
-                    ),
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(start_wd),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(end_wd),
                 )
             return queryset.filter(date_at__gte=start_wd, date_at__lte=end_wd)
         if self.value() == "today":
-            row_day = (
-                _staff_attendance_db_date_for_calendar_work_day(today)
-                if is_skud
-                else today
-            )
+            row_day = _staff_attendance_db_date_for_calendar_work_day(today) if is_skud else today
             return queryset.filter(date_at=row_day)
         elif self.value() == "yesterday":
             row_day = today if is_skud else today - one
@@ -583,12 +569,8 @@ class DateRangeFilter(admin.SimpleListFilter):
             week_end = week_start + timedelta(days=6)
             if is_skud:
                 return queryset.filter(
-                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
-                        week_start
-                    ),
-                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
-                        week_end
-                    ),
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(week_start),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(week_end),
                 )
             return queryset.filter(date_at__gte=week_start, date_at__lte=week_end)
         elif self.value() == "last_week":
@@ -596,12 +578,8 @@ class DateRangeFilter(admin.SimpleListFilter):
             week_end = week_start + timedelta(days=6)
             if is_skud:
                 return queryset.filter(
-                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
-                        week_start
-                    ),
-                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
-                        week_end
-                    ),
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(week_start),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(week_end),
                 )
             return queryset.filter(date_at__gte=week_start, date_at__lte=week_end)
         elif self.value() == "this_month":
@@ -622,12 +600,8 @@ class DateRangeFilter(admin.SimpleListFilter):
             last_prev = first_prev.replace(day=last_prev_dom)
             if is_skud:
                 return queryset.filter(
-                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
-                        first_prev
-                    ),
-                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
-                        last_prev
-                    ),
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(first_prev),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(last_prev),
                 )
             last_month = today.month - 1 if today.month > 1 else 12
             year = today.year if today.month > 1 else today.year - 1
@@ -641,12 +615,8 @@ class DateRangeFilter(admin.SimpleListFilter):
             last_day = date(today.year, last_month_of_q, last_dom)
             if is_skud:
                 return queryset.filter(
-                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
-                        first_day
-                    ),
-                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(
-                        last_day
-                    ),
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(first_day),
+                    date_at__lte=_staff_attendance_db_date_for_calendar_work_day(last_day),
                 )
             return queryset.filter(
                 date_at__year=today.year,
@@ -720,6 +690,28 @@ class StaffAttendanceSkudDataFilter(admin.SimpleListFilter):
         return queryset
 
 
+class ArchivedStaffFilter(admin.SimpleListFilter):
+    """Показывать всех, только активных или только архивных.
+
+    По умолчанию — все: админка единственное место, где архивных видно
+    и откуда их можно вернуть в работу. Остальной код их не отдаёт.
+    """
+
+    title = "Статус в выгрузке"
+    parameter_name = "archived"
+
+    def lookups(self, request, model_admin):
+        return (("active", "Только активные"), ("archived", "Только архивные"))
+
+    def queryset(self, request, queryset):
+        value = self.value()
+        if value == "active":
+            return queryset.filter(archived_at__isnull=True)
+        if value == "archived":
+            return queryset.filter(archived_at__isnull=False)
+        return queryset
+
+
 class AttendanceStatusFilter(admin.SimpleListFilter):
     title = "Статус присутствия"
     parameter_name = "attendance_status"
@@ -747,9 +739,7 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
         work_end = timezone.now().replace(hour=18, minute=0, second=0, microsecond=0)
 
         late_threshold = work_start + timedelta(minutes=late_threshold_minutes)
-        early_leave_threshold = work_end - timedelta(
-            minutes=early_leave_threshold_minutes
-        )
+        early_leave_threshold = work_end - timedelta(minutes=early_leave_threshold_minutes)
 
         if self.value() == "present":
             return queryset.filter(
@@ -790,9 +780,7 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
         elif self.value() == "remote":
             return queryset.filter(
                 Q(remote_work__permanent_remote=True)
-                | Q(
-                    remote_work__start_date__lte=today, remote_work__end_date__gte=today
-                )
+                | Q(remote_work__start_date__lte=today, remote_work__end_date__gte=today)
             ).distinct()
 
         elif self.value() == "partial":
@@ -802,10 +790,7 @@ class AttendanceStatusFilter(admin.SimpleListFilter):
                     attendance__first_in__isnull=False,
                     attendance__last_out__isnull=False,
                 )
-                .annotate(
-                    workday_duration=F("attendance__last_out")
-                    - F("attendance__first_in")
-                )
+                .annotate(workday_duration=F("attendance__last_out") - F("attendance__first_in"))
                 .filter(
                     workday_duration__gte=timedelta(hours=minimum_workday_hours),
                     workday_duration__lt=timedelta(hours=standard_workday_hours),
@@ -842,14 +827,12 @@ class PasswordResetTokenAdmin(admin.ModelAdmin):
 
     def expiration_time(self, obj):
         if obj.is_valid():
-            expiration = obj.created_at + timezone.timedelta(hours=1)
+            expiration = obj.created_at + timedelta(hours=1)
             time_left = expiration - timezone.now()
             hours = time_left.seconds // 3600
             minutes = (time_left.seconds % 3600) // 60
 
-            if time_left.days < 0 or (
-                time_left.days == 0 and hours == 0 and minutes == 0
-            ):
+            if time_left.days < 0 or (time_left.days == 0 and hours == 0 and minutes == 0):
                 return format_html('<span style="color: red;">Истек</span>')
 
             return format_html(
@@ -906,12 +889,12 @@ class PasswordResetRequestLogAdmin(admin.ModelAdmin):
     ordering = ("-requested_at",)
 
     def next_possible_request(self, obj):
-        return obj.requested_at + timezone.timedelta(minutes=5)
+        return obj.requested_at + timedelta(minutes=5)
 
     next_possible_request.short_description = "Следующий возможный запрос"
 
     def time_until_next(self, obj):
-        next_time = obj.requested_at + timezone.timedelta(minutes=5)
+        next_time = obj.requested_at + timedelta(minutes=5)
         time_left = next_time - timezone.now()
 
         if time_left.total_seconds() <= 0:
@@ -998,9 +981,7 @@ class APIKeyAdmin(admin.ModelAdmin):
     short_key.short_description = "Ключ API"
 
     def save_model(self, request, obj, form, change):
-        logger.debug(
-            "APIKeyAdmin.save_model key_name=%s change=%s", obj.key_name, change
-        )
+        logger.debug("APIKeyAdmin.save_model key_name=%s change=%s", obj.key_name, change)
         if not change:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
@@ -1295,12 +1276,14 @@ class StaffAdmin(admin.ModelAdmin):
         "full_name",
         "department",
         "display_positions",
+        "archived_status",
         "needs_training_status",
         "face_recognition_ml_badge",
     )
     list_display_links = ("pin", "full_name")
     list_per_page = 50
     list_filter = (
+        ArchivedStaffFilter,
         DepartmentHierarchyFilter,
         "positions",
         "needs_training",
@@ -1313,6 +1296,8 @@ class StaffAdmin(admin.ModelAdmin):
         "assign_position",
         "mark_needs_training_true",
         "export_staff_data",
+        "mark_archived",
+        "mark_active",
     ]
     ordering = ("-pin", "-department", "surname", "name")
     save_on_top = True
@@ -1336,6 +1321,16 @@ class StaffAdmin(admin.ModelAdmin):
             "Должность и отдел",
             {
                 "fields": ("department", "positions"),
+                "classes": ("wide",),
+            },
+        ),
+        (
+            "Статус в выгрузке",
+            {
+                "fields": ("archived_at",),
+                "description": "Заполнено — запись заморожена: импорт её не обновляет, "
+                "посещаемость не загружается, в API и отчёты не попадает. "
+                "Очистите поле, чтобы вернуть сотрудника в работу.",
                 "classes": ("wide",),
             },
         ),
@@ -1396,12 +1391,19 @@ class StaffAdmin(admin.ModelAdmin):
 
     def needs_training_status(self, obj):
         if obj.needs_training:
-            return format_html(
-                '<span style="color: red;">Требуется обучение модели</span>'
-            )
+            return format_html('<span style="color: red;">Требуется обучение модели</span>')
         return format_html('<span style="color: green;">Модель обучена</span>')
 
     needs_training_status.short_description = "Статус обучения модели"
+
+    @admin.display(description="В выгрузке", ordering="archived_at")
+    def archived_status(self, obj):
+        if obj.archived_at is None:
+            return format_html('<span style="color: green;">Активен</span>')
+        return format_html(
+            '<span style="color: #a8641b;">Архивный с {}</span>',
+            obj.archived_at.strftime("%d.%m.%Y"),
+        )
 
     @admin.display(description="ML-файлы")
     def face_recognition_ml_badge(self, obj):
@@ -1555,9 +1557,7 @@ class StaffAdmin(admin.ModelAdmin):
             try:
                 body = build_npy_embeddings_preview_body(fp, fname)
             except Exception as exc:
-                body = (
-                    f"<p>Не удалось прочитать .npy: <code>{escape(str(exc))}</code></p>"
-                )
+                body = f"<p>Не удалось прочитать .npy: <code>{escape(str(exc))}</code></p>"
         else:
             body = build_pt_checkpoint_preview_body(fp, fname, dl_href)
 
@@ -1646,7 +1646,9 @@ class StaffAdmin(admin.ModelAdmin):
             + "".join(tiles)
         )
         if not names:
-            body = '<p style="color:#b91c1c;">Нет подходящих изображений в каталоге аугментаций.</p>'
+            body = (
+                '<p style="color:#b91c1c;">Нет подходящих изображений в каталоге аугментаций.</p>'
+            )
         html = (
             '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>'
             f"Аугментации {escape(pin)}</title>"
@@ -1699,11 +1701,7 @@ class StaffAdmin(admin.ModelAdmin):
                 remote_works = list(obj.remote_work.all())
                 remote = any(
                     rw.permanent_remote
-                    or (
-                        rw.start_date
-                        and rw.end_date
-                        and rw.start_date <= today <= rw.end_date
-                    )
+                    or (rw.start_date and rw.end_date and rw.start_date <= today <= rw.end_date)
                     for rw in remote_works
                 )
             else:
@@ -1723,11 +1721,7 @@ class StaffAdmin(admin.ModelAdmin):
             if hasattr(obj, "absences"):
                 absences = list(obj.absences.all())
                 absence = next(
-                    (
-                        a
-                        for a in absences
-                        if a.start_date <= today <= a.end_date and a.approved
-                    ),
+                    (a for a in absences if a.start_date <= today <= a.end_date and a.approved),
                     None,
                 )
             else:
@@ -1958,9 +1952,7 @@ class StaffAdmin(admin.ModelAdmin):
         if is_remote:
             source_flags.append("remote")
         if holiday:
-            source_flags.append(
-                "holiday_working" if holiday_working else "holiday_nonworking"
-            )
+            source_flags.append("holiday_working" if holiday_working else "holiday_nonworking")
         elif is_weekend:
             source_flags.append("weekend")
 
@@ -1992,8 +1984,6 @@ class StaffAdmin(admin.ModelAdmin):
         if cached_html:
             return format_html(cached_html)
 
-        # Без «сегодня»: строка СКУД за текущую смену обычно попадает в БД после ночной выгрузки
-        # (date_at на следующий календарный день), карточка «сегодня» выглядела бы пустой/вводящей в заблуждение.
         today = timezone.localdate()
         end_date = today - timedelta(days=1)
         start_date = end_date - timedelta(days=self.ATTENDANCE_HISTORY_DAYS - 1)
@@ -2001,9 +1991,7 @@ class StaffAdmin(admin.ModelAdmin):
         attendance_records = (
             StaffAttendance.objects.filter(
                 staff=obj,
-                date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
-                    start_date
-                ),
+                date_at__gte=_staff_attendance_db_date_for_calendar_work_day(start_date),
                 date_at__lte=_staff_attendance_db_date_for_calendar_work_day(end_date),
             )
             .select_related("absence_reason")
@@ -2031,9 +2019,7 @@ class StaffAdmin(admin.ModelAdmin):
 
         lesson_records = (
             LessonAttendance.exclude_report_invalid_days(
-                LessonAttendance.objects.filter(
-                    staff=obj, date_at__range=(start_date, end_date)
-                )
+                LessonAttendance.objects.filter(staff=obj, date_at__range=(start_date, end_date))
             )
             .only("id", "date_at", "first_in", "last_out", "staff_id", "subject_name")
             .order_by("date_at", "first_in")
@@ -2054,9 +2040,7 @@ class StaffAdmin(admin.ModelAdmin):
             elif rw.start_date and rw.end_date:
                 remote_periods.append((rw.start_date, rw.end_date))
 
-        holidays = PublicHoliday.objects.filter(
-            date__range=(start_date, end_date)
-        ).only(
+        holidays = PublicHoliday.objects.filter(date__range=(start_date, end_date)).only(
             "date",
             "name",
             "is_working_day",
@@ -2091,11 +2075,7 @@ class StaffAdmin(admin.ModelAdmin):
                         "Удалённое занятие", background="#7c3aed"
                     ),
                 ),
-                (
-                    _staff_attendance_history_legend_badge(
-                        "Удалённо", background="#2563eb"
-                    ),
-                ),
+                (_staff_attendance_history_legend_badge("Удалённо", background="#2563eb"),),
                 (
                     _staff_attendance_history_legend_badge(
                         "Праздник, выходной", background="#9333ea"
@@ -2106,11 +2086,7 @@ class StaffAdmin(admin.ModelAdmin):
                         "Праздник, рабочий", background="#ca8a04"
                     ),
                 ),
-                (
-                    _staff_attendance_history_legend_badge(
-                        "Выходной (сб/вс)", background="#64748b"
-                    ),
-                ),
+                (_staff_attendance_history_legend_badge("Выходной (сб/вс)", background="#64748b"),),
             ),
         )
         legend_block = format_html(
@@ -2161,8 +2137,7 @@ class StaffAdmin(admin.ModelAdmin):
     )
 
     def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        qs = qs.select_related("department").prefetch_related("positions")
+        qs = Staff.all_objects.select_related("department").prefetch_related("positions")
         return qs
 
     display_positions.short_description = "Должности"
@@ -2182,14 +2157,22 @@ class StaffAdmin(admin.ModelAdmin):
             "Статус 'Требуется обучение модели' был изменён на 'True' для выбранных сотрудников.",
         )
 
+    @admin.action(description="Пометить архивными (исключить из выгрузок и API)")
+    def mark_archived(self, request, queryset):
+        updated = queryset.filter(archived_at__isnull=True).update(archived_at=timezone.now())
+        self.message_user(request, f"Помечено архивными: {updated}.")
+
+    @admin.action(description="Вернуть в работу (снять отметку архивного)")
+    def mark_active(self, request, queryset):
+        updated = queryset.filter(archived_at__isnull=False).update(archived_at=None)
+        self.message_user(request, f"Возвращено в работу: {updated}.")
+
     mark_needs_training_true.short_description = (
         "Установить 'Требуется обучение модели' для выбранных сотрудников"
     )
 
     def export_staff_data(self, request, queryset):
-        self.message_user(
-            request, f"Данные {queryset.count()} сотрудников экспортированы."
-        )
+        self.message_user(request, f"Данные {queryset.count()} сотрудников экспортированы.")
 
     export_staff_data.short_description = "Экспортировать данные сотрудников"
 
@@ -2262,9 +2245,7 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
     def augmentation_status(self, obj):
         count, exists = count_augment_images(obj.staff.pin)
         if not exists:
-            return format_html(
-                '<span style="color: red;">❌ Нет каталога аугментаций</span>'
-            )
+            return format_html('<span style="color: red;">❌ Нет каталога аугментаций</span>')
         if count == 0:
             return format_html(
                 '<span style="color: red;">Нет файлов <code>{}_aug_*</code></span>',
@@ -2297,9 +2278,7 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
                 low = name.lower()
                 if not low.endswith((".jpg", ".jpeg", ".png", ".webp")):
                     continue
-                if name.startswith(f"{pin}_aug_") or name.startswith(
-                    f"{pin}_augmented_"
-                ):
+                if name.startswith(f"{pin}_aug_") or name.startswith(f"{pin}_augmented_"):
                     names.append(name)
             names.sort()
 
@@ -2423,21 +2402,15 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
 
     def regenerate_masks(self, request, queryset):
         count = queryset.count()
-        self.message_user(
-            request, f"Запущена регенерация масок для {count} сотрудников."
-        )
+        self.message_user(request, f"Запущена регенерация масок для {count} сотрудников.")
 
-    regenerate_masks.short_description = (
-        "Регенерировать маски для выбранных сотрудников"
-    )
+    regenerate_masks.short_description = "Регенерировать маски для выбранных сотрудников"
 
     def force_augmentation(self, request, queryset):
         count = queryset.count()
         self.message_user(request, f"Запущена аугментация для {count} сотрудников.")
 
-    force_augmentation.short_description = (
-        "Запустить аугментацию для выбранных сотрудников"
-    )
+    force_augmentation.short_description = "Запустить аугментацию для выбранных сотрудников"
 
     def has_add_permission(self, request):
         """Маска одна на сотрудника; создаётся пайплайном Face-ML, не вручную."""
@@ -2548,9 +2521,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         "duration",
     )
 
-    def get_paginator(
-        self, request, queryset, per_page, orphans=0, allow_empty_first_page=True
-    ):
+    def get_paginator(self, request, queryset, per_page, orphans=0, allow_empty_first_page=True):
         return Paginator(
             CachedCountQuerySet(queryset),
             per_page,
@@ -2672,8 +2643,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         if not obj.absence_reason_id:
             return "—"
         url = reverse(
-            f"admin:{AbsentReason._meta.app_label}_"
-            f"{AbsentReason._meta.model_name}_change",
+            f"admin:{AbsentReason._meta.app_label}_" f"{AbsentReason._meta.model_name}_change",
             args=[obj.absence_reason_id],
         )
         return format_html('<a href="{}">{}</a>', url, obj.absence_reason)
@@ -2692,9 +2662,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
             minutes,
         )
 
-    formatted_effective_work_seconds.short_description = (
-        "Эффективное время в здании (сек)"
-    )
+    formatted_effective_work_seconds.short_description = "Эффективное время в здании (сек)"
 
     def formatted_area_sequence(self, obj):
         """Рендерит цепочку зон: №, Время, Зона, Устройство (devSn). Выход подсвечивается."""
@@ -2839,9 +2807,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
             return format_html(cached_html)
 
         positions = list(obj.staff.positions.all()[:3])
-        positions_str = (
-            ", ".join(p.name for p in positions) if positions else "Не указаны"
-        )
+        positions_str = ", ".join(p.name for p in positions) if positions else "Не указаны"
 
         avatar_html = self.staff_avatar(obj)
 
@@ -2930,9 +2896,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
                 today = timezone.now().date()
                 start_wd = today - timedelta(days=13)
                 qs = qs.filter(
-                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(
-                        start_wd
-                    ),
+                    date_at__gte=_staff_attendance_db_date_for_calendar_work_day(start_wd),
                     date_at__lte=_staff_attendance_db_date_for_calendar_work_day(today),
                 )
             qs = qs.only(
@@ -2977,17 +2941,15 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
         return value
 
     def changelist_view(self, request, extra_context=None):
-        request.staffattendance_changelist = True
+        setattr(request, "staffattendance_changelist", True)
         try:
             return super().changelist_view(request, extra_context=extra_context)
         finally:
-            request.staffattendance_changelist = False
+            setattr(request, "staffattendance_changelist", False)
 
     def export_attendance_data(self, request, queryset):
         count = queryset.count()
-        self.message_user(
-            request, f"Экспортированы данные о посещаемости для {count} записей."
-        )
+        self.message_user(request, f"Экспортированы данные о посещаемости для {count} записей.")
 
     export_attendance_data.short_description = "Экспортировать данные о посещаемости"
 
@@ -3038,9 +3000,7 @@ class PhotoEffectiveStatusFilter(SimpleListFilter):
                 Q(photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS)
                 | (
                     Q(photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE)
-                    & Q(
-                        photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS
-                    )
+                    & Q(photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS)
                 )
             )
 
@@ -3048,9 +3008,7 @@ class PhotoEffectiveStatusFilter(SimpleListFilter):
             return queryset.filter(
                 photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
                 photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
-                photo_spoof_tags__contains=[
-                    "pad_rule:presentation_insufficient_input_review"
-                ],
+                photo_spoof_tags__contains=["pad_rule:presentation_insufficient_input_review"],
             )
 
         if value == LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW:
@@ -3058,9 +3016,7 @@ class PhotoEffectiveStatusFilter(SimpleListFilter):
                 photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
                 photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
             ).exclude(
-                photo_spoof_tags__contains=[
-                    "pad_rule:presentation_insufficient_input_review"
-                ]
+                photo_spoof_tags__contains=["pad_rule:presentation_insufficient_input_review"]
             )
 
         return queryset.filter(
@@ -3246,8 +3202,7 @@ class LessonAttendanceAdmin(ModelAdmin):
         )
         allowed_roots = (attendance_root, media_control_root)
         return any(
-            normalized == root or normalized.startswith(f"{root}{os.sep}")
-            for root in allowed_roots
+            normalized == root or normalized.startswith(f"{root}{os.sep}") for root in allowed_roots
         )
 
     @classmethod
@@ -3292,16 +3247,12 @@ class LessonAttendanceAdmin(ModelAdmin):
     def delete_model(self, request, obj):
         deleted_ids = [obj.id] if obj.id is not None else []
         candidate_paths = set()
-        if obj.staff_image_path and self._is_deletable_attendance_photo_path(
-            obj.staff_image_path
-        ):
+        if obj.staff_image_path and self._is_deletable_attendance_photo_path(obj.staff_image_path):
             candidate_paths.add(os.path.abspath(str(obj.staff_image_path)))
         super().delete_model(request, obj)
         deleted_files = self._delete_orphaned_photo_paths(candidate_paths, deleted_ids)
         if deleted_files:
-            self.message_user(
-                request, f"Удалено файлов фотографий с диска: {deleted_files}."
-            )
+            self.message_user(request, f"Удалено файлов фотографий с диска: {deleted_files}.")
 
     def delete_queryset(self, request, queryset):
         deleted_ids = list(queryset.values_list("id", flat=True))
@@ -3309,9 +3260,7 @@ class LessonAttendanceAdmin(ModelAdmin):
         super().delete_queryset(request, queryset)
         deleted_files = self._delete_orphaned_photo_paths(candidate_paths, deleted_ids)
         if deleted_files:
-            self.message_user(
-                request, f"Удалено файлов фотографий с диска: {deleted_files}."
-            )
+            self.message_user(request, f"Удалено файлов фотографий с диска: {deleted_files}.")
 
     def formatted_duration_seconds(self, obj):
         """Показывает duration_seconds в виде «N сек (X ч Y мин)»."""
@@ -3428,18 +3377,15 @@ class LessonAttendanceAdmin(ModelAdmin):
 
         photo_expired = request.GET.get("photo_expired")
         if photo_expired == "yes":
-            thirty_days_ago = timezone.now().date() - timezone.timedelta(days=31)
+            thirty_days_ago = timezone.now().date() - timedelta(days=31)
             qs = qs.filter(date_at__lt=thirty_days_ago)
         elif photo_expired == "no":
-            thirty_days_ago = timezone.now().date() - timezone.timedelta(days=31)
+            thirty_days_ago = timezone.now().date() - timedelta(days=31)
             qs = qs.filter(date_at__gte=thirty_days_ago)
         return qs
 
     def has_photo(self, obj):
-        return (
-            obj.staff_image_path
-            and obj.staff_image_path != "/static/media/images/no-avatar.png"
-        )
+        return obj.staff_image_path and obj.staff_image_path != "/static/media/images/no-avatar.png"
 
     has_photo.boolean = True
     has_photo.short_description = "Фотография"
@@ -3460,9 +3406,7 @@ class LessonAttendanceAdmin(ModelAdmin):
             ),
             LessonAttendance.PHOTO_SPOOF_STATUS_ERROR: ("#616161", "Ошибка"),
         }
-        color, label = status_map.get(
-            status_value, ("#616161", status_value or "Неизвестно")
-        )
+        color, label = status_map.get(status_value, ("#616161", status_value or "Неизвестно"))
         return format_html(
             "<span style='color:{}; font-weight:600;'>{}</span><br><small style='color:#666;'>{}</small>",
             color,
@@ -3492,10 +3436,7 @@ class LessonAttendanceAdmin(ModelAdmin):
         """Clarify whether ``check_photo`` has already persisted vs still pending."""
         if obj is None:
             return format_html("")
-        if (
-            not obj.staff_image_path
-            or obj.staff_image_path == "/static/media/images/no-avatar.png"
-        ):
+        if not obj.staff_image_path or obj.staff_image_path == "/static/media/images/no-avatar.png":
             return format_html(
                 "<p class='la-pad-muted'>Нет файла фото на диске — автоматическая проверка фото не запускалась.</p>"
             )
@@ -3510,9 +3451,7 @@ class LessonAttendanceAdmin(ModelAdmin):
             return format_html(
                 "<p class='la-pad-muted'>Время последнего авто-скана в БД не заполнено.</p>"
             )
-        local = timezone.localtime(obj.photo_spoof_checked_at).strftime(
-            "%d.%m.%Y %H:%M:%S"
-        )
+        local = timezone.localtime(obj.photo_spoof_checked_at).strftime("%d.%m.%Y %H:%M:%S")
         ver = (obj.photo_spoof_model_version or "").strip() or "—"
         st_label = (
             "Недостаточно данных"
@@ -3628,9 +3567,7 @@ class LessonAttendanceAdmin(ModelAdmin):
             verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN,
             comment="Manual clean via admin action",
         )
-        self.message_user(
-            request, f"Ручной вердикт «Нормальное» установлен: {updated}."
-        )
+        self.message_user(request, f"Ручной вердикт «Нормальное» установлен: {updated}.")
 
     mark_photo_manual_clean.short_description = "Отметить как нормальное (manual)"
 
@@ -3646,9 +3583,7 @@ class LessonAttendanceAdmin(ModelAdmin):
             f"Ручной вердикт «Подозрительное (ручное)» установлен: {updated}.",
         )
 
-    mark_photo_manual_suspicious.short_description = (
-        "Отметить как подозрительное (manual)"
-    )
+    mark_photo_manual_suspicious.short_description = "Отметить как подозрительное (manual)"
 
     def reset_photo_manual_verdict(self, request, queryset):
         updated = queryset.update(
@@ -3711,9 +3646,7 @@ class LessonAttendanceAdmin(ModelAdmin):
             )
             return
 
-        photo_ids, skipped = prepare_lesson_attendance_admin_pad_full_rescan(
-            selected_ids
-        )
+        photo_ids, skipped = prepare_lesson_attendance_admin_pad_full_rescan(selected_ids)
 
         if not photo_ids:
             msg = self._format_lesson_attendance_pad_rescan_message(
@@ -3781,9 +3714,9 @@ class LessonAttendanceAdmin(ModelAdmin):
         locations = cache.get("lesson_admin_closest_locations")
         if locations is None:
             locations = list(
-                ClassLocation.objects.filter(
-                    latitude__isnull=False, longitude__isnull=False
-                ).only("id", "name", "address", "latitude", "longitude")
+                ClassLocation.objects.filter(latitude__isnull=False, longitude__isnull=False).only(
+                    "id", "name", "address", "latitude", "longitude"
+                )
             )
             cache.set("lesson_admin_closest_locations", locations, 300)
 
@@ -3817,10 +3750,7 @@ class LessonAttendanceAdmin(ModelAdmin):
     closest_location.short_description = "Ближайшая локация"
 
     def photo_preview(self, obj):
-        if (
-            obj.staff_image_path
-            and obj.staff_image_path != "/static/media/images/no-avatar.png"
-        ):
+        if obj.staff_image_path and obj.staff_image_path != "/static/media/images/no-avatar.png":
             return format_html(
                 """
                 <div style="text-align: center;">
@@ -3897,7 +3827,7 @@ class ClassLocationAdmin(ModelAdmin):
 
     class AttendancePeriodFilter(SimpleListFilter):
         title = "Период посещаемости"
-        parameter_name = "attendance_period"
+        parameter_name: str = "attendance_period"
         template = "admin/attendance_period_filter.html"
 
         def __init__(self, request, params, model, model_admin):
@@ -3928,8 +3858,7 @@ class ClassLocationAdmin(ModelAdmin):
 
         def choices(self, changelist):
             custom = bool(
-                _parse_admin_iso_date(self.date_from)
-                or _parse_admin_iso_date(self.date_to)
+                _parse_admin_iso_date(self.date_from) or _parse_admin_iso_date(self.date_to)
             )
             yield {
                 "selected": self.value() is None and not custom,
@@ -4061,9 +3990,7 @@ class ClassLocationAdmin(ModelAdmin):
         from openpyxl.styles.numbers import BUILTIN_FORMATS
         from openpyxl.worksheet.table import Table, TableStyleInfo
 
-        period_start, period_end, period_label = self._resolve_attendance_period_window(
-            request
-        )
+        period_start, period_end, period_label = self._resolve_attendance_period_window(request)
         all_locations = list(
             ClassLocation.objects.filter(
                 latitude__isnull=False,
@@ -4103,6 +4030,7 @@ class ClassLocationAdmin(ModelAdmin):
         header_fill = PatternFill("solid", fgColor="1D4ED8")
         wb = Workbook()
         ws = wb.active
+        assert ws is not None
         ws.title = "Посещаемость"
         ws.append([f"Период: {start_label} — {end_label}"])
         ws.merge_cells("A1:D1")
@@ -4129,9 +4057,7 @@ class ClassLocationAdmin(ModelAdmin):
         for cell in ws[2]:
             cell.font = header_font
             cell.fill = header_fill
-            cell.alignment = Alignment(
-                wrap_text=True, vertical="center", horizontal="center"
-            )
+            cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
 
         out = io.BytesIO()
         wb.save(out)
@@ -4165,10 +4091,10 @@ class ClassLocationAdmin(ModelAdmin):
         from_date = _parse_admin_iso_date(request.GET.get("attendance_from"))
         to_date = _parse_admin_iso_date(request.GET.get("attendance_to"))
         if from_date or to_date:
-            if from_date is None:
-                from_date = to_date
             if to_date is None:
                 to_date = today
+            if from_date is None:
+                from_date = to_date
             if from_date > to_date:
                 from_date, to_date = to_date, from_date
             period_start, period_end = _aware_day_bounds(from_date, to_date)
@@ -4189,9 +4115,7 @@ class ClassLocationAdmin(ModelAdmin):
             period_start, period_end = _aware_day_bounds(date(today.year, 1, 1), today)
             return period_start, period_end, f"year_{today.year}"
         if raw_value == "this_month":
-            last_day = date(
-                today.year, today.month, monthrange(today.year, today.month)[1]
-            )
+            last_day = date(today.year, today.month, monthrange(today.year, today.month)[1])
             period_start, period_end = _aware_day_bounds(today.replace(day=1), last_day)
             return period_start, period_end, f"month_{today.year}_{today.month:02d}"
         if not raw_value:
@@ -4257,14 +4181,10 @@ class ClassLocationAdmin(ModelAdmin):
             LessonAttendance.objects.filter(
                 first_in__gte=period_start,
                 first_in__lte=now,
-                latitude__gte=min(item["latitude"] for item in location_meta)
-                - max_lat_margin,
-                latitude__lte=max(item["latitude"] for item in location_meta)
-                + max_lat_margin,
-                longitude__gte=min(item["longitude"] for item in location_meta)
-                - max_lon_margin,
-                longitude__lte=max(item["longitude"] for item in location_meta)
-                + max_lon_margin,
+                latitude__gte=min(item["latitude"] for item in location_meta) - max_lat_margin,
+                latitude__lte=max(item["latitude"] for item in location_meta) + max_lat_margin,
+                longitude__gte=min(item["longitude"] for item in location_meta) - max_lon_margin,
+                longitude__lte=max(item["longitude"] for item in location_meta) + max_lon_margin,
             )
         ).only("id", "latitude", "longitude")
 
@@ -4302,9 +4222,7 @@ class ClassLocationAdmin(ModelAdmin):
         )
 
     def _should_attach_attendance_counts(self, request) -> bool:
-        resolver_name = getattr(
-            getattr(request, "resolver_match", None), "url_name", ""
-        )
+        resolver_name = getattr(getattr(request, "resolver_match", None), "url_name", "")
         if resolver_name and not resolver_name.endswith("_changelist"):
             return False
         return self._attendance_query_active(request)
@@ -4325,12 +4243,8 @@ class ClassLocationAdmin(ModelAdmin):
             )
         )
         if not self._should_attach_attendance_counts(request):
-            return queryset.annotate(
-                _attendance_hits_period=Value(0, output_field=IntegerField())
-            )
-        period_start, period_end, period_label = self._resolve_attendance_period_window(
-            request
-        )
+            return queryset.annotate(_attendance_hits_period=Value(0, output_field=IntegerField()))
+        period_start, period_end, period_label = self._resolve_attendance_period_window(request)
         locations = list(queryset)
         counts = self._get_location_attendance_period_counts(
             locations,
@@ -4339,12 +4253,9 @@ class ClassLocationAdmin(ModelAdmin):
             period_label=period_label,
         )
         if not counts:
-            return queryset.annotate(
-                _attendance_hits_period=Value(0, output_field=IntegerField())
-            )
+            return queryset.annotate(_attendance_hits_period=Value(0, output_field=IntegerField()))
         count_cases = [
-            When(pk=location_id, then=Value(hit_count))
-            for location_id, hit_count in counts.items()
+            When(pk=location_id, then=Value(hit_count)) for location_id, hit_count in counts.items()
         ]
         return queryset.annotate(
             _attendance_hits_period=Case(
@@ -4422,12 +4333,7 @@ class ClassLocationAdmin(ModelAdmin):
         ]
 
     def attendance_stats(self, obj):
-        if (
-            obj is None
-            or obj.pk is None
-            or obj.latitude is None
-            or obj.longitude is None
-        ):
+        if obj is None or obj.pk is None or obj.latitude is None or obj.longitude is None:
             return format_html(
                 '<div style="padding: 20px; color: #666;">'
                 "Сохраните локацию с координатами для отображения статистики посещаемости."
@@ -4476,12 +4382,8 @@ class ClassLocationAdmin(ModelAdmin):
             counts_by_ym[(local_first_in.year, local_first_in.month)] += 1
             total_hits += 1
 
-        months_data = [
-            counts_by_ym.get((month.year, month.month), 0) for month in months_order
-        ]
-        month_names = [
-            date_format(month, "M") or month_abbr[month.month] for month in months_order
-        ]
+        months_data = [counts_by_ym.get((month.year, month.month), 0) for month in months_order]
+        month_names = [date_format(month, "M") or month_abbr[month.month] for month in months_order]
         max_count = max(months_data) if any(months_data) else 1
 
         columns = []
@@ -4585,9 +4487,7 @@ class ClassLocationAdmin(ModelAdmin):
 
                     invalidate_class_location_cache_impl()
                 except Exception as inv_err:
-                    logger.warning(
-                        "ClassLocationAdmin.save_model cache invalidation: %s", inv_err
-                    )
+                    logger.warning("ClassLocationAdmin.save_model cache invalidation: %s", inv_err)
             logger.info(
                 "ClassLocationAdmin.save_model OK id=%s name=%s",
                 obj.pk,
@@ -4650,9 +4550,7 @@ class ClassLocationAdmin(ModelAdmin):
         qs = (
             cl.queryset
             if cl
-            else ClassLocation.objects.filter(
-                latitude__isnull=False, longitude__isnull=False
-            )
+            else ClassLocation.objects.filter(latitude__isnull=False, longitude__isnull=False)
         )
         locs = [
             o
@@ -4749,9 +4647,7 @@ class SalaryAdmin(admin.ModelAdmin):
 
     def export_salary_report(self, request, queryset):
         count = queryset.count()
-        self.message_user(
-            request, f"Экспортирован отчет по зарплате для {count} сотрудников."
-        )
+        self.message_user(request, f"Экспортирован отчет по зарплате для {count} сотрудников.")
 
     export_salary_report.short_description = "Экспортировать отчет по зарплате"
 
@@ -4780,13 +4676,9 @@ class PublicHolidayAdmin(admin.ModelAdmin):
             if value == "today":
                 return queryset.filter(date=today)
             if value == "week":
-                return queryset.filter(
-                    date__gte=today, date__lte=today + timedelta(days=7)
-                )
+                return queryset.filter(date__gte=today, date__lte=today + timedelta(days=7))
             if value == "month":
-                return queryset.filter(
-                    date__gte=today, date__lte=today + timedelta(days=30)
-                )
+                return queryset.filter(date__gte=today, date__lte=today + timedelta(days=30))
             if value == "future":
                 return queryset.filter(date__gte=today)
             if value == "past":
@@ -4896,9 +4788,7 @@ class PublicHolidayAdmin(admin.ModelAdmin):
                 abs(days),
             )
         if days == 0:
-            return format_html(
-                '<span style="color:#047857; font-weight:600;">Сегодня</span>'
-            )
+            return format_html('<span style="color:#047857; font-weight:600;">Сегодня</span>')
         if days <= 7:
             return format_html(
                 '<span style="color:#b45309; font-weight:600;">через {} дн.</span>',
@@ -4930,7 +4820,6 @@ class PublicHolidayAdmin(admin.ModelAdmin):
             try:
                 next_date = holiday.date.replace(year=holiday.date.year + 1)
             except ValueError:
-                # 29 Feb fallback for non-leap year.
                 next_date = holiday.date.replace(year=holiday.date.year + 1, day=28)
 
             _, is_created = PublicHoliday.objects.get_or_create(
@@ -5141,18 +5030,14 @@ class RemoteWorkAdmin(admin.ModelAdmin):
 
     def extend_remote_work(self, request, queryset):
         count = queryset.count()
-        self.message_user(
-            request, f"Период удаленной работы продлен для {count} сотрудников."
-        )
+        self.message_user(request, f"Период удаленной работы продлен для {count} сотрудников.")
 
     extend_remote_work.short_description = "Продлить период удаленной работы"
 
     def terminate_remote_work(self, request, queryset):
         today = timezone.now().date()
         count = queryset.filter(end_date__gt=today).update(end_date=today)
-        self.message_user(
-            request, f"Удаленная работа завершена для {count} сотрудников."
-        )
+        self.message_user(request, f"Удаленная работа завершена для {count} сотрудников.")
 
     terminate_remote_work.short_description = "Завершить удаленную работу"
 
