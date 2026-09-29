@@ -4,6 +4,7 @@ BiSeNet face parsing (CelebAMask-HQ, 19 classes) for RGB photos — eyeglasses m
 Uses yakhyo/face-parsing ONNX (ResNet18 backbone): same preprocessing as upstream onnx_inference.py.
 Class index 6 == eye_g (eyeglasses); see yakhyo utils/common.py ATTRIBUTES.
 """
+
 from __future__ import annotations
 
 import logging
@@ -63,9 +64,7 @@ class FaceParsingEngine:
             if cuda_ok
             else ["CPUExecutionProvider"]
         )
-        self._session = ort.InferenceSession(
-            str(model_path), providers=providers
-        )
+        self._session = ort.InferenceSession(str(model_path), providers=providers)
         self.input_size = (512, 512)
         self._mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
         self._std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -138,9 +137,7 @@ def _ensure_model_file(path: Path) -> bool:
             )
             _RT.missing_model_logged = True
         return False
-    url = str(
-        getattr(settings, "FACE_PARSING_DOWNLOAD_URL", DEFAULT_DOWNLOAD_URL)
-    )
+    url = str(getattr(settings, "FACE_PARSING_DOWNLOAD_URL", DEFAULT_DOWNLOAD_URL))
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_suffix(path.suffix + ".part")
     logger.info("Face parsing: загрузка ONNX %s -> %s", url, path)

@@ -146,9 +146,7 @@ def parse_pad_ui_reason_from_tags(tags: list[str]) -> Optional[str]:
     return None
 
 
-def _evidence_line_to_english_metrics(
-    raw: Optional[dict[str, float]]
-) -> dict[str, float]:
+def _evidence_line_to_english_metrics(raw: Optional[dict[str, float]]) -> dict[str, float]:
     """Map legacy short keys on ``pad_evidence`` to stable English metric names.
 
     Args:
@@ -357,10 +355,7 @@ def _append_insufficient_roi_uncertainty(
     branch_str: Optional[str],
 ) -> None:
     """Tag review outcomes that stem from inadequate ROI for texture/geometry fusion."""
-    if (
-        status == "review"
-        and branch_str == "presentation_insufficient_input_review"
-    ):
+    if status == "review" and branch_str == "presentation_insufficient_input_review":
         uncertainty_codes.append("presentation_roi_insufficient")
 
 
@@ -475,9 +470,7 @@ def build_pad_diagnostic_payload(
     struct_dict = struct if isinstance(struct, dict) else None
     branch = struct_dict.get("branch") if isinstance(struct_dict, dict) else None
     branch_str = branch if isinstance(branch, str) else None
-    product_outcome = (
-        struct_dict.get("product_outcome") if isinstance(struct_dict, dict) else None
-    )
+    product_outcome = struct_dict.get("product_outcome") if isinstance(struct_dict, dict) else None
     if not isinstance(product_outcome, str) or not product_outcome:
         product_outcome = status
     elif product_outcome != status and status in ("suspicious", "clean", "error"):
@@ -492,9 +485,7 @@ def build_pad_diagnostic_payload(
         if isinstance(far, (int, float)):
             face_area_ratio = float(far)
 
-    corroboration = (
-        struct_dict.get("corroboration") if isinstance(struct_dict, dict) else None
-    )
+    corroboration = struct_dict.get("corroboration") if isinstance(struct_dict, dict) else None
     corr_dict = corroboration if isinstance(corroboration, dict) else {}
 
     raw_evidence = parse_pad_evidence_line(tags)
@@ -530,9 +521,7 @@ def build_pad_diagnostic_payload(
     interpretability_codes: list[str] = []
     if status == "review" and branch_str:
         if branch_str == "presentation_insufficient_input_review":
-            interpretability_codes.append(
-                "presentation_roi_unreliable_for_attack_verdict"
-            )
+            interpretability_codes.append("presentation_roi_unreliable_for_attack_verdict")
         low_other = (
             deepface_score < 0.05
             and device_score < _device_present_floor()
@@ -543,13 +532,9 @@ def build_pad_diagnostic_payload(
             "recapture_isolated_fft_aniso_corroborated_review",
         ):
             if low_other and not spoof_model_fake:
-                interpretability_codes.append(
-                    "review_primarily_face_texture_periodicity"
-                )
+                interpretability_codes.append("review_primarily_face_texture_periodicity")
             if branch_str == "recapture_isolated_fft_aniso_corroborated_review":
-                interpretability_codes.append(
-                    "texture_fft_and_anisotropy_both_elevated"
-                )
+                interpretability_codes.append("texture_fft_and_anisotropy_both_elevated")
         if (
             branch_str == "fake_default_review_not_clean"
             and spoof_model_fake
@@ -580,13 +565,9 @@ def build_pad_diagnostic_payload(
         if branch_str == "fake_low_confidence_no_geometry_clean":
             interpretability_codes.append("fasnet_below_review_threshold_auto_cleared")
         if branch_str == "recapture_mid_weak_geometry_clean":
-            interpretability_codes.append(
-                "recapture_mid_downgraded_no_suspicious_geometry"
-            )
+            interpretability_codes.append("recapture_mid_downgraded_no_suspicious_geometry")
         if branch_str == "spoof_model_uncertain_low_recapture_clean":
-            interpretability_codes.append(
-                "spoof_model_missing_low_recapture_auto_cleared"
-            )
+            interpretability_codes.append("spoof_model_missing_low_recapture_auto_cleared")
         if branch_str == "recapture_isolated_extreme_moire_live_uncertain_clean":
             interpretability_codes.append("texture_fft_and_anisotropy_both_elevated")
         if branch_str == "recapture_isolated_extreme_single_channel_uncertain_clean":
@@ -608,9 +589,7 @@ def build_pad_diagnostic_payload(
         tags=tags,
         quality_degraded=quality_degraded,
     )
-    _append_insufficient_roi_uncertainty(
-        uncertainty_codes, status=status, branch_str=branch_str
-    )
+    _append_insufficient_roi_uncertainty(uncertainty_codes, status=status, branch_str=branch_str)
 
     decision_support_flags: list[str] = []
     if isinstance(struct_dict, dict) and struct_dict.get("shield_normal_live") is True:

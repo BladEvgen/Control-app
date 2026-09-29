@@ -6,8 +6,8 @@ from django import template
 from django.contrib.admin.templatetags.admin_list import (
     items_for_result,
     result_headers,
-    result_list as build_result_list_context,
 )
+from django.contrib.admin.templatetags.admin_list import result_list as build_result_list_context
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 
@@ -41,9 +41,7 @@ def staffattendance_grouped_tbody(cl):
         cells = items_for_result(cl, res, None)
         parity = "grp-row-even" if row_idx % 2 == 0 else "grp-row-odd"
         row_idx += 1
-        parts.append(
-            f'<tr class="grp-row {parity}">' + "".join(str(c) for c in cells) + "</tr>"
-        )
+        parts.append(f'<tr class="grp-row {parity}">' + "".join(str(c) for c in cells) + "</tr>")
     return mark_safe("".join(parts))
 
 

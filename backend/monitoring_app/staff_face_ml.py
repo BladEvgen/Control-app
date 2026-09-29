@@ -3,6 +3,7 @@
 Staff-specific files are stored next to the avatar (``dirname(avatar.path)``),
 consistent with ``monitoring_app.ml``. Augment crops use ``settings.AUGMENT_ROOT``.
 """
+
 from __future__ import annotations
 
 import os
@@ -190,15 +191,11 @@ def collect_staff_face_ml_infos(staff) -> list[_FileInfo]:
     def add_file(label: str, basename: str, *, npy_meta: bool = False) -> None:
         downloadable = basename in allowed_ml_basenames(pin)
         if ws is None:
-            items.append(
-                _FileInfo(label, basename, False, downloadable=downloadable)
-            )
+            items.append(_FileInfo(label, basename, False, downloadable=downloadable))
             return
         fp = ws / basename
         if not fp.is_file():
-            items.append(
-                _FileInfo(label, basename, False, downloadable=downloadable)
-            )
+            items.append(_FileInfo(label, basename, False, downloadable=downloadable))
             return
         st = fp.stat()
         detail = ""
@@ -270,16 +267,8 @@ def render_staff_face_ml_table(
     for info in collect_staff_face_ml_infos(staff):
         if info.exists:
             sz = info.size_bytes
-            sz_s = (
-                f"{sz / 1024 / 1024:.2f} MiB"
-                if sz >= 1024 * 1024
-                else f"{sz / 1024:.1f} KiB"
-            )
-            mt = (
-                info.mtime.strftime("%Y-%m-%d %H:%M")
-                if info.mtime
-                else "—"
-            )
+            sz_s = f"{sz / 1024 / 1024:.2f} MiB" if sz >= 1024 * 1024 else f"{sz / 1024:.1f} KiB"
+            mt = info.mtime.strftime("%Y-%m-%d %H:%M") if info.mtime else "—"
             status = f'<span style="color:#15803d;font-weight:600;">есть</span> · {sz_s} · {mt}'
         else:
             status = '<span style="color:#b91c1c;">нет</span>'
@@ -293,8 +282,7 @@ def render_staff_face_ml_table(
             q = quote(info.basename, safe="")
             href = f"{file_download_url}?f={q}"
             link = (
-                f' <a href="{escape(href)}" style="font-size:12px;margin-left:6px;">'
-                "скачать</a>"
+                f' <a href="{escape(href)}" style="font-size:12px;margin-left:6px;">' "скачать</a>"
             )
             if file_preview_url and info.basename.endswith((".npy", ".pt")):
                 href_pv = f"{file_preview_url}?f={q}"
@@ -302,11 +290,7 @@ def render_staff_face_ml_table(
                     f' <a href="{escape(href_pv)}" target="_blank" rel="noopener" '
                     f'style="font-size:12px;margin-left:6px;">просмотр</a>'
                 )
-        elif (
-            info.exists
-            and info.basename.endswith((".npy", ".pt"))
-            and file_preview_url
-        ):
+        elif info.exists and info.basename.endswith((".npy", ".pt")) and file_preview_url:
             q = quote(info.basename, safe="")
             href_pv = f"{file_preview_url}?f={q}"
             link = (
@@ -322,11 +306,7 @@ def render_staff_face_ml_table(
                     f'style="font-size:12px;margin-left:6px;">медиа</a>'
                 )
 
-        if (
-            info.label.startswith("Аугментации")
-            and info.exists
-            and augment_gallery_url
-        ):
+        if info.label.startswith("Аугментации") and info.exists and augment_gallery_url:
             link += (
                 f' <a href="{escape(augment_gallery_url)}" target="_blank" rel="noopener" '
                 f'style="font-size:12px;margin-left:6px;">галерея</a>'
@@ -350,9 +330,7 @@ def render_staff_face_ml_table(
         "Файл</th>"
         '<th style="text-align:left;padding:8px 10px;background:#f8fafc;border-bottom:2px solid #e2e8f0;">'
         "Статус</th>"
-        "</tr></thead><tbody>"
-        + "".join(rows_html)
-        + "</tbody></table>"
+        "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table>"
         '<p style="margin:10px 0 0 0;font-size:11px;color:#94a3b8;">'
         "Эмбеддинги: больше строк — обычно богаче галерея (аугментации). Сравнивайте размер .npy и даты после "
         "переобучения. «Просмотр» — HTML-сводка (.npy) или описание чекпоинта (.pt); «Галерея» — картинки "
@@ -392,9 +370,7 @@ def face_ml_list_badge(staff) -> SafeString:
         f'<span style="color:{"#16a34a" if best else "#cbd5e1"};" title="best_model.pt">★</span>'
     )
     aug_color = "#16a34a" if n_aug >= 10 else ("#ca8a04" if n_aug else "#cbd5e1")
-    parts.append(
-        f'<span style="color:{aug_color};" title="аугментации">aug{n_aug}</span>'
-    )
+    parts.append(f'<span style="color:{aug_color};" title="аугментации">aug{n_aug}</span>')
     html = (
         '<span style="font-size:11px;font-weight:600;letter-spacing:0.02em;">'
         + " ".join(parts)

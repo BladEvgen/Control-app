@@ -1,4 +1,5 @@
 import logging
+
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
@@ -39,9 +40,7 @@ class Command(BaseCommand):
         dry_run = options.get("dry_run", False)
 
         with transaction.atomic():  # type: ignore[operator]
-            student_position = Position.objects.filter(
-                name__icontains="студент"
-            ).first()
+            student_position = Position.objects.filter(name__icontains="студент").first()
             if student_position is None:
                 student_position = Position.objects.create(name=STUDENT_POSITION_NAME)
                 created = True
@@ -49,7 +48,9 @@ class Command(BaseCommand):
                 created = False
             if created:
                 self.stdout.write(
-                    self.style.SUCCESS(f"Создана должность: {student_position.name} (id={student_position.id})")
+                    self.style.SUCCESS(
+                        f"Создана должность: {student_position.name} (id={student_position.id})"
+                    )
                 )
             else:
                 self.stdout.write(
@@ -61,14 +62,10 @@ class Command(BaseCommand):
             )
 
         if not staff_ids:
-            self.stdout.write(
-                self.style.WARNING(f"Нет сотрудников с pin, содержащим '{pattern}'.")
-            )
+            self.stdout.write(self.style.WARNING(f"Нет сотрудников с pin, содержащим '{pattern}'."))
             return
 
-        self.stdout.write(
-            f"Найдено сотрудников по шаблону '{pattern}': {len(staff_ids)}"
-        )
+        self.stdout.write(f"Найдено сотрудников по шаблону '{pattern}': {len(staff_ids)}")
         for s in Staff.objects.filter(id__in=staff_ids).only("pin", "surname", "name")[:20]:
             self.stdout.write(f"  {s.pin} — {s.surname} {s.name}")
         if len(staff_ids) > 20:
@@ -82,10 +79,7 @@ class Command(BaseCommand):
         with transaction.atomic():  # type: ignore[operator]
             through.objects.filter(staff_id__in=staff_ids).delete()
             through.objects.bulk_create(
-                [
-                    through(staff_id=sid, position_id=student_position.pk)
-                    for sid in staff_ids
-                ]
+                [through(staff_id=sid, position_id=student_position.pk) for sid in staff_ids]
             )
 
         self.stdout.write(

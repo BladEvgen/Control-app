@@ -3,6 +3,7 @@ import logging
 
 from django.core.management.base import BaseCommand
 from django.utils import timezone
+
 from monitoring_app import models, utils
 from monitoring_app.cache_conf import register_preload, warmup_cache
 
@@ -28,9 +29,7 @@ class Command(BaseCommand):
         force = options.get("force", False)
         keys = options.get("keys")
 
-        self.stdout.write(
-            self.style.SUCCESS(f"Начинаем прогрев кэша (force={force})...")
-        )
+        self.stdout.write(self.style.SUCCESS(f"Начинаем прогрев кэша (force={force})..."))
 
         def get_parent_departments():
             roots = (
@@ -67,9 +66,7 @@ class Command(BaseCommand):
             from monitoring_app import serializers
 
             def calculate_staff_count(department):
-                rows = list(
-                    models.ChildDepartment.objects.values_list("id", "parent_id")
-                )
+                rows = list(models.ChildDepartment.objects.values_list("id", "parent_id"))
                 children_by_parent = {}
                 for cid, pid in rows:
                     children_by_parent.setdefault(pid, []).append(cid)
@@ -102,11 +99,9 @@ class Command(BaseCommand):
                     child_departments_data = models.ChildDepartment.objects.filter(
                         parent=department
                     )
-                    child_departments_data_serialized = (
-                        serializers.ChildDepartmentSerializer(
-                            child_departments_data, many=True
-                        ).data
-                    )
+                    child_departments_data_serialized = serializers.ChildDepartmentSerializer(
+                        child_departments_data, many=True
+                    ).data
 
                     results[dept_id] = {
                         "name": department.name,
@@ -158,9 +153,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("\nРезультаты прогрева кэша:"))
         for key, result in results.items():
             if result.get("status") == "success":
-                self.stdout.write(
-                    self.style.SUCCESS(f"  ✓ {key}: успешно загружен в кэш")
-                )
+                self.stdout.write(self.style.SUCCESS(f"  ✓ {key}: успешно загружен в кэш"))
             else:
                 self.stdout.write(
                     self.style.ERROR(

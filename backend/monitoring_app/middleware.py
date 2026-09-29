@@ -116,9 +116,7 @@ class EnhancedSecurityMiddleware:
         window_start = current_time - self.rate_period
 
         request_times = cache.get(identifier, [])
-        request_times = [
-            timestamp for timestamp in request_times if timestamp > window_start
-        ]
+        request_times = [timestamp for timestamp in request_times if timestamp > window_start]
 
         if len(request_times) >= self.rate_limit:
             return False
@@ -168,9 +166,7 @@ class EnhancedSecurityMiddleware:
             origin (str): The Origin header from the request.
         """
         response["Access-Control-Allow-Origin"] = origin
-        response["Access-Control-Allow-Methods"] = (
-            "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-        )
+        response["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
         response["Access-Control-Allow-Headers"] = (
             "Content-Type, Authorization, x-api-token, X-API-KEY, X-Api-Key, Accept, Origin, X-Requested-With"
         )
@@ -254,9 +250,7 @@ class JWTAuthMiddleware:
         query_string = scope.get("query_string", b"").decode("utf-8")
         token = None
         if query_string:
-            params = dict(
-                pair.split("=") for pair in query_string.split("&") if "=" in pair
-            )
+            params = dict(pair.split("=") for pair in query_string.split("&") if "=" in pair)
             token = params.get("token")
         if token:
             try:

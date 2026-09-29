@@ -38,8 +38,7 @@ class FaceGalleryVettingTests(SimpleTestCase):
         pad_bad_ids: set[int] | None = None,
     ) -> tuple[list[list[float]], dict[str, object]]:
         ids_by_path = {
-            str(Path(str(src["path"])).resolve()): i + 1
-            for i, src in enumerate(sources)
+            str(Path(str(src["path"])).resolve()): i + 1 for i, src in enumerate(sources)
         }
         pad_bad_ids = pad_bad_ids or set()
 
@@ -121,9 +120,7 @@ class FaceGalleryVettingTests(SimpleTestCase):
         rows, report = self._run_vetting(sources, vectors, metas, pad_bad_ids={3})
 
         self.assertEqual(len(rows), 2)
-        self.assertEqual(
-            report["accepted_by_source"], {"avatar": 1, "lesson_attendance": 1}
-        )
+        self.assertEqual(report["accepted_by_source"], {"avatar": 1, "lesson_attendance": 1})
         self.assertEqual(report["rejected_by_reason"], {"gallery_pad_suspicious": 1})
 
     @override_settings(
@@ -167,9 +164,7 @@ class FaceGalleryVettingTests(SimpleTestCase):
     @override_settings(FACE_GALLERY_ATTENDANCE_MIN_NO_ANCHOR_COUNT=3)
     def test_rejects_single_attendance_frame_without_anchor(self) -> None:
         attendance = self._file("attendance.jpg")
-        sources = [
-            {"path": attendance, "source": "lesson_attendance", "trusted": False}
-        ]
+        sources = [{"path": attendance, "source": "lesson_attendance", "trusted": False}]
         vectors = {1: _unit([1.0, 0.0, 0.0, 0.0])}
         metas = {1: self._good_meta()}
 

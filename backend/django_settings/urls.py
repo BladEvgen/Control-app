@@ -1,7 +1,7 @@
 from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
-from django.conf.urls.static import static
 
 urlpatterns = [
     path("grappelli/", include("grappelli.urls")),
@@ -13,4 +13,4 @@ urlpatterns = [
 
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-    urlpatterns += static(settings.AUGMENT_URL, document_root=settings.MEDIA_ROOT / 'user_images')
+    urlpatterns += static(settings.AUGMENT_URL, document_root=settings.MEDIA_ROOT / "user_images")

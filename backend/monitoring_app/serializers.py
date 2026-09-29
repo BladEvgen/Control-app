@@ -138,8 +138,7 @@ class ChildDepartmentSerializer(serializers.ModelSerializer):
         return models.ChildDepartment.objects.filter(parent=obj).exists()
 
     def get_direct_staff_count(self, obj) -> int:
-        """Сотрудники, привязанные к самому отделу, без вложенных.
-        """
+        """Сотрудники, привязанные к самому отделу, без вложенных."""
         staff_count = getattr(obj, "annotated_direct_staff", None)
         if staff_count is not None:
             return staff_count

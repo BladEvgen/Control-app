@@ -28,7 +28,9 @@ class IsAuthenticatedOrAPIKey(BasePermission):
         except (InvalidToken, AuthenticationFailed):
             pass
         except Exception as e:
-            logger.warning(f"Unexpected error during JWT authentication for {method} {path}: {str(e)}")
+            logger.warning(
+                f"Unexpected error during JWT authentication for {method} {path}: {str(e)}"
+            )
 
         api_key = request.headers.get("X-API-KEY") or request.headers.get("x-api-key")
         if api_key:

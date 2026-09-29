@@ -1,4 +1,5 @@
 import os
+
 from django.core.management import call_command
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "django_settings.settings")

@@ -81,8 +81,7 @@ class Command(BaseCommand):
         else:
             self.stdout.write(
                 self.style.WARNING(
-                    "Building attendance report exported with no data: "
-                    f"{output_path}"
+                    "Building attendance report exported with no data: " f"{output_path}"
                 )
             )
 

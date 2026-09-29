@@ -74,8 +74,7 @@ def _build_context(inputs: DecisionInputs, tags: list[str]) -> PadDecisionContex
         "decision_strong_device_min"
     ) and inputs.frame_score >= _pad_float("decision_strong_frame_min")
     quality_poor = (
-        inputs.quality_penalty >= _pad_float("decision_quality_poor_min")
-        or "quality_poor" in tags
+        inputs.quality_penalty >= _pad_float("decision_quality_poor_min") or "quality_poor" in tags
     )
     insufficient_input = _presentation_input_insufficient(
         tags, inputs.face_area_ratio, inputs.quality_penalty
@@ -89,8 +88,7 @@ def _build_context(inputs: DecisionInputs, tags: list[str]) -> PadDecisionContex
     background_frame_only = "screen_frame_background_only" in tags
     background_screen_context = (
         inputs.device_bg_score >= max(_pad_float("decision_strong_device_min"), 0.52)
-        or inputs.frame_global_score
-        >= max(_pad_float("decision_strong_frame_min"), 0.42)
+        or inputs.frame_global_score >= max(_pad_float("decision_strong_frame_min"), 0.42)
         or (
             "screen_bezel_context" in tags
             and inputs.frame_global_score >= _pad_float("decision_weak_frame_min")
@@ -221,8 +219,7 @@ def _background_vote(ctx: PadDecisionContext) -> float:
         return 0.0
     if ctx.fasnet_live and not any(t.startswith("device_on_face:") for t in ctx.tags):
         return min(
-            _mean_clamped([ctx.inputs.frame_global_score, ctx.inputs.device_bg_score])
-            * 0.45,
+            _mean_clamped([ctx.inputs.frame_global_score, ctx.inputs.device_bg_score]) * 0.45,
             0.28,
         )
     return _mean_clamped([ctx.inputs.frame_global_score, ctx.inputs.device_bg_score])
@@ -236,9 +233,7 @@ def _face_reflection_vote(ctx: PadDecisionContext) -> float:
     return raw
 
 
-def _live_model_vetoes_heuristic_suspicious(
-    ctx: PadDecisionContext, neural: float
-) -> bool:
+def _live_model_vetoes_heuristic_suspicious(ctx: PadDecisionContext, neural: float) -> bool:
     """FasNet «живое» без нейро-риска: блики/цвет/слабый TV не дают auto-reject.
 
     Confirmed on-face device geometry (e.g. a TV/phone screen detected
@@ -294,24 +289,18 @@ def _build_jury(ctx: PadDecisionContext) -> dict[str, Any]:
 
     weights = {
         "neural_model": _pad_float("risk_weight_deepface") or 0.35,
-        "face_display_geometry": _pad_float("risk_weight_device")
-        + _pad_float("risk_weight_frame"),
+        "face_display_geometry": _pad_float("risk_weight_device") + _pad_float("risk_weight_frame"),
         "background_display_context": 0.08,
         "recapture_texture": _pad_float("risk_weight_recapture"),
         "face_reflection_artifacts": _pad_float("risk_weight_reflection"),
     }
     wsum = sum(weights.values()) or 1.0
-    global_score = (
-        sum(float(v["score"]) * weights.get(str(v["family"]), 0.1) for v in votes)
-        / wsum
-    )
+    global_score = sum(float(v["score"]) * weights.get(str(v["family"]), 0.1) for v in votes) / wsum
     global_score = _clamp01(global_score)
 
     fam_min = _pad_int("ensemble_suspicious_family_min")
     jury_decision = STATUS_CLEAN
-    if len(strong) >= fam_min and consensus >= _pad_float(
-        "ensemble_suspicious_score_min"
-    ):
+    if len(strong) >= fam_min and consensus >= _pad_float("ensemble_suspicious_score_min"):
         jury_decision = STATUS_SUSPICIOUS
     elif "neural_model" in strong or (
         len(review) >= fam_min and consensus >= _pad_float("ensemble_review_score_min")
@@ -345,18 +334,10 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
     debate = jury["debate"]
     neural = float(debate["score"])
     background = float(
-        next(
-            v["score"]
-            for v in jury["votes"]
-            if v["family"] == "background_display_context"
-        )
+        next(v["score"] for v in jury["votes"] if v["family"] == "background_display_context")
     )
     surface = float(
-        next(
-            v["score"]
-            for v in jury["votes"]
-            if v["family"] == "face_reflection_artifacts"
-        )
+        next(v["score"] for v in jury["votes"] if v["family"] == "face_reflection_artifacts")
     )
     rec = ctx.rec
     refl = ctx.refl
@@ -407,8 +388,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
         any(tag in tags for tag in ("quality_small_face", "quality_face_edge_crop"))
         or (
             inputs.face_area_ratio > 1e-9
-            and inputs.face_area_ratio
-            < _pad_float("presentation_texture_min_face_area_ratio")
+            and inputs.face_area_ratio < _pad_float("presentation_texture_min_face_area_ratio")
         )
         or (
             "quality_blur" in tags
@@ -451,8 +431,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
 
     if roi_insufficient:
         blur_compound = "quality_blur" in tags and any(
-            tag in tags
-            for tag in ("quality_poor", "quality_low_contrast", "quality_exposure")
+            tag in tags for tag in ("quality_poor", "quality_low_contrast", "quality_exposure")
         )
         if (
             not ctx.deepfake
@@ -465,29 +444,19 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
                 tag in tags for tag in ("quality_small_face", "quality_face_edge_crop")
             ) or (
                 inputs.face_area_ratio > 1e-9
-                and inputs.face_area_ratio
-                < _pad_float("presentation_texture_min_face_area_ratio")
+                and inputs.face_area_ratio < _pad_float("presentation_texture_min_face_area_ratio")
             )
             if edge_or_tiny:
-                _clean(
-                    "presentation_insufficient_input_uncertain_clean", uncertain=True
-                )
+                _clean("presentation_insufficient_input_uncertain_clean", uncertain=True)
             elif blur_compound or ctx.quality_poor:
                 _clean("image_quality_uncertain_clean", uncertain=True)
             else:
-                _clean(
-                    "presentation_insufficient_input_uncertain_clean", uncertain=True
-                )
+                _clean("presentation_insufficient_input_uncertain_clean", uncertain=True)
             return GlobalVerdict(status, trust, branch, risk, jury)
         _review("presentation_insufficient_input_review")
         return GlobalVerdict(status, trust, branch, risk, jury)
 
-    if (
-        ctx.quality_poor
-        and not ctx.has_device
-        and not ctx.has_frame
-        and not ctx.deepfake
-    ):
+    if ctx.quality_poor and not ctx.has_device and not ctx.has_frame and not ctx.deepfake:
         _clean("image_quality_uncertain_clean", uncertain=True)
         return GlobalVerdict(status, trust, branch, risk, jury)
 
@@ -528,8 +497,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
     if (
         ctx.device_confirmed
         and surface >= refl_strong
-        and ctx.inputs.face_area_ratio
-        >= _pad_float("reflection_suspicious_min_face_area_ratio")
+        and ctx.inputs.face_area_ratio >= _pad_float("reflection_suspicious_min_face_area_ratio")
         and not ctx.reflection_guard_fake
     ):
         if _live_model_vetoes_heuristic_suspicious(ctx, neural):
@@ -545,11 +513,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
         if ctx.dual_mid_geometry and neural >= df_mid_susp:
             _suspicious("fake_mid_plus_dual_mid_geometry")
             return GlobalVerdict(status, trust, branch, risk, jury)
-        if (
-            neural >= df_mid_susp
-            and ctx.background_screen_context
-            and not ctx.device_confirmed
-        ):
+        if neural >= df_mid_susp and ctx.background_screen_context and not ctx.device_confirmed:
             _suspicious("fake_mid_plus_background_display_suspicious")
             return GlobalVerdict(status, trust, branch, risk, jury)
         if neural >= df_mid_susp and surface >= refl_mid and refl >= refl_mid:
@@ -559,11 +523,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
                 _review("fake_plus_face_reflection_review_no_geometry")
             return GlobalVerdict(status, trust, branch, risk, jury)
         review_floor = _pad_float("ensemble_review_vote_min")
-        if (
-            neural >= df_review
-            and ctx.credible_display_context
-            and background >= review_floor
-        ):
+        if neural >= df_review and ctx.credible_display_context and background >= review_floor:
             _review("fake_background_display_review")
             return GlobalVerdict(status, trust, branch, risk, jury)
         if ctx.reflection_guard_fake and neural >= 0.55:
@@ -571,9 +531,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
             return GlobalVerdict(status, trust, branch, risk, jury)
         if (ctx.quality_poor or roi_insufficient) and neural < 0.92:
             _review(
-                "fake_quality_poor_review"
-                if ctx.quality_poor
-                else "fake_quality_limited_review"
+                "fake_quality_poor_review" if ctx.quality_poor else "fake_quality_limited_review"
             )
             return GlobalVerdict(status, trust, branch, risk, jury)
         if "quality_blur" in tags and neural < 0.92:
@@ -590,8 +548,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
         refl >= refl_strong
         and ctx.dual_mid_geometry
         and not ctx.quality_poor
-        and ctx.inputs.face_area_ratio
-        >= _pad_float("reflection_suspicious_min_face_area_ratio")
+        and ctx.inputs.face_area_ratio >= _pad_float("reflection_suspicious_min_face_area_ratio")
     ):
         if _live_model_vetoes_heuristic_suspicious(ctx, neural):
             _clean("live_selfie_surface_noise_uncertain_clean", uncertain=True)
@@ -626,9 +583,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
         and ctx.inputs.face_area_ratio >= 0.05
         and refl >= _pad_float("reflection_review_min")
         and (
-            not ctx.device_confirmed
-            or "quality_blur" in tags
-            or "glasses_reflection_guard" in tags
+            not ctx.device_confirmed or "quality_blur" in tags or "glasses_reflection_guard" in tags
         )
     )
     if live_selfie:
@@ -652,10 +607,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
 
     if (
         ctx.inputs.quality_penalty > 0.0
-        and any(
-            t in ctx.tags
-            for t in ("quality_blur", "quality_low_contrast", "quality_exposure")
-        )
+        and any(t in ctx.tags for t in ("quality_blur", "quality_low_contrast", "quality_exposure"))
         and not ctx.quality_poor
         and not ctx.deepfake
         and not ctx.has_device
@@ -696,9 +648,7 @@ def resolve_global_verdict(inputs: DecisionInputs, tags: list[str]) -> GlobalVer
     return GlobalVerdict(status, trust, branch, risk, jury)
 
 
-def _isolated_recapture_branch(
-    ctx: PadDecisionContext, rec: float
-) -> Optional[tuple[str, bool]]:
+def _isolated_recapture_branch(ctx: PadDecisionContext, rec: float) -> Optional[tuple[str, bool]]:
     """Return (branch, uncertain_clean) for strong isolated recapture, or None."""
     dual_tex = _recapture_dual_inner_cues(ctx.tags)
     moire_rec = _pad_float("recapture_isolated_moire_forgive_min_rec")

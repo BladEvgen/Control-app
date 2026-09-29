@@ -9,6 +9,7 @@ from typing import Any, cast
 import numpy as np
 from django.conf import settings
 from django.core.management.base import BaseCommand
+
 from monitoring_app import models
 from monitoring_app.ml import (
     _collect_readable_lesson_attendance_paths_for_staff,
@@ -128,9 +129,7 @@ class Command(BaseCommand):
                     continue
                 ap = staff.avatar.path
                 if not os.path.isfile(ap):
-                    self.stdout.write(
-                        style.WARNING(f"[skip] {staff.pin}: файл аватара не найден")
-                    )
+                    self.stdout.write(style.WARNING(f"[skip] {staff.pin}: файл аватара не найден"))
                     skipped += 1
                     continue
 
@@ -146,9 +145,7 @@ class Command(BaseCommand):
                         "source": "staff_face_sample",
                         "trusted": True,
                     }
-                    for path in _collect_trusted_staff_face_sample_paths_for_staff(
-                        staff
-                    )
+                    for path in _collect_trusted_staff_face_sample_paths_for_staff(staff)
                 )
                 sources.extend(
                     {
@@ -156,9 +153,7 @@ class Command(BaseCommand):
                         "source": "lesson_attendance",
                         "trusted": False,
                     }
-                    for path in _collect_readable_lesson_attendance_paths_for_staff(
-                        staff
-                    )
+                    for path in _collect_readable_lesson_attendance_paths_for_staff(staff)
                 )
                 seen: set[str] = set()
                 uniq_sources: list[dict[str, object]] = []
@@ -196,9 +191,7 @@ class Command(BaseCommand):
                     )
                 else:
                     np.save(out_path, mat)
-                    meta_path = os.path.join(
-                        base_dir, f"{staff.pin}_gallery_real_meta.json"
-                    )
+                    meta_path = os.path.join(base_dir, f"{staff.pin}_gallery_real_meta.json")
                     with open(meta_path, "w", encoding="utf-8") as fh:
                         json.dump(
                             {

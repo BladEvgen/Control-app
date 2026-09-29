@@ -66,16 +66,12 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("photo_path", type=str, help="Path to the photo file.")
-        parser.add_argument(
-            "pin", type=str, help="Staff PIN associated with the photo."
-        )
+        parser.add_argument("pin", type=str, help="Staff PIN associated with the photo.")
         parser.add_argument(
             "--subject_name", type=str, default="Test Subject", help="Subject name."
         )
         parser.add_argument("--tutor_id", type=int, default=1, help="Tutor ID.")
-        parser.add_argument(
-            "--tutor", type=str, default="Test Tutor", help="Tutor name."
-        )
+        parser.add_argument("--tutor", type=str, default="Test Tutor", help="Tutor name.")
         parser.add_argument("--latitude", type=float, default=0.0, help="Latitude.")
         parser.add_argument("--longitude", type=float, default=0.0, help="Longitude.")
         parser.add_argument(
@@ -114,9 +110,7 @@ class Command(BaseCommand):
                 first_in = timezone.make_aware(first_in)
             except ValueError:
                 self.stderr.write(
-                    self.style.ERROR(
-                        "Invalid first_in format. Use YYYY-MM-DD HH:MM:SS."
-                    )
+                    self.style.ERROR("Invalid first_in format. Use YYYY-MM-DD HH:MM:SS.")
                 )
                 return
         else:

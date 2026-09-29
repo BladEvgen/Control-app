@@ -1,26 +1,27 @@
 from __future__ import annotations
 
 from django.test import SimpleTestCase, override_settings
+
 from monitoring_app.face_verification_contract import (
-    QualityPayload,
-    LivenessPayload,
-    R_LIVENESS_FAILED,
-    R_WEAK_ENROLLMENT,
-    R_PROBE_QUALITY_LOW,
-    R_PAD_PIPELINE_FAILED,
-    R_NEAREST_IMPOSTOR_TOO_CLOSE,
-    R_SCORE_BELOW_VERIFIED_THRESHOLD,
     R_COLD_START_QUALITY_INSUFFICIENT,
+    R_LIVENESS_FAILED,
+    R_NEAREST_IMPOSTOR_TOO_CLOSE,
+    R_PAD_PIPELINE_FAILED,
+    R_PROBE_QUALITY_LOW,
     R_SCORE_BELOW_COLD_START_THRESHOLD,
+    R_SCORE_BELOW_VERIFIED_THRESHOLD,
     R_SCORE_BELOW_WEAK_GALLERY_THRESHOLD,
+    R_WEAK_ENROLLMENT,
+    LivenessPayload,
+    QualityPayload,
 )
 from monitoring_app.face_verification_pad import (
     pad_blocks_before_identity,
     pad_blocks_bootstrap_sample,
     pad_public_decision_from_result,
 )
-from monitoring_app.photo_pad import PadResult
 from monitoring_app.face_verification_policy import decide_face_verify_binary
+from monitoring_app.photo_pad import PadResult
 
 _QUALITY_OK: QualityPayload = {
     "passed": True,

@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 from django.conf import settings
 from django.db.models import QuerySet
+
 from monitoring_app import face_parsing, ml, models
 
 logger = logging.getLogger(__name__)
@@ -216,9 +217,7 @@ def _preset_unsharp_mild(rgb: np.ndarray) -> np.ndarray:
 def _preset_far_camera(rgb: np.ndarray) -> np.ndarray:
     """Downscale and upscale: cheap lens / distance / recompression pipeline."""
     h, w = rgb.shape[:2]
-    small = cv2.resize(
-        rgb, (max(w // 2, 96), max(h // 2, 96)), interpolation=cv2.INTER_AREA
-    )
+    small = cv2.resize(rgb, (max(w // 2, 96), max(h // 2, 96)), interpolation=cv2.INTER_AREA)
     return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
 
 
@@ -236,9 +235,7 @@ def _preset_iso_noise(rgb: np.ndarray) -> np.ndarray:
     f = rgb.astype(np.float32)
     h, w = f.shape[:2]
     cy, cx = h // 2, w // 2
-    seed = (
-        int(f[cy, cx, 0]) << 16 | int(f[cy, cx, 1]) << 8 | int(f[cy, cx, 2])
-    ) & 0xFFFFFFFF
+    seed = (int(f[cy, cx, 0]) << 16 | int(f[cy, cx, 1]) << 8 | int(f[cy, cx, 2])) & 0xFFFFFFFF
     rng = np.random.default_rng(seed)
     noise = rng.normal(0.0, 2.4, rgb.shape).astype(np.float32)
     return np.clip(f + noise, 0, 255).astype(np.uint8)
@@ -620,15 +617,9 @@ def run_staff_avatar_augmentation(
     no augmented files (successful PINs are absent from the dict).
     """
     notes: Dict[str, str] = {}
-    qs = (
-        staff_queryset
-        if staff_queryset is not None
-        else _default_augment_staff_queryset()
-    )
+    qs = staff_queryset if staff_queryset is not None else _default_augment_staff_queryset()
     if not qs.exists():
-        logger.info(
-            "No staff members found with a valid avatar and needs_training set to True."
-        )
+        logger.info("No staff members found with a valid avatar and needs_training set to True.")
         return notes
 
     logger.info(
@@ -710,9 +701,7 @@ def run_staff_avatar_augmentation(
             rng = np.random.default_rng(seed=hash(staff_member.pin) % (2**32))
 
             likely_glasses = _glasses_likely_rgb(face_square)
-            inpaint_enabled = bool(
-                getattr(settings, "AUGMENT_GLASSES_INPAINT_ENABLE", True)
-            )
+            inpaint_enabled = bool(getattr(settings, "AUGMENT_GLASSES_INPAINT_ENABLE", True))
 
             for _name, preset_fn in FACE_ID_PRESET_AUGMENTS.items():
                 if _name in _GLASSES_SYNTH_PRESET_NAMES and likely_glasses:
@@ -744,10 +733,7 @@ def run_staff_avatar_augmentation(
 
             saved_random = 0
             attempts = 0
-            while (
-                saved_random < RANDOM_AUGMENTS_TARGET
-                and attempts < RANDOM_AUGMENT_MAX_ATTEMPTS
-            ):
+            while saved_random < RANDOM_AUGMENTS_TARGET and attempts < RANDOM_AUGMENT_MAX_ATTEMPTS:
                 attempts += 1
                 aug_rgb = _random_augment_face_rgb(np.copy(face_square), rng)
                 ok, file_index = _save_augment_if_valid(

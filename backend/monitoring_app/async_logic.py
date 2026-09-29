@@ -44,9 +44,7 @@ def async_drf_view(methods):
         @api_view(methods)
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
-            logger.info(
-                "Entering async_drf_view wrapper; converting async view to sync"
-            )
+            logger.info("Entering async_drf_view wrapper; converting async view to sync")
             result = async_to_sync(func)(*args, **kwargs)
             logger.info("Async view completed in async_drf_view wrapper")
             return result

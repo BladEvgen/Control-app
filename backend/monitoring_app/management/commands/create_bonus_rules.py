@@ -65,7 +65,5 @@ class Command(BaseCommand):
                 self.stdout.write(f"Обновлено правило: {rule}")
 
         self.stdout.write(
-            self.style.SUCCESS(
-                f"\nГотово! Создано: {created_count}, обновлено: {updated_count}.\n"
-            )
+            self.style.SUCCESS(f"\nГотово! Создано: {created_count}, обновлено: {updated_count}.\n")
         )

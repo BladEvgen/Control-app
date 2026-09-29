@@ -112,9 +112,7 @@ class Command(BaseCommand):
         try:
             return datetime.date.fromisoformat(raw)
         except ValueError as exc:
-            raise CommandError(
-                "Неверный формат --since-date. Используй YYYY-MM-DD."
-            ) from exc
+            raise CommandError("Неверный формат --since-date. Используй YYYY-MM-DD.") from exc
 
     def _parse_exact_date(self, raw: str) -> datetime.date | None:
         if not raw:
@@ -236,11 +234,7 @@ class Command(BaseCommand):
         for start in range(0, total, batch_size):
             batch = records[start : start + batch_size]
             for record in batch:
-                if (
-                    not dry_run
-                    and not force_manual
-                    and record.photo_manual_verdict != MANUAL_NONE
-                ):
+                if not dry_run and not force_manual and record.photo_manual_verdict != MANUAL_NONE:
                     stats["skipped_manual"] += 1
                     continue
 
@@ -275,10 +269,7 @@ class Command(BaseCommand):
 
                 if not dry_run:
                     update_kwargs = result.to_update_kwargs()
-                    if (
-                        reset_manual_verdicts
-                        and record.photo_manual_verdict != MANUAL_NONE
-                    ):
+                    if reset_manual_verdicts and record.photo_manual_verdict != MANUAL_NONE:
                         update_kwargs.update(
                             {
                                 "photo_manual_verdict": MANUAL_NONE,
@@ -288,16 +279,10 @@ class Command(BaseCommand):
                             }
                         )
                         stats["manual_reset"] += 1
-                    rows = LessonAttendance.objects.filter(pk=record.pk).update(
-                        **update_kwargs
-                    )
+                    rows = LessonAttendance.objects.filter(pk=record.pk).update(**update_kwargs)
                     if rows:
-                        updated_ws_by_date.setdefault(record.date_at, []).append(
-                            record.pk
-                        )
-                elif (
-                    reset_manual_verdicts and record.photo_manual_verdict != MANUAL_NONE
-                ):
+                        updated_ws_by_date.setdefault(record.date_at, []).append(record.pk)
+                elif reset_manual_verdicts and record.photo_manual_verdict != MANUAL_NONE:
                     stats["manual_reset"] += 1
 
                 if result.status == "suspicious":
@@ -310,11 +295,7 @@ class Command(BaseCommand):
                         )
                     )
 
-            avg_ms = (
-                (sum(elapsed_list) / len(elapsed_list) * 1000.0)
-                if elapsed_list
-                else 0.0
-            )
+            avg_ms = (sum(elapsed_list) / len(elapsed_list) * 1000.0) if elapsed_list else 0.0
             self.stdout.write(
                 "Прогресс: "
                 f"{min(start + batch_size, total)}/{total} | "

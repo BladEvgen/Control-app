@@ -12,6 +12,7 @@ from typing import Any, Optional, cast
 import cv2
 import numpy as np
 from django.conf import settings
+
 from monitoring_app import ml
 from monitoring_app.pad_diagnostics import PAD_TRACE_SCHEMA
 from monitoring_app.pad_evidence import (
@@ -300,9 +301,7 @@ def normalize_device(device: Optional[str] = None) -> str:
     Returns:
         One of ``DEVICE_AUTO``, ``DEVICE_CPU``, ``DEVICE_CUDA``.
     """
-    configured = (
-        device or getattr(settings, "PHOTO_PAD_DEVICE", DEVICE_AUTO) or DEVICE_AUTO
-    )
+    configured = device or getattr(settings, "PHOTO_PAD_DEVICE", DEVICE_AUTO) or DEVICE_AUTO
     normalized = str(configured).strip().lower()
     if normalized not in DEVICE_VALUES:
         return DEVICE_AUTO
@@ -317,11 +316,7 @@ def _resolve_torch_device(preferred_device: str) -> tuple[Optional[Any], str]:
 
     if preferred_device == DEVICE_CUDA:
         return (
-            (
-                torch.device("cuda")
-                if torch.cuda.is_available()
-                else torch.device("cpu")
-            ),
+            (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")),
             (DEVICE_CUDA if torch.cuda.is_available() else DEVICE_CPU),
         )
     if preferred_device == DEVICE_CPU:
@@ -360,6 +355,7 @@ def _get_fasnet():
             import io
 
             from deepface.models.spoofing.FasNet import Fasnet
+
             from monitoring_app.ml_log_quiet import ml_third_party_stdout_verbose
 
             _stdout_ctx = (
@@ -662,11 +658,7 @@ def _score_minifasnet_onnx(
         if raw.ndim != 2 or raw.shape[0] < 1 or raw.shape[1] < 3:
             return None, ["minifasnet_onnx_error"]
         row = raw[0].astype(np.float64)
-        if (
-            np.all(row >= 0.0)
-            and np.all(row <= 1.0)
-            and abs(float(row.sum()) - 1.0) <= 0.02
-        ):
+        if np.all(row >= 0.0) and np.all(row <= 1.0) and abs(float(row.sum()) - 1.0) <= 0.02:
             probs = row
         else:
             probs = _softmax_probs(row)
@@ -830,9 +822,7 @@ def _signal_device(
             x1, y1, x2, y2 = box
             glasses_ov = 0.0
             if glasses_mask is not None:
-                glasses_ov = _device_box_overlap_glasses_mask(
-                    x1, y1, x2, y2, glasses_mask
-                )
+                glasses_ov = _device_box_overlap_glasses_mask(x1, y1, x2, y2, glasses_mask)
                 if glasses_ov >= skip_ov:
                     tags.append("device_ignored_glasses_reflection")
                     continue
@@ -1018,16 +1008,12 @@ def _signal_screen_frame(
         try:
             clahe_obj = _CV2_CREATE_CLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             gray_enhanced = clahe_obj.apply(gray)
-            blurred_enh = _CV2_GAUSSIAN_BLUR(
-                gray_enhanced, (gaussian_kernel, gaussian_kernel), 0
-            )
+            blurred_enh = _CV2_GAUSSIAN_BLUR(gray_enhanced, (gaussian_kernel, gaussian_kernel), 0)
             edges_enh = _CV2_CANNY(blurred_enh, max(20, canny_low - 25), canny_high)
             if glasses_mask is not None and glasses_mask.shape[:2] == (h, w):
                 edges_enh = np.asarray(edges_enh).copy()
                 edges_enh[glasses_mask > 127] = 0
-            sf, sg = _frame_scores_from_edges(
-                edges_enh, frame_area, w, h, face_bbox, face_center
-            )
+            sf, sg = _frame_scores_from_edges(edges_enh, frame_area, w, h, face_bbox, face_center)
             best_face = max(best_face, sf)
             best_global = max(best_global, sg)
         except Exception as exc:
@@ -1097,22 +1083,11 @@ def _signal_dark_bezel_context(gray: np.ndarray) -> float:
     row_mean = gray.mean(axis=1)
     lower_jump = 0.0
     if h >= 16:
-        lower_jump = float(np.abs(np.diff(row_mean[int(h * 0.6) :])).max()) / max(
-            1.0, center_mean
-        )
-    if (
-        horiz_single_support >= 0.72
-        and horiz_side_support >= 0.06
-        and lower_jump >= 0.1
-    ):
+        lower_jump = float(np.abs(np.diff(row_mean[int(h * 0.6) :])).max()) / max(1.0, center_mean)
+    if horiz_single_support >= 0.72 and horiz_side_support >= 0.06 and lower_jump >= 0.1:
         single_bar_score = min(
             1.0,
-            (
-                0.68 * horiz_single_support
-                + 0.16 * horiz_side_support
-                + 0.16 * lower_jump
-            )
-            * 0.58,
+            (0.68 * horiz_single_support + 0.16 * horiz_side_support + 0.16 * lower_jump) * 0.58,
         )
     final_score = max(pair_score, single_bar_score)
     if final_score < 0.2:
@@ -1331,10 +1306,7 @@ def _presentation_roi_reliable_for_texture(
     Returns:
         Whether presentation ROI is adequate for texture-driven attack conclusions.
     """
-    if any(
-        tag in tags
-        for tag in ("quality_blur", "quality_small_face", "quality_face_edge_crop")
-    ):
+    if any(tag in tags for tag in ("quality_blur", "quality_small_face", "quality_face_edge_crop")):
         return False
     min_face = _pad_float("presentation_texture_min_face_area_ratio")
     if face_area_ratio > 1e-9 and face_area_ratio < min_face:
@@ -1354,8 +1326,7 @@ def _presentation_input_insufficient(
     if face_area_ratio > 1e-9 and face_area_ratio < min_face:
         return True
     if "quality_blur" in tags and any(
-        tag in tags
-        for tag in ("quality_poor", "quality_low_contrast", "quality_exposure")
+        tag in tags for tag in ("quality_poor", "quality_low_contrast", "quality_exposure")
     ):
         return True
     if (
@@ -1392,9 +1363,7 @@ _PAD_UI_REASON_RU: dict[str, str] = {
     "fake_default_review_not_clean": (
         "Модели видят риск подмены без явного экрана у лица. Нужна проверка."
     ),
-    "fake_plus_face_gated_screen": (
-        "Модели и геометрия: у лица признаки экрана или рамки."
-    ),
+    "fake_plus_face_gated_screen": ("Модели и геометрия: у лица признаки экрана или рамки."),
     "fake_extreme_score_suspicious": "Модели почти уверены: кадр похож на подмену.",
     "fake_high_plus_suspicious_device_face": (
         "Высокий риск подмены: устройство подтверждено у лица."

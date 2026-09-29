@@ -1,4 +1,5 @@
 from django.core.management.base import BaseCommand
+
 from monitoring_app.tasks import warmup_class_location_buffers
 
 

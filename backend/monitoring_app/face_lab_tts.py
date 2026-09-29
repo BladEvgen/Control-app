@@ -78,13 +78,9 @@ _CACHE_TTL = 60 * 60 * 24 * 30
 
 def _voice_for_lang(lang: str) -> str:
     if lang == "kk":
-        return (
-            getattr(settings, "FACE_LAB_EDGE_TTS_VOICE_KK", "") or "kk-KZ-AigulNeural"
-        )
+        return getattr(settings, "FACE_LAB_EDGE_TTS_VOICE_KK", "") or "kk-KZ-AigulNeural"
     if lang == "en":
-        return (
-            getattr(settings, "FACE_LAB_EDGE_TTS_VOICE_EN", "") or "en-US-JennyNeural"
-        )
+        return getattr(settings, "FACE_LAB_EDGE_TTS_VOICE_EN", "") or "en-US-JennyNeural"
     return getattr(settings, "FACE_LAB_EDGE_TTS_VOICE_RU", "") or "ru-RU-SvetlanaNeural"
 
 
@@ -126,9 +122,7 @@ def face_lab_tts_view(request):
         try:
             audio = _edge_tts_mp3(text, voice)
         except Exception:
-            logger.exception(
-                "face_lab_tts_view: edge-tts failed for %s/%s", phase, lang
-            )
+            logger.exception("face_lab_tts_view: edge-tts failed for %s/%s", phase, lang)
             return Response(
                 {"error": "TTS synthesis failed."},
                 status=status.HTTP_502_BAD_GATEWAY,

@@ -66,12 +66,8 @@ class Command(BaseCommand):
                     if isinstance(t, str) and t.startswith("pad_rule:"):
                         branch = t[len("pad_rule:") :]
                         break
-                branch_hist[branch or "(none)"] = (
-                    branch_hist.get(branch or "(none)", 0) + 1
-                )
-                self.stdout.write(
-                    f"{label}\t{r.status}\t{branch}\ttrust={r.trust_confirmed!r}"
-                )
+                branch_hist[branch or "(none)"] = branch_hist.get(branch or "(none)", 0) + 1
+                self.stdout.write(f"{label}\t{r.status}\t{branch}\ttrust={r.trust_confirmed!r}")
             total = len(SYNTHETIC_REVIEW_RATE_AUDIT_SCENARIOS)
             self.stdout.write(
                 f"\n--- synthetic summary (n={total}) ---\n"
@@ -112,9 +108,7 @@ class Command(BaseCommand):
                 pth = Path(path_str).expanduser()
                 if not pth.is_file():
                     self.stdout.write(
-                        self.style.WARNING(
-                            f"skip missing file group={group} path={pth}"
-                        )
+                        self.style.WARNING(f"skip missing file group={group} path={pth}")
                     )
                     continue
                 try:

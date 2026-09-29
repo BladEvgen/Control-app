@@ -2,6 +2,7 @@
 
 Builds layperson-friendly explanations plus optional developer ``<details>`` blocks.
 """
+
 from __future__ import annotations
 
 import base64
@@ -66,8 +67,8 @@ def build_npy_embeddings_preview_body(path: Path, fname: str) -> str:
 
     parts.append(
         '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:14px 16px;margin-bottom:16px;">'
-        "<p style=\"margin:0 0 8px 0;font-size:15px;font-weight:600;color:#1e3a8a;\">Что вы видите</p>"
-        "<p style=\"margin:0;font-size:14px;line-height:1.5;color:#1e293b;\">"
+        '<p style="margin:0 0 8px 0;font-size:15px;font-weight:600;color:#1e3a8a;">Что вы видите</p>'
+        '<p style="margin:0;font-size:14px;line-height:1.5;color:#1e293b;">'
         "Это <strong>не фотография</strong>, а сохранённые <strong>числовые «отпечатки» лица</strong> для системы доступа. "
         "Каждая <strong>строка</strong> — один вариант лица (фото или аугментация); в каждой строке <strong>много чисел</strong> "
         "(обычно 512) — так модель описывает черты лица. Ниже — наглядная «карта» этих чисел и схема, насколько варианты похожи друг на друга."
@@ -193,8 +194,8 @@ def build_pt_checkpoint_preview_body(path: Path, fname: str, download_url: str) 
     parts: list[str] = []
     parts.append(
         '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px 16px;margin-bottom:16px;">'
-        "<p style=\"margin:0 0 8px 0;font-size:15px;font-weight:600;color:#14532d;\">Что это за файл</p>"
-        "<p style=\"margin:0;font-size:14px;line-height:1.5;color:#1e293b;\">"
+        '<p style="margin:0 0 8px 0;font-size:15px;font-weight:600;color:#14532d;">Что это за файл</p>'
+        '<p style="margin:0;font-size:14px;line-height:1.5;color:#1e293b;">'
         "Это <strong>сохранённые настройки нейросети</strong> после обучения: коэффициенты («веса»), которые переводят "
         "512 чисел эмбеддинга в решение «похоже на этого сотрудника / нет». "
         "<strong>Это не изображение</strong> и не фото — открыть «как картинку» нельзя; ниже — схема, сколько чисел в каждом блоке модели."
@@ -235,8 +236,7 @@ def build_pt_checkpoint_preview_body(path: Path, fname: str, download_url: str) 
 
             parts.append(
                 f'<p style="font-size:14px;color:#334155;"><strong>Файл:</strong> {fname_e}<br/>'
-                f"<strong>Всего чисел в модели:</strong> {total:,}".replace(",", " ")
-                + "</p>"
+                f"<strong>Всего чисел в модели:</strong> {total:,}".replace(",", " ") + "</p>"
             )
 
             try:
@@ -267,7 +267,9 @@ def build_pt_checkpoint_preview_body(path: Path, fname: str, download_url: str) 
                         "</figcaption></figure>"
                     )
             except Exception as exc:
-                chart_html = f'<p style="color:#b45309;">Диаграмма не построена: {escape(str(exc))}</p>'
+                chart_html = (
+                    f'<p style="color:#b45309;">Диаграмма не построена: {escape(str(exc))}</p>'
+                )
 
             parts.append(chart_html)
     except Exception as exc:

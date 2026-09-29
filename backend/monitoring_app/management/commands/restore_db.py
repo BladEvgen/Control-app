@@ -135,13 +135,9 @@ class Command(BaseCommand):
                     "Используйте --format json или --format sql."
                 )
 
-        self.stdout.write(
-            f"Восстановление из {backup_path} (формат: {file_format.upper()})..."
-        )
+        self.stdout.write(f"Восстановление из {backup_path} (формат: {file_format.upper()})...")
 
-        self.stdout.write(
-            self.style.WARNING("ВНИМАНИЕ: Это перезапишет существующие данные в БД!")
-        )
+        self.stdout.write(self.style.WARNING("ВНИМАНИЕ: Это перезапишет существующие данные в БД!"))
         if not dry_run:
             if not options.get("yes", False):
                 confirm = input("Продолжить? (yes/no): ")
@@ -151,8 +147,7 @@ class Command(BaseCommand):
             else:
                 self.stdout.write(
                     self.style.WARNING(
-                        "Автоматическое подтверждение: "
-                        "восстановление будет выполнено"
+                        "Автоматическое подтверждение: " "восстановление будет выполнено"
                     )
                 )
 
@@ -178,9 +173,7 @@ class Command(BaseCommand):
             backup_path: Путь к файлу JSON или JSON.GZ.
             dry_run: Если True, файл только проверяется без записи в БД.
         """
-        is_gzipped = backup_path.suffix == ".gz" or backup_path.name.endswith(
-            ".json.gz"
-        )
+        is_gzipped = backup_path.suffix == ".gz" or backup_path.name.endswith(".json.gz")
 
         if is_gzipped:
             with gzip.open(backup_path, "rt", encoding="utf-8") as f:
@@ -195,9 +188,7 @@ class Command(BaseCommand):
         self.stdout.write(f"Найдено объектов: {len(data)}")
         if dry_run:
             self.stdout.write(
-                self.style.SUCCESS(
-                    "Dry-run: JSON файл валиден, восстановление не выполнено"
-                )
+                self.style.SUCCESS("Dry-run: JSON файл валиден, восстановление не выполнено")
             )
             return
 
@@ -210,12 +201,9 @@ class Command(BaseCommand):
         try:
             self._restore_json_optimized(data)
         except Exception as e:
-            logger.warning(
-                f"Оптимизированная загрузка не удалась: {e}, пробуем loaddata..."
-            )
+            logger.warning(f"Оптимизированная загрузка не удалась: {e}, пробуем loaddata...")
             temp_file = (
-                backup_path.parent
-                / f"temp_restore_{backup_path.stem.replace('.json', '')}.json"
+                backup_path.parent / f"temp_restore_{backup_path.stem.replace('.json', '')}.json"
             )
             try:
                 with open(temp_file, "w", encoding="utf-8") as f:
@@ -224,9 +212,7 @@ class Command(BaseCommand):
                 self.stdout.write("Используется стандартный loaddata...")
                 call_command("loaddata", str(temp_file), verbosity=1)
                 self.stdout.write(
-                    self.style.SUCCESS(
-                        f"JSON бэкап успешно восстановлен из {backup_path}"
-                    )
+                    self.style.SUCCESS(f"JSON бэкап успешно восстановлен из {backup_path}")
                 )
             except Exception as load_error:
                 error_str = str(load_error).lower()
@@ -237,9 +223,7 @@ class Command(BaseCommand):
                             "Попробуйте остановить сервер Django и повторить."
                         )
                     )
-                raise CommandError(
-                    f"Ошибка загрузки данных: {load_error}"
-                ) from load_error
+                raise CommandError(f"Ошибка загрузки данных: {load_error}") from load_error
             finally:
                 self._safe_unlink(temp_file)
         finally:
@@ -273,9 +257,7 @@ class Command(BaseCommand):
 
         if dry_run:
             self.stdout.write(
-                self.style.SUCCESS(
-                    "Dry-run: SQL файл валиден, восстановление не выполнено"
-                )
+                self.style.SUCCESS("Dry-run: SQL файл валиден, восстановление не выполнено")
             )
             return
 
@@ -298,9 +280,7 @@ class Command(BaseCommand):
         finally:
             self._restore_mysql_settings()
 
-    def _restore_sql_with_mysql(
-        self, db_config: dict, backup_path: Path, is_gzipped: bool
-    ) -> bool:
+    def _restore_sql_with_mysql(self, db_config: dict, backup_path: Path, is_gzipped: bool) -> bool:
         """Восстанавливает SQL бэкап используя mysql клиент.
 
         Args:
@@ -355,8 +335,7 @@ class Command(BaseCommand):
 
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"SQL бэкап успешно восстановлен из {backup_path} "
-                    "через mysql клиент"
+                    f"SQL бэкап успешно восстановлен из {backup_path} " "через mysql клиент"
                 )
             )
             self._restore_mysql_settings()
@@ -415,9 +394,7 @@ class Command(BaseCommand):
                         ]
                     ):
                         continue
-                    logger.warning(
-                        f"Ошибка выполнения SQL команды: {cmd[:100]}... - {e}"
-                    )
+                    logger.warning(f"Ошибка выполнения SQL команды: {cmd[:100]}... - {e}")
 
             self.stdout.write(
                 self.style.SUCCESS(
@@ -458,9 +435,7 @@ class Command(BaseCommand):
                 pass
 
             self.stdout.write(
-                self.style.SUCCESS(
-                    f"MySQL настроен для восстановления (таймаут: {timeout}с)"
-                )
+                self.style.SUCCESS(f"MySQL настроен для восстановления (таймаут: {timeout}с)")
             )
         except Exception as e:
             logger.warning(f"Не удалось настроить MySQL: {e}")
@@ -514,8 +489,7 @@ class Command(BaseCommand):
                     )
                     self.stdout.write(
                         self.style.WARNING(
-                            f"Временный файл не удален: {file_path}. "
-                            "Удалите его вручную."
+                            f"Временный файл не удален: {file_path}. " "Удалите его вручную."
                         )
                     )
             except Exception as e:
@@ -528,9 +502,7 @@ class Command(BaseCommand):
         Удаляет все данные из всех таблиц для обеспечения чистого состояния
         перед восстановлением.
         """
-        self.stdout.write(
-            self.style.WARNING("Очистка базы данных перед восстановлением...")
-        )
+        self.stdout.write(self.style.WARNING("Очистка базы данных перед восстановлением..."))
         try:
             cursor = connection.cursor()
             db_config = settings.DATABASES.get("default", {})
@@ -552,13 +524,10 @@ class Command(BaseCommand):
                                 cursor.execute(f"DELETE FROM `{table}`")
                             except Exception as delete_error:
                                 logger.warning(
-                                    f"Не удалось удалить данные из {table}: "
-                                    f"{delete_error}"
+                                    f"Не удалось удалить данные из {table}: " f"{delete_error}"
                                 )
 
-                    self.stdout.write(
-                        self.style.SUCCESS(f"Очищено таблиц: {len(tables)}")
-                    )
+                    self.stdout.write(self.style.SUCCESS(f"Очищено таблиц: {len(tables)}"))
 
                 cursor.execute("SET SESSION foreign_key_checks = 1")
                 cursor.execute("SET SESSION unique_checks = 1")
@@ -569,9 +538,7 @@ class Command(BaseCommand):
         except Exception as e:
             logger.error(f"Ошибка при очистке БД: {e}")
             self.stdout.write(
-                self.style.ERROR(
-                    f"Ошибка очистки БД: {e}. Продолжаем восстановление..."
-                )
+                self.style.ERROR(f"Ошибка очистки БД: {e}. Продолжаем восстановление...")
             )
 
     def _get_certs_signal_bindings(self):
@@ -581,9 +548,7 @@ class Command(BaseCommand):
         Если приложение certs не установлено или не импортируется, возвращает пустой список.
         """
         if not apps.is_installed("certs"):
-            logger.info(
-                "Приложение certs не установлено; операции с его сигналами пропущены."
-            )
+            logger.info("Приложение certs не установлено; операции с его сигналами пропущены.")
             return []
 
         try:
@@ -679,8 +644,7 @@ class Command(BaseCommand):
                 apps.get_model(app_label, model_name)
 
                 self.stdout.write(
-                    f"[{idx}/{total_models}] Загрузка {model_label}: "
-                    f"{len(objects)} объектов..."
+                    f"[{idx}/{total_models}] Загрузка {model_label}: " f"{len(objects)} объектов..."
                 )
 
                 deserialized_objects = []
@@ -689,9 +653,7 @@ class Command(BaseCommand):
                         obj = serializers.deserialize("json", json.dumps([obj_data]))
                         deserialized_objects.extend(list(obj))
                     except Exception as e:
-                        logger.warning(
-                            f"Ошибка десериализации объекта {model_label}: {e}"
-                        )
+                        logger.warning(f"Ошибка десериализации объекта {model_label}: {e}")
                         continue
 
                 batch_size = 100
@@ -707,13 +669,8 @@ class Command(BaseCommand):
                                     saved_count += 1
                                 except Exception as e:
                                     error_str = str(e).lower()
-                                    if (
-                                        "duplicate" not in error_str
-                                        and "unique" not in error_str
-                                    ):
-                                        logger.warning(
-                                            f"Ошибка сохранения {model_label}: {e}"
-                                        )
+                                    if "duplicate" not in error_str and "unique" not in error_str:
+                                        logger.warning(f"Ошибка сохранения {model_label}: {e}")
 
                         if saved_count % 1000 == 0:
                             elapsed = time.time() - start_time
@@ -744,14 +701,11 @@ class Command(BaseCommand):
                 logger.warning(f"Модель {model_label} не найдена, пропускаем")
             except Exception as e:
                 logger.error(f"Ошибка загрузки {model_label}: {e}")
-                self.stdout.write(
-                    self.style.ERROR(f"  ✗ Ошибка загрузки {model_label}: {e}")
-                )
+                self.stdout.write(self.style.ERROR(f"  ✗ Ошибка загрузки {model_label}: {e}"))
 
         total_elapsed = time.time() - start_time
         self.stdout.write(
             self.style.SUCCESS(
-                f"\n✓ Восстановление завершено: {total_loaded} объектов "
-                f"за {total_elapsed:.1f}с"
+                f"\n✓ Восстановление завершено: {total_loaded} объектов " f"за {total_elapsed:.1f}с"
             )
         )

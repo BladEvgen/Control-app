@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Literal
 
 from django.conf import settings
+
 from monitoring_app.face_verification_contract import (
     R_COLD_START_QUALITY_INSUFFICIENT,
     R_LIVENESS_FAILED,
@@ -69,17 +70,13 @@ def _cold_start_response_strength(
     threshold_weak_gallery: float,
     threshold_cold_start: float,
 ) -> Literal["strong", "weak"]:
-    score_margin = float(
-        getattr(settings, "FACE_VERIFY_COLD_START_STRONG_SCORE_MARGIN", 0.025)
-    )
+    score_margin = float(getattr(settings, "FACE_VERIFY_COLD_START_STRONG_SCORE_MARGIN", 0.025))
     min_score = max(
         float(threshold_weak_gallery),
         float(threshold_cold_start) + score_margin,
     )
     min_det = float(getattr(settings, "FACE_VERIFY_COLD_START_STRONG_DET_MIN", 0.72))
-    min_area = float(
-        getattr(settings, "FACE_VERIFY_COLD_START_STRONG_FACE_AREA_MIN", 0.04)
-    )
+    min_area = float(getattr(settings, "FACE_VERIFY_COLD_START_STRONG_FACE_AREA_MIN", 0.04))
     det = quality.get("det_score")
     area = quality.get("face_area_ratio")
     if (
@@ -201,13 +198,8 @@ def decide_face_verify_binary(
         if isinstance(decision, Mapping)
         else str(liveness.get("operator_action") or "").strip().lower()
     )
-    liveness_accepted_with_caution = (
-        public_liveness_decision == "YES"
-        or (
-            st_live == "clean"
-            and tc is None
-            and operator_action == "accept_with_caution"
-        )
+    liveness_accepted_with_caution = public_liveness_decision == "YES" or (
+        st_live == "clean" and tc is None and operator_action == "accept_with_caution"
     )
     liveness_rejected = public_liveness_decision == "NO"
     liveness_uncertain = (
@@ -324,11 +316,7 @@ def decide_face_verify_binary(
     if strong:
         thr = float(threshold_verified)
         if float(score) >= thr:
-            summary = (
-                "Да. Фото принято."
-                if liveness_uncertain
-                else "Да. Совпадение есть."
-            )
+            summary = "Да. Фото принято." if liveness_uncertain else "Да. Совпадение есть."
             return (
                 True,
                 "YES",
@@ -338,12 +326,8 @@ def decide_face_verify_binary(
                 thr,
                 gallery_strength,
             )
-        relaxed_enabled = bool(
-            getattr(settings, "FACE_VERIFY_STRONG_GALLERY_RELAXED_ENABLE", True)
-        )
-        relaxed_thr = float(
-            getattr(settings, "FACE_VERIFY_STRONG_GALLERY_RELAXED_THRESHOLD", 0.74)
-        )
+        relaxed_enabled = bool(getattr(settings, "FACE_VERIFY_STRONG_GALLERY_RELAXED_ENABLE", True))
+        relaxed_thr = float(getattr(settings, "FACE_VERIFY_STRONG_GALLERY_RELAXED_THRESHOLD", 0.74))
         relaxed_gap_min = float(
             getattr(settings, "FACE_VERIFY_STRONG_GALLERY_RELAXED_GAP_MIN", 0.12)
         )
@@ -353,11 +337,7 @@ def decide_face_verify_binary(
             and float(score) >= relaxed_thr
             and float(identity_gap) >= relaxed_gap_min
         ):
-            summary = (
-                "Да. Фото принято."
-                if liveness_uncertain
-                else "Да. Совпадение есть."
-            )
+            summary = "Да. Фото принято." if liveness_uncertain else "Да. Совпадение есть."
             return (
                 True,
                 "YES",
@@ -399,11 +379,7 @@ def decide_face_verify_binary(
             breakdown=breakdown,
         ):
             thr_sp = float(getattr(settings, "FACE_VERIFY_SINGLE_PHOTO_THRESHOLD", 0.76))
-            summary = (
-                "Да. Фото принято."
-                if liveness_uncertain
-                else "Да. Совпадение есть."
-            )
+            summary = "Да. Фото принято." if liveness_uncertain else "Да. Совпадение есть."
             return (
                 True,
                 "YES",
@@ -415,11 +391,7 @@ def decide_face_verify_binary(
             )
         thr_c = float(threshold_cold_start)
         if float(score) >= thr_c:
-            summary = (
-                "Да. Фото принято."
-                if liveness_uncertain
-                else "Да. Совпадение есть."
-            )
+            summary = "Да. Фото принято." if liveness_uncertain else "Да. Совпадение есть."
             response_strength = _cold_start_response_strength(
                 quality=quality,
                 score=float(score),
@@ -447,11 +419,7 @@ def decide_face_verify_binary(
 
     thr_w = float(threshold_weak_gallery)
     if float(score) >= thr_w:
-        summary = (
-            "Да. Фото принято."
-            if liveness_uncertain
-            else "Да. Совпадение есть."
-        )
+        summary = "Да. Фото принято." if liveness_uncertain else "Да. Совпадение есть."
         return (
             True,
             "YES",

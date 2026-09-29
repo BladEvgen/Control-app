@@ -71,9 +71,11 @@ def bootstrap_quality_decision(
     yaw = _float_or_none(probe_meta.get("pose_yaw"))
     pitch = _float_or_none(probe_meta.get("pose_pitch"))
     max_yaw = _setting_float(
-        "FACE_BOOTSTRAP_SAMPLE_FRONT_MAX_ABS_YAW"
-        if angle == FRONT_ANGLE
-        else "FACE_BOOTSTRAP_SAMPLE_SIDE_MAX_ABS_YAW",
+        (
+            "FACE_BOOTSTRAP_SAMPLE_FRONT_MAX_ABS_YAW"
+            if angle == FRONT_ANGLE
+            else "FACE_BOOTSTRAP_SAMPLE_SIDE_MAX_ABS_YAW"
+        ),
         42.0 if angle == FRONT_ANGLE else 62.0,
     )
     max_pitch = _setting_float("FACE_BOOTSTRAP_SAMPLE_MAX_ABS_PITCH", 42.0)
@@ -100,9 +102,7 @@ def bootstrap_quality_decision(
 
     raw_soft_codes = probe_meta.get("quality_reason_codes")
     soft_codes = (
-        [str(code) for code in raw_soft_codes]
-        if isinstance(raw_soft_codes, (list, tuple))
-        else []
+        [str(code) for code in raw_soft_codes] if isinstance(raw_soft_codes, (list, tuple)) else []
     )
     return True, {
         "reason": "bootstrap_relaxed_quality_passed",

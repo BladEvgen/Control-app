@@ -12,6 +12,7 @@ import numpy as np
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db.models import Q
+
 from monitoring_app import face_parsing, ml, models
 
 
@@ -148,9 +149,7 @@ def _recommend_thresholds(
     min_threshold: float,
 ) -> dict[str, object]:
     recommendations: dict[str, object] = {}
-    rows_with_both = [
-        row for row in table if row["far"] is not None and row["frr"] is not None
-    ]
+    rows_with_both = [row for row in table if row["far"] is not None and row["frr"] is not None]
     if rows_with_both:
         eer_row = min(
             rows_with_both,
@@ -183,7 +182,10 @@ def _recommend_thresholds(
 def _staff_label(staff: "models.Staff") -> str:
     return " ".join(
         part
-        for part in (str(getattr(staff, "surname", "") or ""), str(getattr(staff, "name", "") or ""))
+        for part in (
+            str(getattr(staff, "surname", "") or ""),
+            str(getattr(staff, "name", "") or ""),
+        )
         if part
     ).strip()
 
@@ -195,9 +197,7 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser):
-        parser.add_argument(
-            "--pin", default="", help="Фокусный PIN для подробного отчёта."
-        )
+        parser.add_argument("--pin", default="", help="Фокусный PIN для подробного отчёта.")
         parser.add_argument("--max-staff", type=int, default=250)
         parser.add_argument("--max-images-per-staff", type=int, default=6)
         parser.add_argument("--max-impostor-pairs", type=int, default=30000)
@@ -358,11 +358,7 @@ class Command(BaseCommand):
         max_staff = max(1, _option_int(opt, "max_staff", 250))
         max_images = max(1, _option_int(opt, "max_images_per_staff", 6))
         max_impostor_pairs = max(1, _option_int(opt, "max_impostor_pairs", 30000))
-        targets = [
-            float(x)
-            for x in str(options.get("target_far") or "").split(",")
-            if x.strip()
-        ]
+        targets = [float(x) for x in str(options.get("target_far") or "").split(",") if x.strip()]
         output = str(opt.get("output") or "").strip()
         if not output:
             output = os.path.join(
@@ -417,10 +413,7 @@ class Command(BaseCommand):
             if len(staff_records) < 2:
                 continue
             for a, b in combinations(staff_records, 2):
-                score = float(
-                    cast(np.ndarray, a["embedding"])
-                    @ cast(np.ndarray, b["embedding"])
-                )
+                score = float(cast(np.ndarray, a["embedding"]) @ cast(np.ndarray, b["embedding"]))
                 genuine.append(
                     {
                         "score": score,
@@ -446,8 +439,7 @@ class Command(BaseCommand):
                         break
                     for b in rows_b:
                         score = float(
-                            cast(np.ndarray, a["embedding"])
-                            @ cast(np.ndarray, b["embedding"])
+                            cast(np.ndarray, a["embedding"]) @ cast(np.ndarray, b["embedding"])
                         )
                         impostor.append(
                             {
@@ -487,24 +479,14 @@ class Command(BaseCommand):
                 "image_count": len(focus_records),
                 "runtime_gallery": {},
                 "images": [
-                    {
-                        key: value
-                        for key, value in rec.items()
-                        if key not in {"embedding"}
-                    }
+                    {key: value for key, value in rec.items() if key not in {"embedding"}}
                     for rec in focus_records
                 ],
-                "genuine_scores": _describe(
-                    [_required_float(x, "score") for x in focus_scores]
-                ),
+                "genuine_scores": _describe([_required_float(x, "score") for x in focus_scores]),
                 "nearest_impostors": focus_impostors,
             }
             if focus_records:
-                staff = (
-                    cast(Any, models.Staff)
-                    .objects.filter(pin=pin_filter)
-                    .first()
-                )
+                staff = cast(Any, models.Staff).objects.filter(pin=pin_filter).first()
                 if staff is not None:
                     rich, rich_bd = ml.build_runtime_gallery_embeddings(
                         staff,
@@ -594,19 +576,17 @@ class Command(BaseCommand):
         with open(output, "w", encoding="utf-8") as fh:
             json.dump(result, fh, ensure_ascii=False, indent=2)
 
-        genuine_summary = cast(dict[str, object], cast(dict[str, object], result["genuine"])["overall"])
-        impostor_summary = cast(dict[str, object], cast(dict[str, object], result["impostor"])["overall"])
-        recommendations = result["recommendations"]
-        self.stdout.write(
-            f"records={len(records)} genuine={len(genuine)} impostor={len(impostor)}"
+        genuine_summary = cast(
+            dict[str, object], cast(dict[str, object], result["genuine"])["overall"]
         )
+        impostor_summary = cast(
+            dict[str, object], cast(dict[str, object], result["impostor"])["overall"]
+        )
+        recommendations = result["recommendations"]
+        self.stdout.write(f"records={len(records)} genuine={len(genuine)} impostor={len(impostor)}")
         self.stdout.write(f"genuine={genuine_summary}")
         self.stdout.write(f"impostor={impostor_summary}")
-        self.stdout.write(
-            f"recommendations={json.dumps(recommendations, ensure_ascii=False)}"
-        )
+        self.stdout.write(f"recommendations={json.dumps(recommendations, ensure_ascii=False)}")
         if focus_report:
-            self.stdout.write(
-                f"focus={json.dumps(focus_report, ensure_ascii=False)[:4000]}"
-            )
+            self.stdout.write(f"focus={json.dumps(focus_report, ensure_ascii=False)[:4000]}")
         self.stdout.write(f"saved={output}")

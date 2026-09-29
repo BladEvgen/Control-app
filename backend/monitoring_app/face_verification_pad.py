@@ -17,9 +17,7 @@ from monitoring_app.photo_pad import (
     PadResult,
 )
 
-VERIFY_PAD_NOTE_RU = (
-    "Проверка живости (PAD) выполнена на сервере в составе verify_face."
-)
+VERIFY_PAD_NOTE_RU = "Проверка живости (PAD) выполнена на сервере в составе verify_face."
 
 
 def pad_operator_action_from_diagnostics(diagnostics: dict[str, object]) -> str:
@@ -63,9 +61,8 @@ def pad_has_hard_spoof_evidence(pad: PadResult) -> bool:
 
     recapture_strong = recapture >= _pad_num("recapture_strong", 0.38)
     color_strong = color >= _pad_num("color_hist_strong", 0.40)
-    has_geometry = (
-        device >= _pad_num("decision_weak_device_min", 0.16)
-        or frame >= _pad_num("decision_weak_frame_min", 0.20)
+    has_geometry = device >= _pad_num("decision_weak_device_min", 0.16) or frame >= _pad_num(
+        "decision_weak_frame_min", 0.20
     )
     has_model = model >= _pad_num("decision_deepfake_review_min", 0.65)
     return (recapture_strong or color_strong) and (has_geometry or has_model)
@@ -77,11 +74,7 @@ def pad_public_decision_from_result(pad: PadResult) -> str:
     action = pad_operator_action_from_diagnostics(diagnostics)
     if pad_has_hard_spoof_evidence(pad):
         return "NO"
-    if (
-        action == "reject"
-        or pad.status == STATUS_SUSPICIOUS
-        or pad.trust_confirmed is False
-    ):
+    if action == "reject" or pad.status == STATUS_SUSPICIOUS or pad.trust_confirmed is False:
         return "REVIEW"
     if action in {"manual_review", "retry_photo"}:
         return "REVIEW"

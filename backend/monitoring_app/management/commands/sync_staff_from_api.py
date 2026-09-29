@@ -38,7 +38,9 @@ class Command(BaseCommand):
         for err in result.get("errors", []):
             self.stdout.write(self.style.ERROR(f"Ошибка: {err}"))
         if dry_run:
-            self.stdout.write(self.style.WARNING(f"Dry-run: удалить {deleted} сотрудников (БД не менялась)."))
+            self.stdout.write(
+                self.style.WARNING(f"Dry-run: удалить {deleted} сотрудников (БД не менялась).")
+            )
         else:
             self.stdout.write(self.style.SUCCESS(f"Удалено сотрудников: {deleted}."))
         self.stdout.write("Готово.")

@@ -16,13 +16,14 @@ import torch.nn as nn
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
-from monitoring_app import face_parsing, models
 from rest_framework.exceptions import ValidationError
 from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from torch.optim.adamw import AdamW
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
+
+from monitoring_app import face_parsing, models
 
 cv2 = cast(Any, importlib.import_module("cv2"))
 
@@ -123,9 +124,7 @@ arcface_lock = Lock()
 runtime_gallery_cache_lock = Lock()
 
 RUNTIME_GALLERY_CACHE_VERSION = 6
-_staff_runtime_gallery_mem_cache: dict[
-    str, tuple[str, Optional[np.ndarray], dict[str, int]]
-] = {}
+_staff_runtime_gallery_mem_cache: dict[str, tuple[str, Optional[np.ndarray], dict[str, int]]] = {}
 _multi_staff_runtime_gallery_mem_cache: Optional[
     tuple[tuple[str, ...], np.ndarray, tuple[str, ...]]
 ] = None
@@ -261,9 +260,7 @@ def _staff_runtime_gallery_signature(
     augment_signatures: list[tuple[str, Optional[str]]] = []
     if bool(getattr(settings, "FACE_RUNTIME_INCLUDE_AUGMENTED_GALLERY", True)):
         for p in _collect_runtime_augment_paths_for_staff(staff):
-            augment_signatures.append(
-                (os.path.basename(p), _runtime_gallery_file_signature(p))
-            )
+            augment_signatures.append((os.path.basename(p), _runtime_gallery_file_signature(p)))
 
     face_sample_signatures: list[tuple[object, ...]] = []
     if bool(getattr(settings, "FACE_RUNTIME_INCLUDE_FACE_SAMPLES", True)):
@@ -375,9 +372,7 @@ def _save_staff_runtime_gallery_cache(
     """
     payload: dict[str, Any] = {
         "signature": np.asarray(signature),
-        "breakdown_json": np.asarray(
-            json.dumps(breakdown, ensure_ascii=True, sort_keys=True)
-        ),
+        "breakdown_json": np.asarray(json.dumps(breakdown, ensure_ascii=True, sort_keys=True)),
         "has_gallery": np.asarray(1 if gallery is not None and gallery.size else 0),
     }
     if gallery is not None and gallery.size:
@@ -596,9 +591,7 @@ def decode_upload_image_bytes_to_bgr(raw_bytes: bytes) -> np.ndarray:
                 rgb = np.asarray(im, dtype=np.uint8)
             image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         except Exception as exc:
-            logger.warning(
-                "decode_upload_image_bytes_to_bgr PIL fallback failed: %s", exc
-            )
+            logger.warning("decode_upload_image_bytes_to_bgr PIL fallback failed: %s", exc)
             raise ValidationError("Невозможно прочитать изображение.") from exc
     _staff_upload_megapixel_guard(image)
     return image
@@ -612,11 +605,7 @@ def reencode_bgr_to_canonical_jpeg_bytes(
     """
     Encode a BGR image as baseline JPEG — canonical on-disk format for staff uploads.
     """
-    q = (
-        quality
-        if quality is not None
-        else int(getattr(settings, "STAFF_UPLOAD_JPEG_QUALITY", 92))
-    )
+    q = quality if quality is not None else int(getattr(settings, "STAFF_UPLOAD_JPEG_QUALITY", 92))
     q = max(1, min(100, int(q)))
     ok, enc = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), q])
     if not ok or enc is None:
@@ -763,9 +752,7 @@ def _unsharp_bgr(image_bgr: np.ndarray) -> np.ndarray:
 
 
 def _jpeg_roundtrip_bgr(image_bgr: np.ndarray, quality: int) -> np.ndarray:
-    ok, enc = cv2.imencode(
-        ".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
-    )
+    ok, enc = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
     if not ok or enc is None:
         return image_bgr
     dec = cv2.imdecode(enc, cv2.IMREAD_COLOR)
@@ -806,9 +793,7 @@ def _accepted_condition_variant_rows(
             if vf is None:
                 continue
             if _bbox_iou_insight(base_face.bbox, vf.bbox) < min_iou:
-                logger.debug(
-                    "Runtime condition variant %s skipped: bbox moved too far", name
-                )
+                logger.debug("Runtime condition variant %s skipped: bbox moved too far", name)
                 continue
             row = _normalized_embedding_row_from_face(vf)
             if row is None:
@@ -879,9 +864,7 @@ def _create_face_encoding_from_bgr(
     return (mean / norm).tolist(), face, faces
 
 
-def _face_crop_quality_metrics(
-    image_bgr: np.ndarray, bbox
-) -> dict[str, Optional[float]]:
+def _face_crop_quality_metrics(image_bgr: np.ndarray, bbox) -> dict[str, Optional[float]]:
     h, w = image_bgr.shape[:2]
     try:
         x1, y1, x2, y2 = (int(round(float(bbox[i]))) for i in range(4))
@@ -904,9 +887,7 @@ def _face_pose_meta(face: Any) -> dict[str, Optional[float]]:
     if pose is None:
         return {"pose_yaw": None, "pose_pitch": None, "pose_roll": None}
     try:
-        vals: list[Optional[float]] = [
-            float(x) for x in np.asarray(pose).reshape(-1)[:3]
-        ]
+        vals: list[Optional[float]] = [float(x) for x in np.asarray(pose).reshape(-1)[:3]]
     except (TypeError, ValueError):
         return {"pose_yaw": None, "pose_pitch": None, "pose_roll": None}
     while len(vals) < 3:
@@ -935,9 +916,7 @@ def _collect_runtime_augment_paths_for_staff(staff: "models.Staff") -> list[str]
         low = name.lower()
         if not low.endswith((".jpg", ".jpeg", ".png", ".webp")):
             continue
-        if name.startswith(f"{staff.pin}_aug_") or name.startswith(
-            f"{staff.pin}_augmented_"
-        ):
+        if name.startswith(f"{staff.pin}_aug_") or name.startswith(f"{staff.pin}_augmented_"):
             names.append(name)
     names.sort()
     return [os.path.join(aug_dir, name) for name in names[:cap]]
@@ -967,9 +946,7 @@ def _lesson_attendance_stored_path_allowed(abs_path: str) -> bool:
     except OSError:
         return False
     attendance_root = os.path.abspath(str(settings.ATTENDANCE_ROOT))
-    media_control_root = os.path.abspath(
-        os.path.join(str(settings.MEDIA_ROOT), "control_image")
-    )
+    media_control_root = os.path.abspath(os.path.join(str(settings.MEDIA_ROOT), "control_image"))
     for root in (attendance_root, media_control_root):
         if normalized == root or normalized.startswith(f"{root}{os.sep}"):
             return True
@@ -1071,10 +1048,7 @@ def _collect_trusted_staff_face_sample_paths_for_staff(
     staff: "models.Staff",
 ) -> list[str]:
     """Paths for active trusted :class:`~monitoring_app.models.StaffFaceSample` images."""
-    return [
-        str(row["path"])
-        for row in _collect_trusted_staff_face_sample_records_for_staff(staff)
-    ]
+    return [str(row["path"]) for row in _collect_trusted_staff_face_sample_records_for_staff(staff)]
 
 
 def _collect_trusted_staff_face_sample_records_for_staff(
@@ -1087,9 +1061,9 @@ def _collect_trusted_staff_face_sample_records_for_staff(
     out: list[dict[str, object]] = []
     seen: set[str] = set()
     face_sample_manager = cast(Any, models.StaffFaceSample).objects
-    qs = face_sample_manager.filter(
-        staff=staff, is_active=True, is_trusted=True
-    ).order_by("-created_at", "-id")
+    qs = face_sample_manager.filter(staff=staff, is_active=True, is_trusted=True).order_by(
+        "-created_at", "-id"
+    )
     for row in qs.iterator(chunk_size=50):
         if len(out) >= cap:
             break
@@ -1108,9 +1082,7 @@ def _collect_trusted_staff_face_sample_records_for_staff(
                 "angle": str(row.angle or ""),
                 "with_glasses": bool(row.with_glasses),
                 "probe_eyeglasses_likely": row.probe_eyeglasses_likely,
-                "updated_at": (
-                    row.updated_at.isoformat() if row.updated_at is not None else ""
-                ),
+                "updated_at": (row.updated_at.isoformat() if row.updated_at is not None else ""),
             }
         )
     return out
@@ -1141,9 +1113,7 @@ def _runtime_glasses_variant_bgr(
 
     try:
         rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        dilate = int(
-            getattr(settings, "FACE_RUNTIME_GLASSES_VARIANT_INPAINT_DILATE", 7)
-        )
+        dilate = int(getattr(settings, "FACE_RUNTIME_GLASSES_VARIANT_INPAINT_DILATE", 7))
         mask = eng.eyeglasses_inpaint_mask_u8(rgb, dilate=dilate)
         if mask is None or int(np.count_nonzero(mask)) < 10:
             return None
@@ -1234,9 +1204,7 @@ def _runtime_embedding_rows_from_image(
     )
     if embedding is None or face is None:
         return [], 0, 0
-    base = _l2_normalize_embedding_rows(
-        np.asarray(embedding, dtype=np.float64).reshape(1, -1)
-    )[0]
+    base = _l2_normalize_embedding_rows(np.asarray(embedding, dtype=np.float64).reshape(1, -1))[0]
 
     rows: list[np.ndarray] = [base]
     condition_count = 0
@@ -1266,9 +1234,7 @@ def _runtime_embedding_rows_from_image(
                 v = _l2_normalize_embedding_rows(
                     np.asarray(variant_embedding, dtype=np.float64).reshape(1, -1)
                 )[0]
-                min_cos = float(
-                    getattr(settings, "FACE_RUNTIME_GLASSES_VARIANT_MIN_COS", 0.58)
-                )
+                min_cos = float(getattr(settings, "FACE_RUNTIME_GLASSES_VARIANT_MIN_COS", 0.58))
                 if float(base @ v.reshape(-1)) >= min_cos:
                     rows.append(v)
                     variant_count += 1
@@ -1530,9 +1496,7 @@ def create_face_encoding_with_probe_meta(
         face_ratio = float(area) / denom
 
         min_det = float(getattr(settings, "FACE_VERIFY_PROBE_DET_SCORE_MIN", 0.35))
-        min_face = float(
-            getattr(settings, "FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN", 0.008)
-        )
+        min_face = float(getattr(settings, "FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN", 0.008))
         quality_pass = True
         qreasons: list[str] = []
         if det_f is not None and det_f < min_det:
@@ -1545,12 +1509,8 @@ def create_face_encoding_with_probe_meta(
         blur = quality_metrics.get("blur_laplacian_var")
         bright = quality_metrics.get("brightness_mean")
         min_blur = float(getattr(settings, "FACE_VERIFY_PROBE_BLUR_MIN", 12.0))
-        min_brightness = float(
-            getattr(settings, "FACE_VERIFY_PROBE_BRIGHTNESS_MIN", 22.0)
-        )
-        max_brightness = float(
-            getattr(settings, "FACE_VERIFY_PROBE_BRIGHTNESS_MAX", 238.0)
-        )
+        min_brightness = float(getattr(settings, "FACE_VERIFY_PROBE_BRIGHTNESS_MIN", 22.0))
+        max_brightness = float(getattr(settings, "FACE_VERIFY_PROBE_BRIGHTNESS_MAX", 238.0))
         if min_blur > 0 and isinstance(blur, (int, float)) and float(blur) < min_blur:
             quality_pass = False
             qreasons.append("blurry_face")
@@ -1577,11 +1537,7 @@ def create_face_encoding_with_probe_meta(
         if max_yaw > 0 and isinstance(yaw, (int, float)) and abs(float(yaw)) > max_yaw:
             quality_pass = False
             qreasons.append("face_yaw_too_large")
-        if (
-            max_pitch > 0
-            and isinstance(pitch, (int, float))
-            and abs(float(pitch)) > max_pitch
-        ):
+        if max_pitch > 0 and isinstance(pitch, (int, float)) and abs(float(pitch)) > max_pitch:
             quality_pass = False
             qreasons.append("face_pitch_too_large")
 
@@ -1669,9 +1625,7 @@ def _gallery_enrollment_quality_reject_reasons(
             reasons.append(reason)
 
     bright = _gallery_meta_float(meta, "brightness_mean")
-    max_brightness = float(
-        getattr(settings, "FACE_GALLERY_ENROLLMENT_BRIGHTNESS_MAX", 232.0)
-    )
+    max_brightness = float(getattr(settings, "FACE_GALLERY_ENROLLMENT_BRIGHTNESS_MAX", 232.0))
     if max_brightness < 255 and bright is not None and bright > max_brightness:
         reasons.append("gallery_too_bright")
 
@@ -1820,9 +1774,7 @@ def create_vetted_gallery_embeddings_from_images(
                 trusted_source=trusted,
             )
             if pad_reasons:
-                rejected.append(
-                    _gallery_reject_record(abs_path, source, pad_reasons, pad_meta)
-                )
+                rejected.append(_gallery_reject_record(abs_path, source, pad_reasons, pad_meta))
                 continue
 
         embedding, meta = create_face_encoding_with_probe_meta(image, use_tta=use_tta)
@@ -1848,9 +1800,9 @@ def create_vetted_gallery_embeddings_from_images(
             )
             continue
 
-        row = _l2_normalize_embedding_rows(
-            np.asarray(embedding, dtype=np.float64).reshape(1, -1)
-        )[0]
+        row = _l2_normalize_embedding_rows(np.asarray(embedding, dtype=np.float64).reshape(1, -1))[
+            0
+        ]
         accepted.append(
             {
                 "path": abs_path,
@@ -1872,9 +1824,7 @@ def create_vetted_gallery_embeddings_from_images(
     if anchors:
         anchor_mat = np.vstack(anchors)
         anchor_centroid = _normalized_centroid_row(anchor_mat)
-        min_anchor = float(
-            getattr(settings, "FACE_GALLERY_ATTENDANCE_MIN_ANCHOR_COS", 0.54)
-        )
+        min_anchor = float(getattr(settings, "FACE_GALLERY_ATTENDANCE_MIN_ANCHOR_COS", 0.54))
         if anchor_centroid is not None and min_anchor > 0:
             kept: list[dict[str, object]] = []
             for item in accepted:
@@ -1898,9 +1848,7 @@ def create_vetted_gallery_embeddings_from_images(
         min_no_anchor = max(
             1, int(getattr(settings, "FACE_GALLERY_ATTENDANCE_MIN_NO_ANCHOR_COUNT", 3))
         )
-        attendance_count = sum(
-            1 for item in accepted if str(item["source"]) in attendance_sources
-        )
+        attendance_count = sum(1 for item in accepted if str(item["source"]) in attendance_sources)
         if attendance_count and attendance_count < min_no_anchor:
             kept = []
             for item in accepted:
@@ -1922,13 +1870,9 @@ def create_vetted_gallery_embeddings_from_images(
             accepted = kept
 
     if len(accepted) >= 3:
-        mat_for_centroid = np.vstack(
-            [cast(np.ndarray, item["embedding"]) for item in accepted]
-        )
+        mat_for_centroid = np.vstack([cast(np.ndarray, item["embedding"]) for item in accepted])
         centroid = _normalized_centroid_row(mat_for_centroid)
-        min_centroid = float(
-            getattr(settings, "FACE_GALLERY_ENROLLMENT_MIN_CENTROID_COS", 0.46)
-        )
+        min_centroid = float(getattr(settings, "FACE_GALLERY_ENROLLMENT_MIN_CENTROID_COS", 0.46))
         if centroid is not None and min_centroid > 0:
             kept = []
             for item in accepted:
@@ -2005,9 +1949,7 @@ def create_vetted_gallery_embeddings_from_images(
             {
                 "path": item["path"],
                 "source": item["source"],
-                "quality_rank": round(
-                    _gallery_object_float(item.get("quality_rank")), 4
-                ),
+                "quality_rank": round(_gallery_object_float(item.get("quality_rank")), 4),
                 "det_score": meta.get("det_score"),
                 "face_area_ratio": meta.get("face_area_ratio"),
                 "blur_laplacian_var": meta.get("blur_laplacian_var"),
@@ -2229,9 +2171,7 @@ def build_runtime_gallery_embeddings(
                     breakdown["glasses_variant_prototypes"] += variant_count
                     breakdown["condition_variant_prototypes"] += condition_count
     except Exception as e:
-        logger.warning(
-            "Avatar embedding for runtime gallery skipped for %s: %s", staff.pin, e
-        )
+        logger.warning("Avatar embedding for runtime gallery skipped for %s: %s", staff.pin, e)
 
     if bool(getattr(settings, "FACE_RUNTIME_INCLUDE_FACE_SAMPLES", True)):
         sample_rows: list[np.ndarray] = []
@@ -2405,9 +2345,7 @@ def verify_staff_face_embedding_score(
     if gal is None or gal.size == 0:
         raise ValueError("No gallery embeddings available for this staff member.")
 
-    p = _l2_normalize_embedding_rows(
-        np.asarray(probe_embedding, dtype=np.float64).reshape(1, -1)
-    )
+    p = _l2_normalize_embedding_rows(np.asarray(probe_embedding, dtype=np.float64).reshape(1, -1))
     sims = (gal @ p.T).ravel()
     max_sim = float(np.max(sims))
     n = int(gal.shape[0])
@@ -2429,9 +2367,7 @@ def verify_staff_face_embedding_score(
         "threshold_review": thr_review,
         "max_cosine": max_sim,
         "similarity_mean_top3": (
-            float(np.mean(np.partition(sims, -min(3, n))[-min(3, n) :]))
-            if n > 0
-            else 0.0
+            float(np.mean(np.partition(sims, -min(3, n))[-min(3, n) :])) if n > 0 else 0.0
         ),
     }
     _apply_impostor_gap_guard(staff, p, score, meta)
@@ -2454,9 +2390,7 @@ def _apply_impostor_gap_guard(
 
     staff_manager = cast(Any, models.Staff).objects
     staff_qs = list(
-        staff_manager.filter(
-            Q(face_mask__isnull=False) | (Q(avatar__isnull=False) & ~Q(avatar=""))
-        )
+        staff_manager.filter(Q(face_mask__isnull=False) | (Q(avatar__isnull=False) & ~Q(avatar="")))
         .select_related("department", "face_mask")
         .order_by("pin")
     )
@@ -2552,15 +2486,11 @@ def _classify_runtime_gallery_matches(
                     "pin": staff_best.pin,
                     "name": staff_best.name,
                     "surname": staff_best.surname,
-                    "department": (
-                        staff_best.department.name if staff_best.department else None
-                    ),
+                    "department": (staff_best.department.name if staff_best.department else None),
                     "similarity": similarity,
                     "neighbor_gap": gap,
                     "bbox": bbox,
-                    "avatar_url": (
-                        staff_best.avatar.url if staff_best.avatar else None
-                    ),
+                    "avatar_url": (staff_best.avatar.url if staff_best.avatar else None),
                 }
             )
         else:
@@ -2712,9 +2642,7 @@ def evaluate_metrics(y_true, y_pred):
     precision = precision_score(
         y_true, y_pred, average="weighted", zero_division=zero_division_safe
     )
-    recall = recall_score(
-        y_true, y_pred, average="weighted", zero_division=zero_division_safe
-    )
+    recall = recall_score(y_true, y_pred, average="weighted", zero_division=zero_division_safe)
     f1 = f1_score(y_true, y_pred, average="weighted", zero_division=zero_division_safe)
     return precision, recall, f1
 
@@ -2799,9 +2727,7 @@ def load_model_for_staff(staff, model_path_suffix="model.pt"):
 
     device = get_device()
     model = FaceRecognitionResNet().to(device)
-    model.load_state_dict(
-        torch.load(model_path, map_location=device, weights_only=True)
-    )
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.to(device)
     model.eval()
     logger.info(f"Model for {staff.pin} loaded from {model_path}")
@@ -2819,9 +2745,7 @@ def load_general_model():
         ValueError: If the general model file does not exist.
     """
 
-    model_path = os.path.join(
-        settings.GENERAL_MODELS_ROOT, "general_face_recognition_model.pt"
-    )
+    model_path = os.path.join(settings.GENERAL_MODELS_ROOT, "general_face_recognition_model.pt")
     if not os.path.exists(model_path):
         logger.error("Общая модель не найдена")
         raise ValueError("Общая модель не найдена")
@@ -2830,9 +2754,7 @@ def load_general_model():
     staff_manager = cast(Any, models.Staff).objects
     num_classes = len(staff_manager.filter(avatar__isnull=False))
     model = GeneralFaceRecognitionModel(num_classes=num_classes).to(device)
-    model.load_state_dict(
-        torch.load(model_path, map_location=device, weights_only=True)
-    )
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.to(device)
     model.eval()
     logger.info(f"General model loaded from {model_path}")
@@ -2874,18 +2796,14 @@ def train_face_recognition_model(staff, epochs=20, batch_size=256, learning_rate
 
     if not os.path.exists(embeddings_path):
         logger.error(f"Эмбеддинги для {staff.pin} не найдены по пути {embeddings_path}")
-        raise ValueError(
-            f"Эмбеддинги для {staff.pin} не найдены по пути {embeddings_path}"
-        )
+        raise ValueError(f"Эмбеддинги для {staff.pin} не найдены по пути {embeddings_path}")
 
     positive_embeddings = np.load(embeddings_path)
     if positive_embeddings.size == 0:
         logger.error(f"Эмбеддинги пусты для {staff.pin}")
         raise ValueError(f"Эмбеддинги пусты для {staff.pin}")
 
-    positive_embeddings = torch.tensor(positive_embeddings, dtype=torch.float32).to(
-        device
-    )
+    positive_embeddings = torch.tensor(positive_embeddings, dtype=torch.float32).to(device)
 
     negative_embeddings = generate_negative_samples(staff)
 
@@ -2917,9 +2835,7 @@ def train_face_recognition_model(staff, epochs=20, batch_size=256, learning_rate
     sampler = get_class_weights(labels_int, class_weights)
 
     dataset = TensorDataset(embeddings_combined, labels)
-    train_loader = DataLoader(
-        dataset, batch_size=batch_size, sampler=sampler, num_workers=0
-    )
+    train_loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, num_workers=0)
 
     y_split = labels.cpu().numpy()
     strat = _sklearn_stratify_y(y_split)
@@ -2944,9 +2860,7 @@ def train_face_recognition_model(staff, epochs=20, batch_size=256, learning_rate
     labels_val = torch.tensor(labels_val_np, dtype=torch.float32).to(device)
 
     val_dataset = TensorDataset(inputs_val, labels_val)
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False, num_workers=0
-    )
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
     model = FaceRecognitionResNet().to(device)
 
@@ -2962,9 +2876,7 @@ def train_face_recognition_model(staff, epochs=20, batch_size=256, learning_rate
     patience_es = 6
     trigger_times = 0
     min_epochs_before_es = 4
-    best_model_path = os.path.join(
-        os.path.dirname(staff.avatar.path), f"{staff.pin}_best_model.pt"
-    )
+    best_model_path = os.path.join(os.path.dirname(staff.avatar.path), f"{staff.pin}_best_model.pt")
     os.makedirs(os.path.dirname(best_model_path), exist_ok=True)
 
     for epoch in range(epochs):
@@ -3004,9 +2916,7 @@ def train_face_recognition_model(staff, epochs=20, batch_size=256, learning_rate
             all_labels_list.extend(batch_labels.cpu().numpy())
 
         train_accuracy = np.mean(np.array(all_preds) == np.array(all_labels_list))
-        train_precision, train_recall, train_f1 = evaluate_metrics(
-            all_labels_list, all_preds
-        )
+        train_precision, train_recall, train_f1 = evaluate_metrics(all_labels_list, all_preds)
         logger.info(
             f"Epoch {epoch+1}, Train Loss: {train_loss / len(train_loader):.4f}, "
             f"Train Acc: {train_accuracy:.4f}, Precision: {train_precision:.4f}, "
@@ -3053,14 +2963,10 @@ def train_face_recognition_model(staff, epochs=20, batch_size=256, learning_rate
                 logger.info("Early stopping triggered.")
                 break
 
-    final_model_path = os.path.join(
-        os.path.dirname(staff.avatar.path), f"{staff.pin}_model.pt"
-    )
+    final_model_path = os.path.join(os.path.dirname(staff.avatar.path), f"{staff.pin}_model.pt")
     os.makedirs(os.path.dirname(final_model_path), exist_ok=True)
     if os.path.isfile(best_model_path):
-        model.load_state_dict(
-            torch.load(best_model_path, map_location=device, weights_only=True)
-        )
+        model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
         logger.info("Final export uses best validation weights for %s.", staff.pin)
     torch.save(model.state_dict(), final_model_path)
     logger.info(f"Model for {staff.pin} saved at {final_model_path}")
@@ -3080,9 +2986,7 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
     device = get_device()
 
     staff_manager = cast(Any, models.Staff).objects
-    staff_members = list(
-        staff_manager.filter(avatar__isnull=False).order_by("pk").distinct()
-    )
+    staff_members = list(staff_manager.filter(avatar__isnull=False).order_by("pk").distinct())
     num_staff = len(staff_members)
     ordered_pins = [s.pin for s in staff_members]
     logger.info(
@@ -3102,23 +3006,15 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
     staff_pin_to_label = {staff.pin: idx for idx, staff in enumerate(staff_members)}
 
     for staff in staff_members:
-        if (
-            not staff.avatar
-            or not staff.avatar.path
-            or not os.path.exists(staff.avatar.path)
-        ):
-            logger.warning(
-                f"Staff {staff.pin} has no associated avatar file. Skipping."
-            )
+        if not staff.avatar or not staff.avatar.path or not os.path.exists(staff.avatar.path):
+            logger.warning(f"Staff {staff.pin} has no associated avatar file. Skipping.")
             continue
 
         embeddings_path = os.path.join(
             os.path.dirname(staff.avatar.path), f"{staff.pin}_embeddings.npy"
         )
         if not os.path.exists(embeddings_path):
-            logger.warning(
-                f"Embeddings for {staff.pin} not found at {embeddings_path}. Skipping."
-            )
+            logger.warning(f"Embeddings for {staff.pin} not found at {embeddings_path}. Skipping.")
             continue
 
         embeddings = np.load(embeddings_path)
@@ -3156,9 +3052,7 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
 
     if not all_embeddings.any():
         logger.error("Insufficient data to train the general model after filtering.")
-        raise ValueError(
-            "Insufficient data to train the general model after filtering."
-        )
+        raise ValueError("Insufficient data to train the general model after filtering.")
 
     all_embeddings = torch.tensor(all_embeddings, dtype=torch.float32).to(device)
     all_labels = torch.tensor(all_labels, dtype=torch.long).to(device)
@@ -3217,12 +3111,8 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
     train_dataset = TensorDataset(inputs_train, labels_train)
     val_dataset = TensorDataset(inputs_val, labels_val)
 
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, sampler=sampler, num_workers=0
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False, num_workers=0
-    )
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
     final_model_path = os.path.join(
         settings.GENERAL_MODELS_ROOT, "general_face_recognition_model.pt"
@@ -3324,9 +3214,7 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
             all_labels_list.extend(batch_labels.cpu().numpy())
 
         train_accuracy = np.mean(np.array(all_preds) == np.array(all_labels_list))
-        train_precision, train_recall, train_f1 = evaluate_metrics(
-            all_labels_list, all_preds
-        )
+        train_precision, train_recall, train_f1 = evaluate_metrics(all_labels_list, all_preds)
         logger.info(
             f"Epoch {epoch+1}, Train Loss: {train_loss / len(train_loader):.4f}, "
             f"Train Acc: {train_accuracy:.4f}, Precision: {train_precision:.4f}, "
@@ -3374,9 +3262,7 @@ def train_general_model(epochs=100, batch_size=256, learning_rate=1e-4):
                 break
 
     if os.path.isfile(best_model_path):
-        model.load_state_dict(
-            torch.load(best_model_path, map_location=device, weights_only=True)
-        )
+        model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
         logger.info("General model export uses best validation checkpoint.")
     torch.save(model.state_dict(), final_model_path)
     logger.info(f"General model saved at {final_model_path}")
@@ -3447,9 +3333,7 @@ def recognize_faces_in_image(image_file):
             .order_by("pin")
         )
         if not staff_qs:
-            raise ValidationError(
-                "В базе нет сотрудников с аватаром или сохранённой маской лица."
-            )
+            raise ValidationError("В базе нет сотрудников с аватаром или сохранённой маской лица.")
 
         def ensure_dim_matches(matrix: np.ndarray) -> None:
             dim_staff = int(matrix.shape[1])
@@ -3463,9 +3347,7 @@ def recognize_faces_in_image(image_file):
         unknown_faces: list[dict[str, Any]] = []
 
         try:
-            cached_matrix, cached_owners = build_cached_staff_runtime_gallery_matrix(
-                staff_qs
-            )
+            cached_matrix, cached_owners = build_cached_staff_runtime_gallery_matrix(staff_qs)
         except ValueError:
             cached_matrix = None
             cached_owners = []
@@ -3486,8 +3368,8 @@ def recognize_faces_in_image(image_file):
                 return recognized_staff, unknown_faces
 
         try:
-            staff_embeddings_normalized, row_owners = (
-                build_multi_staff_runtime_gallery_matrix(staff_qs)
+            staff_embeddings_normalized, row_owners = build_multi_staff_runtime_gallery_matrix(
+                staff_qs
             )
         except ValueError:
             raise ValidationError(
