@@ -63,8 +63,8 @@ from monitoring_app.cache_conf import (
     Cache,
     get_cache,
     invalidate_cache,
-    invalidate_cache_pattern,
     invalidate_lesson_attendance_derived_caches,
+    invalidate_staff_attendance_caches,
     invalidate_staff_detail_for_pin,
 )
 from monitoring_app.face_bootstrap_quality import bootstrap_quality_decision
@@ -263,15 +263,6 @@ def _pick_attendance_terminal(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     return random.SystemRandom().choice(valid_terminals), None
-
-
-def _invalidate_attendance_write_caches(work_day: datetime.date) -> None:
-    work_day_str = work_day.strftime("%Y-%m-%d")
-    invalidate_cache_pattern(f"staff_attendance_stats_{work_day_str}*")
-    invalidate_cache_pattern(f"map_location_{work_day_str}*")
-    invalidate_cache("today_attendance_stats")
-    invalidate_cache("map_locations_today")
-    invalidate_cache_pattern("staff_detail_*")
 
 
 def _get_manual_parameters_for_inspector(view, method, overrides):
@@ -6658,7 +6649,7 @@ def create_signed_lesson_attendance(request):
         longitude=longitude,
         date_at=timezone.localtime(first_in).date(),
     )
-    _invalidate_attendance_write_caches(timezone.localtime(first_in).date())
+    invalidate_staff_attendance_caches()
     return Response(
         {
             "id": lesson.id,
@@ -6775,21 +6766,27 @@ def upsert_signed_staff_attendance(request):
         },
     ]
     effective_work_intervals = [{"start": first_in.isoformat(), "end": last_out.isoformat()}]
+    report_fields = {
+        "first_in": first_in,
+        "last_out": last_out,
+        "area_name_in": entry_area,
+        "area_name_out": exit_area,
+        "effective_work_seconds": effective_work_seconds,
+        "effective_work_intervals": effective_work_intervals,
+    }
+    # Подписанная запись доверенная: одинакова в обоих режимах отчёта (терминал может быть лифтом).
+    variant = attendance_fetcher.variant_to_json(report_fields)
     with _db_atomic():
         attendance, created = models.StaffAttendance.objects.update_or_create(
             staff=staff,
             date_at=date_at,
             defaults={
-                "first_in": first_in,
-                "last_out": last_out,
-                "area_name_in": entry_area,
-                "area_name_out": exit_area,
-                "effective_work_seconds": effective_work_seconds,
+                **report_fields,
                 "area_sequence": area_sequence,
-                "effective_work_intervals": effective_work_intervals,
+                "report_variants": {"all": variant, "turnstile": variant},
             },
         )
-    _invalidate_attendance_write_caches(work_day)
+    invalidate_staff_attendance_caches()
     return Response(
         {
             "id": attendance.id,

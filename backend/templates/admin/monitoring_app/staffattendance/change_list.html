@@ -1,5 +1,35 @@
 {% extends "admin/change_list.html" %}
 {% load admin_list staffattendance_admin %}
+{% block content %}
+  <section class="report-mode" aria-labelledby="report-mode-title">
+    <div class="report-mode__text">
+      <h2 id="report-mode-title" class="report-mode__title">Источник времени в отчётах</h2>
+      <p class="report-mode__hint">
+        {% if turnstile_only %}
+          Приход, уход и эффективное время считаются только по турникетам.
+          Нет прохода через турникет — сотрудник отсутствует. Лифты и ЦОС видны только в истории перемещений.
+        {% else %}
+          Учитываются все устройства: турникеты, лифты, ЦОС. Уход — последнее событие дня на любом устройстве.
+        {% endif %}
+      </p>
+    </div>
+    <form class="report-mode__switch" method="post"
+          action="{% url 'admin:monitoring_app_staffattendance_toggle_report_mode' %}"
+          data-confirm="Сменить источник времени? Отчёты (Excel, карточки сотрудников) будут пересчитаны за весь период — это займёт несколько минут.">
+      {% csrf_token %}
+      <div class="report-mode__segments" role="group" aria-label="Источник времени в отчётах">
+        {% if turnstile_only %}
+          <span class="report-mode__segment is-active" aria-current="true">Только турникеты</span>
+          <button type="submit" class="report-mode__segment">Все устройства</button>
+        {% else %}
+          <button type="submit" class="report-mode__segment">Только турникеты</button>
+          <span class="report-mode__segment is-active" aria-current="true">Все устройства</span>
+        {% endif %}
+      </div>
+    </form>
+  </section>
+  {{ block.super }}
+{% endblock %}
 {% block result_list %}
   {% staffattendance_grouped_result_list cl %}
 {% endblock %}

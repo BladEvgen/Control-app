@@ -34,7 +34,7 @@ from monitoring_app.admin import (
     StaffAdmin,
     admin_site,
 )
-from monitoring_app.attendance_fetcher import _compute_attendance_from_events
+from monitoring_app.attendance_fetcher import DayResult, compute_day
 from monitoring_app.cache_conf import Cache
 from monitoring_app.consumers import (
     PHOTO_WS_PROTOCOL,
@@ -1744,10 +1744,13 @@ class SuspiciousLocationPatternsApiTest(APITestCase):
 
 
 @override_settings(
-    ATTENDANCE_EXIT_DEVICE_SNS=frozenset({"QJT3244400440", "CORL223060005"}),
+    ATTENDANCE_EXIT_DEVICE_SNS=frozenset({"QJT3244400440", "CORL223060005", "CN3R230260001"}),
     ATTENDANCE_AMBIGUOUS_EXIT_DEVICE_SNS=frozenset({"QJT3244400440"}),
     ATTENDANCE_REENTRY_DEVICE_SNS=frozenset(
         {"COVS222560013", "CN3R230260010", "CN3R230260002", "CN3R230260003"}
+    ),
+    ATTENDANCE_TURNSTILE_DEVICE_SNS=frozenset(
+        {"CN3R230260010", "CN3R230260002", "CN3R230260003", "CN3R230260001", "CORL223060005"}
     ),
     ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES=45,
 )
@@ -1759,107 +1762,208 @@ class AttendanceFetcherExitResolutionTest(TestCase):
             "areaName": area,
         }
 
-    def _find_item(
-        self,
-        sequence: Optional[list[Dict[str, str]]],
-        dev_sn: str,
-        resolution: Optional[str] = None,
-    ) -> Optional[Dict[str, str]]:
-        for item in sequence or []:
-            if item.get("devSn") != dev_sn:
-                continue
-            if resolution is None or item.get("exit_resolution") == resolution:
-                return item
-        return None
+    def _item(self, day: DayResult, dev_sn: str) -> Dict[str, str]:
+        item = next((i for i in day.area_sequence or [] if i.get("devSn") == dev_sn), None)
+        if item is None:
+            self.fail(f"{dev_sn} not in area_sequence")
+        return item
+
+    @staticmethod
+    def _hhmm(value) -> Optional[str]:
+        return value.strftime("%H:%M") if value else None
 
     def test_qjt_with_reentry_in_10_minutes_is_bridge_transfer(self):
-        events = [
-            self._event(9, 0, "CN3R230260010", "Главный вход"),
-            self._event(12, 0, "QJT3244400440", "Переход в пристройку"),
-            self._event(12, 10, "COVS222560013", "Мост из пристройки"),
-        ]
-        _, _, _, area_sequence, _, _, _, stats = _compute_attendance_from_events(events)
-
-        qjt_item = self._find_item(area_sequence, "QJT3244400440", "bridge_transfer")
-        self.assertIsNotNone(qjt_item)
-        if qjt_item is None:
-            self.fail("Expected QJT event resolved as bridge_transfer")
-        self.assertEqual(qjt_item.get("exit_candidate"), "1")
-        self.assertNotIn("is_exit", qjt_item)
-        self.assertEqual(stats["ambiguous_exit_candidates"], 1)
-        self.assertEqual(stats["ambiguous_resolved_as_transfer"], 1)
-        self.assertEqual(stats["ambiguous_resolved_as_exit"], 0)
+        day = compute_day(
+            [
+                self._event(9, 0, "CN3R230260010", "Главный вход"),
+                self._event(12, 0, "QJT3244400440", "Переход в пристройку"),
+                self._event(12, 10, "COVS222560013", "Мост из пристройки"),
+            ]
+        )
+        qjt = self._item(day, "QJT3244400440")
+        self.assertEqual(qjt.get("exit_resolution"), "bridge_transfer")
+        self.assertEqual(qjt.get("exit_candidate"), "1")
+        self.assertNotIn("is_exit", qjt)
+        self.assertEqual(
+            day.stats,
+            {
+                "ambiguous_exit_candidates": 1,
+                "ambiguous_resolved_as_exit": 0,
+                "ambiguous_resolved_as_transfer": 1,
+            },
+        )
 
     def test_qjt_without_reentry_in_45_minutes_is_exit(self):
-        events = [
-            self._event(9, 0, "CN3R230260010", "Главный вход"),
-            self._event(12, 0, "QJT3244400440", "Переход в пристройку"),
-        ]
-        _, _, effective, area_sequence, intervals, _, _, stats = _compute_attendance_from_events(
-            events
+        day = compute_day(
+            [
+                self._event(9, 0, "CN3R230260010", "Главный вход"),
+                self._event(12, 0, "QJT3244400440", "Переход в пристройку"),
+            ]
         )
-        qjt_item = self._find_item(area_sequence, "QJT3244400440", "exit")
-
-        self.assertIsNotNone(qjt_item)
-        if qjt_item is None:
-            self.fail("Expected QJT event resolved as exit")
-        self.assertEqual(qjt_item.get("is_exit"), "1")
-        self.assertEqual(effective, 3 * 3600)
-        self.assertEqual(len(intervals or []), 1)
-        self.assertEqual(stats["ambiguous_resolved_as_exit"], 1)
+        self.assertEqual(self._item(day, "QJT3244400440").get("is_exit"), "1")
+        self.assertEqual(day.variants["all"]["effective_work_seconds"], 3 * 3600)
+        self.assertEqual(len(day.variants["all"]["effective_work_intervals"]), 1)
+        self.assertEqual(day.stats["ambiguous_resolved_as_exit"], 1)
 
     def test_qjt_with_reentry_after_50_minutes_is_exit(self):
-        events = [
-            self._event(9, 0, "CN3R230260010", "Главный вход"),
-            self._event(12, 0, "QJT3244400440", "Переход в пристройку"),
-            self._event(12, 50, "COVS222560013", "Мост из пристройки"),
-        ]
-        _, _, _, area_sequence, _, _, _, stats = _compute_attendance_from_events(events)
-        qjt_item = self._find_item(area_sequence, "QJT3244400440", "exit")
-
-        self.assertIsNotNone(qjt_item)
-        if qjt_item is None:
-            self.fail("Expected QJT event resolved as exit")
-        self.assertEqual(qjt_item.get("is_exit"), "1")
-        self.assertEqual(stats["ambiguous_resolved_as_exit"], 1)
-        self.assertEqual(stats["ambiguous_resolved_as_transfer"], 0)
+        day = compute_day(
+            [
+                self._event(9, 0, "CN3R230260010", "Главный вход"),
+                self._event(12, 0, "QJT3244400440", "Переход в пристройку"),
+                self._event(12, 50, "COVS222560013", "Мост из пристройки"),
+            ]
+        )
+        self.assertEqual(self._item(day, "QJT3244400440").get("is_exit"), "1")
+        self.assertEqual(day.stats["ambiguous_resolved_as_transfer"], 0)
 
     def test_regular_exit_device_still_works_as_exit(self):
-        events = [
-            self._event(9, 0, "CN3R230260010", "Главный вход"),
-            self._event(18, 0, "CORL223060005", "Выход турникет"),
-        ]
-        _, _, _, area_sequence, _, _, _, _ = _compute_attendance_from_events(events)
-        regular_exit_item = self._find_item(area_sequence, "CORL223060005", "exit")
-
-        self.assertIsNotNone(regular_exit_item)
-        if regular_exit_item is None:
-            self.fail("Expected regular exit device to be marked as exit")
-        self.assertEqual(regular_exit_item.get("is_exit"), "1")
-        self.assertEqual(regular_exit_item.get("exit_candidate"), "1")
+        day = compute_day(
+            [
+                self._event(9, 0, "CN3R230260010", "Главный вход"),
+                self._event(18, 0, "CORL223060005", "Выход турникет"),
+            ]
+        )
+        item = self._item(day, "CORL223060005")
+        self.assertEqual(item.get("is_exit"), "1")
+        self.assertEqual(item.get("exit_candidate"), "1")
 
     def test_first_event_on_exit_device_is_not_exit(self):
-        events = [self._event(9, 0, "QJT3244400440", "Переход в пристройку")]
-        _, _, _, area_sequence, _, _, _, stats = _compute_attendance_from_events(events)
-        first_item = next(iter(area_sequence or []), None)
-        if first_item is None:
-            self.fail("Expected non-empty area_sequence")
-        self.assertNotIn("is_exit", first_item)
-        self.assertNotIn("exit_candidate", first_item)
-        self.assertEqual(stats["ambiguous_exit_candidates"], 0)
+        day = compute_day([self._event(9, 0, "QJT3244400440", "Переход в пристройку")])
+        item = self._item(day, "QJT3244400440")
+        self.assertNotIn("is_exit", item)
+        self.assertNotIn("exit_candidate", item)
+        self.assertEqual(day.stats["ambiguous_exit_candidates"], 0)
 
     def test_mixed_intervals_total_seconds_is_merged_correctly(self):
-        events = [
-            self._event(9, 0, "CN3R230260010", "Главный вход"),
-            self._event(12, 0, "QJT3244400440", "Переход в пристройку"),
-            self._event(12, 10, "COVS222560013", "Мост из пристройки"),
-            self._event(13, 0, "CORL223060005", "Выход турникет"),
-            self._event(14, 0, "CN3R230260003", "Главный вход"),
-            self._event(18, 0, "QJT3244400440", "Переход в пристройку"),
-        ]
-        _, _, effective, _, intervals, _, _, _ = _compute_attendance_from_events(events)
-        self.assertEqual(effective, 8 * 3600)
-        self.assertEqual(len(intervals or []), 2)
+        day = compute_day(
+            [
+                self._event(9, 0, "CN3R230260010", "Главный вход"),
+                self._event(12, 0, "QJT3244400440", "Переход в пристройку"),
+                self._event(12, 10, "COVS222560013", "Мост из пристройки"),
+                self._event(13, 0, "CORL223060005", "Выход турникет"),
+                self._event(14, 0, "CN3R230260003", "Главный вход"),
+                self._event(18, 0, "QJT3244400440", "Переход в пристройку"),
+            ]
+        )
+        self.assertEqual(day.variants["all"]["effective_work_seconds"], 8 * 3600)
+        self.assertEqual(len(day.variants["all"]["effective_work_intervals"]), 2)
+
+    def test_qjt_followed_by_hard_exit_is_bridge_transfer_and_last_out(self):
+        # T19T 25.09.2026: мост ЦОС в 15:43, выход через турникет Абылайхана в 17:07.
+        day = compute_day(
+            [
+                self._event(7, 5, "CN3R230260010", "АБЫЛАЙХАНА"),
+                self._event(15, 42, "CJKT220360027", "лифт4"),
+                self._event(15, 43, "QJT3244400440", "ЦОС"),
+                self._event(17, 7, "CN3R230260001", "АБЫЛАЙХАНА"),
+            ]
+        )
+        for mode in ("all", "turnstile"):
+            report = day.variants[mode]
+            self.assertEqual(self._hhmm(report["first_in"]), "07:05", mode)
+            self.assertEqual(self._hhmm(report["last_out"]), "17:07", mode)
+            self.assertEqual(report["effective_work_seconds"], 10 * 3600 + 2 * 60, mode)
+        self.assertEqual(self._item(day, "QJT3244400440").get("exit_resolution"), "bridge_transfer")
+
+    def test_exit_after_closed_interval_still_moves_last_out(self):
+        day = compute_day(
+            [
+                self._event(9, 0, "CN3R230260010", "Главный вход"),
+                self._event(13, 0, "CORL223060005", "Выход турникет"),
+                self._event(13, 5, "CORL223060005", "Выход турникет"),
+            ]
+        )
+        self.assertEqual(self._hhmm(day.variants["all"]["last_out"]), "13:05")
+        self.assertEqual(day.variants["all"]["effective_work_seconds"], 4 * 3600)
+
+    def test_turnstile_mode_ignores_lift_and_cos_at_day_edges(self):
+        day = compute_day(
+            [
+                self._event(8, 30, "CJKT220360027", "лифт4"),
+                self._event(9, 0, "CN3R230260002", "АБЫЛАЙХАНА"),
+                self._event(18, 0, "CN3R230260001", "АБЫЛАЙХАНА"),
+                self._event(19, 30, "CJKT220360027", "лифт4"),
+            ]
+        )
+        self.assertEqual(self._hhmm(day.variants["all"]["first_in"]), "08:30")
+        self.assertEqual(self._hhmm(day.variants["all"]["last_out"]), "19:30")
+        turnstile = day.variants["turnstile"]
+        self.assertEqual(self._hhmm(turnstile["first_in"]), "09:00")
+        self.assertEqual(self._hhmm(turnstile["last_out"]), "18:00")
+        self.assertEqual(turnstile["effective_work_seconds"], 9 * 3600)
+        self.assertEqual(turnstile["area_name_out"], "АБЫЛАЙХАНА")
+        # история — по всем устройствам
+        self.assertEqual(len(day.area_sequence or []), 4)
+
+    def test_turnstile_mode_without_turnstile_is_absent(self):
+        day = compute_day(
+            [
+                self._event(9, 0, "COVS222560013", "ЦОС"),
+                self._event(18, 0, "CJKT220360027", "лифт4"),
+            ]
+        )
+        self.assertIsNotNone(day.variants["all"]["first_in"])
+        turnstile = day.variants["turnstile"]
+        self.assertIsNone(turnstile["first_in"])
+        self.assertIsNone(turnstile["last_out"])
+        self.assertIsNone(turnstile["effective_work_seconds"])
+
+    def test_repeat_tap_on_same_turnstile_is_not_an_exit(self):
+        # T19T 22.09.2026: две отметки на турникете в 07:05 и 07:06, уход в 18:15.
+        day = compute_day(
+            [
+                self._event(7, 5, "CN3R230260001", "АБЫЛАЙХАНА"),
+                self._event(7, 6, "CN3R230260001", "АБЫЛАЙХАНА"),
+                self._event(9, 31, "CJKT214260032", "лифт2"),
+                self._event(18, 15, "CN3R230260001", "АБЫЛАЙХАНА"),
+            ]
+        )
+        turnstile = day.variants["turnstile"]
+        self.assertEqual(self._hhmm(turnstile["first_in"]), "07:05")
+        self.assertEqual(self._hhmm(turnstile["last_out"]), "18:15")
+        self.assertEqual(turnstile["effective_work_seconds"], 11 * 3600 + 10 * 60)
+        self.assertEqual(len(day.area_sequence or []), 4)  # история — со всеми отметками
+        # Повтор наследует флаги: вторая отметка в 07:06 — тоже вход (без is_exit).
+        self.assertNotIn("is_exit", (day.area_sequence or [])[1])
+
+    def test_repeat_exit_tap_keeps_exit_flag_in_history(self):
+        day = compute_day(
+            [
+                self._event(9, 0, "CN3R230260002", "АБЫЛАЙХАНА"),
+                self._event(18, 15, "CN3R230260001", "АБЫЛАЙХАНА"),
+                self._event(18, 15, "CN3R230260001", "АБЫЛАЙХАНА"),
+            ]
+        )
+        self.assertEqual([i.get("is_exit") for i in day.area_sequence or []], [None, "1", "1"])
+
+    def test_single_turnstile_exit_is_departure_only(self):
+        # T19T 23.09.2026: вход через ЦОС, единственный турникет — выход в 16:51.
+        day = compute_day(
+            [
+                self._event(9, 52, "COVS222560013", "ЦОС"),
+                self._event(16, 51, "CN3R230260001", "АБЫЛАЙХАНА"),
+            ]
+        )
+        turnstile = day.variants["turnstile"]
+        self.assertIsNone(turnstile["first_in"])
+        self.assertEqual(self._hhmm(turnstile["last_out"]), "16:51")
+        self.assertIsNone(turnstile["effective_work_seconds"])
+
+    def test_single_turnstile_entry_is_arrival_only(self):
+        day = compute_day(
+            [
+                self._event(9, 0, "CN3R230260002", "АБЫЛАЙХАНА"),
+                self._event(18, 0, "QJT3244400440", "ЦОС"),
+            ]
+        )
+        turnstile = day.variants["turnstile"]
+        self.assertEqual(self._hhmm(turnstile["first_in"]), "09:00")
+        self.assertIsNone(turnstile["last_out"])
+
+    def test_unparseable_events_are_counted_and_skipped(self):
+        day = compute_day([{"eventTime": "bad"}, self._event(9, 0, "CN3R230260010", "Вход")])
+        self.assertEqual(day.parse_errors, 1)
+        self.assertEqual(self._hhmm(day.variants["all"]["first_in"]), "09:00")
 
 
 _FIXTURE_PHOTO = Path(__file__).resolve().parent / "fixtures" / "test_photo.jpg"
@@ -3358,3 +3462,25 @@ class SignedAttendanceWriteApiTest(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AttendanceReportModeToggleAdminTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_superuser("root", "r@example.com", "pw")
+        self.client.force_login(self.user)
+        self.url = reverse("admin:monitoring_app_staffattendance_toggle_report_mode")
+
+    @patch("monitoring_app.tasks.rebuild_staff_attendance_report.delay")
+    def test_post_flips_mode_and_queues_rebuild(self, delay_mock):
+        from monitoring_app.models import AttendanceSettings
+
+        self.assertTrue(AttendanceSettings.load().turnstile_only)
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(AttendanceSettings.load().turnstile_only)
+        delay_mock.assert_called_once_with("all")
+
+    def test_get_is_rejected(self):
+        self.assertEqual(self.client.get(self.url).status_code, 403)

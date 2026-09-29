@@ -26,6 +26,7 @@ from .lesson_locations_conf import (
     PUBLIC_HOLIDAY_LIST_CACHE_TTL,
 )
 from .models import (
+    AttendanceSettings,
     ChildDepartment,
     ClassLocation,
     LessonAttendance,
@@ -162,6 +163,18 @@ def send_deleted_photo(sender, instance, **kwargs):
     _ = kwargs
     _invalidate_lesson_attendance_cache(instance)
     _send_photo_event(instance, op="deleted", state_code=STATE_DELETED)
+
+
+@receiver(post_save, sender=AttendanceSettings)
+def rebuild_attendance_report_on_mode_change(sender, instance, **kwargs):
+    """Смена режима «только турникеты» → фоновый пересчёт отчётных полей из report_variants."""
+    _ = sender
+    _ = kwargs
+    from .tasks import rebuild_staff_attendance_report
+
+    mode = "turnstile" if instance.turnstile_only else "all"
+    task = cast(Any, rebuild_staff_attendance_report)
+    transaction.on_commit(lambda: task.delay(mode))
 
 
 @receiver([post_save, post_delete], sender=StaffAttendance)

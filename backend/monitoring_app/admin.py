@@ -23,7 +23,7 @@ from django.contrib.admin.models import LogEntry
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import logout
 from django.core.cache import cache
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Avg, Case, Count, F, IntegerField, Q, Value, When
@@ -53,6 +53,7 @@ from monitoring_app.lesson_locations_conf import (
 from monitoring_app.models import (
     AbsentReason,
     APIKey,
+    AttendanceSettings,
     ChildDepartment,
     ClassLocation,
     FileCategory,
@@ -2481,6 +2482,23 @@ class CachedCountQuerySet:
         return getattr(self._queryset, name)
 
 
+@admin.register(AttendanceSettings, site=admin_site)
+class AttendanceSettingsAdmin(admin.ModelAdmin):
+    list_display = ("__str__", "turnstile_only")
+
+    def has_add_permission(self, request):
+        return not AttendanceSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        # Singleton: сразу открываем форму с переключателем.
+        return redirect(
+            "admin:monitoring_app_attendancesettings_change", AttendanceSettings.load().pk
+        )
+
+
 @admin.register(StaffAttendance, site=admin_site)
 class StaffAttendanceAdmin(admin.ModelAdmin):
     change_list_template = "admin/monitoring_app/staffattendance/change_list.html"
@@ -2940,8 +2958,40 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
             return format_html('<span style="color: #999;">N/A</span>')
         return value
 
+    def get_urls(self):
+        return [
+            path(
+                "toggle-report-mode/",
+                self.admin_site.admin_view(self.toggle_report_mode_view),
+                name="monitoring_app_staffattendance_toggle_report_mode",
+            ),
+            *super().get_urls(),
+        ]
+
+    def toggle_report_mode_view(self, request):
+        """Переключатель «отчёт только по турникетам» (POST); пересчёт — в фоне по сигналу."""
+        if request.method != "POST" or not request.user.has_perm(
+            "monitoring_app.change_attendancesettings"
+        ):
+            raise PermissionDenied
+        attendance_settings = AttendanceSettings.load()
+        attendance_settings.turnstile_only = not attendance_settings.turnstile_only
+        attendance_settings.save()
+        mode = "только турникеты" if attendance_settings.turnstile_only else "все устройства"
+        self.message_user(
+            request,
+            f"Режим отчёта: {mode}. Время прихода/ухода и эффективное время "
+            "пересчитываются в фоне (несколько минут).",
+            messages.SUCCESS,
+        )
+        return redirect("admin:monitoring_app_staffattendance_changelist")
+
     def changelist_view(self, request, extra_context=None):
         setattr(request, "staffattendance_changelist", True)
+        extra_context = {
+            **(extra_context or {}),
+            "turnstile_only": AttendanceSettings.load().turnstile_only,
+        }
         try:
             return super().changelist_view(request, extra_context=extra_context)
         finally:

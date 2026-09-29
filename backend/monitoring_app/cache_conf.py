@@ -309,3 +309,21 @@ def invalidate_lesson_attendance_derived_caches(
 
 def _invalidate_excel_attendance_cache(cache: BaseCache = Cache) -> None:
     invalidate_cache_pattern("attendance_data_*", cache=cache)
+
+
+def invalidate_staff_attendance_caches(cache: BaseCache = Cache) -> None:
+    """Чистит всё, что строится из StaffAttendance (для bulk-записей, где сигналы не шлются).
+
+    Ключи содержат версию, поэтому чистим по префиксам.
+    """
+    for prefix in (
+        "attendance_data_",
+        "staffatt_count_",
+        "staff_attendance_stats_",
+        "map_location_",
+        "department_confirmation_",
+        "staff_detail_",
+    ):
+        invalidate_cache_pattern(f"{prefix}*", cache=cache)
+    invalidate_cache("today_attendance_stats", cache=cache)
+    invalidate_cache("map_locations_today", cache=cache)

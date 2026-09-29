@@ -703,3 +703,62 @@ body.grp-change-list.model-staff #result_list th {
   color: #64748b;
   font-weight: 500;
 }
+
+/* ── Переключатель «Источник времени в отчётах» (StaffAttendance changelist) ── */
+.report-mode {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin: 0 0 16px;
+    padding: 12px 16px;
+    background: #f4f8fa;
+    border: 1px solid #d4e3ea;
+    border-left: 4px solid #309bbf;
+    border-radius: 4px;
+}
+.report-mode__text { flex: 1 1 320px; min-width: 0; }
+.report-mode__title {
+    margin: 0 0 4px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #333;
+    text-transform: none;
+}
+.report-mode__hint { margin: 0; font-size: 12px; line-height: 1.5; color: #555; }
+/* Переключатель не сжимается: при нехватке места уходит на новую строку целиком. */
+.report-mode__switch { flex: 0 0 auto; margin: 0; }
+.report-mode__segments {
+    display: inline-flex;
+    flex-wrap: nowrap;
+    border: 1px solid #309bbf;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.report-mode__segment {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+    padding: 0 16px;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    color: #309bbf;
+    background: #fff;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    width: auto;
+    min-width: max-content;
+    justify-content: center;
+}
+.report-mode__segment + .report-mode__segment { border-left: 1px solid #309bbf; }
+.report-mode__segment.is-active { color: #fff; background: #309bbf; cursor: default; }
+.report-mode__segment.is-active::before { content: "✓"; margin-right: 6px; }
+button.report-mode__segment { cursor: pointer; transition: background-color 150ms ease-out; }
+button.report-mode__segment:hover { background: #e3f1f6; }
+button.report-mode__segment:focus-visible { outline: 2px solid #1f6f8b; outline-offset: -2px; }

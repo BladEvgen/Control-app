@@ -6,7 +6,7 @@ import tempfile
 from typing import TYPE_CHECKING, Any, cast
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from monitoring_app.models import ChildDepartment, ParentDepartment, Position, Staff
@@ -676,56 +676,186 @@ class AttendanceFetcherAggregationTests(TestCase):
         self.assertIn("T900300T", pins)
         self.assertNotIn("T900301T", pins)
 
+    WORK_DAY = datetime.date(2026, 3, 10)
+
+    def _events(self, *items):
+        return [
+            {"eventTime": f"2026-03-10 {hhmmss}", "devSn": sn, "areaName": area}
+            for hhmmss, sn, area in items
+        ]
+
+    def _save(self, result, mode="turnstile"):
+        from monitoring_app.attendance_fetcher import save_attendance_days
+
+        return save_attendance_days({self.WORK_DAY: {self.staff.id: result}}, mode)
+
     def test_empty_events_still_produce_a_row(self):
-        from monitoring_app.attendance_fetcher import (
-            _aggregate_pin_events,
-            update_attendance_records,
-        )
+        from monitoring_app.attendance_fetcher import compute_day
         from monitoring_app.models import StaffAttendance
 
-        stats = {"event_time_parse_errors": 0}
-        row = _aggregate_pin_events([], stats)
-        next_day = timezone.make_aware(datetime.datetime(2026, 3, 11))
-
-        result = update_attendance_records({"T900300T": row}, next_day)
+        result = self._save(compute_day([]))
 
         self.assertEqual(result["created_records"], 1)
         record = StaffAttendance.objects.get(staff=self.staff)
-        self.assertEqual(record.date_at, next_day.date())
+        self.assertEqual(record.date_at, datetime.date(2026, 3, 11))
         self.assertIsNone(record.first_in)
         self.assertEqual(record.area_name_in, "Unknown")
 
     def test_second_run_updates_instead_of_duplicating(self):
-        from monitoring_app.attendance_fetcher import (
-            _aggregate_pin_events,
-            update_attendance_records,
-        )
+        from monitoring_app.attendance_fetcher import compute_day
         from monitoring_app.models import StaffAttendance
 
-        next_day = timezone.make_aware(datetime.datetime(2026, 3, 11))
-        stats = {"event_time_parse_errors": 0}
-        update_attendance_records({"T900300T": _aggregate_pin_events([], stats)}, next_day)
+        self._save(compute_day([]))
+        events = self._events(
+            ("09:00:00", "CN3R230260002", "Вход"), ("10:00:00", "CN3R230260001", "Выход")
+        )
+        result = self._save(compute_day(events))
 
-        changed = (None, None, 3600, None, None, "Главный вход", "Главный выход")
-        result = update_attendance_records({"T900300T": changed}, next_day)
-
-        self.assertEqual(result["created_records"], 0)
-        self.assertEqual(result["updated_records"], 1)
+        self.assertEqual(result, {"created_records": 0, "updated_records": 1})
         self.assertEqual(StaffAttendance.objects.count(), 1)
         record = StaffAttendance.objects.get(staff=self.staff)
         self.assertEqual(record.effective_work_seconds, 3600)
-        self.assertEqual(record.area_name_in, "Главный вход")
+        self.assertEqual(record.area_name_in, "Вход")
 
-    def test_unknown_pin_is_skipped_without_error(self):
-        from monitoring_app.attendance_fetcher import update_attendance_records
+    def test_report_mode_switch_is_single_update_without_api(self):
+        from monitoring_app.attendance_fetcher import apply_report_mode, compute_day
         from monitoring_app.models import StaffAttendance
 
-        next_day = timezone.make_aware(datetime.datetime(2026, 3, 11))
-        row = (None, None, None, None, None, "Unknown", "Unknown")
+        events = self._events(
+            ("09:00:05", "CN3R230260002", "АБЫЛАЙХАНА"),
+            ("18:00:07", "CN3R230260001", "АБЫЛАЙХАНА"),
+            ("19:30:09", "CJKT220360027", "лифт4"),
+        )
+        self._save(compute_day(events), mode="turnstile")
+        record = StaffAttendance.objects.get(staff=self.staff)
+        self.assertEqual(timezone.localtime(record.last_out).strftime("%H:%M:%S"), "18:00:07")
+        self.assertEqual(len(record.area_sequence), 3)
 
-        result = update_attendance_records({"НЕТ_ТАКОГО": row}, next_day)
+        with self.assertNumQueries(1):  # смена режима — один UPDATE
+            self.assertEqual(apply_report_mode(mode="all"), 1)
+        record.refresh_from_db()
+        self.assertEqual(timezone.localtime(record.first_in).strftime("%H:%M:%S"), "09:00:05")
+        self.assertEqual(timezone.localtime(record.last_out).strftime("%H:%M:%S"), "19:30:09")
+        self.assertEqual(record.area_name_out, "лифт4")
+        self.assertEqual(record.effective_work_seconds, 9 * 3600 + 2)
+        self.assertEqual(len(record.effective_work_intervals), 1)
 
-        self.assertEqual(result["created_records"], 0)
+        apply_report_mode(mode="turnstile")
+        record.refresh_from_db()
+        self.assertEqual(timezone.localtime(record.last_out).strftime("%H:%M:%S"), "18:00:07")
+        self.assertEqual(record.area_name_out, "АБЫЛАЙХАНА")
+
+    def test_report_mode_without_turnstile_nulls_report_columns(self):
+        from monitoring_app.attendance_fetcher import apply_report_mode, compute_day
+        from monitoring_app.models import StaffAttendance
+
+        self._save(compute_day(self._events(("09:00:00", "CJKT220360027", "лифт4"))), "all")
+        apply_report_mode(mode="turnstile")
+
+        record = StaffAttendance.objects.get(staff=self.staff)
+        self.assertIsNone(record.first_in)
+        self.assertIsNone(record.last_out)
+        self.assertIsNone(record.effective_work_seconds)
+        self.assertFalse(record.effective_work_intervals)
+
+    def _run_migration_0021(self):
+        import importlib
+
+        from django.apps import apps
+
+        importlib.import_module("monitoring_app.migrations.0021_rebuild_attendance_report").rebuild(
+            apps, None
+        )
+
+    def test_migration_0021_same_event_day_never_has_last_out_before_first_in(self):
+        # Ли Александр 28.09.2026: единственный турникет 16:22, дальше только лифты.
+        from monitoring_app.models import StaffAttendance
+
+        first_in = timezone.make_aware(datetime.datetime(2026, 3, 10, 16, 22, 37))
+        record = StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=datetime.date(2026, 3, 11),
+            first_in=first_in,
+            last_out=timezone.make_aware(datetime.datetime(2026, 3, 10, 17, 53, 53)),
+            area_sequence=[
+                {"t": "16:22", "area": "АБЫЛАЙХАНА", "devSn": "CN3R230260002"},
+                {"t": "16:28", "area": "лифт7", "devSn": "CJKT214260022"},
+                {"t": "17:53", "area": "лифт7", "devSn": "CJKT214260022"},
+            ],
+        )
+
+        self._run_migration_0021()
+
+        record.refresh_from_db()
+        self.assertEqual(record.first_in, first_in)
+        # Единственный турникет — вход: только приход, ухода по турникету нет.
+        self.assertIsNone(record.last_out)
+
+    def test_migration_0021_backfills_legacy_rows_from_area_sequence(self):
+        from monitoring_app.attendance_fetcher import apply_report_mode
+        from monitoring_app.models import StaffAttendance
+
+        first_in = timezone.make_aware(datetime.datetime(2026, 3, 10, 7, 5, 1))
+        record = StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=datetime.date(2026, 3, 11),
+            first_in=first_in,
+            last_out=timezone.make_aware(datetime.datetime(2026, 3, 10, 15, 43, 39)),
+            area_sequence=[
+                {"t": "07:05", "area": "АБЫЛАЙХАНА", "devSn": "CN3R230260010"},
+                {"t": "15:43", "area": "ЦОС", "devSn": "QJT3244400440"},
+                {"t": "17:07", "area": "АБЫЛАЙХАНА", "devSn": "CN3R230260001"},
+            ],
+        )
+
+        self._run_migration_0021()
+        apply_report_mode(mode="all")
+
+        record.refresh_from_db()
+        self.assertEqual(record.first_in, first_in)  # секунды сохранены
+        self.assertEqual(timezone.localtime(record.last_out).strftime("%H:%M"), "17:07")
+        self.assertEqual(record.effective_work_seconds, 10 * 3600 + 2 * 60)
+        self.assertEqual(set(record.report_variants), {"all", "turnstile"})
+        self.assertEqual(record.area_sequence[1].get("exit_resolution"), "bridge_transfer")
+        self.assertNotIn("is_exit", record.area_sequence[1])
+
+    def test_fetch_window_splits_full_windows_instead_of_paging(self):
+        import asyncio
+        from unittest.mock import patch
+
+        from monitoring_app.attendance_fetcher import AsyncAttendanceFetcher
+
+        # 7 событий по часам; страница = 3 → окно делится, пока не станет < 3.
+        stamps = [datetime.datetime(2026, 3, 10, h, 0, 0) for h in range(8, 15)]
+        calls = []
+
+        async def fake_get(_self, params):
+            calls.append(params)
+            start = datetime.datetime.fromisoformat(params["startDate"])
+            end = datetime.datetime.fromisoformat(params["endDate"])
+            hits = [{"id": str(t), "eventTime": str(t)} for t in stamps if start <= t <= end]
+            return hits[:3]
+
+        with (
+            patch.object(AsyncAttendanceFetcher, "PAGE_SIZE", 3),
+            patch.object(AsyncAttendanceFetcher, "_get", fake_get),
+        ):
+            events = asyncio.run(
+                AsyncAttendanceFetcher().fetch_window(
+                    datetime.datetime(2026, 3, 10), datetime.datetime(2026, 3, 10, 23, 59, 59)
+                )
+            )
+
+        self.assertEqual(sorted(e["id"] for e in events), sorted(str(t) for t in stamps))
+        self.assertTrue(all(p["pageNo"] == "1" for p in calls))
+
+    def test_unknown_pin_is_skipped_without_error(self):
+        from monitoring_app.attendance_fetcher import save_attendance_days
+        from monitoring_app.models import StaffAttendance
+
+        self.assertEqual(
+            save_attendance_days({}, "all"), {"created_records": 0, "updated_records": 0}
+        )
         self.assertEqual(StaffAttendance.objects.count(), 0)
 
 
@@ -744,3 +874,87 @@ class DepartmentSubtreeTests(TestCase):
             sorted(d.id for d in root.get_all_child_departments()),
             ["10", "100", "200"],
         )
+
+
+class AttendanceSyncRangeTests(TransactionTestCase):
+    """sync_range пишет в БД из потоков database_sync_to_async — нужна настоящая фиксация."""
+
+    def setUp(self):
+        from monitoring_app.models import AttendanceSettings
+
+        AttendanceSettings.load()
+        ChildDepartment.objects.create(id="1", name="КРМУ")
+        self.staff = Staff.objects.create(
+            pin="T900300T", name="Тестбек", surname="Тестбеков", department_id="1"
+        )
+
+    def _sync(self, events, **kwargs):
+        import asyncio
+        from unittest.mock import patch
+
+        from monitoring_app.attendance_fetcher import AsyncAttendanceFetcher
+
+        calls = []
+
+        async def fake_fetch(_self, start_day, end_day, pins):
+            calls.append((start_day, end_day))
+            return events
+
+        with patch.object(AsyncAttendanceFetcher, "fetch_events", fake_fetch):
+            summary = asyncio.run(
+                AsyncAttendanceFetcher().sync_range(
+                    datetime.date(2026, 3, 10), datetime.date(2026, 3, 11), **kwargs
+                )
+            )
+        return summary, calls
+
+    def test_sync_range_groups_bulk_events_by_pin_and_day(self):
+        from monitoring_app.models import StaffAttendance
+
+        events = [
+            {
+                "id": "1",
+                "pin": "T900300T",
+                "eventTime": "2026-03-10 09:00:05",
+                "devSn": "CN3R230260002",
+                "areaName": "А",
+            },
+            {
+                "id": "2",
+                "pin": "T900300T",
+                "eventTime": "2026-03-10 18:00:07",
+                "devSn": "CN3R230260001",
+                "areaName": "А",
+            },
+            {
+                "id": "3",
+                "pin": "НЕ_СОТРУДНИК",
+                "eventTime": "2026-03-10 10:00:00",
+                "devSn": "X",
+                "areaName": "А",
+            },
+        ]
+
+        summary, calls = self._sync(events, chunk_days=7)
+
+        self.assertEqual(calls, [(datetime.date(2026, 3, 10), datetime.date(2026, 3, 11))])
+        self.assertEqual(summary["created_records"], 2)  # 10.03 с событиями + пустой 11.03
+        record = StaffAttendance.objects.get(staff=self.staff, date_at=datetime.date(2026, 3, 11))
+        self.assertEqual(timezone.localtime(record.last_out).strftime("%H:%M:%S"), "18:00:07")
+        empty = StaffAttendance.objects.get(staff=self.staff, date_at=datetime.date(2026, 3, 12))
+        self.assertIsNone(empty.first_in)
+
+    def test_refetch_keeps_existing_rows_on_empty_days(self):
+        from monitoring_app.models import StaffAttendance
+
+        manual = StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=datetime.date(2026, 3, 12),
+            first_in=timezone.make_aware(datetime.datetime(2026, 3, 11, 9, 0)),
+        )
+
+        summary, _ = self._sync([], keep_existing_when_empty=True)
+
+        self.assertEqual(summary["created_records"] + summary["updated_records"], 0)
+        manual.refresh_from_db()
+        self.assertIsNotNone(manual.first_in)

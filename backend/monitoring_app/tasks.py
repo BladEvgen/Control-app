@@ -349,6 +349,14 @@ def get_all_attendance_task(days=None):
     return summary
 
 
+@shared_task(name="monitoring_app.tasks.rebuild_staff_attendance_report")
+def rebuild_staff_attendance_report(mode=None):
+    """Переписывает отчётные поля StaffAttendance под режим AttendanceSettings (без API СКУД)."""
+    from monitoring_app.attendance_fetcher import apply_report_mode
+
+    return apply_report_mode(mode=mode)
+
+
 @shared_task(name="monitoring_app.tasks.backup_db_task")
 def backup_db_task(
     backup_format: str = "both",

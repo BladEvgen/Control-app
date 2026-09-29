@@ -30,6 +30,7 @@ class CustomIndexDashboard(Dashboard):
                 column=1,
                 collapsible=True,
                 models=(
+                    "monitoring_app.models.AttendanceSettings",
                     "monitoring_app.models.StaffAttendance",
                     "monitoring_app.models.LessonAttendance",
                     "monitoring_app.models.ClassLocation",

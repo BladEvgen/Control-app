@@ -359,8 +359,7 @@ class StaffQuerySet(models.QuerySet):
 
 
 class StaffManager(models.Manager.from_queryset(StaffQuerySet)):  # type: ignore[misc]
-    """Менеджер по умолчанию: отдаёт только неархивных сотрудников.
-    """
+    """Менеджер по умолчанию: отдаёт только неархивных сотрудников."""
 
     def get_queryset(self) -> StaffQuerySet:
         qs = cast(StaffQuerySet, super().get_queryset())
@@ -693,6 +692,42 @@ class RemoteWork(models.Model):
         verbose_name_plural = "Дистанционная работа"
 
 
+class AttendanceSettings(models.Model):
+    """Singleton (pk=1): режим расчёта отчётного времени СКУД."""
+
+    turnstile_only = models.BooleanField(
+        default=True,
+        verbose_name="Отчёт только по турникетам",
+        help_text=(
+            "Вкл: приход/уход и время в здании считаются только по турникетам "
+            "(ATTENDANCE_TURNSTILE_DEVICE_SNS); нет турникета — нет на работе. "
+            "Выкл: берутся все устройства (лифты, ЦОС), последний в выгрузке — уход. "
+            "История перемещений всегда содержит все устройства. "
+            "После сохранения отчётные поля пересчитываются в фоне."
+        ),
+    )
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls) -> "AttendanceSettings":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    @classmethod
+    def report_mode(cls) -> str:
+        return "turnstile" if cls.load().turnstile_only else "all"
+
+    def __str__(self) -> str:
+        return "Настройки посещаемости"
+
+    class Meta:
+        verbose_name = "Настройки посещаемости"
+        verbose_name_plural = "Настройки посещаемости"
+
+
 class StaffAttendance(models.Model):
     """
     Посещаемость по СКУД: одна запись на (сотрудник, дата выгрузки).
@@ -751,7 +786,7 @@ class StaffAttendance(models.Model):
         null=True,
         blank=True,
         verbose_name="Эффективное время в здании (сек)",
-        help_text="Сумма интервалов «внутри» по турникетам выхода.",
+        help_text="Сумма интервалов «внутри» по устройствам выхода (с учётом режима отчёта).",
     )
     area_sequence = models.JSONField(
         null=True,
@@ -764,6 +799,17 @@ class StaffAttendance(models.Model):
         blank=True,
         verbose_name="Интервалы «в здании» (для объединения с LA)",
         help_text="Список {start, end} в ISO формате для вычитания пересечений с занятиями.",
+    )
+    report_variants = models.JSONField(
+        null=True,
+        blank=True,
+        editable=False,
+        verbose_name="Варианты отчёта (все устройства / только турникеты)",
+        help_text=(
+            "{'all': {...}, 'turnstile': {...}} — отчётные поля по обоим режимам. "
+            "first_in/last_out/area_name_*/effective_* = вариант активного режима "
+            "AttendanceSettings.turnstile_only."
+        ),
     )
 
     def __str__(self) -> str:

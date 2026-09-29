@@ -23,9 +23,7 @@ load_dotenv(BASE_DIR / ".env")
 
 def _csv_env_frozenset(name: str, default: str) -> frozenset[str]:
     """Parse comma-separated env var into a normalized frozenset."""
-    return frozenset(
-        item.strip() for item in os.getenv(name, default).split(",") if item.strip()
-    )
+    return frozenset(item.strip() for item in os.getenv(name, default).split(",") if item.strip())
 
 
 def _int_env(name: str, default: int) -> int:
@@ -85,6 +83,16 @@ ATTENDANCE_REENTRY_DEVICE_SNS = _csv_env_frozenset(
     "ATTENDANCE_REENTRY_DEVICE_SNS",
     "COVS222560013,CN3R230260010,CN3R230260002,CN3R230260003",
 )
+# Турникеты (Абылайхана, Торекулова, Карасай): в режиме «только турникеты»
+# (AttendanceSettings.turnstile_only) отчётные first_in/last_out/время берутся только с них.
+ATTENDANCE_TURNSTILE_DEVICE_SNS = _csv_env_frozenset(
+    "ATTENDANCE_TURNSTILE_DEVICE_SNS",
+    "CN3R230260001,CN3R230260002,CN3R230260003,CN3R230260005,CN3R230260009,"
+    "CN3R230260010,CN3R230260015,CN3R230260016,CORL223060005,CORL223060016",
+)
+# Повторный проход через то же устройство в пределах N секунд — двойное прикладывание
+# карты, а не новое движение (иначе 07:05 + 07:06 на турникете = «вошёл и вышел»).
+ATTENDANCE_REPEAT_TAP_SECONDS = _int_env("ATTENDANCE_REPEAT_TAP_SECONDS", 120)
 ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES = int(
     os.getenv("ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES", "45")
 )
@@ -96,33 +104,26 @@ ATTENDANCE_API_TERMINAL_POOLS = _json_env_dict("ATTENDANCE_API_TERMINAL_POOLS")
 # p99 ~=0.220. Keep the accept threshold far above impostors, but low enough for
 # glasses/no-glasses and webcam drift when the nearest-other gap is large.
 FACE_RECOGNITION_THRESHOLD = float(os.getenv("FACE_RECOGNITION_THRESHOLD", "0.72"))
-FACE_RECOGNITION_THRESHOLD_RELAXED = float(
-    os.getenv("FACE_RECOGNITION_THRESHOLD_RELAXED", "0.62")
+FACE_RECOGNITION_THRESHOLD_RELAXED = float(os.getenv("FACE_RECOGNITION_THRESHOLD_RELAXED", "0.62"))
+FACE_RECOGNITION_MIN_NEIGHBOR_GAP = float(os.getenv("FACE_RECOGNITION_MIN_NEIGHBOR_GAP", "0.10"))
+FACE_ENCODING_TTA_ENABLE = os.getenv("FACE_ENCODING_TTA_ENABLE", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
 )
-FACE_RECOGNITION_MIN_NEIGHBOR_GAP = float(
-    os.getenv("FACE_RECOGNITION_MIN_NEIGHBOR_GAP", "0.10")
-)
-FACE_ENCODING_TTA_ENABLE = os.getenv(
-    "FACE_ENCODING_TTA_ENABLE", "1"
-).strip().lower() in ("1", "true", "yes", "on")
 FACE_ENCODING_TTA_FOR_BULK_BUILD = os.getenv(
     "FACE_ENCODING_TTA_FOR_BULK_BUILD", "0"
 ).strip().lower() in ("1", "true", "yes", "on")
-FACE_ENCODING_TTA_MAX_EXTRA_VARIANTS = int(
-    os.getenv("FACE_ENCODING_TTA_MAX_EXTRA_VARIANTS", "5")
-)
+FACE_ENCODING_TTA_MAX_EXTRA_VARIANTS = int(os.getenv("FACE_ENCODING_TTA_MAX_EXTRA_VARIANTS", "5"))
 FACE_ENCODING_TTA_MIN_CONSENSUS_COS = float(
     os.getenv("FACE_ENCODING_TTA_MIN_CONSENSUS_COS", "0.76")
 )
-FACE_ENCODING_TTA_MIN_FACE_IOU = float(
-    os.getenv("FACE_ENCODING_TTA_MIN_FACE_IOU", "0.20")
-)
+FACE_ENCODING_TTA_MIN_FACE_IOU = float(os.getenv("FACE_ENCODING_TTA_MIN_FACE_IOU", "0.20"))
 FACE_RUNTIME_INCLUDE_AUGMENTED_GALLERY = os.getenv(
     "FACE_RUNTIME_INCLUDE_AUGMENTED_GALLERY", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
-FACE_RUNTIME_AUGMENTED_GALLERY_MAX = int(
-    os.getenv("FACE_RUNTIME_AUGMENTED_GALLERY_MAX", "24")
-)
+FACE_RUNTIME_AUGMENTED_GALLERY_MAX = int(os.getenv("FACE_RUNTIME_AUGMENTED_GALLERY_MAX", "24"))
 FACE_RUNTIME_INCLUDE_FACE_SAMPLES = os.getenv(
     "FACE_RUNTIME_INCLUDE_FACE_SAMPLES", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
@@ -132,9 +133,7 @@ FACE_RUNTIME_INCLUDE_FACE_SAMPLES = os.getenv(
 FACE_RUNTIME_CONDITION_VARIANTS_ENABLE = os.getenv(
     "FACE_RUNTIME_CONDITION_VARIANTS_ENABLE", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
-FACE_RUNTIME_CONDITION_VARIANTS_MAX = int(
-    os.getenv("FACE_RUNTIME_CONDITION_VARIANTS_MAX", "3")
-)
+FACE_RUNTIME_CONDITION_VARIANTS_MAX = int(os.getenv("FACE_RUNTIME_CONDITION_VARIANTS_MAX", "3"))
 FACE_RUNTIME_CONDITION_VARIANT_MIN_COS = float(
     os.getenv("FACE_RUNTIME_CONDITION_VARIANT_MIN_COS", "0.84")
 )
@@ -164,9 +163,7 @@ FACE_TRAINING_INCLUDE_LESSON_ATTENDANCE = os.getenv(
     "yes",
     "on",
 )
-FACE_TRAINING_LESSON_ATTENDANCE_MAX = int(
-    os.getenv("FACE_TRAINING_LESSON_ATTENDANCE_MAX", "80")
-)
+FACE_TRAINING_LESSON_ATTENDANCE_MAX = int(os.getenv("FACE_TRAINING_LESSON_ATTENDANCE_MAX", "80"))
 FACE_GALLERY_ENROLLMENT_PAD_VALIDATE = os.getenv(
     "FACE_GALLERY_ENROLLMENT_PAD_VALIDATE", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
@@ -182,9 +179,7 @@ FACE_GALLERY_ENROLLMENT_DET_SCORE_MIN = float(
 FACE_GALLERY_ENROLLMENT_FACE_AREA_RATIO_MIN = float(
     os.getenv("FACE_GALLERY_ENROLLMENT_FACE_AREA_RATIO_MIN", "0.012")
 )
-FACE_GALLERY_ENROLLMENT_BLUR_MIN = float(
-    os.getenv("FACE_GALLERY_ENROLLMENT_BLUR_MIN", "18.0")
-)
+FACE_GALLERY_ENROLLMENT_BLUR_MIN = float(os.getenv("FACE_GALLERY_ENROLLMENT_BLUR_MIN", "18.0"))
 FACE_GALLERY_ENROLLMENT_BRIGHTNESS_MIN = float(
     os.getenv("FACE_GALLERY_ENROLLMENT_BRIGHTNESS_MIN", "30.0")
 )
@@ -206,12 +201,8 @@ FACE_GALLERY_ATTENDANCE_MIN_NO_ANCHOR_COUNT = int(
 FACE_GALLERY_ENROLLMENT_MIN_CENTROID_COS = float(
     os.getenv("FACE_GALLERY_ENROLLMENT_MIN_CENTROID_COS", "0.46")
 )
-FACE_GALLERY_REAL_DEDUPE_MAX_COS = float(
-    os.getenv("FACE_GALLERY_REAL_DEDUPE_MAX_COS", "0.9975")
-)
-FACE_GALLERY_REAL_MAX_PROTOTYPES = int(
-    os.getenv("FACE_GALLERY_REAL_MAX_PROTOTYPES", "48")
-)
+FACE_GALLERY_REAL_DEDUPE_MAX_COS = float(os.getenv("FACE_GALLERY_REAL_DEDUPE_MAX_COS", "0.9975"))
+FACE_GALLERY_REAL_MAX_PROTOTYPES = int(os.getenv("FACE_GALLERY_REAL_MAX_PROTOTYPES", "48"))
 FACE_GALLERY_REAL_META_ACCEPTED_DETAIL_LIMIT = int(
     os.getenv("FACE_GALLERY_REAL_META_ACCEPTED_DETAIL_LIMIT", "48")
 )
@@ -238,39 +229,23 @@ FACE_VERIFY_STRONG_GALLERY_RELAXED_THRESHOLD = float(
 FACE_VERIFY_STRONG_GALLERY_RELAXED_GAP_MIN = float(
     os.getenv("FACE_VERIFY_STRONG_GALLERY_RELAXED_GAP_MIN", "0.18")
 )
-FACE_VERIFY_MIN_ENROLLMENT_SOURCES = int(
-    os.getenv("FACE_VERIFY_MIN_ENROLLMENT_SOURCES", "2")
-)
-FACE_VERIFY_MIN_TEMPLATES_STRONG = int(
-    os.getenv("FACE_VERIFY_MIN_TEMPLATES_STRONG", "2")
-)
+FACE_VERIFY_MIN_ENROLLMENT_SOURCES = int(os.getenv("FACE_VERIFY_MIN_ENROLLMENT_SOURCES", "2"))
+FACE_VERIFY_MIN_TEMPLATES_STRONG = int(os.getenv("FACE_VERIFY_MIN_TEMPLATES_STRONG", "2"))
 # Single-source (avatar-only) galleries count as strong once they have this
 # many TTA-rendered templates — most staff only ever upload one avatar.
 FACE_VERIFY_SINGLE_SOURCE_STRONG_MIN_TEMPLATES = int(
     os.getenv("FACE_VERIFY_SINGLE_SOURCE_STRONG_MIN_TEMPLATES", "5")
 )
-FACE_VERIFY_MAX_COSINE_FACTOR = float(
-    os.getenv("FACE_VERIFY_MAX_COSINE_FACTOR", "0.97")
-)
-FACE_VERIFY_PROBE_DET_SCORE_MIN = float(
-    os.getenv("FACE_VERIFY_PROBE_DET_SCORE_MIN", "0.35")
-)
+FACE_VERIFY_MAX_COSINE_FACTOR = float(os.getenv("FACE_VERIFY_MAX_COSINE_FACTOR", "0.97"))
+FACE_VERIFY_PROBE_DET_SCORE_MIN = float(os.getenv("FACE_VERIFY_PROBE_DET_SCORE_MIN", "0.35"))
 FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN = float(
     os.getenv("FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN", "0.008")
 )
 FACE_VERIFY_PROBE_BLUR_MIN = float(os.getenv("FACE_VERIFY_PROBE_BLUR_MIN", "8.0"))
-FACE_VERIFY_PROBE_BRIGHTNESS_MIN = float(
-    os.getenv("FACE_VERIFY_PROBE_BRIGHTNESS_MIN", "22.0")
-)
-FACE_VERIFY_PROBE_BRIGHTNESS_MAX = float(
-    os.getenv("FACE_VERIFY_PROBE_BRIGHTNESS_MAX", "238.0")
-)
-FACE_VERIFY_PROBE_MAX_ABS_YAW = float(
-    os.getenv("FACE_VERIFY_PROBE_MAX_ABS_YAW", "40.0")
-)
-FACE_VERIFY_PROBE_MAX_ABS_PITCH = float(
-    os.getenv("FACE_VERIFY_PROBE_MAX_ABS_PITCH", "35.0")
-)
+FACE_VERIFY_PROBE_BRIGHTNESS_MIN = float(os.getenv("FACE_VERIFY_PROBE_BRIGHTNESS_MIN", "22.0"))
+FACE_VERIFY_PROBE_BRIGHTNESS_MAX = float(os.getenv("FACE_VERIFY_PROBE_BRIGHTNESS_MAX", "238.0"))
+FACE_VERIFY_PROBE_MAX_ABS_YAW = float(os.getenv("FACE_VERIFY_PROBE_MAX_ABS_YAW", "40.0"))
+FACE_VERIFY_PROBE_MAX_ABS_PITCH = float(os.getenv("FACE_VERIFY_PROBE_MAX_ABS_PITCH", "35.0"))
 FACE_VERIFY_IMPOSTOR_GAP_ENABLE = os.getenv(
     "FACE_VERIFY_IMPOSTOR_GAP_ENABLE", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
@@ -280,12 +255,8 @@ FACE_VERIFY_IMPOSTOR_MIN_OTHER_SCORE = float(
 )
 # Cold-start verify: only when runtime gallery has no gallery_real.npy rows (avatar/mask only).
 # Softer cosine floor than weak-gallery strict, but stricter probe quality (det + face area).
-FACE_VERIFY_THRESHOLD_COLD_START = float(
-    os.getenv("FACE_VERIFY_THRESHOLD_COLD_START", "0.835")
-)
-FACE_VERIFY_COLD_START_DET_MIN = float(
-    os.getenv("FACE_VERIFY_COLD_START_DET_MIN", "0.42")
-)
+FACE_VERIFY_THRESHOLD_COLD_START = float(os.getenv("FACE_VERIFY_THRESHOLD_COLD_START", "0.835"))
+FACE_VERIFY_COLD_START_DET_MIN = float(os.getenv("FACE_VERIFY_COLD_START_DET_MIN", "0.42"))
 FACE_VERIFY_COLD_START_FACE_AREA_MIN = float(
     os.getenv("FACE_VERIFY_COLD_START_FACE_AREA_MIN", "0.012")
 )
@@ -304,19 +275,13 @@ FACE_VERIFY_SINGLE_PHOTO_RELAXED_ENABLE = os.getenv(
 # Single-photo fallback keeps the normal verified threshold, but also requires
 # good probe quality, several same-image runtime variants, and a large impostor
 # gap. This is for “only one photo exists”, not for lowering security globally.
-FACE_VERIFY_SINGLE_PHOTO_THRESHOLD = float(
-    os.getenv("FACE_VERIFY_SINGLE_PHOTO_THRESHOLD", "0.72")
-)
-FACE_VERIFY_SINGLE_PHOTO_GAP_MIN = float(
-    os.getenv("FACE_VERIFY_SINGLE_PHOTO_GAP_MIN", "0.18")
-)
+FACE_VERIFY_SINGLE_PHOTO_THRESHOLD = float(os.getenv("FACE_VERIFY_SINGLE_PHOTO_THRESHOLD", "0.72"))
+FACE_VERIFY_SINGLE_PHOTO_GAP_MIN = float(os.getenv("FACE_VERIFY_SINGLE_PHOTO_GAP_MIN", "0.18"))
 FACE_VERIFY_SINGLE_PHOTO_MIN_TEMPLATES = int(
     os.getenv("FACE_VERIFY_SINGLE_PHOTO_MIN_TEMPLATES", "3")
 )
 # Trusted face bootstrap samples (StaffFaceSample): cap and near-duplicate rejection.
-FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES = int(
-    os.getenv("FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES", "5")
-)
+FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES = int(os.getenv("FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES", "5"))
 FACE_SAMPLE_DEDUPE_MAX_COS = float(os.getenv("FACE_SAMPLE_DEDUPE_MAX_COS", "0.992"))
 
 # Staff / Face Lab: server normalizes uploads to JPEG (drops non-image payloads, EXIF, etc.).
@@ -326,9 +291,7 @@ STAFF_AVATAR_UPLOAD_MAX_BYTES = int(
     os.getenv("STAFF_AVATAR_UPLOAD_MAX_BYTES", str(12 * 1024 * 1024))
 )
 
-AUGMENT_SYNTH_GLASSES_RANDOM_P = float(
-    os.getenv("AUGMENT_SYNTH_GLASSES_RANDOM_P", "0.22")
-)
+AUGMENT_SYNTH_GLASSES_RANDOM_P = float(os.getenv("AUGMENT_SYNTH_GLASSES_RANDOM_P", "0.22"))
 AUGMENT_GLASSES_HEURISTIC_HORIZ_DOM = float(
     os.getenv("AUGMENT_GLASSES_HEURISTIC_HORIZ_DOM", "1.12")
 )
@@ -343,9 +306,11 @@ FACE_PARSING_ENABLE = os.getenv("FACE_PARSING_ENABLE", "1").strip().lower() in (
     "true",
     "yes",
 )
-FACE_PARSING_AUTO_DOWNLOAD = os.getenv(
-    "FACE_PARSING_AUTO_DOWNLOAD", "0"
-).strip().lower() in ("1", "true", "yes")
+FACE_PARSING_AUTO_DOWNLOAD = os.getenv("FACE_PARSING_AUTO_DOWNLOAD", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 _face_parsing_path = os.getenv("FACE_PARSING_MODEL_PATH", "").strip()
 FACE_PARSING_MODEL_PATH = (
     str(Path(_face_parsing_path).expanduser().resolve()) if _face_parsing_path else None
@@ -355,12 +320,16 @@ FACE_PARSING_DOWNLOAD_URL = os.getenv(
     "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.onnx",
 )
 FACE_PARSING_GLASSES_FRAC_MIN = _float_env("FACE_PARSING_GLASSES_FRAC_MIN", 0.00035)
-FACE_PARSING_USE_FOR_AUGMENT = os.getenv(
-    "FACE_PARSING_USE_FOR_AUGMENT", "1"
-).strip().lower() in ("1", "true", "yes")
-FACE_PARSING_USE_FOR_API = os.getenv(
-    "FACE_PARSING_USE_FOR_API", "1"
-).strip().lower() in ("1", "true", "yes")
+FACE_PARSING_USE_FOR_AUGMENT = os.getenv("FACE_PARSING_USE_FOR_AUGMENT", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+FACE_PARSING_USE_FOR_API = os.getenv("FACE_PARSING_USE_FOR_API", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 RATE_PERIOD = 600
 RATE_LIMIT = 40
 NO_ALBUMENTATIONS_UPDATE: int = int(os.getenv("NO_ALBUMENTATIONS_UPDATE", "1"))
@@ -391,15 +360,9 @@ SECRET_API = os.getenv("SECRET_API")
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
 # Face Lab: Edge neural TTS (Microsoft, via edge-tts; no API key). Optional voice overrides.
-FACE_LAB_EDGE_TTS_VOICE_RU = os.getenv(
-    "FACE_LAB_EDGE_TTS_VOICE_RU", "ru-RU-SvetlanaNeural"
-).strip()
-FACE_LAB_EDGE_TTS_VOICE_KK = os.getenv(
-    "FACE_LAB_EDGE_TTS_VOICE_KK", "kk-KZ-AigulNeural"
-).strip()
-FACE_LAB_EDGE_TTS_VOICE_EN = os.getenv(
-    "FACE_LAB_EDGE_TTS_VOICE_EN", "en-US-JennyNeural"
-).strip()
+FACE_LAB_EDGE_TTS_VOICE_RU = os.getenv("FACE_LAB_EDGE_TTS_VOICE_RU", "ru-RU-SvetlanaNeural").strip()
+FACE_LAB_EDGE_TTS_VOICE_KK = os.getenv("FACE_LAB_EDGE_TTS_VOICE_KK", "kk-KZ-AigulNeural").strip()
+FACE_LAB_EDGE_TTS_VOICE_EN = os.getenv("FACE_LAB_EDGE_TTS_VOICE_EN", "en-US-JennyNeural").strip()
 MAIN_IP = os.getenv("MAIN_IP")
 DB_TYPE = os.getenv("DB_TYPE", "sqlite3").lower()
 
@@ -748,12 +711,8 @@ ATTENDANCE_ROOT = (
 
 AUGMENT_URL = "/augment_media/"
 _augment_root_env = os.getenv("AUGMENT_ROOT")
-_default_augment_template = (
-    MEDIA_ROOT / "user_images" / "{staff_pin}" / "augmented_images"
-)
-AUGMENT_ROOT = (
-    _augment_root_env if _augment_root_env else str(_default_augment_template)
-)
+_default_augment_template = MEDIA_ROOT / "user_images" / "{staff_pin}" / "augmented_images"
+AUGMENT_ROOT = _augment_root_env if _augment_root_env else str(_default_augment_template)
 
 _general_models_env = os.getenv("GENERAL_MODELS_ROOT")
 GENERAL_MODELS_ROOT = (
@@ -839,7 +798,9 @@ REDOC_SETTINGS = {
 }
 
 # Celery configurations
-CELERY_BROKER_URL = f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}/0"
+CELERY_BROKER_URL = (
+    f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}/0"
+)
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 
@@ -862,9 +823,7 @@ PHOTO_PAD_GUIDE_FACE_DETECTOR_MODEL = os.getenv(
 )
 PHOTO_PAD_GUIDE_COLOR_MODEL = os.getenv(
     "PHOTO_PAD_GUIDE_COLOR_MODEL",
-    str(
-        PHOTO_PAD_GUIDE_MODELS_ROOT / "replay-attack_ycrcb_luv_extraTreesClassifier.pkl"
-    ),
+    str(PHOTO_PAD_GUIDE_MODELS_ROOT / "replay-attack_ycrcb_luv_extraTreesClassifier.pkl"),
 )
 PHOTO_PAD_MINIFASNET_ONNX_MODEL = os.getenv(
     "PHOTO_PAD_MINIFASNET_ONNX_MODEL",
@@ -901,9 +860,7 @@ PHOTO_PAD_NUMBERS = {
     "device_min_area_ratio": _float_env("PHOTO_PAD_DEVICE_MIN_AREA_RATIO", 0.015),
     "device_ratio_ref": _float_env("PHOTO_PAD_DEVICE_RATIO_REF", 0.25),
     "device_score_conf_weight": _float_env("PHOTO_PAD_DEVICE_SCORE_CONF_WEIGHT", 0.60),
-    "device_score_ratio_weight": _float_env(
-        "PHOTO_PAD_DEVICE_SCORE_RATIO_WEIGHT", 0.40
-    ),
+    "device_score_ratio_weight": _float_env("PHOTO_PAD_DEVICE_SCORE_RATIO_WEIGHT", 0.40),
     # Поиск прямоугольной рамки экрана
     "frame_canny_low": _int_env("PHOTO_PAD_FRAME_CANNY_LOW", 50),
     "frame_canny_high": _int_env("PHOTO_PAD_FRAME_CANNY_HIGH", 160),
@@ -926,45 +883,27 @@ PHOTO_PAD_NUMBERS = {
     "quality_penalty_blur": _float_env("PHOTO_PAD_QUALITY_PENALTY_BLUR", 0.35),
     "quality_penalty_exposure": _float_env("PHOTO_PAD_QUALITY_PENALTY_EXPOSURE", 0.20),
     "quality_penalty_contrast": _float_env("PHOTO_PAD_QUALITY_PENALTY_CONTRAST", 0.20),
-    "quality_penalty_small_face": _float_env(
-        "PHOTO_PAD_QUALITY_PENALTY_SMALL_FACE", 0.25
-    ),
+    "quality_penalty_small_face": _float_env("PHOTO_PAD_QUALITY_PENALTY_SMALL_FACE", 0.25),
     "quality_poor_threshold": _float_env("PHOTO_PAD_QUALITY_POOR_THRESHOLD", 0.45),
     # --- Fused spoof risk weights (face ROI; quality not mixed into decision branches) ---
     "risk_weight_deepface": _float_env("PHOTO_PAD_RISK_WEIGHT_DEEPFACE", 0.46),
     "risk_weight_device": _float_env("PHOTO_PAD_RISK_WEIGHT_DEVICE", 0.22),
     "risk_weight_frame": _float_env("PHOTO_PAD_RISK_WEIGHT_FRAME", 0.12),
     # --- Rule engine: FasNet + geometry + recapture + shield ---
-    "decision_device_present_min": _float_env(
-        "PHOTO_PAD_DECISION_DEVICE_PRESENT_MIN", 0.24
-    ),
+    "decision_device_present_min": _float_env("PHOTO_PAD_DECISION_DEVICE_PRESENT_MIN", 0.24),
     "decision_device_confirmed_strong_min": _float_env(
         "PHOTO_PAD_DECISION_DEVICE_CONFIRMED_STRONG_MIN", 0.48
     ),
     "decision_device_confirmed_single_min": _float_env(
         "PHOTO_PAD_DECISION_DEVICE_CONFIRMED_SINGLE_MIN", 0.36
     ),
-    "decision_frame_present_min": _float_env(
-        "PHOTO_PAD_DECISION_FRAME_PRESENT_MIN", 0.34
-    ),
-    "decision_strong_device_min": _float_env(
-        "PHOTO_PAD_DECISION_STRONG_DEVICE_MIN", 0.40
-    ),
-    "decision_strong_frame_min": _float_env(
-        "PHOTO_PAD_DECISION_STRONG_FRAME_MIN", 0.34
-    ),
-    "decision_quality_poor_min": _float_env(
-        "PHOTO_PAD_DECISION_QUALITY_POOR_MIN", 0.45
-    ),
-    "decision_deepfake_review_min": _float_env(
-        "PHOTO_PAD_DECISION_DEEPFAKE_REVIEW_MIN", 0.65
-    ),
-    "decision_deepfake_device_min": _float_env(
-        "PHOTO_PAD_DECISION_DEEPFAKE_DEVICE_MIN", 0.92
-    ),
-    "decision_deepfake_very_high": _float_env(
-        "PHOTO_PAD_DECISION_DEEPFAKE_VERY_HIGH", 0.985
-    ),
+    "decision_frame_present_min": _float_env("PHOTO_PAD_DECISION_FRAME_PRESENT_MIN", 0.34),
+    "decision_strong_device_min": _float_env("PHOTO_PAD_DECISION_STRONG_DEVICE_MIN", 0.40),
+    "decision_strong_frame_min": _float_env("PHOTO_PAD_DECISION_STRONG_FRAME_MIN", 0.34),
+    "decision_quality_poor_min": _float_env("PHOTO_PAD_DECISION_QUALITY_POOR_MIN", 0.45),
+    "decision_deepfake_review_min": _float_env("PHOTO_PAD_DECISION_DEEPFAKE_REVIEW_MIN", 0.65),
+    "decision_deepfake_device_min": _float_env("PHOTO_PAD_DECISION_DEEPFAKE_DEVICE_MIN", 0.92),
+    "decision_deepfake_very_high": _float_env("PHOTO_PAD_DECISION_DEEPFAKE_VERY_HIGH", 0.985),
     "decision_deepfake_mid_suspicious_min": _float_env(
         "PHOTO_PAD_DECISION_DEEPFAKE_MID_SUSPICIOUS_MIN", 0.82
     ),
@@ -979,37 +918,23 @@ PHOTO_PAD_NUMBERS = {
     "decision_quality_frame_review_min": _float_env(
         "PHOTO_PAD_DECISION_QUALITY_FRAME_REVIEW_MIN", 0.24
     ),
-    "decision_suspicious_device_min": _float_env(
-        "PHOTO_PAD_DECISION_SUSPICIOUS_DEVICE_MIN", 0.34
-    ),
-    "decision_suspicious_frame_min": _float_env(
-        "PHOTO_PAD_DECISION_SUSPICIOUS_FRAME_MIN", 0.42
-    ),
+    "decision_suspicious_device_min": _float_env("PHOTO_PAD_DECISION_SUSPICIOUS_DEVICE_MIN", 0.34),
+    "decision_suspicious_frame_min": _float_env("PHOTO_PAD_DECISION_SUSPICIOUS_FRAME_MIN", 0.42),
     "decision_weak_device_min": _float_env("PHOTO_PAD_DECISION_WEAK_DEVICE_MIN", 0.16),
     "decision_weak_frame_min": _float_env("PHOTO_PAD_DECISION_WEAK_FRAME_MIN", 0.20),
-    "decision_weak_combined_sum_min": _float_env(
-        "PHOTO_PAD_DECISION_WEAK_COMBINED_SUM_MIN", 0.24
-    ),
+    "decision_weak_combined_sum_min": _float_env("PHOTO_PAD_DECISION_WEAK_COMBINED_SUM_MIN", 0.24),
     # --- Glasses reflection guard (soften false device hits on lenses) ---
     "glasses_mask_min_pixels": _int_env("PHOTO_PAD_GLASSES_MASK_MIN_PIXELS", 24),
     "glasses_mask_dilate": _int_env("PHOTO_PAD_GLASSES_MASK_DILATE", 11),
-    "glasses_device_overlap_skip": _float_env(
-        "PHOTO_PAD_GLASSES_DEVICE_OVERLAP_SKIP", 0.42
-    ),
-    "glasses_device_overlap_soft": _float_env(
-        "PHOTO_PAD_GLASSES_DEVICE_OVERLAP_SOFT", 0.14
-    ),
+    "glasses_device_overlap_skip": _float_env("PHOTO_PAD_GLASSES_DEVICE_OVERLAP_SKIP", 0.42),
+    "glasses_device_overlap_soft": _float_env("PHOTO_PAD_GLASSES_DEVICE_OVERLAP_SOFT", 0.14),
     # Face-centric gating (PAD v4)
     "device_face_expand_scale": _float_env("PHOTO_PAD_DEVICE_FACE_EXPAND_SCALE", 1.38),
     "device_face_iou_min": _float_env("PHOTO_PAD_DEVICE_FACE_IOU_MIN", 0.04),
-    "device_face_cover_ratio_min": _float_env(
-        "PHOTO_PAD_DEVICE_FACE_COVER_RATIO_MIN", 0.14
-    ),
+    "device_face_cover_ratio_min": _float_env("PHOTO_PAD_DEVICE_FACE_COVER_RATIO_MIN", 0.14),
     "frame_face_expand_scale": _float_env("PHOTO_PAD_FRAME_FACE_EXPAND_SCALE", 1.42),
     "frame_face_iou_min": _float_env("PHOTO_PAD_FRAME_FACE_IOU_MIN", 0.08),
-    "frame_face_max_quad_area_ratio": _float_env(
-        "PHOTO_PAD_FRAME_FACE_MAX_QUAD_AREA_RATIO", 0.48
-    ),
+    "frame_face_max_quad_area_ratio": _float_env("PHOTO_PAD_FRAME_FACE_MAX_QUAD_AREA_RATIO", 0.48),
     "frame_face_min_cover_when_large_quad": _float_env(
         "PHOTO_PAD_FRAME_FACE_MIN_COVER_WHEN_LARGE_QUAD", 0.40
     ),
@@ -1018,12 +943,8 @@ PHOTO_PAD_NUMBERS = {
     "recapture_fft_ring_outer": _int_env("PHOTO_PAD_RECAPTURE_FFT_RING_OUTER", 42),
     "recapture_fft_baseline": _float_env("PHOTO_PAD_RECAPTURE_FFT_BASELINE", 0.42),
     "recapture_fft_scale": _float_env("PHOTO_PAD_RECAPTURE_FFT_SCALE", 0.24),
-    "recapture_sobel_aniso_min": _float_env(
-        "PHOTO_PAD_RECAPTURE_SOBEL_ANISO_MIN", 2.05
-    ),
-    "recapture_sobel_aniso_scale": _float_env(
-        "PHOTO_PAD_RECAPTURE_SOBEL_ANISO_SCALE", 0.35
-    ),
+    "recapture_sobel_aniso_min": _float_env("PHOTO_PAD_RECAPTURE_SOBEL_ANISO_MIN", 2.05),
+    "recapture_sobel_aniso_scale": _float_env("PHOTO_PAD_RECAPTURE_SOBEL_ANISO_SCALE", 0.35),
     "recapture_mid": _float_env("PHOTO_PAD_RECAPTURE_MID", 0.22),
     "recapture_strong": _float_env("PHOTO_PAD_RECAPTURE_STRONG", 0.38),
     "recapture_isolated_extreme_single_channel_min": _float_env(
@@ -1036,28 +957,18 @@ PHOTO_PAD_NUMBERS = {
         "PHOTO_PAD_RECAPTURE_ISOLATED_MOIRE_MAX_QUALITY_PENALTY", 0.10
     ),
     "risk_weight_recapture": _float_env("PHOTO_PAD_RISK_WEIGHT_RECAPTURE", 0.20),
-    "decision_recapture_review_min": _float_env(
-        "PHOTO_PAD_DECISION_RECAPTURE_REVIEW_MIN", 0.18
-    ),
+    "decision_recapture_review_min": _float_env("PHOTO_PAD_DECISION_RECAPTURE_REVIEW_MIN", 0.18),
     "decision_recapture_corroboration_min": _float_env(
         "PHOTO_PAD_DECISION_RECAPTURE_CORROBORATION_MIN", 0.26
     ),
-    "recapture_inner_face_scale": _float_env(
-        "PHOTO_PAD_RECAPTURE_INNER_FACE_SCALE", 0.62
-    ),
-    "recapture_min_laplacian_var": _float_env(
-        "PHOTO_PAD_RECAPTURE_MIN_LAPLACIAN_VAR", 18.0
-    ),
-    "recapture_blur_dampen_factor": _float_env(
-        "PHOTO_PAD_RECAPTURE_BLUR_DAMPEN_FACTOR", 0.38
-    ),
+    "recapture_inner_face_scale": _float_env("PHOTO_PAD_RECAPTURE_INNER_FACE_SCALE", 0.62),
+    "recapture_min_laplacian_var": _float_env("PHOTO_PAD_RECAPTURE_MIN_LAPLACIAN_VAR", 18.0),
+    "recapture_blur_dampen_factor": _float_env("PHOTO_PAD_RECAPTURE_BLUR_DAMPEN_FACTOR", 0.38),
     # --- Normal-live shield (blocks weak-geometry → review when other cues are calm) ---
     "shield_max_device_face": _float_env("PHOTO_PAD_SHIELD_MAX_DEVICE_FACE", 0.175),
     "shield_max_frame_face": _float_env("PHOTO_PAD_SHIELD_MAX_FRAME_FACE", 0.205),
     "shield_max_recapture": _float_env("PHOTO_PAD_SHIELD_MAX_RECAPTURE", 0.18),
-    "shield_max_quality_penalty": _float_env(
-        "PHOTO_PAD_SHIELD_MAX_QUALITY_PENALTY", 0.38
-    ),
+    "shield_max_quality_penalty": _float_env("PHOTO_PAD_SHIELD_MAX_QUALITY_PENALTY", 0.38),
     "no_fake_susp_min_face_area_ratio": _float_env(
         "PHOTO_PAD_NO_FAKE_SUSP_MIN_FACE_AREA_RATIO", 0.034
     ),
@@ -1071,32 +982,18 @@ PHOTO_PAD_NUMBERS = {
     "presentation_texture_max_quality_penalty": _float_env(
         "PHOTO_PAD_PRESENTATION_TEXTURE_MAX_QUALITY_PENALTY", 0.30
     ),
-    "guide_face_detector_conf_min": _float_env(
-        "PHOTO_PAD_GUIDE_FACE_DETECTOR_CONF_MIN", 0.50
-    ),
-    "minifasnet_onnx_crop_scale": _float_env(
-        "PHOTO_PAD_MINIFASNET_ONNX_CROP_SCALE", 2.70
-    ),
+    "guide_face_detector_conf_min": _float_env("PHOTO_PAD_GUIDE_FACE_DETECTOR_CONF_MIN", 0.50),
+    "minifasnet_onnx_crop_scale": _float_env("PHOTO_PAD_MINIFASNET_ONNX_CROP_SCALE", 2.70),
     "minifasnet_onnx_mid": _float_env("PHOTO_PAD_MINIFASNET_ONNX_MID", 0.50),
     "minifasnet_onnx_strong": _float_env("PHOTO_PAD_MINIFASNET_ONNX_STRONG", 0.70),
     "spoof_model_family_mid": _float_env("PHOTO_PAD_SPOOF_MODEL_FAMILY_MID", 0.45),
-    "spoof_model_family_strong": _float_env(
-        "PHOTO_PAD_SPOOF_MODEL_FAMILY_STRONG", 0.70
-    ),
-    "spoof_model_disagreement_min": _float_env(
-        "PHOTO_PAD_SPOOF_MODEL_DISAGREEMENT_MIN", 0.45
-    ),
+    "spoof_model_family_strong": _float_env("PHOTO_PAD_SPOOF_MODEL_FAMILY_STRONG", 0.70),
+    "spoof_model_disagreement_min": _float_env("PHOTO_PAD_SPOOF_MODEL_DISAGREEMENT_MIN", 0.45),
     "ensemble_review_vote_min": _float_env("PHOTO_PAD_ENSEMBLE_REVIEW_VOTE_MIN", 0.35),
     "ensemble_strong_vote_min": _float_env("PHOTO_PAD_ENSEMBLE_STRONG_VOTE_MIN", 0.58),
-    "ensemble_suspicious_score_min": _float_env(
-        "PHOTO_PAD_ENSEMBLE_SUSPICIOUS_SCORE_MIN", 0.52
-    ),
-    "ensemble_review_score_min": _float_env(
-        "PHOTO_PAD_ENSEMBLE_REVIEW_SCORE_MIN", 0.30
-    ),
-    "ensemble_suspicious_family_min": _int_env(
-        "PHOTO_PAD_ENSEMBLE_SUSPICIOUS_FAMILY_MIN", 2
-    ),
+    "ensemble_suspicious_score_min": _float_env("PHOTO_PAD_ENSEMBLE_SUSPICIOUS_SCORE_MIN", 0.52),
+    "ensemble_review_score_min": _float_env("PHOTO_PAD_ENSEMBLE_REVIEW_SCORE_MIN", 0.30),
+    "ensemble_suspicious_family_min": _int_env("PHOTO_PAD_ENSEMBLE_SUSPICIOUS_FAMILY_MIN", 2),
 }
 
 CELERY_TASK_QUEUES = (Queue("control_app_queue", routing_key="control_app_queue"),)
@@ -1108,18 +1005,17 @@ CELERY_TASK_ROUTES = {
     },
 }
 
-BACKUP_DB_WEEKLY_DAY_OF_WEEK = (
-    os.getenv("BACKUP_DB_WEEKLY_DAY_OF_WEEK", "1").strip() or "1"
-)
+BACKUP_DB_WEEKLY_DAY_OF_WEEK = os.getenv("BACKUP_DB_WEEKLY_DAY_OF_WEEK", "1").strip() or "1"
 BACKUP_DB_WEEKLY_HOUR = min(max(0, _int_env("BACKUP_DB_WEEKLY_HOUR", 3)), 23)
 BACKUP_DB_WEEKLY_MINUTE = min(max(0, _int_env("BACKUP_DB_WEEKLY_MINUTE", 30)), 59)
 BACKUP_DB_WEEKLY_KEEP_DAYS = max(1, _int_env("BACKUP_DB_WEEKLY_KEEP_DAYS", 30))
-BACKUP_DB_WEEKLY_OUTPUT_DIR = (
-    os.getenv("BACKUP_DB_WEEKLY_OUTPUT_DIR", "DB").strip() or "DB"
+BACKUP_DB_WEEKLY_OUTPUT_DIR = os.getenv("BACKUP_DB_WEEKLY_OUTPUT_DIR", "DB").strip() or "DB"
+BACKUP_DB_WEEKLY_COMPRESS = os.getenv("BACKUP_DB_WEEKLY_COMPRESS", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
 )
-BACKUP_DB_WEEKLY_COMPRESS = os.getenv(
-    "BACKUP_DB_WEEKLY_COMPRESS", "1"
-).strip().lower() in ("1", "true", "yes", "on")
 BACKUP_DB_WEEKLY_FORMAT = os.getenv("BACKUP_DB_WEEKLY_FORMAT", "both").strip().lower()
 if BACKUP_DB_WEEKLY_FORMAT not in {"json", "sql", "both"}:
     BACKUP_DB_WEEKLY_FORMAT = "both"
