@@ -8,7 +8,6 @@ import React, {
 } from "react";
 import { motion } from "framer-motion";
 import { useParams } from "react-router-dom";
-import { useNavigate } from "../../RouterUtils";
 import axiosInstance from "../../api";
 import { apiUrl } from "../../../apiConfig";
 import { installFaceLabAxiosLogging } from "../../faceLab/faceLabAxiosLogging";
@@ -47,7 +46,6 @@ const containerVariants = {
 
 const StaffDetail: React.FC = () => {
   const { pin } = useParams<{ pin: string }>();
-  const navigate = useNavigate();
   const skipPageMotion = useMemo(() => consumeSkipPageMotion(), []);
   const today = useMemo(() => new Date().toISOString().split("T")[0], []);
 
@@ -222,15 +220,21 @@ const StaffDetail: React.FC = () => {
   const breadcrumbs = useMemo((): BreadcrumbItem[] => {
     const items: BreadcrumbItem[] = [];
 
-    if (staffData?.department_id) {
-      items.push({
-        label: "Отделы",
-        onClick: () => navigate("/"),
+    const path = staffData?.breadcrumb_path ?? [];
+    if (path.length > 0) {
+      path.forEach((item, idx) => {
+        const isOwnDepartment = idx === path.length - 1;
+        items.push({
+          label: formatDepartmentName(item.name),
+          path: isOwnDepartment
+            ? `/childDepartment/${item.id}?direct=1`
+            : `/department/${item.id}`,
+        });
       });
-
+    } else if (staffData?.department_id) {
       items.push({
         label: formatDepartmentName(staffData.department || ""),
-        onClick: () => navigate(`/childDepartment/${staffData.department_id}`),
+        path: `/childDepartment/${staffData.department_id}?direct=1`,
       });
     }
 
@@ -241,7 +245,7 @@ const StaffDetail: React.FC = () => {
     }
 
     return items;
-  }, [staffData, navigate]);
+  }, [staffData]);
 
   const uploadAvatarFile = useCallback(
     async (file: File) => {

@@ -96,6 +96,7 @@ export interface StaffData {
   avatar: string;
   department: string;
   department_id: number;
+  breadcrumb_path?: IBreadcrumbPathItem[];
   attendance: Record<string, AttendanceData>;
   lesson_attendance_audit?: Record<string, LessonAttendanceDayAudit>;
   percent_for_period: number;

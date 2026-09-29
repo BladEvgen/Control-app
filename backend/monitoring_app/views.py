@@ -5666,6 +5666,9 @@ def get_staff_detail(staff, start_date, end_date):
             "avatar": (staff.avatar.url if staff.avatar else "/media/images/no-avatar.png"),
             "department": staff.department.name if staff.department else "N/A",
             "department_id": staff.department.id if staff.department else "N/A",
+            "breadcrumb_path": (
+                _get_breadcrumb_path(staff.department.id) if staff.department else []
+            ),
             "attendance": {},
             "lesson_attendance_audit": lesson_attendance_audit,
             "percent_for_period": 0.0,
@@ -5771,6 +5774,7 @@ def get_staff_detail(staff, start_date, end_date):
         "avatar": avatar_url,
         "department": staff.department.name if staff.department else "N/A",
         "department_id": staff.department.id if staff.department else "N/A",
+        "breadcrumb_path": (_get_breadcrumb_path(staff.department.id) if staff.department else []),
         "attendance": attendance_data,
         "lesson_attendance_audit": lesson_attendance_audit,
         "percent_for_period": round(percent_for_period, 2),
