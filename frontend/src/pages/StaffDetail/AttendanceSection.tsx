@@ -61,7 +61,7 @@ const AttendanceSection: React.FC<AttendanceSectionProps> = ({
             idPrefix="staff-attendance"
           />
         </div>
-        <div className="w-full shrink-0 border-t border-gray-200/80 pt-4 dark:border-gray-700/80 max-lg:max-w-[17.5rem] lg:w-auto lg:max-w-xs lg:border-t-0 lg:pt-0 lg:text-right">
+        <div className="w-full shrink-0 border-t border-gray-200/80 pt-4 dark:border-gray-700/80 lg:w-auto lg:max-w-xs lg:border-t-0 lg:pt-0 lg:text-right">
           <span className="inline-flex items-center text-sm text-gray-600 dark:text-gray-400 sm:text-base">
             <FiInfo className="mr-2 shrink-0" aria-hidden />
             <span className="break-words">

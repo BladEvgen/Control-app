@@ -216,10 +216,8 @@ input[type="date"]::-webkit-calendar-picker-indicator {
         @apply overflow-x-auto overflow-y-hidden rounded-xl border border-gray-200 dark:border-gray-700;
     }
 
-    /* Date fields: fixed width on desktop, capped width on tablet (no stretch / overflow) */
     .date-field-slot {
         width: 100%;
-        max-width: 17.5rem;
     }
 
     @media (min-width: 1024px) {
@@ -232,7 +230,6 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 
     .date-filter-action {
         width: 100%;
-        max-width: 17.5rem;
     }
 
     @media (min-width: 768px) {
