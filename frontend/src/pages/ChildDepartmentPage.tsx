@@ -23,6 +23,8 @@ import {
   FaChartBar,
   FaChevronDown,
   FaChevronUp,
+  FaChevronLeft,
+  FaChevronRight,
 } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 import LoaderComponent from "../components/LoaderComponent";
@@ -32,6 +34,8 @@ import SearchInput from "../components/SearchInput";
 import { runAttendanceExcelDownload } from "../utils/attendanceExcelDownloadHub";
 
 const LazyDashboard = lazy(() => import("./Dashboard"));
+
+const STAFF_PAGE_SIZE = 50;
 
 class BaseAction<T> {
   static SET_LOADING = "SET_LOADING";
@@ -55,6 +59,7 @@ const ChildDepartmentPage = () => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const [staffPage, setStaffPage] = useState<number>(0);
 
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
@@ -201,14 +206,23 @@ const ChildDepartmentPage = () => {
 
   const isDownloadDisabled = !startDate || !endDate;
 
-  const filteredStaff = useMemo(
-    () =>
-      data?.staff_data
-        ? Object.entries(data.staff_data).filter(([, staff]) =>
-            staff.FIO.toLowerCase().includes(searchQuery.toLowerCase()),
-          )
-        : [],
-    [data?.staff_data, searchQuery],
+  const filteredStaff = useMemo(() => {
+    if (!data?.staff_data) return [];
+    const query = searchQuery.toLowerCase();
+    return Object.entries(data.staff_data).filter(([, staff]) =>
+      (staff.FIO ?? "").toLowerCase().includes(query),
+    );
+  }, [data?.staff_data, searchQuery]);
+
+  const staffPageCount = Math.max(
+    1,
+    Math.ceil(filteredStaff.length / STAFF_PAGE_SIZE),
+  );
+  const currentStaffPage = Math.min(staffPage, staffPageCount - 1);
+  const pageStart = currentStaffPage * STAFF_PAGE_SIZE;
+  const visibleStaff = useMemo(
+    () => filteredStaff.slice(pageStart, pageStart + STAFF_PAGE_SIZE),
+    [filteredStaff, pageStart],
   );
 
   const skipPageMotion = useMemo(() => consumeSkipPageMotion(), []);
@@ -351,7 +365,10 @@ const ChildDepartmentPage = () => {
                   <SearchInput
                     value={searchQuery}
                     message="Поиск по ФИО"
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value);
+                      setStaffPage(0);
+                    }}
                   />
                 </div>
               </div>
@@ -372,7 +389,7 @@ const ChildDepartmentPage = () => {
                   Сотрудники не найдены
                 </motion.div>
               ) : (
-                filteredStaff.map(([pin, staff]) => (
+                visibleStaff.map(([pin, staff]) => (
                   <motion.div
                     key={pin}
                     variants={itemVariants}
@@ -482,7 +499,7 @@ const ChildDepartmentPage = () => {
                         </td>
                       </tr>
                     ) : (
-                      filteredStaff.map(([pin, staff]) => (
+                      visibleStaff.map(([pin, staff]) => (
                         <tr
                           key={pin}
                           className="cursor-pointer transition-colors duration-200 hover:bg-primary-50/80 dark:hover:bg-gray-900/85"
@@ -534,6 +551,39 @@ const ChildDepartmentPage = () => {
                 </table>
               </div>
             </motion.div>
+
+            {staffPageCount > 1 && (
+              <nav
+                className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3"
+                aria-label="Страницы списка сотрудников"
+              >
+                <span className="text-sm text-gray-600 dark:text-gray-400 tabular-nums">
+                  {pageStart + 1}–{pageStart + visibleStaff.length} из{" "}
+                  {filteredStaff.length}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setStaffPage(currentStaffPage - 1)}
+                    disabled={currentStaffPage === 0}
+                    className="inline-flex items-center gap-1 px-3 py-2 rounded-md text-sm font-medium text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900 disabled:cursor-not-allowed disabled:text-gray-400 dark:disabled:text-gray-600 disabled:hover:bg-transparent"
+                  >
+                    <FaChevronLeft size={14} /> Назад
+                  </button>
+                  <span className="text-sm text-gray-600 dark:text-gray-400 tabular-nums">
+                    {currentStaffPage + 1} / {staffPageCount}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setStaffPage(currentStaffPage + 1)}
+                    disabled={currentStaffPage >= staffPageCount - 1}
+                    className="inline-flex items-center gap-1 px-3 py-2 rounded-md text-sm font-medium text-gray-800 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-900 disabled:cursor-not-allowed disabled:text-gray-400 dark:disabled:text-gray-600 disabled:hover:bg-transparent"
+                  >
+                    Вперёд <FaChevronRight size={14} />
+                  </button>
+                </div>
+              </nav>
+            )}
           </>
         )}
       </motion.div>
