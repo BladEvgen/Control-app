@@ -25,13 +25,11 @@ max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
 "backend/django_settings/asgi.py" = ["E402"]
+"backend/django_settings/settings.py" = ["E402"]
+"backend/graph_models.py" = ["E402"]
 "backend/monitoring_app/tests*.py" = ["E501"]
 "backend/monitoring_app/swagger_views.py" = ["W293"]
 
-# Секции [tool.ruff.format] здесь намеренно нет: форматирование в проекте
-# делают isort + black (см. ниже и flake_check.sh --fix). ruff format на
-# части файлов расходится с black в переносах импортов, поэтому второй
-# форматтер не подключаем — иначе они переписывают код друг за другом.
 
 [tool.black]
 line-length = 100
@@ -116,4 +114,85 @@ extend_skip_glob = [
     "*/node_modules/*",
     "*/staticroot/*",
     "*/graphify-out/*",
+]
+
+[tool.pylint.main]
+load-plugins = ["pylint_django"]
+django-settings-module = "django_settings.settings"
+init-hook = "import sys, os; sys.path.insert(0, os.path.join(os.getcwd(), 'backend') if os.path.isdir('backend') else os.getcwd())"
+extension-pkg-allow-list = ["cv2"]
+ignore = ["migrations"]
+ignore-paths = [".*[\\\\/]migrations[\\\\/].*", ".*[\\\\/]venv[\\\\/].*", ".*[\\\\/]node_modules[\\\\/].*"]
+ignore-patterns = ["(^|.*/)(migrations|venv|\\.venv|node_modules|build|dist|graphify-out)(/|$)"]
+py-version = "3.11"
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.design]
+max-branches = 20
+max-statements = 90
+max-locals = 25
+
+[tool.pylint.typecheck]
+generated-members = ["objects", "_default_manager", "DoesNotExist", "MultipleObjectsReturned", "_meta", "cv2.*"]
+ignored-modules = ["django", "rest_framework", "channels"]
+
+[tool.pylint.similarities]
+min-similarity-lines = 999
+ignore-comments = true
+ignore-docstrings = true
+ignore-imports = true
+
+[tool.pylint.reports]
+score = false
+reports = false
+
+[tool.pylint."messages control"]
+disable = [
+    "import-error",
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "ungrouped-imports",
+    "logging-fstring-interpolation",
+    "trailing-whitespace",
+    "import-outside-toplevel",
+    "too-many-branches",
+    "too-many-statements",
+    "too-many-return-statements",
+    "too-many-nested-blocks",
+    "too-many-locals",
+    "inconsistent-return-statements",
+    "consider-using-in",
+    "protected-access",
+    "abstract-method",
+    "invalid-name",
+    "line-too-long",
+    "too-many-lines",
+    "wrong-import-position",
+    "superfluous-parens",
+    "use-maxsplit-arg",
+    "consider-using-from-import",
+    "too-many-instance-attributes",
+    "too-few-public-methods",
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "redefined-argument-from-local",
+    "no-else-return",
+    "consider-merging-isinstance",
+    "super-with-arguments",
+    "consider-using-min-builtin",
+    "consider-using-with",
+    "use-dict-literal",
+    "invalid-overridden-method",
+    "arguments-renamed",
+    "reimported",
+    "unused-variable",
+    "unused-argument",
+    "redefined-outer-name",
+    "cell-var-from-loop",
+    "raise-missing-from",
+    "broad-exception-caught",
+    "useless-return",
 ]

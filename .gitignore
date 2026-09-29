@@ -325,3 +325,4 @@ scripts/git-commit-grouped-tracked.sh
 **/.memsearch/**
 **/.claude/**
 **/pad_ml/**
+uv.lock
