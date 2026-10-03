@@ -4238,23 +4238,24 @@ class ClassLocationAdmin(ModelAdmin):
             )
         ).only("id", "latitude", "longitude")
 
+        searcher = monitoring_utils.LocationSearcher(
+            [{**item, "name": str(item["id"])} for item in location_meta]
+        )
+        max_radius = max(item["radius_m"] for item in location_meta)
         counts = {location.pk: 0 for location in locations}
         for lesson in candidate_lessons.iterator(chunk_size=1000):
-            nearest_location_id = None
-            nearest_distance = float("inf")
-            for item in location_meta:
+            for distance_m, item in searcher.find_locations_within_radius(
+                lesson.latitude,
+                lesson.longitude,
+                max_radius,
+            ):
                 if abs(lesson.latitude - item["latitude"]) > item["lat_margin"]:
                     continue
                 if abs(lesson.longitude - item["longitude"]) > item["lon_margin"]:
                     continue
-                distance_m = self._distance_to_location_m(item, lesson)
-                if distance_m > item["radius_m"]:
-                    continue
-                if distance_m < nearest_distance:
-                    nearest_distance = distance_m
-                    nearest_location_id = item["id"]
-            if nearest_location_id is not None:
-                counts[nearest_location_id] += 1
+                if distance_m <= item["radius_m"]:
+                    counts[item["id"]] += 1
+                    break
 
         cache.set(cache_key, counts, timeout=self.ATTENDANCE_STATS_CACHE_TTL)
         return counts

@@ -2,7 +2,6 @@ import datetime
 import hashlib
 import json
 import logging
-import math
 import os
 import re
 from collections import Counter, defaultdict
@@ -21,7 +20,6 @@ from typing import (
     cast,
 )
 
-import numpy as np
 import pytz
 from cryptography.fernet import Fernet
 from django.conf import settings
@@ -37,6 +35,18 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from monitoring_app import models
 from monitoring_app.cache_conf import get_cache
+from monitoring_app.geo import R_EARTH_M as R_EARTH_M
+from monitoring_app.geo import LocationSearcher as LocationSearcher
+from monitoring_app.geo import calculate_distance_haversine as calculate_distance_haversine
+from monitoring_app.geo import (
+    cluster_geo_items,
+)
+from monitoring_app.geo import (
+    compute_class_location_acceptance_radii as compute_class_location_acceptance_radii,
+)
+from monitoring_app.geo import compute_neighbor_color_index as compute_neighbor_color_index
+from monitoring_app.geo import get_location_radius as get_location_radius
+from monitoring_app.geo import is_within_radius as is_within_radius
 
 DAYS = settings.DAYS
 
@@ -766,7 +776,10 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
     Returns:
         list: Список словарей с данными по локациям, готовых для отображения на карте.
     """
-    from sklearn.neighbors import KDTree
+    locations = list(locations)
+    first_location_by_address = {}
+    for loc in locations:
+        first_location_by_address.setdefault(clean_address(loc.address), loc)
 
     staff_by_address = defaultdict(int)
     lesson_attendance_by_address = defaultdict(int)
@@ -801,14 +814,7 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
                     address = resolve_area_address(area_name_in)
                     if address:
                         comparison_address = clean_address(address)
-                        matched_location = next(
-                            (
-                                loc
-                                for loc in locations
-                                if clean_address(loc.address) == comparison_address
-                            ),
-                            None,
-                        )
+                        matched_location = first_location_by_address.get(comparison_address)
                         if matched_location:
                             original_address = matched_location.address.strip()
                             staff_by_address[original_address] += attendance.get("count", 0)
@@ -849,75 +855,39 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
                 )
 
                 class_locations = list(
-                    models.ClassLocation.objects.only("id", "name", "latitude", "longitude")
+                    models.ClassLocation.objects.only(
+                        "id", "name", "address", "latitude", "longitude"
+                    )
                 )
                 if not class_locations:
                     logger.warning("Нет записей ClassLocation.")
                     return []
 
-                class_coords = [(loc.latitude, loc.longitude) for loc in class_locations]
-
-                kd_tree = KDTree(class_coords, metric="euclidean")
-                logger.info("KDTree успешно построен.")
-
-                nearest_addresses = []
+                payload = [
+                    {
+                        "name": loc.name,
+                        "address": loc.address,
+                        "latitude": loc.latitude,
+                        "longitude": loc.longitude,
+                    }
+                    for loc in class_locations
+                    if loc.latitude is not None and loc.longitude is not None
+                ]
+                searcher = LocationSearcher(payload)
+                coordinates = []
                 for lesson_id, lesson_lat, lesson_lon in lesson_attendances_list:
                     if lesson_lat is None or lesson_lon is None:
                         logger.warning(f"LessonAttendance {lesson_id} не имеет координат")
                         continue
-
-                    k_candidates = min(5, len(class_locations))
-                    _distances_degrees, candidate_indices = kd_tree.query(
-                        [[lesson_lat, lesson_lon]], k=k_candidates
+                    coordinates.append((float(lesson_lat), float(lesson_lon)))
+                nearest_addresses = [
+                    location["address"].strip()
+                    for location in searcher.find_nearest_locations_bulk(
+                        coordinates,
+                        radius=float("inf"),
                     )
-
-                    candidate_list = []
-                    if hasattr(candidate_indices, "flatten"):
-                        candidate_list = candidate_indices.flatten().tolist()
-                    elif hasattr(candidate_indices, "__len__") and len(candidate_indices) > 0:
-                        if (
-                            hasattr(candidate_indices[0], "__len__")
-                            and len(candidate_indices[0]) > 0
-                        ):
-                            candidate_list = [int(idx) for idx in candidate_indices[0]]
-                        else:
-                            candidate_list = [int(candidate_indices[0])]
-
-                    nearest_location = None
-                    min_distance = float("inf")
-                    for idx in candidate_list:
-                        if 0 <= idx < len(class_locations):
-                            candidate_loc = class_locations[idx]
-                            distance = calculate_distance_haversine(
-                                lesson_lat,
-                                lesson_lon,
-                                candidate_loc.latitude,
-                                candidate_loc.longitude,
-                            )
-                            if distance < min_distance:
-                                min_distance = distance
-                                nearest_location = candidate_loc
-
-                    if nearest_location is None:
-                        for loc in class_locations:
-                            distance = calculate_distance_haversine(
-                                lesson_lat,
-                                lesson_lon,
-                                loc.latitude,
-                                loc.longitude,
-                            )
-                            if distance < min_distance:
-                                min_distance = distance
-                                nearest_location = loc
-
-                    if nearest_location:
-                        nearest_addresses.append(nearest_location.address.strip())
-                    else:
-                        logger.warning(
-                            f"Не найдена ближайшая локация для LessonAttendance {lesson_id}"
-                        )
-
-                logger.info("KDTree запрос с точным расчетом завершен.")
+                    if location is not None
+                ]
 
                 address_counts = Counter(nearest_addresses)
                 lesson_attendance_by_address = defaultdict(int, address_counts)
@@ -990,185 +960,6 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
     return result_list
 
 
-class LocationSearcher:
-    """Класс для поиска ближайших локаций с использованием KDTree.
-
-    Использует KDTree для быстрого поиска кандидатов и формулу Haversine
-    для точного расчета расстояния.
-    """
-
-    def __init__(self, locations):
-        """Инициализирует LocationSearcher со списком локаций.
-
-        Args:
-            locations (list): Список словарей с ключами `latitude`, `longitude`, `name`.
-        """
-        from sklearn.neighbors import KDTree
-
-        self.locations = locations
-        self.location_coords = np.asarray(
-            [(float(loc["latitude"]), float(loc["longitude"])) for loc in locations],
-            dtype=float,
-        )
-        self.kd_tree = KDTree(self.location_coords, metric="euclidean")
-        self.names = [loc["name"] for loc in locations]
-
-    def _pick_nearest_candidate(
-        self,
-        lat: float,
-        lon: float,
-        candidate_indices,
-        *,
-        radius: float = 200,
-    ):
-        """Возвращает ближайшую локацию по индексам кандидатов.
-
-        Args:
-            lat: Широта искомой точки.
-            lon: Долгота искомой точки.
-            candidate_indices: Индексы кандидатов из KDTree.
-            radius: Радиус поиска в метрах.
-
-        Returns:
-            dict | None: Payload ближайшей локации.
-
-        Notes:
-            Complexity: O(k), где ``k`` — число кандидатов в радиусе KDTree.
-        """
-        nearest_candidate = None
-        min_distance = float("inf")
-
-        for idx in candidate_indices:
-            idx_int = int(idx)
-            if 0 <= idx_int < len(self.locations):
-                candidate = self.locations[idx_int]
-                distance = calculate_distance_haversine(
-                    lat,
-                    lon,
-                    float(candidate["latitude"]),
-                    float(candidate["longitude"]),
-                )
-                if distance < min_distance and distance <= radius:
-                    min_distance = distance
-                    nearest_candidate = candidate
-
-        return nearest_candidate
-
-    def _find_nearest_candidate(self, lat, lon, radius=200):
-        """Возвращает ближайшую локацию payload в заданном радиусе."""
-        if lat is None or lon is None:
-            return None
-        if not self.locations:
-            return None
-
-        meters_to_degrees = radius / 111000
-        candidate_indices = self.kd_tree.query_radius([[lat, lon]], r=meters_to_degrees)[0]
-
-        if len(candidate_indices) == 0:
-            return None
-
-        return self._pick_nearest_candidate(
-            float(lat),
-            float(lon),
-            candidate_indices,
-            radius=radius,
-        )
-
-    def find_nearest(self, lat, lon, radius=200):
-        """Находит ближайшую локацию в заданном радиусе с точным расчетом расстояния.
-
-        Использует KDTree для быстрого поиска кандидатов, затем пересчитывает
-        точное расстояние через формулу Haversine для выбора ближайшей локации.
-
-        Args:
-            lat (float): Широта искомой точки.
-            lon (float): Долгота искомой точки.
-            radius (float): Радиус поиска в метрах.
-
-        Returns:
-            str: Название ближайшей локации или "Unknown Area".
-        """
-        nearest_candidate = self._find_nearest_candidate(lat, lon, radius=radius)
-        if nearest_candidate is None:
-            return "Unknown Area"
-        return str(nearest_candidate.get("name") or "Unknown Area")
-
-    def find_nearest_location(self, lat, lon, radius=200):
-        """Возвращает payload ближайшей локации или None."""
-        return self._find_nearest_candidate(lat, lon, radius=radius)
-
-    def find_nearest_locations_bulk(
-        self,
-        coordinates: Sequence[tuple[float, float]],
-        *,
-        radius: float = 200,
-    ) -> list[dict[str, Any] | None]:
-        """Находит ближайшие локации сразу для набора координат.
-
-        Args:
-            coordinates: Список координат ``(lat, lon)``.
-            radius: Радиус поиска в метрах.
-
-        Returns:
-            Список payload-локаций в том же порядке, что и ``coordinates``.
-
-        Notes:
-            Complexity: O(n log L + e), где ``n`` — число точек,
-            ``L`` — число локаций, ``e`` — число candidate edges.
-        """
-        if not coordinates or not self.locations:
-            return []
-
-        meters_to_degrees = radius / 111000
-        coords_array = np.asarray(coordinates, dtype=float)
-        candidate_indices_list = self.kd_tree.query_radius(
-            coords_array,
-            r=meters_to_degrees,
-        )
-
-        return [
-            self._pick_nearest_candidate(
-                float(lat),
-                float(lon),
-                candidate_indices,
-                radius=radius,
-            )
-            for (lat, lon), candidate_indices in zip(
-                coordinates,
-                candidate_indices_list,
-            )
-        ]
-
-
-R_EARTH_M = 6_371_000
-
-
-def calculate_distance_haversine(lat1, lon1, lat2, lon2):
-    """Расстояние между двумя точками по формуле Haversine (большой круг на сфере).
-
-    Подходит для WGS84 (lat/lon) при d < 1 км. Точность для смартфона (5–15 м) достаточна.
-
-    Args:
-        lat1, lon1: широта и долгота первой точки, градусы.
-        lat2, lon2: широта и долгота второй точки, градусы.
-
-    Returns:
-        float: расстояние в метрах.
-    """
-    earth_radius_m = R_EARTH_M
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
-    a = (
-        math.sin(delta_phi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
-    )
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    distance = earth_radius_m * c
-    return distance
-
-
 def _convert_to_local_with_tz(
     dt: datetime.date | datetime.datetime | None,
     local_tz: datetime.tzinfo,
@@ -1193,125 +984,7 @@ def _convert_to_local_with_tz(
     return timezone.localtime(dt, local_tz)
 
 
-def compute_class_location_acceptance_radii(
-    locations,
-    r_same_point=60,
-    r_cluster=80,
-    r_standalone=65,
-    same_point_threshold=5,
-    cluster_threshold=30,
-):
-    """Приёмный радиус R_loc (м) для каждой локации. Логика:
-
-    1) Если у объекта задано acceptance_radius_m (БД) и > 0 — использовать его.
-    2) Иначе — по соседству (min_d до ближайшей другой локации, Haversine):
-       — min_d < same_point_threshold: одна точка, несколько организаций → r_same_point
-       — same_point_threshold ≤ min_d < cluster_threshold: кластер/двор → r_cluster
-       — min_d ≥ cluster_threshold: отдельно стоящая → r_standalone
-
-    Кэшируется в Redis. Классификация по соседям учитывает двор/несколько пинов.
-
-    Args:
-        locations: объекты с .id, .latitude, .longitude; опционально .acceptance_radius_m
-        r_same_point, r_cluster, r_standalone: радиусы в метрах
-        same_point_threshold, cluster_threshold: пороги до ближайшей локации (м)
-
-    Returns:
-        dict[int, int]: {location_id: R в метрах}
-    """
-    locs = [
-        o
-        for o in locations
-        if getattr(o, "latitude", None) is not None and getattr(o, "longitude", None) is not None
-    ]
-    out = {}
-    for loc in locs:
-        override = getattr(loc, "acceptance_radius_m", None)
-        if override is not None and override > 0:
-            out[loc.id] = int(override)
-            continue
-        min_d = float("inf")
-        for other in locs:
-            if getattr(other, "id", None) == getattr(loc, "id", None):
-                continue
-            d = calculate_distance_haversine(
-                loc.latitude, loc.longitude, other.latitude, other.longitude
-            )
-            if d < min_d:
-                min_d = d
-        if min_d < same_point_threshold:
-            radius_m = r_same_point
-        elif min_d < cluster_threshold:
-            radius_m = r_cluster
-        else:
-            radius_m = r_standalone
-        out[loc.id] = radius_m
-    return out
-
-
-def get_location_radius(loc, radii_dict=None):
-    """Радиус R (м) для локации: acceptance_radius_m или radii_dict или DEFAULT."""
-    override = getattr(loc, "acceptance_radius_m", None)
-    if override is not None and override > 0:
-        return int(override)
-    if radii_dict and getattr(loc, "id", None) in radii_dict:
-        return int(radii_dict[loc.id])
-    from monitoring_app.lesson_locations_conf import DEFAULT_ACCEPTANCE_RADIUS_M
-
-    return DEFAULT_ACCEPTANCE_RADIUS_M
-
-
-def compute_neighbor_color_index(locations, neighbor_threshold_m=30):
-    """Индексы цветов для различения соседних локаций на карте.
-
-    Сосед = расстояние < neighbor_threshold_m. В каждом кластере соседей
-    раздаёт 0,1,2,... чтобы отличать друг от друга. Одинокие — 0.
-
-    Returns:
-        dict[int, int]: {location_id: 0..4}
-    """
-    thr = neighbor_threshold_m
-    locs = [
-        o
-        for o in locations
-        if getattr(o, "latitude", None) is not None and getattr(o, "longitude", None) is not None
-    ]
-    neighbors = {o.id: [] for o in locs}
-    for i, a in enumerate(locs):
-        for b in locs[i + 1 :]:
-            d = calculate_distance_haversine(a.latitude, a.longitude, b.latitude, b.longitude)
-            if d < thr:
-                neighbors[a.id].append(b.id)
-                neighbors[b.id].append(a.id)
-    palette_size = 5
-    out = {}
-    for loc in locs:
-        used = {out[n] for n in neighbors[loc.id] if n in out}
-        c = 0
-        while c in used:
-            c += 1
-        out[loc.id] = c % palette_size
-    return out
-
-
-def is_within_radius(lat1, lon1, lat2, lon2, radius=200):
-    """Проверяет, находится ли точка в заданном радиусе от другой точки.
-
-    Args:
-        lat1 (float): Широта первой точки в градусах.
-        lon1 (float): Долгота первой точки в градусах.
-        lat2 (float): Широта второй точки в градусах.
-        lon2 (float): Долгота второй точки в градусах.
-        radius (float): Радиус в метрах. По умолчанию 200.
-
-    Returns:
-        bool: True если расстояние меньше или равно радиусу.
-    """
-    distance = calculate_distance_haversine(lat1, lon1, lat2, lon2)
-    return distance <= radius
-
-
-EXCEL_ATTENDANCE_CACHE_VERSION = "excel_alerts_v3"
+EXCEL_ATTENDANCE_CACHE_VERSION = "excel_alerts_v4"
 EXCEL_CLASS_LOCATION_RESOLVE_RADIUS_M = 200
 EXCEL_GPS_SPOOF_RADIUS_M = 2
 EXCEL_GPS_SPOOF_MIN_DAYS = 3
@@ -1411,122 +1084,29 @@ def _cluster_geo_items_for_excel(
     lat_key: str = "latitude",
     lon_key: str = "longitude",
 ) -> list[ExcelGeoCluster]:
-    """Cluster geo items by radius using BallTree and connected components.
+    """Cluster Excel geographic records through the shared spherical index.
 
     Args:
-        items: Sequence of mapping-like geo records.
-        radius_m: Clustering radius in meters.
-        lat_key: Key used to read latitude from each item.
-        lon_key: Key used to read longitude from each item.
+        items: Records containing geographic coordinates.
+        radius_m: Maximum distance for an edge between two records.
+        lat_key: Record key containing latitude.
+        lon_key: Record key containing longitude.
 
     Returns:
-        List of clusters with original items and centroid coordinates.
+        Connected components with their original records and center coordinates.
 
-    Notes:
-        Complexity: O(n^2) for very small buckets (``n <= 8``) to avoid tree
-        overhead; otherwise O(n log n + e), where ``e`` is the number of
-        candidate neighbor edges returned by BallTree within the radius.
+    Raises:
+        ValueError: If the shared index receives non-finite coordinates.
     """
-    from sklearn.neighbors import BallTree
-
-    if not items:
-        return []
-    if len(items) == 1:
-        item = items[0]
-        return [
-            {
-                "items": [item],
-                "center_lat": float(item[lat_key]),
-                "center_lon": float(item[lon_key]),
-            }
-        ]
-
-    coords_deg = np.array(
-        [[float(item[lat_key]), float(item[lon_key])] for item in items],
-        dtype=float,
+    return cast(
+        list[ExcelGeoCluster],
+        cluster_geo_items(
+            items,
+            radius_m=radius_m,
+            lat_key=lat_key,
+            lon_key=lon_key,
+        ),
     )
-    if len(items) <= 8:
-        clusters = []
-        visited = set()
-        for start_idx in range(len(items)):
-            if start_idx in visited:
-                continue
-            queue = [start_idx]
-            component_indices = []
-            while queue:
-                idx = queue.pop()
-                if idx in visited:
-                    continue
-                visited.add(idx)
-                component_indices.append(idx)
-                base_lat = coords_deg[idx][0]
-                base_lon = coords_deg[idx][1]
-                for other_idx in range(len(items)):
-                    if other_idx == idx or other_idx in visited:
-                        continue
-                    distance = calculate_distance_haversine(
-                        base_lat,
-                        base_lon,
-                        float(coords_deg[other_idx][0]),
-                        float(coords_deg[other_idx][1]),
-                    )
-                    if distance <= radius_m:
-                        queue.append(other_idx)
-
-            cluster_items = [items[idx] for idx in component_indices]
-            cluster_coords = coords_deg[component_indices]
-            clusters.append(
-                {
-                    "items": cluster_items,
-                    "center_lat": float(cluster_coords[:, 0].mean()),
-                    "center_lon": float(cluster_coords[:, 1].mean()),
-                }
-            )
-        return clusters
-
-    coords_rad = np.radians(coords_deg)
-    tree = BallTree(coords_rad, metric="haversine")
-    radius_rad = radius_m / R_EARTH_M
-    neighbor_indices = tree.query_radius(coords_rad, r=radius_rad)
-
-    clusters = []
-    visited = set()
-    for start_idx in range(len(items)):
-        if start_idx in visited:
-            continue
-        queue = [start_idx]
-        component_indices = []
-        while queue:
-            idx = queue.pop()
-            if idx in visited:
-                continue
-            visited.add(idx)
-            component_indices.append(idx)
-            base_lat = coords_deg[idx][0]
-            base_lon = coords_deg[idx][1]
-            for other_idx in neighbor_indices[idx]:
-                other_idx = int(other_idx)
-                if other_idx == idx or other_idx in visited:
-                    continue
-                distance = calculate_distance_haversine(
-                    base_lat,
-                    base_lon,
-                    float(coords_deg[other_idx][0]),
-                    float(coords_deg[other_idx][1]),
-                )
-                if distance <= radius_m:
-                    queue.append(other_idx)
-
-        cluster_items = [items[idx] for idx in component_indices]
-        cluster_coords = coords_deg[component_indices]
-        clusters.append(
-            {
-                "items": cluster_items,
-                "center_lat": float(cluster_coords[:, 0].mean()),
-                "center_lon": float(cluster_coords[:, 1].mean()),
-            }
-        )
-    return clusters
 
 
 def _pick_excel_dominant_cluster(
@@ -1548,8 +1128,8 @@ def _pick_excel_dominant_cluster(
         Most representative cluster or ``None`` when input is empty.
 
     Notes:
-        Complexity: O(n log n + e) for clustering plus O(c log c) for sorting
-        ``c`` produced clusters.
+        Complexity: typically O(n + u log u) for clustering, then O(n + c)
+        to select from ``c`` clusters. No cluster sorting is needed.
     """
     clusters = _cluster_geo_items_for_excel(
         items,
@@ -1559,14 +1139,14 @@ def _pick_excel_dominant_cluster(
     )
     if not clusters:
         return None
-    return sorted(
+    return min(
         clusters,
         key=lambda cluster: (
             -len(cluster["items"]),
             min(_excel_sort_token(item.get("sort_time")) for item in cluster["items"]),
             min(int(item.get("sort_id", 0)) for item in cluster["items"]),
         ),
-    )[0]
+    )
 
 
 def _build_excel_day_anchor(
@@ -1583,8 +1163,8 @@ def _build_excel_day_anchor(
         usable geo data.
 
     Notes:
-        Complexity: O(m log m + e), where ``m`` is the number of rows in the
-        day bucket.
+        Complexity: typically O(m + u log u), where ``m`` is the number of rows
+        and ``u`` the number of distinct coordinates in the day bucket.
     """
     if not day_records:
         return None
@@ -1714,7 +1294,7 @@ def _normalize_excel_lesson_rows(
         location metadata.
 
     Notes:
-        Complexity: O(n + u log L + e), where ``u`` is the number of unique
+        Complexity: typically O(n + u log L + t), where ``u`` is the number of unique
         rounded coordinate pairs and ``L`` is the number of class locations.
     """
     resolution_cache: ExcelResolutionCache = {}
@@ -1832,11 +1412,10 @@ def _detect_excel_gps_spoof_alerts(
         Set of alert keys ``(staff_id, iso_date)`` to color in Excel.
 
     Notes:
-        Complexity: O(r + sum(m_i log m_i + e_i) + sum(a_j log a_j + g_j)),
-        where ``r`` is the number of rows, ``m_i`` is the size of each
-        staff/location/day bucket, ``a_j`` is the number of day anchors in each
-        staff/location bucket, and ``e_i``/``g_j`` are the BallTree neighbor
-        edge counts for those buckets.
+        Complexity: typically O(r + sum(u_i log u_i) + sum(v_j log v_j)),
+        where ``r`` is the number of rows, ``u_i`` counts distinct coordinates
+        in each staff/location/day bucket and ``v_j`` counts distinct daily
+        anchor coordinates in each staff/location bucket.
     """
     if not normalized_lesson_rows:
         return set()
@@ -2180,7 +1759,9 @@ def _collect_attendance_data_impl(
         staff_id__in=staff_ids, start_date__lte=end_date, end_date__gte=start_date
     ).values("staff_id", "start_date", "end_date", "reason", "approved")
 
-    attendance_map = defaultdict(lambda: defaultdict(dict))
+    attendance_map: defaultdict[str, defaultdict[int, dict[str, Any]]] = defaultdict(
+        lambda: defaultdict(dict)
+    )
 
     for att in attendance_qs.iterator(chunk_size=2000):
         first_in = att.get("first_in")

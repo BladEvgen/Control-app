@@ -342,6 +342,7 @@ def _collect_daily_and_summary_rows(
         la_by_key[key].append(record)
 
     address_to_name, location_points = _build_location_maps()
+    location_searcher = utils.LocationSearcher(location_points)
 
     holidays = {
         holiday.date: holiday.is_working_day
@@ -370,6 +371,7 @@ def _collect_daily_and_summary_rows(
             la_records=la_records,
             address_to_name=address_to_name,
             location_points=location_points,
+            location_searcher=location_searcher,
         )
 
         dept_name = staff_info["department_name"]
@@ -497,6 +499,7 @@ def _choose_location(
     la_records: list[dict[str, Any]],
     address_to_name: dict[str, str],
     location_points: list[dict[str, Any]],
+    location_searcher: utils.LocationSearcher | None = None,
 ) -> tuple[str, str]:
     sa_address = _resolve_sa_address(sa_records)
     if sa_address:
@@ -506,6 +509,7 @@ def _choose_location(
     la_address = _resolve_la_address(
         record=earliest_la,
         location_points=location_points,
+        location_searcher=location_searcher,
     )
     if la_address:
         return (address_to_name.get(la_address) or la_address, la_address)
@@ -538,14 +542,18 @@ def _resolve_la_address(
     *,
     record: Optional[dict[str, Any]],
     location_points: list[dict[str, Any]],
+    location_searcher: utils.LocationSearcher | None = None,
 ) -> Optional[str]:
-    return _nearest_address_by_haversine(record=record, location_points=location_points)
+    return _nearest_address_by_haversine(
+        record=record, location_points=location_points, location_searcher=location_searcher
+    )
 
 
 def _nearest_address_by_haversine(
     *,
     record: Optional[dict[str, Any]],
     location_points: list[dict[str, Any]],
+    location_searcher: utils.LocationSearcher | None = None,
 ) -> Optional[str]:
     if record is None or not location_points:
         return None
@@ -555,20 +563,10 @@ def _nearest_address_by_haversine(
     if lat is None or lon is None:
         return None
 
-    nearest_address: Optional[str] = None
-    nearest_distance = float("inf")
-    for point in location_points:
-        distance_m = utils.calculate_distance_haversine(
-            lat,
-            lon,
-            point["latitude"],
-            point["longitude"],
-        )
-        if distance_m < nearest_distance:
-            nearest_distance = distance_m
-            nearest_address = point["address"]
-
-    return nearest_address
+    if location_searcher is None:
+        location_searcher = utils.LocationSearcher(location_points)
+    nearest = location_searcher.find_nearest_location(lat, lon, radius=float("inf"))
+    return nearest["address"] if nearest else None
 
 
 def _build_excel_file(

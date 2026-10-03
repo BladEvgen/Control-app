@@ -74,6 +74,7 @@ from monitoring_app.lesson_locations_conf import (
     ACCEPTANCE_R_STANDALONE,
     CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
     CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_TTL,
+    CLASS_LOCATION_CACHE_VERSION_KEY,
     CLASS_LOCATION_LIST_CACHE_KEY,
     CLASS_LOCATION_LIST_CACHE_TTL,
     CLUSTER_THRESHOLD_M,
@@ -320,7 +321,7 @@ DEPARTMENT_CONFIRMATION_EPOCH_TTL = DEPARTMENT_CONFIRMATION_CACHE_TTL + 60 * 60
 STAFF_PINS_HEADER_NAME = "X-Staff-Pins"
 LESSON_REPORT_CACHE_VERSION = models.LessonAttendance.REPORT_FILTER_CACHE_VERSION
 SUSPICIOUS_LOCATION_PATTERNS_EPOCH_CACHE_KEY = "suspicious_location_patterns_epoch"
-SUSPICIOUS_LOCATION_PATTERNS_CACHE_VERSION = "v9"
+SUSPICIOUS_LOCATION_PATTERNS_CACHE_VERSION = "v10"
 SUSPICIOUS_LOCATION_PATTERNS_CACHE_TTL = 60 * 60
 # Кластер GPS-записей за день у одного человека в один дневной якорь.
 SUSPICIOUS_LOCATION_PERSON_DAY_RADIUS_M = 10
@@ -529,34 +530,46 @@ def is_main_location_confirmable(
 
 CLASS_LOCATION_CACHE = {
     "expires_at": None,
-    "kd_tree": None,
-    "class_names": [],
     "searcher_payload": [],
     "searcher": None,
 }
 
 
 def get_class_location_cache():
-    """
-    Кэш локаций: KDTree, LocationSearcher, location_acceptance_radius_m.
-    R_loc (60–80 м по умолчанию или acceptance_radius_m из БД) — в Redis и in-memory;
-    Celery Beat / warmup_class_location_buffers обновляют.
+    """Return the cached spherical index and acceptance radii.
+
+    Returns:
+        A cache mapping containing location payloads, the spherical searcher,
+        per-location acceptance radii, and the maximum acceptance radius.
+
+    Raises:
+        Exception: Re-raises failures while loading locations or building the
+            in-memory index after clearing its expiration marker.
+
+    Note:
+        Redis stores the shared version and radii, while each worker retains
+        its own indexed payload until the TTL or version changes.
     """
     now = timezone.now()
+    version = Cache.get(CLASS_LOCATION_CACHE_VERSION_KEY)
     cache_expired = (
-        CLASS_LOCATION_CACHE["expires_at"] is None or CLASS_LOCATION_CACHE["expires_at"] <= now
+        CLASS_LOCATION_CACHE["expires_at"] is None
+        or CLASS_LOCATION_CACHE["expires_at"] <= now
+        or CLASS_LOCATION_CACHE.get("version") != version
     )
 
     if cache_expired:
         try:
             locations = list(
                 models.ClassLocation.objects.only(
-                    "id", "name", "latitude", "longitude", "acceptance_radius_m"
+                    "id", "name", "address", "latitude", "longitude", "acceptance_radius_m"
                 )
             )
             payload = [
                 {
+                    "id": loc.id,
                     "name": loc.name,
+                    "location": loc,
                     "latitude": loc.latitude,
                     "longitude": loc.longitude,
                 }
@@ -564,26 +577,7 @@ def get_class_location_cache():
                 if loc.latitude is not None and loc.longitude is not None
             ]
 
-            kd_tree = None
-            class_names = []
-            if payload:
-                try:
-                    from sklearn.neighbors import KDTree
-
-                    coords = [(item["latitude"], item["longitude"]) for item in payload]
-                    kd_tree = KDTree(coords, metric="euclidean")
-                    class_names = [item["name"] for item in payload]
-                except Exception as exc:
-                    logger.warning(f"KDTree initialization failed: {exc}")
-                    kd_tree = None
-                    class_names = []
-
-            searcher = None
-            if payload:
-                try:
-                    searcher = utils.LocationSearcher(payload)
-                except Exception as exc:
-                    logger.warning(f"LocationSearcher initialization failed: {exc}")
+            searcher = utils.LocationSearcher(payload)
 
             locs_with_coords = [
                 loc for loc in locations if loc.latitude is not None and loc.longitude is not None
@@ -607,11 +601,19 @@ def get_class_location_cache():
             CLASS_LOCATION_CACHE.update(
                 {
                     "expires_at": now + CLASS_LOCATION_CACHE_TTL,
-                    "kd_tree": kd_tree,
-                    "class_names": class_names,
+                    "version": version,
                     "searcher_payload": payload,
                     "searcher": searcher,
                     "location_acceptance_radius_m": location_acceptance_radius_m,
+                    "max_acceptance_radius_m": max(
+                        (
+                            location_acceptance_radius_m.get(
+                                item["id"], DEFAULT_ACCEPTANCE_RADIUS_M
+                            )
+                            for item in payload
+                        ),
+                        default=DEFAULT_ACCEPTANCE_RADIUS_M,
+                    ),
                 }
             )
         except Exception as exc:
@@ -728,37 +730,16 @@ def _cluster_geo_items(
     if not items:
         return []
 
-    parents = list(range(len(items)))
-
-    def find(index: int) -> int:
-        while parents[index] != index:
-            parents[index] = parents[parents[index]]
-            index = parents[index]
-        return index
-
-    def union(left: int, right: int) -> None:
-        left_root = find(left)
-        right_root = find(right)
-        if left_root != right_root:
-            parents[right_root] = left_root
-
-    for left, left_item in enumerate(items):
-        for right, right_item in enumerate(items[left + 1 :], start=left + 1):
-            distance_m = utils.calculate_distance_haversine(
-                float(left_item[lat_key]),
-                float(left_item[lon_key]),
-                float(right_item[lat_key]),
-                float(right_item[lon_key]),
-            )
-            if distance_m <= radius_m:
-                union(left, right)
-
-    groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for index, item in enumerate(items):
-        groups[find(index)].append(item)
+    groups = utils.cluster_geo_items(
+        items,
+        radius_m=radius_m,
+        lat_key=lat_key,
+        lon_key=lon_key,
+    )
 
     clusters: list[dict[str, Any]] = []
-    for group_items in groups.values():
+    for group in groups:
+        group_items = group["items"]
         group_items.sort(
             key=lambda item: (
                 _sort_datetime_value(item.get(sort_time_key)),
@@ -793,21 +774,31 @@ def _get_nearest_class_location_context(
     longitude: float,
     class_locations: list[models.ClassLocation],
     location_radii: dict[Any, Any],
+    location_searcher: utils.LocationSearcher | None = None,
 ) -> dict[str, Any]:
     nearest_location = None
     nearest_distance = float("inf")
-    for location in class_locations:
-        loc_lat = cast(float, location.latitude)
-        loc_lon = cast(float, location.longitude)
-        distance_m = utils.calculate_distance_haversine(
+    if location_searcher is None:
+        location_searcher = utils.LocationSearcher(
+            [
+                {
+                    "name": loc.name,
+                    "latitude": loc.latitude,
+                    "longitude": loc.longitude,
+                    "location": loc,
+                }
+                for loc in class_locations
+            ]
+        )
+    nearest = location_searcher.find_nearest_location(latitude, longitude, radius=float("inf"))
+    if nearest is not None:
+        nearest_location = nearest["location"]
+        nearest_distance = utils.calculate_distance_haversine(
             latitude,
             longitude,
-            loc_lat,
-            loc_lon,
+            nearest_location.latitude,
+            nearest_location.longitude,
         )
-        if distance_m < nearest_distance:
-            nearest_distance = distance_m
-            nearest_location = location
 
     if nearest_location is None:
         return {
@@ -903,6 +894,7 @@ def _build_person_repeat_profile(
     anchors: list[dict[str, Any]],
     class_locations: list[models.ClassLocation],
     location_radii: dict[Any, Any],
+    location_searcher: utils.LocationSearcher | None = None,
 ) -> Optional[dict[str, Any]]:
     if not anchors:
         return None
@@ -934,6 +926,7 @@ def _build_person_repeat_profile(
         repeat_cluster["center_lon"],
         class_locations,
         location_radii,
+        location_searcher,
     )
     active_days = len(anchors)
     repeat_days = len(repeat_dates)
@@ -973,10 +966,8 @@ def _build_suspicious_location_patterns_cache_key(
     if staff_pins:
         normalized_pins = sorted({pin for pin in staff_pins if pin})
         pins_hash = hashlib.sha1(",".join(normalized_pins).encode("utf-8")).hexdigest()
-        return "suspicious_location_patterns_" f"pins_{pins_hash}_{int(include_medium)}_{suffix}"
-    return (
-        "suspicious_location_patterns_" f"dept_{child_department_id}_{int(include_medium)}_{suffix}"
-    )
+        return f"suspicious_location_patterns_pins_{pins_hash}_{int(include_medium)}_{suffix}"
+    return f"suspicious_location_patterns_dept_{child_department_id}_{int(include_medium)}_{suffix}"
 
 
 def _sort_reason_codes(reason_codes: set[str]) -> list[str]:
@@ -1012,50 +1003,45 @@ def _suspicious_candidate_priority(
     )
 
 
-def _resolve_la_location(lat, lon, kd_tree, class_names):
-    """Определяет название локации по координатам через KD-дерево.
+def _resolve_la_location(lat, lon, location_searcher):
+    """Resolve the nearest class-location name for lesson coordinates.
 
     Args:
-        lat: Широта (float или None).
-        lon: Долгота (float или None).
-        kd_tree: KDTree для поиска по координатам или None.
-        class_names: Список названий локаций по индексам дерева.
+        lat: Lesson latitude in degrees, or ``None``.
+        lon: Lesson longitude in degrees, or ``None``.
+        location_searcher: Spherical location index, or ``None``.
 
     Returns:
-        Название локации (str) или None при отсутствии данных или ошибке.
+        The nearest location name, or ``None`` when resolution is unavailable.
     """
-    if not kd_tree or not class_names or lat is None or lon is None:
+    if location_searcher is None or lat is None or lon is None:
         return None
     try:
-        _distances, indices = kd_tree.query([[lat, lon]], k=1)
-        if hasattr(indices, "ndim") and indices.ndim > 1:
-            indices = indices.flatten()
-        return class_names[int(indices[0])] if len(indices) > 0 else None
+        location = location_searcher.find_nearest_location(lat, lon, radius=float("inf"))
+        return location["name"] if location is not None else None
     except Exception as e:
         logger.warning("Error resolving LA location: %s", e)
         return None
 
 
-def _merge_attendance_for_date(sa_records, la_records, kd_tree, class_names):
-    """Объединяет StaffAttendance и LessonAttendance за одну дату событий.
-
-    Границы first_in/last_out берутся по минимуму/максимуму из SA и LA; при
-    совпадении приоритет у SA. Зоны для LA определяются по координатам через
-    kd_tree. effective_work_seconds считается объединением интервалов SA и LA
-    с вычитанием пересечений (merge_work_intervals_to_total_seconds). area_sequence
-    возвращается только когда обе границы из SA.
+def _merge_attendance_for_date(sa_records, la_records, location_searcher):
+    """Merge staff and lesson attendance for one event date.
 
     Args:
-        sa_records: Список словарей SA (staff_id, first_in, last_out,
-            area_name_in, area_name_out, effective_work_seconds, effective_work_intervals).
-        la_records: Список словарей LA (staff_id, first_in, last_out,
-            latitude, longitude, duration_seconds).
-        kd_tree: KDTree для поиска локации по координатам или None.
-        class_names: Список названий локаций по индексам дерева.
+        sa_records: Staff-attendance mappings with boundaries, areas, and
+            effective-work intervals.
+        la_records: Lesson-attendance mappings with boundaries, coordinates,
+            and durations.
+        location_searcher: Spherical location index used to resolve lesson
+            coordinates, or ``None``.
 
     Returns:
-        Словарь: first_in, last_out, area_name_in, area_name_out,
-        first_in_source, last_out_source, effective_work_seconds, area_sequence.
+        Merged boundaries, source labels, areas, effective work seconds, and
+        the staff-attendance area sequence.
+
+    Note:
+        Staff attendance wins equal boundary timestamps. Effective work time
+        is calculated from the union of staff and lesson intervals.
     """
     combined: dict[str, Any] = {
         "first_in": None,
@@ -1113,8 +1099,7 @@ def _merge_attendance_for_date(sa_records, la_records, kd_tree, class_names):
         name = _resolve_la_location(
             earliest_la.get("latitude"),
             earliest_la.get("longitude"),
-            kd_tree,
-            class_names,
+            location_searcher,
         )
         if name:
             combined["area_name_in"] = name
@@ -1124,7 +1109,7 @@ def _merge_attendance_for_date(sa_records, la_records, kd_tree, class_names):
         combined["last_out"] = latest_la["last_out"]
         combined["last_out_source"] = "lesson_attendance"
         name = _resolve_la_location(
-            latest_la.get("latitude"), latest_la.get("longitude"), kd_tree, class_names
+            latest_la.get("latitude"), latest_la.get("longitude"), location_searcher
         )
         if name:
             combined["area_name_out"] = name
@@ -1605,7 +1590,10 @@ class StaffAttendanceStatsView(APIView):
 
         present_between_9_to_18 = 0
         for record in present_staff_records:
-            first_in_time = record.first_in.time()
+            first_in = record.first_in
+            if first_in is None:
+                continue
+            first_in_time = first_in.time()
             if datetime.time(8, 0) <= first_in_time <= datetime.time(19, 0):
                 present_between_9_to_18 += 1
 
@@ -2664,6 +2652,17 @@ def suspicious_location_patterns(request):
         ).only("id", "name", "address", "latitude", "longitude", "acceptance_radius_m")
     )
     location_radii = get_class_location_cache().get("location_acceptance_radius_m", {})
+    location_searcher = utils.LocationSearcher(
+        [
+            {
+                "name": loc.name,
+                "latitude": loc.latitude,
+                "longitude": loc.longitude,
+                "location": loc,
+            }
+            for loc in class_locations
+        ]
+    )
 
     lesson_rows = list(
         models.LessonAttendance.exclude_report_invalid_days(
@@ -2714,6 +2713,7 @@ def suspicious_location_patterns(request):
             anchors,
             class_locations,
             location_radii,
+            location_searcher,
         )
         if profile is not None:
             person_profiles[staff_id] = profile
@@ -2742,6 +2742,7 @@ def suspicious_location_patterns(request):
                 exact_longitude,
                 class_locations,
                 location_radii,
+                location_searcher,
             )
             exact_bucket_attendance_ids: dict[int, set[int]] = defaultdict(set)
             exact_bucket_staff_dates: dict[int, set[str]] = defaultdict(set)
@@ -2791,6 +2792,7 @@ def suspicious_location_patterns(request):
                 near_cluster["center_lon"],
                 class_locations,
                 location_radii,
+                location_searcher,
             )
 
             near_bucket_attendance_ids = defaultdict(set)
@@ -2888,6 +2890,7 @@ def suspicious_location_patterns(request):
                     near_pattern_cluster["center_lon"],
                     class_locations,
                     location_radii,
+                    location_searcher,
                 ),
                 "attendance_ids_by_staff": aggregated_near_ids,
                 "staff_dates": aggregated_near_dates,
@@ -3297,6 +3300,8 @@ def lesson_locations(request):
             try:
                 latitude = float(latitude_param)
                 longitude = float(longitude_param)
+                if not math.isfinite(latitude) or not math.isfinite(longitude):
+                    raise ValueError("Non-finite coordinates")
             except (ValueError, TypeError):
                 log_ll.warning("INVALID lat=%s lon=%s", latitude_param, longitude_param)
                 return Response(
@@ -3307,36 +3312,38 @@ def lesson_locations(request):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            all_locations = models.ClassLocation.objects.filter(
-                latitude__isnull=False, longitude__isnull=False
-            ).only("id", "name", "address", "latitude", "longitude")
-
-            if not all_locations.exists():
+            location_cache = get_class_location_cache()
+            searcher = location_cache["searcher"]
+            if not searcher.locations:
                 log_ll.warning("NO_LOCATIONS_IN_DB")
                 return Response(
                     {"error": "No locations available in database"},
                     status=status.HTTP_404_NOT_FOUND,
                 )
-
-            radii = get_class_location_cache().get("location_acceptance_radius_m", {})
+            radii = location_cache.get("location_acceptance_radius_m", {})
             within = []
-            min_overall = float("inf")
-            nearest_loc = None
-
-            for loc in all_locations:
-                d = utils.calculate_distance_haversine(
-                    latitude, longitude, loc.latitude, loc.longitude
-                )
-                acceptance_radius_m = radii.get(loc.id, DEFAULT_ACCEPTANCE_RADIUS_M)
-                if d < min_overall:
-                    min_overall = d
-                    nearest_loc = loc
-                if d <= acceptance_radius_m:
-                    within.append((d, loc, acceptance_radius_m))
-
-            within.sort(key=lambda x: x[0])
+            for distance, payload in searcher.find_locations_within_radius(
+                latitude,
+                longitude,
+                location_cache["max_acceptance_radius_m"],
+            ):
+                acceptance_radius_m = radii.get(payload["id"], DEFAULT_ACCEPTANCE_RADIUS_M)
+                if distance <= acceptance_radius_m:
+                    within.append((distance, payload["location"], acceptance_radius_m))
 
             if not within:
+                nearest = searcher.find_nearest_location(latitude, longitude, radius=float("inf"))
+                nearest_loc = nearest["location"] if nearest else None
+                min_overall = (
+                    utils.calculate_distance_haversine(
+                        latitude,
+                        longitude,
+                        nearest_loc.latitude,
+                        nearest_loc.longitude,
+                    )
+                    if nearest_loc is not None
+                    else float("inf")
+                )
                 nearest_acceptance_radius_m = (
                     radii.get(nearest_loc.id, DEFAULT_ACCEPTANCE_RADIUS_M)
                     if nearest_loc is not None
@@ -5572,10 +5579,7 @@ def get_staff_detail(staff, start_date, end_date):
         [staff.id], start_date, end_date
     )
     location_cache = get_class_location_cache()
-    kd_tree = location_cache["kd_tree"]
-    class_names = location_cache["class_names"]
-    if kd_tree and class_names:
-        logger.debug(f"KDTree initialized with {len(class_names)} locations")
+    location_searcher = location_cache["searcher"]
 
     all_event_dates = sorted(set(sa_by_event_date.keys()) | set(la_by_event_date.keys()))
     combined_attendance = {}
@@ -5583,8 +5587,7 @@ def get_staff_detail(staff, start_date, end_date):
         combined_attendance[event_date] = _merge_attendance_for_date(
             sa_by_event_date.get(event_date, []),
             la_by_event_date.get(event_date, []),
-            kd_tree,
-            class_names,
+            location_searcher,
         )
 
     attendance_dates = list(sa_by_event_date.keys())

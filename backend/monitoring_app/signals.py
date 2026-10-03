@@ -2,6 +2,7 @@ import logging
 import re
 from datetime import timedelta
 from typing import Any, cast
+from uuid import uuid4
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -20,6 +21,7 @@ from .cache_conf import (
 )
 from .lesson_locations_conf import (
     CLASS_LOCATION_ACCEPTANCE_RADII_CACHE_KEY,
+    CLASS_LOCATION_CACHE_VERSION_KEY,
     CLASS_LOCATION_LIST_CACHE_KEY,
     CLASS_LOCATION_LIST_CACHE_TTL,
     PUBLIC_HOLIDAY_LIST_CACHE_KEY,
@@ -285,6 +287,7 @@ def invalidate_class_location_cache_impl():
         )
     except Exception as e:
         logger.warning("ClassLocation list cache warmup failed: %s", e)
+    Cache.set(CLASS_LOCATION_CACHE_VERSION_KEY, uuid4().hex, timeout=None)
     try:
         from celery import current_app
 
