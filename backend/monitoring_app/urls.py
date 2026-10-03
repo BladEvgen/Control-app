@@ -2,10 +2,16 @@ from django.urls import path, re_path
 from django.views.generic import RedirectView
 
 from monitoring_app import custom_jwt, face_lab_tts, views
+from monitoring_app.schedule_presence_api import SchedulePresenceView
 from monitoring_app.swagger import urlpatterns as doc_urls
 from monitoring_app.swagger_views import swagger_session_login, swagger_session_logout
 
 urlpatterns = [
+    path(
+        "api/attendance/schedule-presence/",
+        SchedulePresenceView.as_view(),
+        name="schedule-presence",
+    ),
     path("", RedirectView.as_view(url="/app/")),
     re_path(
         r"^(?P<asset_dir>mediapipe|mediapipe-models)/(?P<asset_path>.+)$",
