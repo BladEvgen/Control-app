@@ -231,13 +231,6 @@ def invalidate_staff_detail_for_pin(staff_pin: str, cache: BaseCache = Cache) ->
     return invalidate_cache_pattern(f"staff_detail_{version}_{pin}_", cache=cache)
 
 
-def invalidate_staff_detail_for_staff_id(staff_id: int, cache: BaseCache = Cache) -> int:
-    from monitoring_app.models import Staff
-
-    pin = Staff.all_objects.filter(pk=staff_id).values_list("pin", flat=True).first() or ""
-    return invalidate_staff_detail_for_pin(pin, cache=cache)
-
-
 def invalidate_staff_detail_for_department(
     department_id: Union[int, str], cache: BaseCache = Cache
 ) -> int:

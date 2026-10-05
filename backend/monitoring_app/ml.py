@@ -695,12 +695,6 @@ def _arcface_get_faces(image_bgr: np.ndarray) -> list:
     return []
 
 
-def _largest_insight_face(faces: list) -> Optional[Any]:
-    if not faces:
-        return None
-    return max(faces, key=lambda f: _bbox_area_insight(f.bbox))
-
-
 def _best_insight_face(faces: list) -> Optional[Any]:
     """Pick the main face: mostly area, with detector confidence as a tie-breaker."""
     if not faces:
@@ -2001,18 +1995,6 @@ def _probe_embedding_row(embedding) -> np.ndarray:
     return v.reshape(-1)
 
 
-def _staff_mask_encoding_row(mask_encoding) -> np.ndarray:
-    """Один ряд эмбеддинга сотрудника из JSON/маски (часто list или [[...]])."""
-    v = np.asarray(mask_encoding, dtype=np.float64)
-    if v.size == 0:
-        raise ValueError("Пустая маска лица")
-    if v.ndim > 1:
-        v = np.asarray(v[0], dtype=np.float64).reshape(-1)
-    else:
-        v = v.reshape(-1)
-    return v
-
-
 def _dedupe_normalized_rows(mat: np.ndarray, min_cos: float = 0.999) -> np.ndarray:
     """Drop near-duplicate prototypes (same face stored multiple times)."""
     if mat.shape[0] <= 1:
@@ -2676,89 +2658,6 @@ def get_class_weights(labels, class_weights):
 # -----------------------------------
 # 9. Model Saving and Loading
 # -----------------------------------
-
-
-def save_model_for_staff(model, staff, model_path_suffix="model.pt"):
-    """
-    Saves the trained model for a staff member.
-
-    Args:
-        model (nn.Module): Trained model.
-        staff (Staff): Staff object.
-        model_path_suffix (str): Suffix for the model file name.
-
-    Raises:
-        Exception: If saving fails.
-    """
-
-    try:
-        model_path = os.path.join(
-            os.path.dirname(staff.avatar.path), f"{staff.pin}_{model_path_suffix}"
-        )
-        torch.save(model.state_dict(), model_path)
-        logger.info(f"Model for {staff.pin} saved at {model_path}")
-
-    except Exception as e:
-        logger.error(f"Error saving model for {staff.pin}: {str(e)}")
-        raise e
-
-
-def load_model_for_staff(staff, model_path_suffix="model.pt"):
-    """
-    Loads the trained model for a staff member.
-
-    Args:
-        staff (Staff): Staff object.
-        model_path_suffix (str): Suffix for the model file name.
-
-    Returns:
-        nn.Module: Loaded model.
-
-    Raises:
-        ValueError: If the model file does not exist.
-    """
-
-    model_path = os.path.join(
-        os.path.dirname(staff.avatar.path), f"{staff.pin}_{model_path_suffix}"
-    )
-    if not os.path.exists(model_path):
-        logger.error(f"Модель для {staff.pin} не найдена")
-        raise ValueError(f"Модель для {staff.pin} не найдена")
-
-    device = get_device()
-    model = FaceRecognitionResNet().to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
-    model.to(device)
-    model.eval()
-    logger.info(f"Model for {staff.pin} loaded from {model_path}")
-    return model
-
-
-def load_general_model():
-    """
-    Loads the trained general face recognition model.
-
-    Returns:
-        nn.Module: Loaded general model.
-
-    Raises:
-        ValueError: If the general model file does not exist.
-    """
-
-    model_path = os.path.join(settings.GENERAL_MODELS_ROOT, "general_face_recognition_model.pt")
-    if not os.path.exists(model_path):
-        logger.error("Общая модель не найдена")
-        raise ValueError("Общая модель не найдена")
-
-    device = get_device()
-    staff_manager = cast(Any, models.Staff).objects
-    num_classes = len(staff_manager.filter(avatar__isnull=False))
-    model = GeneralFaceRecognitionModel(num_classes=num_classes).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
-    model.to(device)
-    model.eval()
-    logger.info(f"General model loaded from {model_path}")
-    return model
 
 
 # -----------------------------------
