@@ -9,7 +9,6 @@ from difflib import get_close_matches
 from functools import lru_cache
 from typing import (
     Any,
-    Dict,
     Iterable,
     List,
     Mapping,
@@ -462,18 +461,6 @@ def password_check(password: str) -> bool:
     )
 
 
-def fetch_data(url: str) -> Dict[str, Any]:
-    import requests
-
-    try:
-        response = requests.get(url, timeout=20)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        logger.error(f"Error fetching data: {e}")
-        return {}
-
-
 def send_password_reset_email(user, request):
     """
     Send a password reset email to the user with branding and design consistent with the website footer.
@@ -671,22 +658,6 @@ def get_user_timezone(request):
     return pytz.timezone(user_timezone)
 
 
-def normalize_id(department_id):
-    """
-    Нормализует ID отдела, удаляя ведущие нули, если ID состоит только из цифр.
-    Если ID содержит буквы, он остаётся без изменений.
-
-    Args:
-        department_id (str): ID отдела.
-
-    Returns:
-        str: Нормализованный ID.
-    """
-    if department_id.isdigit():
-        return str(int(department_id))
-    return department_id
-
-
 def transliterate(name):
     slovar = {
         "а": "a",
@@ -776,6 +747,8 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
     Returns:
         list: Список словарей с данными по локациям, готовых для отображения на карте.
     """
+    from monitoring_app.services import attendance_day
+
     locations = list(locations)
     first_location_by_address = {}
     for loc in locations:
@@ -786,7 +759,7 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
 
     if search_staff_attendance:
         try:
-            data_insert_date = date_at + datetime.timedelta(days=1)
+            data_insert_date = attendance_day.sa_date_at(date_at)
             logger.info(
                 f"Начинаем обработку StaffAttendance для даты вставки: {data_insert_date} (дата события: {date_at})"
             )
@@ -1671,6 +1644,8 @@ def _collect_attendance_data_impl(
     """
     from django.db.models import Q
 
+    from monitoring_app.services import attendance_day
+
     date_range = [
         start_date + datetime.timedelta(days=i) for i in range((end_date - start_date).days + 1)
     ]
@@ -1708,10 +1683,7 @@ def _collect_attendance_data_impl(
 
     attendance_qs = models.StaffAttendance.objects.filter(
         staff_id__in=staff_ids,
-        date_at__range=[
-            start_date + datetime.timedelta(days=1),
-            end_date + datetime.timedelta(days=1),
-        ],
+        date_at__range=[attendance_day.sa_date_at(start_date), attendance_day.sa_date_at(end_date)],
     ).values(
         "staff_id",
         "date_at",
@@ -1766,21 +1738,13 @@ def _collect_attendance_data_impl(
     for att in attendance_qs.iterator(chunk_size=2000):
         first_in = att.get("first_in")
         last_out = att.get("last_out")
-        date_at = att.get("date_at")
+        date_at = att["date_at"]
         area_name_in = att.get("area_name_in")
         area_name_out = att.get("area_name_out")
         first_in_local_full = _convert_to_local_with_tz(first_in, local_tz) if first_in else None
         last_out_local_full = _convert_to_local_with_tz(last_out, local_tz) if last_out else None
 
-        if first_in_local_full:
-            local_date = first_in_local_full
-        else:
-            local_date = _convert_to_local_with_tz(date_at, local_tz)
-            if local_date is not None:
-                local_date = local_date - datetime.timedelta(days=1)
-        if local_date is None:
-            continue
-        date_key = local_date.strftime("%Y-%m-%d")
+        date_key = attendance_day.event_day(date_at).strftime("%Y-%m-%d")
         staff_id = int(att["staff_id"])
 
         use_first_in = first_in_local_full and not is_lift_terminal(area_name_in)
@@ -1918,19 +1882,7 @@ def _collect_attendance_data_impl(
     for date_key in attendance_map:
         for staff_id in attendance_map[date_key]:
             rec = attendance_map[date_key][staff_id]
-            intervals: List[Tuple[datetime.datetime, datetime.datetime]] = []
-            for raw in rec.get("effective_work_intervals") or []:
-                try:
-                    s = raw.get("start") and datetime.datetime.fromisoformat(
-                        raw["start"].replace("Z", "+00:00")
-                    )
-                    e = raw.get("end") and datetime.datetime.fromisoformat(
-                        raw["end"].replace("Z", "+00:00")
-                    )
-                    if s is not None and e is not None and e > s:
-                        intervals.append((s, e))
-                except (ValueError, TypeError, AttributeError):
-                    continue
+            intervals = attendance_day.parse_intervals(rec.get("effective_work_intervals"))
             for start, end in rec.get("la_intervals") or []:
                 if start and end and end > start:
                     intervals.append((start, end))
@@ -2379,7 +2331,3 @@ def generate_excel_file(attendance_data, department_name, user_start_date, user_
         "Excel file generation completed with proper timezone conversion, filtering, and sorting."
     )
     return excel_data.getvalue()
-
-
-def convert_to_local(dt):
-    return _convert_to_local_with_tz(dt, timezone.get_current_timezone())

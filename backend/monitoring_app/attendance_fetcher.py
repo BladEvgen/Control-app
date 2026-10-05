@@ -60,6 +60,7 @@ from django.utils import timezone
 
 from monitoring_app import models
 from monitoring_app.cache_conf import invalidate_staff_attendance_caches
+from monitoring_app.services import attendance_day
 
 logger = logging.getLogger("django")
 
@@ -516,7 +517,7 @@ def save_attendance_days(
     records = [
         models.StaffAttendance(
             staff_id=staff_id,
-            date_at=work_day + timedelta(days=1),
+            date_at=attendance_day.sa_date_at(work_day),
             **_record_fields(day, mode),
         )
         for work_day, by_staff in days.items()
@@ -947,6 +948,6 @@ class AsyncAttendanceFetcher:
         return {
             "days": days_to_subtract,
             "source_date": work_day.isoformat(),
-            "save_date": (work_day + timedelta(days=1)).isoformat(),
+            "save_date": attendance_day.sa_date_at(work_day).isoformat(),
             **summary,
         }

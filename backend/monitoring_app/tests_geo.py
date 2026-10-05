@@ -292,7 +292,8 @@ class GeoTests(TestCase):
             )
 
     def test_view_helpers_share_spherical_search_and_stable_cluster_sorting(self):
-        from monitoring_app.views import _cluster_geo_items, _merge_attendance_for_date
+        from monitoring_app.services.attendance_day import merge_day
+        from monitoring_app.views import _cluster_geo_items
 
         items = [dict(lat=0, lon=lon, sort_id=i) for i, lon in ((2, 0), (1, 0), (3, 1))]
         clusters = _cluster_geo_items(items, 2)
@@ -303,7 +304,7 @@ class GeoTests(TestCase):
         import datetime
 
         start = datetime.datetime(2026, 10, 3, 9, tzinfo=datetime.timezone.utc)
-        merged = _merge_attendance_for_date(
+        merged = merge_day(
             [],
             [
                 dict(

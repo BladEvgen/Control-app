@@ -1,6 +1,5 @@
 import logging
 import re
-from datetime import timedelta
 from typing import Any, cast
 from uuid import uuid4
 
@@ -10,6 +9,8 @@ from django.db import transaction
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django.utils import timezone
+
+from monitoring_app.services import attendance_day
 
 from .cache_conf import (
     Cache,
@@ -190,7 +191,7 @@ def invalidate_attendance_cache(sender, instance, **kwargs):
     invalidate_cache_pattern("staffatt_count_*")
     version = staff_detail_cache_version()
     if hasattr(instance, "date_at") and instance.date_at:
-        work_day = instance.date_at - timedelta(days=1)
+        work_day = attendance_day.event_day(instance.date_at)
         work_day_str = work_day.strftime("%Y-%m-%d")
         invalidate_cache_pattern(f"staff_attendance_stats_{version}_*")
         invalidate_cache_pattern(f"map_location_{version}_*")

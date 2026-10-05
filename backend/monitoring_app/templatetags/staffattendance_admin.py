@@ -1,7 +1,5 @@
 """Теги шаблона админки для StaffAttendance (группировка строк по date_at)."""
 
-from datetime import timedelta
-
 from django import template
 from django.contrib.admin.templatetags.admin_list import (
     items_for_result,
@@ -10,6 +8,8 @@ from django.contrib.admin.templatetags.admin_list import (
 from django.contrib.admin.templatetags.admin_list import result_list as build_result_list_context
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
+
+from monitoring_app.services import attendance_day
 
 register = template.Library()
 
@@ -26,7 +26,7 @@ def staffattendance_grouped_tbody(cl):
         if getattr(res, "date_at", None) != prev_date:
             prev_date = res.date_at
             if res.date_at:
-                shift = res.date_at - timedelta(days=1)
+                shift = attendance_day.event_day(res.date_at)
                 label = (
                     f"Смена {shift.strftime('%d.%m.%Y')} · запись в БД "
                     f"{res.date_at.strftime('%d.%m.%Y')}"

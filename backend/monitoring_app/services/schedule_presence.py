@@ -1,9 +1,10 @@
 """Посещение зданий за прошедший день по точным PIN из расписания."""
 
-from datetime import date, timedelta
+from datetime import date
 from math import cos, radians, sin
 
 from monitoring_app import models, utils
+from monitoring_app.services import attendance_day
 
 
 def address_key(value: str) -> str:
@@ -53,7 +54,9 @@ def schedule_presence(on: date, requests: list[dict]) -> list[dict]:
     }
     visited: dict[str, set[str]] = {pin: set() for pin in staff.values()}
     for row in (
-        models.StaffAttendance.objects.filter(staff_id__in=staff, date_at=on + timedelta(days=1))
+        models.StaffAttendance.objects.filter(
+            staff_id__in=staff, date_at=attendance_day.sa_date_at(on)
+        )
         .values(
             "staff_id",
             "first_in",
@@ -112,7 +115,7 @@ def schedule_presence(on: date, requests: list[dict]) -> list[dict]:
 
     known = set(staff.values())
     has_data = (
-        models.StaffAttendance.objects.filter(date_at=on + timedelta(days=1)).exists()
+        models.StaffAttendance.objects.filter(date_at=attendance_day.sa_date_at(on)).exists()
         or models.LessonAttendance.objects.filter(date_at=on).exists()
     )
     results = []

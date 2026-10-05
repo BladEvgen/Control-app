@@ -86,7 +86,7 @@ from monitoring_app.lesson_locations_conf import (
 from monitoring_app.photo_ws_broadcast import (
     broadcast_lesson_attendance_photo_meta_updates,
 )
-from monitoring_app.services import building_attendance_report
+from monitoring_app.services import attendance_day, building_attendance_report
 from monitoring_app.signals import (
     invalidate_class_location_cache_impl,
     invalidate_public_holiday_cache_impl,
@@ -624,86 +624,6 @@ def get_class_location_cache():
     return CLASS_LOCATION_CACHE
 
 
-def _to_date(dt):
-    """Normalize date_at from DB (date or datetime) to date.
-
-    Args:
-        dt: Value from date_at field (date or datetime).
-
-    Returns:
-        date or None: The calendar date, or None if dt is None.
-    """
-    if dt is None:
-        return None
-    return dt.date() if hasattr(dt, "date") and callable(getattr(dt, "date")) else dt
-
-
-def fetch_attendance_by_event_dates(staff_ids, date_from, date_to):
-    """Загружает StaffAttendance и LessonAttendance по датам событий одним проходом.
-
-    StaffAttendance.date_at — день выгрузки (обычно календарный день после
-    рабочего дня смены). В админке по event_date «2 апреля» ищите строку с
-    date_at «3 апреля». LessonAttendance.date_at — календарный день занятия.
-    Результаты используются
-    в api/staff/{pin}/ и api/attendance/department-confirmation/.
-
-    Args:
-        staff_ids: Список id сотрудников (первичные ключи Staff).
-        date_from: Начало диапазона дат событий (включительно), date.
-        date_to: Конец диапазона дат событий (включительно), date.
-
-    Returns:
-        Кортеж (sa_by_event_date, la_by_event_date): каждый элемент — словарь
-        {event_date: list[dict]} с записями из .values().
-    """
-    date_from_plus1 = date_from + datetime.timedelta(days=1)
-    date_to_plus1 = date_to + datetime.timedelta(days=1)
-    one_day = datetime.timedelta(days=1)
-
-    sa_by_event_date = defaultdict(list)
-    for r in models.StaffAttendance.objects.filter(
-        staff_id__in=staff_ids,
-        date_at__gte=date_from_plus1,
-        date_at__lte=date_to_plus1,
-    ).values(
-        "staff_id",
-        "date_at",
-        "first_in",
-        "last_out",
-        "area_name_in",
-        "area_name_out",
-        "effective_work_seconds",
-        "area_sequence",
-        "effective_work_intervals",
-    ):
-        d = _to_date(r["date_at"])
-        if d is not None:
-            sa_by_event_date[d - one_day].append(r)
-
-    la_by_event_date = defaultdict(list)
-    lesson_attendance_qs = models.LessonAttendance.exclude_report_invalid_days(
-        models.LessonAttendance.objects.filter(
-            staff_id__in=staff_ids,
-            date_at__gte=date_from,
-            date_at__lte=date_to,
-        )
-    )
-    for r in lesson_attendance_qs.values(
-        "staff_id",
-        "date_at",
-        "first_in",
-        "last_out",
-        "latitude",
-        "longitude",
-        "duration_seconds",
-    ):
-        d = _to_date(r["date_at"])
-        if d is not None:
-            la_by_event_date[d].append(r)
-
-    return dict(sa_by_event_date), dict(la_by_event_date)
-
-
 def _sort_datetime_value(value: Any) -> datetime.datetime:
     if isinstance(value, datetime.datetime):
         if timezone.is_naive(value):
@@ -1003,146 +923,6 @@ def _suspicious_candidate_priority(
     )
 
 
-def _resolve_la_location(lat, lon, location_searcher):
-    """Resolve the nearest class-location name for lesson coordinates.
-
-    Args:
-        lat: Lesson latitude in degrees, or ``None``.
-        lon: Lesson longitude in degrees, or ``None``.
-        location_searcher: Spherical location index, or ``None``.
-
-    Returns:
-        The nearest location name, or ``None`` when resolution is unavailable.
-    """
-    if location_searcher is None or lat is None or lon is None:
-        return None
-    try:
-        location = location_searcher.find_nearest_location(lat, lon, radius=float("inf"))
-        return location["name"] if location is not None else None
-    except Exception as e:
-        logger.warning("Error resolving LA location: %s", e)
-        return None
-
-
-def _merge_attendance_for_date(sa_records, la_records, location_searcher):
-    """Merge staff and lesson attendance for one event date.
-
-    Args:
-        sa_records: Staff-attendance mappings with boundaries, areas, and
-            effective-work intervals.
-        la_records: Lesson-attendance mappings with boundaries, coordinates,
-            and durations.
-        location_searcher: Spherical location index used to resolve lesson
-            coordinates, or ``None``.
-
-    Returns:
-        Merged boundaries, source labels, areas, effective work seconds, and
-        the staff-attendance area sequence.
-
-    Note:
-        Staff attendance wins equal boundary timestamps. Effective work time
-        is calculated from the union of staff and lesson intervals.
-    """
-    combined: dict[str, Any] = {
-        "first_in": None,
-        "last_out": None,
-        "area_name_in": None,
-        "area_name_out": None,
-        "first_in_source": None,
-        "last_out_source": None,
-        "effective_work_seconds": None,
-        "area_sequence": None,
-    }
-    if sa_records:
-        first_sa = sa_records[0]
-        combined["effective_work_seconds"] = first_sa.get("effective_work_seconds")
-        combined["area_sequence"] = first_sa.get("area_sequence")
-    for r in sa_records:
-        if r.get("first_in") and (
-            combined["first_in"] is None or r["first_in"] < combined["first_in"]
-        ):
-            combined["first_in"] = r["first_in"]
-            combined["first_in_source"] = "staff_attendance"
-            if r.get("area_name_in"):
-                combined["area_name_in"] = (
-                    utils.resolve_area_address(r["area_name_in"]) or r["area_name_in"]
-                )
-        if r.get("last_out") and (
-            combined["last_out"] is None or r["last_out"] > combined["last_out"]
-        ):
-            combined["last_out"] = r["last_out"]
-            combined["last_out_source"] = "staff_attendance"
-            if r.get("area_name_out"):
-                combined["area_name_out"] = (
-                    utils.resolve_area_address(r["area_name_out"]) or r["area_name_out"]
-                )
-
-    earliest_la = None
-    latest_la = None
-    for r in la_records:
-        if r.get("first_in"):
-            if earliest_la is None:
-                earliest_la = r
-            elif r["first_in"] < earliest_la["first_in"]:
-                earliest_la = r
-        if r.get("last_out"):
-            if latest_la is None:
-                latest_la = r
-            elif r["last_out"] > latest_la["last_out"]:
-                latest_la = r
-
-    if earliest_la is not None and (
-        combined["first_in"] is None or earliest_la["first_in"] < combined["first_in"]
-    ):
-        combined["first_in"] = earliest_la["first_in"]
-        combined["first_in_source"] = "lesson_attendance"
-        name = _resolve_la_location(
-            earliest_la.get("latitude"),
-            earliest_la.get("longitude"),
-            location_searcher,
-        )
-        if name:
-            combined["area_name_in"] = name
-    if latest_la is not None and (
-        combined["last_out"] is None or latest_la["last_out"] > combined["last_out"]
-    ):
-        combined["last_out"] = latest_la["last_out"]
-        combined["last_out_source"] = "lesson_attendance"
-        name = _resolve_la_location(
-            latest_la.get("latitude"), latest_la.get("longitude"), location_searcher
-        )
-        if name:
-            combined["area_name_out"] = name
-
-    intervals: List[Tuple[datetime.datetime, datetime.datetime]] = []
-    if sa_records:
-        for raw in sa_records[0].get("effective_work_intervals") or []:
-            try:
-                s = raw.get("start") and datetime.datetime.fromisoformat(
-                    raw["start"].replace("Z", "+00:00")
-                )
-                e = raw.get("end") and datetime.datetime.fromisoformat(
-                    raw["end"].replace("Z", "+00:00")
-                )
-                if s is not None and e is not None and e > s:
-                    intervals.append((s, e))
-            except (ValueError, TypeError, AttributeError):
-                continue
-    for la in la_records:
-        fi, lo = la.get("first_in"), la.get("last_out")
-        if fi is not None and lo is not None and lo > fi:
-            intervals.append((fi, lo))
-    total_effective = utils.merge_work_intervals_to_total_seconds(intervals)
-    combined["effective_work_seconds"] = total_effective if total_effective > 0 else None
-    if (
-        combined["first_in_source"] != "staff_attendance"
-        or combined["last_out_source"] != "staff_attendance"
-    ):
-        combined["area_sequence"] = None
-
-    return combined
-
-
 def calculate_effective_minutes_with_lunch(first_in, last_out):
     """Считает минуты между первым входом и последним выходом (fallback без событий СКУД).
 
@@ -1385,7 +1165,6 @@ class StaffAttendanceStatsView(APIView):
 
         try:
             target_date = self.get_last_working_day(date_param)
-            next_date = target_date + datetime.timedelta(days=1)
             cache_key = (
                 f"staff_attendance_stats_{LESSON_REPORT_CACHE_VERSION}_"
                 f"{target_date}_{pin_param}"
@@ -1395,7 +1174,7 @@ class StaffAttendanceStatsView(APIView):
 
             cached_data = get_cache(
                 cache_key,
-                query=lambda: self.query_data(target_date, next_date, pin_param),
+                query=lambda: self.query_data(target_date, pin_param),
                 timeout=6 * 3600,
             )
 
@@ -1440,7 +1219,6 @@ class StaffAttendanceStatsView(APIView):
     def query_data(
         self,
         target_date: datetime.date,
-        _next_date: datetime.date,
         pin_param: str | None,
     ) -> dict:
         """
@@ -1448,7 +1226,6 @@ class StaffAttendanceStatsView(APIView):
 
         Args:
             target_date (datetime.date): Целевая дата.
-            next_date (datetime.date): Следующая дата после целевой.
             pin_param (str, optional): ID родительского или дочернего отдела.
 
         Returns:
@@ -1499,7 +1276,6 @@ class StaffAttendanceStatsView(APIView):
                     pin_param,
                 )
 
-        target_date_for_filter = target_date + datetime.timedelta(days=1)
         staff_queryset = (
             staff_queryset.select_related("department__parent")
             .prefetch_related(
@@ -1536,180 +1312,70 @@ class StaffAttendanceStatsView(APIView):
                 "data_for_date": target_date.strftime("%Y-%m-%d"),
             }
 
-        staff_ids = [s.id for s in staff_members]
-        staff_id_to_pin = {s.id: s.pin for s in staff_members}
-
-        staff_attendance_queryset = (
-            models.StaffAttendance.objects.filter(
-                date_at=target_date_for_filter,
-                staff_id__in=staff_ids,
-                first_in__isnull=False,
-            )
-            .select_related("staff")
-            .only(
-                "first_in",
-                "last_out",
-                "effective_work_seconds",
-                "staff_id",
-                "staff__pin",
-                "staff__name",
-                "staff__surname",
-            )
-        )
-        present_staff_records = list(staff_attendance_queryset)
-        attendance_by_pin = {record.staff.pin: record for record in present_staff_records}
-
-        lesson_staff_ids = set(
-            models.LessonAttendance.exclude_report_invalid_days(
-                models.LessonAttendance.objects.filter(
-                    date_at=target_date,
-                    staff_id__in=staff_ids,
-                )
-            )
-            .values_list("staff_id", flat=True)
-            .distinct()
-        )
-        present_pins_from_lessons = {
-            staff_id_to_pin[sid] for sid in lesson_staff_ids if sid in staff_id_to_pin
-        }
-
-        logger.info(
-            "StaffAttendanceStatsView: target_date=%s, target_date_for_filter(SA)=%s, "
-            "staff_count=%s, staff_ids_sample=%s, "
-            "StaffAttendance(present)=%s, LessonAttendance(staff_ids)=%s, present_pins_from_lessons=%s",
-            target_date,
-            target_date_for_filter,
-            len(staff_members),
-            staff_ids[:5] if len(staff_ids) > 5 else staff_ids,
-            len(present_staff_records),
-            len(lesson_staff_ids),
-            len(present_pins_from_lessons),
-        )
-
-        total_staff_count = len(staff_members)
-
-        present_between_9_to_18 = 0
-        for record in present_staff_records:
-            first_in = record.first_in
-            if first_in is None:
-                continue
-            first_in_time = first_in.time()
-            if datetime.time(8, 0) <= first_in_time <= datetime.time(19, 0):
-                present_between_9_to_18 += 1
-
-        employee_position_name = "Сотрудник"
         employee_pins = {
-            s.pin
-            for s in staff_members
-            if any(p.name == employee_position_name for p in s.positions.all())
+            s.pin for s in staff_members if any(p.name == "Сотрудник" for p in s.positions.all())
         }
-        logger.info(
-            "StaffAttendanceStatsView: employee_pins(count)=%s, non_employee(count)=%s",
-            len(employee_pins),
-            total_staff_count - len(employee_pins),
+        sa_by_day, la_by_day = attendance_day.load_days(
+            [s.id for s in staff_members], target_date, target_date
         )
-        present_data, absent_data = self.get_attendance_data(
-            staff_members,
-            attendance_by_pin,
-            present_pins_from_lessons=present_pins_from_lessons,
-            employee_pins=employee_pins,
-        )
-        absent_staff_count = total_staff_count - len(present_data)
+        sa_by_staff, la_by_staff = defaultdict(list), defaultdict(list)
+        for row in sa_by_day.get(target_date, []):
+            sa_by_staff[row["staff_id"]].append(row)
+        for row in la_by_day.get(target_date, []):
+            la_by_staff[row["staff_id"]].append(row)
 
-        present_from_sa = sum(1 for p in present_data if attendance_by_pin.get(p["staff_pin"]))
-        present_from_la_only = len(present_data) - present_from_sa
+        present_data, absent_data = [], []
+        present_between_9_to_18 = 0
+        local_tz = timezone.get_current_timezone()
+        for staff in staff_members:
+            name = f"{staff.surname} {staff.name}"
+            is_employee = staff.pin in employee_pins
+            day = attendance_day.merge_day(
+                sa_by_staff[staff.id], [] if is_employee else la_by_staff[staff.id]
+            )
+            first_in, last_out = day["first_in"], day["last_out"]
+            if not (first_in or last_out):
+                absent_data.append({"staff_pin": staff.pin, "name": name})
+                continue
+            if day["effective_work_seconds"] is not None:
+                minutes_present = day["effective_work_seconds"] / 60.0
+            elif first_in and last_out:
+                minutes_present = (last_out - first_in).total_seconds() / 60
+            else:
+                minutes_present = 0
+            if first_in and datetime.time(8) <= first_in.astimezone(
+                local_tz
+            ).time() <= datetime.time(19):
+                present_between_9_to_18 += 1
+            present_data.append(
+                {
+                    "staff_pin": staff.pin,
+                    "name": name,
+                    "minutes_present": round(minutes_present, 2),
+                    "individual_percentage": (
+                        round(minutes_present / (8 * 60) * 100, 2) if is_employee else 100.0
+                    ),
+                }
+            )
+
         logger.info(
-            "StaffAttendanceStatsView: present_data=%s (from SA=%s, from LA only=%s), absent_data=%s, department=%s",
+            "StaffAttendanceStatsView: target_date=%s, staff=%s, present=%s, absent=%s, department=%s",
+            target_date,
+            len(staff_members),
             len(present_data),
-            present_from_sa,
-            present_from_la_only,
             len(absent_data),
             department_name,
         )
-
         return {
             "department_name": department_name,
-            "total_staff_count": total_staff_count,
+            "total_staff_count": len(staff_members),
             "present_staff_count": len(present_data),
-            "absent_staff_count": absent_staff_count,
+            "absent_staff_count": len(absent_data),
             "present_between_9_to_18": present_between_9_to_18,
             "present_data": present_data,
             "absent_data": absent_data,
             "data_for_date": target_date.strftime("%Y-%m-%d"),
         }
-
-    def get_attendance_data(
-        self,
-        staff_members,
-        attendance_by_pin,
-        present_pins_from_lessons=None,
-        employee_pins=None,
-    ):
-        """Формирует present_data и absent_data.
-
-        Сотрудники (должность «Сотрудник»): только StaffAttendance, процент по времени.
-        Студенты и др.: присутствие по StaffAttendance или LessonAttendance (удалённые локации),
-        процент — факт присутствия (100%).
-        """
-        if present_pins_from_lessons is None:
-            present_pins_from_lessons = set()
-        if employee_pins is None:
-            employee_pins = {
-                s.pin
-                for s in staff_members
-                if any(p.name == "Сотрудник" for p in s.positions.all())
-            }
-        logger.debug("Generating attendance data.")
-        present_data = []
-        absent_data = []
-        total_minutes = 8 * 60
-        for staff in staff_members:
-            is_employee = staff.pin in employee_pins
-            attendance = attendance_by_pin.get(staff.pin)
-
-            if attendance:
-                if getattr(attendance, "effective_work_seconds", None) is not None:
-                    minutes_present = attendance.effective_work_seconds / 60.0
-                elif attendance.first_in and attendance.last_out:
-                    minutes_present = (
-                        attendance.last_out - attendance.first_in
-                    ).total_seconds() / 60
-                else:
-                    minutes_present = 0
-                if is_employee:
-                    individual_percentage = (minutes_present / total_minutes) * 100
-                else:
-                    individual_percentage = 100.0
-                present_data.append(
-                    {
-                        "staff_pin": staff.pin,
-                        "name": f"{staff.surname} {staff.name}",
-                        "minutes_present": round(minutes_present, 2),
-                        "individual_percentage": round(individual_percentage, 2),
-                    }
-                )
-                continue
-
-            if not is_employee and staff.pin in present_pins_from_lessons:
-                present_data.append(
-                    {
-                        "staff_pin": staff.pin,
-                        "name": f"{staff.surname} {staff.name}",
-                        "minutes_present": 0,
-                        "individual_percentage": 100.0,
-                    }
-                )
-                continue
-
-            absent_data.append(
-                {
-                    "staff_pin": staff.pin,
-                    "name": f"{staff.surname} {staff.name}",
-                }
-            )
-
-        logger.info("Attendance data generation complete.")
-        return present_data, absent_data
 
 
 @swagger_auto_schema(
@@ -1871,7 +1537,7 @@ def _build_one_day_confirmation(
     """
     date_str = target_date.strftime("%Y-%m-%d")
     staff_ids = [s.id for s in staff_list]
-    data_insert_date = target_date + datetime.timedelta(days=1)
+    data_insert_date = attendance_day.sa_date_at(target_date)
 
     sa_qs = models.StaffAttendance.objects.filter(
         staff_id__in=staff_ids,
@@ -2093,7 +1759,7 @@ def _build_one_day_from_records(
             location_counts[addr].append(staff.pin)
 
     if dates_with_any_sa is not None:
-        data_insert_date = target_date + datetime.timedelta(days=1)
+        data_insert_date = attendance_day.sa_date_at(target_date)
         data_available = (
             bool(staff_to_location) or bool(la_records) or (data_insert_date in dates_with_any_sa)
         )
@@ -2422,10 +2088,8 @@ def department_attendance_confirmation(request):
 
     if use_range:
         staff_ids = [s.id for s in staff_list]
-        sa_by_event_date, la_by_event_date = fetch_attendance_by_event_dates(
-            staff_ids, date_from, date_to
-        )
-        dates_with_any_sa = {ed + datetime.timedelta(days=1) for ed in sa_by_event_date}
+        sa_by_event_date, la_by_event_date = attendance_day.load_days(staff_ids, date_from, date_to)
+        dates_with_any_sa = {attendance_day.sa_date_at(ed) for ed in sa_by_event_date}
 
         location_cache = get_class_location_cache()
         location_searcher = location_cache.get("searcher")
@@ -4504,15 +4168,11 @@ def _build_department_summary_data(parent_department_id: str):
 
     parent_department = get_object_or_404(models.ChildDepartment, id=parent_department_id)
     total_staff_count = get_subtree_staff_count(parent_department.id)
-    # Аннотации читает ChildDepartmentSerializer: без них он делал по запросу
-    # на каждый подотдел (у «деканата» это 54 лишних запроса).
     active_ids = _department_ids_with_active_staff()
     child_departments_data = (
         models.ChildDepartment.objects.filter(parent=parent_department)
-        # Полностью заархивированные подотделы наружу не отдаём.
-        .filter(id__in=active_ids).annotate(
-            # Считаем только тех детей, которые сами не скрыты: иначе
-            # has_child_departments повёл бы в пустой список.
+        .filter(id__in=active_ids)
+        .annotate(
             annotated_child_count=Count(
                 "children", filter=Q(children__id__in=active_ids), distinct=True
             ),
@@ -4764,11 +4424,6 @@ def _fetch_root_departments_data():
             ],
         }
 
-    # Единственный корень — это не уровень навигации: страница из одной карточки
-    # заставляет кликать в неё, чтобы попасть к настоящим отделам. В этом случае
-    # отдаём детей корня, а сам корень уходит в display_root — фронт берёт
-    # оттуда заголовок и ссылку на сотрудников, привязанных к корню напрямую.
-    # При двух и более корнях поведение прежнее: показываем сами корни.
     display_root = None
     if len(root_ids) == 1:
         only_root = root_ids[0]
@@ -4786,8 +4441,6 @@ def _fetch_root_departments_data():
         displayed = [(root_id, None) for root_id in root_ids if subtree_staff(root_id) > 0]
 
     departments_data = [serialize(dept_id, parent_id) for dept_id, parent_id in displayed]
-    # Счётчик на странице должен совпадать с суммой карточек плюс сотрудники
-    # самого корня, иначе «в КРМУ 11658, а внутри 8072».
     total_staff_count = sum(subtree_staff(root_id) for root_id in root_ids)
 
     return {
@@ -4980,10 +4633,6 @@ def child_department_detail(request, child_department_id):
     Http404: Если дочерний отдел не существует.
     """
     logger.info(f"Request received for child department detail with ID {child_department_id}")
-
-    # direct=1 — только сотрудники самого отдела, без подотделов. Нужен для
-    # отделов, где есть и подотделы, и свои люди (КРМУ, деканат): иначе ссылка
-    # на «своих» тянула бы всё поддерево — для корня это 8072 записи.
     direct_only = request.GET.get("direct") == "1"
     cache_key = f"child_department_detail_v2_{child_department_id}_{int(direct_only)}"
 
@@ -4994,8 +4643,6 @@ def child_department_detail(request, child_department_id):
             logger.warning(f"Child department with ID {child_department_id} not found")
             return None
 
-        # subtree_ids вместо обхода на Python: для корня прежняя версия
-        # делала 1236 запросов, из-за чего страница не открывалась.
         department_ids = [child_department.pk] if direct_only else child_department.subtree_ids()
         staff_in_department = list(
             models.Staff.objects.filter(department_id__in=department_ids)
@@ -5575,16 +5222,14 @@ def get_staff_detail(staff, start_date, end_date):
     logger.info(f"Получение деталей сотрудника {staff.name} (PIN: {staff.pin})")
     logger.debug(f"Запрошенный диапазон дат: {start_date} до {end_date}")
 
-    sa_by_event_date, la_by_event_date = fetch_attendance_by_event_dates(
-        [staff.id], start_date, end_date
-    )
+    sa_by_event_date, la_by_event_date = attendance_day.load_days([staff.id], start_date, end_date)
     location_cache = get_class_location_cache()
     location_searcher = location_cache["searcher"]
 
     all_event_dates = sorted(set(sa_by_event_date.keys()) | set(la_by_event_date.keys()))
     combined_attendance = {}
     for event_date in all_event_dates:
-        combined_attendance[event_date] = _merge_attendance_for_date(
+        combined_attendance[event_date] = attendance_day.merge_day(
             sa_by_event_date.get(event_date, []),
             la_by_event_date.get(event_date, []),
             location_searcher,
@@ -5816,8 +5461,10 @@ def get_average_attendance_for_period(staff, start_date, end_date):
 
     previous_attendance_qs = models.StaffAttendance.objects.filter(
         staff=staff,
-        date_at__gte=previous_start_date + datetime.timedelta(days=1),
-        date_at__lte=previous_end_date + datetime.timedelta(days=1),
+        date_at__range=(
+            attendance_day.sa_date_at(previous_start_date),
+            attendance_day.sa_date_at(previous_end_date),
+        ),
     ).only("id", "date_at", "first_in", "last_out", "effective_work_seconds")
     logger.debug(
         f"Retrieved {previous_attendance_qs.count()} attendance records for previous period"
@@ -6133,50 +5780,6 @@ def check_off_day(event_date, holiday_dict):
     return (is_weekend and event_date not in holiday_dict) or (
         is_holiday and not holiday_dict[event_date]
     )
-
-
-def update_percent_for_period(
-    percent_for_period,
-    percent_day,
-    is_off_day,
-    total_minutes_worked,
-    cost_per_day,
-    penalty_rate,
-):
-    """
-    Обновление накопленного процента за период на основе ежедневной посещаемости.
-
-    Args:
-        percent_for_period (float): Текущий накопленный процент.
-        percent_day (float): Процент присутствия за день.
-        is_off_day (bool): Является ли день выходным.
-        total_minutes_worked (float): Отработано минут за день.
-        cost_per_day (float): Стоимость одного дня в процентах.
-        penalty_rate (float): Штрафной коэффициент за отсутствие.
-
-    Returns:
-        float: Обновленный процент за период.
-    """
-    logger.debug(
-        f"Updating percent for period. Initial: {percent_for_period}%, "
-        f"Day percent: {percent_day}%, Is off day: {is_off_day}, "
-        f"Total minutes worked: {total_minutes_worked}, "
-        f"Cost per day: {cost_per_day}%, Penalty rate: {penalty_rate}%"
-    )
-
-    if is_off_day and total_minutes_worked > 0:
-        percent_for_period += percent_day * 1.5
-        logger.info(f"Off day with work. Increasing percent by {percent_day * 1.5}%.")
-    elif not is_off_day and total_minutes_worked == 0:
-        penalty = penalty_rate * cost_per_day
-        percent_for_period -= penalty
-        logger.warning(f"Workday with no work. Decreasing percent by {penalty}%.")
-    else:
-        percent_for_period += percent_day
-        logger.info(f"Regular day. Adding {percent_day}% to the period percent.")
-
-    logger.debug(f"Updated percent for period: {percent_for_period}%")
-    return percent_for_period
 
 
 @swagger_auto_schema(
@@ -6753,7 +6356,7 @@ def upsert_signed_staff_attendance(request):
     first_in_local = timezone.localtime(first_in)
     last_out_local = timezone.localtime(last_out)
     work_day = first_in_local.date()
-    date_at = work_day + datetime.timedelta(days=1)
+    date_at = attendance_day.sa_date_at(work_day)
     effective_work_seconds = int((last_out - first_in).total_seconds())
     entry_area = str(entry_terminal["areaName"])
     exit_area = str(exit_terminal["areaName"])
@@ -6781,7 +6384,6 @@ def upsert_signed_staff_attendance(request):
         "effective_work_seconds": effective_work_seconds,
         "effective_work_intervals": effective_work_intervals,
     }
-    # Подписанная запись доверенная: одинакова в обоих режимах отчёта (терминал может быть лифтом).
     variant = attendance_fetcher.variant_to_json(report_fields)
     with _db_atomic():
         attendance, created = models.StaffAttendance.objects.update_or_create(
@@ -8095,24 +7697,7 @@ def staff_detail_by_department_id(request, department_id):
             staff_dict = {staff.id: staff for staff in staff_objects}
             staff_ids = list(staff_dict.keys())
 
-            staff_attendance_qs = models.StaffAttendance.objects.filter(
-                staff_id__in=staff_ids,
-                date_at__range=(start_date, end_date),
-            ).values("staff_id", "date_at", "first_in", "last_out", "area_name_in")
-
-            lesson_attendance_qs = models.LessonAttendance.exclude_report_invalid_days(
-                models.LessonAttendance.objects.filter(
-                    staff_id__in=staff_ids,
-                    date_at__range=(start_date, end_date),
-                )
-            ).values(
-                "staff_id",
-                "date_at",
-                "first_in",
-                "last_out",
-                "latitude",
-                "longitude",
-            )
+            sa_by_day, la_by_day = attendance_day.load_days(staff_ids, start_date, end_date)
 
             absent_reasons_qs = (
                 models.AbsentReason.objects.filter(
@@ -8144,14 +7729,14 @@ def staff_detail_by_department_id(request, department_id):
                 location_searcher = utils.LocationSearcher(location_cache["searcher_payload"] or [])
 
             staff_attendance_map = defaultdict(lambda: defaultdict(list))
-            for sa in staff_attendance_qs:
-                date_key = (sa["date_at"] - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-                staff_attendance_map[sa["staff_id"]][date_key].append(sa)
+            for day, rows in sa_by_day.items():
+                for sa in rows:
+                    staff_attendance_map[sa["staff_id"]][day.strftime("%Y-%m-%d")].append(sa)
 
             lesson_attendance_map = defaultdict(lambda: defaultdict(list))
-            for la in lesson_attendance_qs:
-                date_key = la["date_at"].strftime("%Y-%m-%d")
-                lesson_attendance_map[la["staff_id"]][date_key].append(la)
+            for day, rows in la_by_day.items():
+                for la in rows:
+                    lesson_attendance_map[la["staff_id"]][day.strftime("%Y-%m-%d")].append(la)
 
             absence_map = defaultdict(lambda: defaultdict(list))
             for ar in absent_reasons_qs:
@@ -8195,40 +7780,10 @@ def staff_detail_by_department_id(request, department_id):
                     sa_records = staff_attendance_map.get(staff_id, {}).get(date_key, [])
                     la_records = lesson_attendance_map.get(staff_id, {}).get(date_key, [])
 
-                    first_in = None
-                    last_out = None
-                    area_names = []
-
-                    for sa in sa_records:
-                        if sa["first_in"]:
-                            sa_first_in = sa["first_in"].astimezone(timezone.get_default_timezone())
-                            if not first_in or sa_first_in < first_in:
-                                first_in = sa_first_in
-                        if sa["last_out"]:
-                            sa_last_out = sa["last_out"].astimezone(timezone.get_default_timezone())
-                            if not last_out or sa_last_out > last_out:
-                                last_out = sa_last_out
-                        area_address = utils.resolve_area_address(sa.get("area_name_in"))
-                        if area_address:
-                            area_names.append(area_address)
-
-                    for la in la_records:
-                        if la["first_in"]:
-                            la_first_in = la["first_in"].astimezone(timezone.get_default_timezone())
-                            if not first_in or la_first_in < first_in:
-                                first_in = la_first_in
-                        if la["last_out"]:
-                            la_last_out = la["last_out"].astimezone(timezone.get_default_timezone())
-                            if not last_out or la_last_out > last_out:
-                                last_out = la_last_out
-
-                        closest_location_name = location_searcher.find_nearest(
-                            la["latitude"], la["longitude"], radius=200
-                        )
-                        if closest_location_name != "Unknown Area":
-                            area_names.append(closest_location_name)
-
-                    area_name = area_names[0] if area_names else "Unknown Area"
+                    day = attendance_day.merge_day(sa_records, la_records, location_searcher)
+                    first_in = day["first_in"] and timezone.localtime(day["first_in"])
+                    last_out = day["last_out"] and timezone.localtime(day["last_out"])
+                    area_name = day["area_name_in"] or day["area_name_out"] or "Unknown Area"
 
                     remote_work = remote_work_map.get(staff_id, {}).get(date_key, False)
                     reasons = absence_map.get(staff_id, {}).get(date_key, [])
@@ -8250,8 +7805,6 @@ def staff_detail_by_department_id(request, department_id):
                     results.append(date_result)
 
             paginator = StaffAttendancePagination()
-            # paginate_queryset работает с любой последовательностью;
-            # стаб DRF объявляет только QuerySet.
             result_page = paginator.paginate_queryset(cast(Any, results), request)
             return paginator.get_paginated_response(result_page).data
 
@@ -8527,8 +8080,6 @@ def login_view(request):
     },
 )
 @async_logic.async_drf_view(["GET"])
-# permission_classes типизирован под sync-вьюхи; в рантайме он лишь ставит
-# атрибут, поэтому с async_drf_view работает.
 @permission_classes([permissions.IsAuthenticatedOrAPIKey])  # type: ignore[arg-type]
 async def fetch_data_view(request):
     """

@@ -1,4 +1,3 @@
-import datetime
 import logging
 
 from django.core.management.base import BaseCommand
@@ -122,9 +121,7 @@ class Command(BaseCommand):
 
             view = StaffAttendanceStatsView()
             target_date = view.get_last_working_day(today)
-            next_date = target_date + datetime.timedelta(days=1)
-
-            return view.query_data(target_date, next_date, None)
+            return view.query_data(target_date, None)
 
         register_preload("today_attendance_stats", get_today_attendance_stats)
 

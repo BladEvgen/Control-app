@@ -78,6 +78,7 @@ from monitoring_app.pad_admin_summary import (
     format_lesson_attendance_antifraud_operator_panel,
     format_lesson_attendance_pad_technical_compact,
 )
+from monitoring_app.services import attendance_day
 from monitoring_app.staff_face_ml import (
     allowed_augment_basename,
     allowed_ml_basenames,
@@ -381,7 +382,9 @@ class MonitoringAdminSite(admin.AdminSite):
 
         return JsonResponse(
             {
-                "labels": [str(item["date_at"] - timedelta(days=1)) for item in attendance_data],
+                "labels": [
+                    str(attendance_day.event_day(item["date_at"])) for item in attendance_data
+                ],
                 "data": [item["count"] for item in attendance_data],
             }
         )
@@ -1766,7 +1769,7 @@ class StaffAdmin(admin.ModelAdmin):
             local_value = _to_local_datetime(value)
             if local_value is not None:
                 return local_value.date()
-        return record.date_at - timedelta(days=1)
+        return attendance_day.event_day(record.date_at)
 
     def _is_remote_on_date(self, current_date, remote_periods):
         return any(
@@ -2884,7 +2887,7 @@ class StaffAttendanceAdmin(admin.ModelAdmin):
 
     def event_calendar_day(self, obj):
         if obj.date_at:
-            return (obj.date_at - timedelta(days=1)).strftime("%d.%m.%Y")
+            return attendance_day.event_day(obj.date_at).strftime("%d.%m.%Y")
         return "—"
 
     event_calendar_day.short_description = "День смены"

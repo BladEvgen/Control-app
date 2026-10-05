@@ -13,6 +13,7 @@ from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import Alignment, Font
 
 from monitoring_app import models, utils
+from monitoring_app.services import attendance_day
 
 DEFAULT_DAYS_WITH_DATA = 7
 UNKNOWN_LOCATION_NAME = "Неизвестная локация"
@@ -216,23 +217,15 @@ def _get_sa_event_dates(
     date_from: Optional[datetime.date],
     date_to: Optional[datetime.date],
 ) -> set[datetime.date]:
-    one_day = datetime.timedelta(days=1)
-    qs = models.StaffAttendance.objects.filter(
-        staff_id__in=staff_ids,
-        first_in__isnull=False,
-    )
+    qs = models.StaffAttendance.objects.filter(attendance_day.SA_PRESENT, staff_id__in=staff_ids)
     if date_from is not None and date_to is not None:
         qs = qs.filter(
-            date_at__range=(date_from + one_day, date_to + one_day),
+            date_at__range=(
+                attendance_day.sa_date_at(date_from),
+                attendance_day.sa_date_at(date_to),
+            ),
         )
-
-    result: set[datetime.date] = set()
-    for value in qs.values_list("date_at", flat=True).distinct():
-        date_value = _normalize_to_date(value)
-        if date_value is None:
-            continue
-        result.add(date_value - one_day)
-    return result
+    return {attendance_day.event_day(v) for v in qs.values_list("date_at", flat=True).distinct()}
 
 
 def _get_la_event_dates(
@@ -249,21 +242,11 @@ def _get_la_event_dates(
 
     result: set[datetime.date] = set()
     for value in qs.values_list("date_at", flat=True).distinct():
-        date_value = _normalize_to_date(value)
+        date_value = attendance_day.to_date(value)
         if date_value is None:
             continue
         result.add(date_value)
     return result
-
-
-def _normalize_to_date(value: Any) -> Optional[datetime.date]:
-    if value is None:
-        return None
-    if isinstance(value, datetime.datetime):
-        return value.date()
-    if isinstance(value, datetime.date):
-        return value
-    return None
 
 
 def _is_student_staff(staff: models.Staff) -> bool:
@@ -297,8 +280,6 @@ def _collect_daily_and_summary_rows(
     selected_set = set(selected_dates)
     date_from = selected_dates[0]
     date_to = selected_dates[-1]
-    one_day = datetime.timedelta(days=1)
-
     staff_ids = [staff.id for staff in students]
     staff_map = {
         staff.id: {
@@ -312,16 +293,13 @@ def _collect_daily_and_summary_rows(
     la_by_key: dict[tuple[datetime.date, int], list[dict[str, Any]]] = defaultdict(list)
 
     sa_qs = models.StaffAttendance.objects.filter(
+        attendance_day.SA_PRESENT,
         staff_id__in=staff_ids,
-        date_at__range=(date_from + one_day, date_to + one_day),
-        first_in__isnull=False,
+        date_at__range=(attendance_day.sa_date_at(date_from), attendance_day.sa_date_at(date_to)),
     ).values("staff_id", "date_at", "first_in", "area_name_in", "area_name_out")
 
     for record in sa_qs:
-        event_date = _normalize_to_date(record.get("date_at"))
-        if event_date is None:
-            continue
-        event_date = event_date - one_day
+        event_date = attendance_day.event_day(record["date_at"])
         if event_date not in selected_set:
             continue
         key = (event_date, int(record["staff_id"]))
@@ -335,7 +313,7 @@ def _collect_daily_and_summary_rows(
     ).values("staff_id", "date_at", "first_in", "latitude", "longitude")
 
     for record in la_qs:
-        event_date = _normalize_to_date(record.get("date_at"))
+        event_date = attendance_day.to_date(record.get("date_at"))
         if event_date is None or event_date not in selected_set:
             continue
         key = (event_date, int(record["staff_id"]))
