@@ -4,6 +4,7 @@ import React, {
   useRef,
   useCallback,
   useMemo,
+  useId,
 } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -13,6 +14,7 @@ import {
   FaChevronLeft,
   FaChevronRight,
 } from "react-icons/fa";
+import { validRange } from "../utils/reportDates";
 
 const MONTHS_RU = [
   "Январь",
@@ -66,17 +68,17 @@ function formatFullRu(s: string): string {
   const d = strToDate(s);
   if (!d) return s;
   try {
-    return d.toLocaleDateString("ru-RU", {
+    const label = d.toLocaleDateString("ru-RU", {
       weekday: "long",
       day: "numeric",
       month: "long",
       year: "numeric",
     });
+    return label.charAt(0).toUpperCase() + label.slice(1);
   } catch {
     return formatDdMmYyyy(s);
   }
 }
-
 
 interface CalCell {
   dateStr: string;
@@ -152,7 +154,6 @@ function buildGrid(
   return cells;
 }
 
-
 interface EditableDateFieldProps {
   value: string;
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -168,10 +169,8 @@ interface EditableDateFieldProps {
   ariaLabel?: string;
 }
 
-
 const POPOVER_W = 308;
 const POPOVER_H_EST = 400;
-
 
 const EditableDateField: React.FC<EditableDateFieldProps> = ({
   value,
@@ -186,6 +185,8 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
   maxDate,
   ariaLabel,
 }) => {
+  const titleId = useId();
+  const inputId = useId();
   const [isOpen, setIsOpen] = useState(false);
   const [draft, setDraft] = useState(value);
   const [viewYear, setViewYear] = useState(() => new Date().getFullYear());
@@ -209,10 +210,11 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
     const rect = el.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    const width = Math.min(POPOVER_W, vw - 16);
 
     let left = rect.left;
-    if (left + POPOVER_W > vw - 12) left = rect.right - POPOVER_W;
-    left = Math.max(8, Math.min(left, vw - POPOVER_W - 8));
+    if (left + width > vw - 8) left = rect.right - width;
+    left = Math.max(8, Math.min(left, vw - width - 8));
 
     const below = vh - rect.bottom - 12;
     const top =
@@ -220,7 +222,13 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
         ? rect.bottom + 8
         : Math.max(8, rect.top - POPOVER_H_EST - 8);
 
-    setPopStyle({ top, left, width: POPOVER_W });
+    setPopStyle({
+      top,
+      left,
+      width,
+      maxHeight: vh - top - 8,
+      overflowY: "auto",
+    });
   }, []);
 
   const open = useCallback(() => {
@@ -234,8 +242,11 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
 
   const apply = useCallback(
     (ds: string) => {
-      onChange({ target: { value: ds } } as React.ChangeEvent<HTMLInputElement>);
+      onChange({
+        target: { value: ds },
+      } as React.ChangeEvent<HTMLInputElement>);
       setIsOpen(false);
+      triggerRef.current?.focus();
     },
     [onChange],
   );
@@ -243,6 +254,7 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
   const cancel = useCallback(() => {
     setDraft(value);
     setIsOpen(false);
+    triggerRef.current?.focus();
   }, [value]);
 
   useEffect(() => {
@@ -261,7 +273,10 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
 
     document.addEventListener("mousedown", onMouse);
     document.addEventListener("keydown", onKey);
-    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("scroll", onScroll, {
+      capture: true,
+      passive: true,
+    });
     window.addEventListener("resize", onResize);
     return () => {
       document.removeEventListener("mousedown", onMouse);
@@ -317,16 +332,16 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
 
   const cellCls = useCallback((c: CalCell): string => {
     const base =
-      "relative flex items-center justify-center rounded-lg text-[12px] font-medium select-none transition-all duration-100 aspect-square focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1";
+      "relative flex items-center justify-center rounded-lg text-[12px] font-medium select-none transition-all duration-100 aspect-square focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-1";
 
     if (c.isDisabled) {
       return `${base} text-slate-300 dark:text-slate-600 cursor-not-allowed`;
     }
     if (c.isSelected) {
-      return `${base} bg-blue-600 text-white shadow-lg scale-[1.08] z-10 cursor-pointer`;
+      return `${base} bg-primary-600 text-white shadow-lg scale-[1.08] z-10 cursor-pointer`;
     }
     if (c.isToday) {
-      return `${base} ring-1 ring-blue-400 dark:ring-blue-500 font-semibold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/30 cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-900/50`;
+      return `${base} ring-1 ring-primary-400 dark:ring-primary-500 font-semibold text-primary-700 dark:text-primary-300 bg-primary-50 dark:bg-primary-900/30 cursor-pointer hover:bg-primary-100 dark:hover:bg-primary-900/50`;
     }
     if (!c.isCurrent) {
       return `${base} text-slate-300 dark:text-slate-600 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40 hover:text-slate-500 dark:hover:text-slate-400`;
@@ -337,135 +352,166 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
     return `${base} text-slate-700 dark:text-slate-200 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/60`;
   }, []);
 
-  const triggerText = displayLabel ?? formatDdMmYyyy(value);
+  const rawTriggerText = displayLabel ?? formatDdMmYyyy(value);
+  const triggerText =
+    rawTriggerText.charAt(0).toUpperCase() + rawTriggerText.slice(1);
 
   const defaultTriggerCls =
-    "cursor-pointer transition-colors duration-150 hover:text-blue-600 dark:hover:text-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded";
+    "cursor-pointer transition-colors duration-150 hover:text-primary-600 dark:hover:text-primary-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 rounded";
 
   const popover = createPortal(
     <AnimatePresence>
       {isOpen && (
         <div
           ref={popoverRef}
-          className="fixed z-[9999]"
+          className="fixed z-[9999] date-popover"
+          role="dialog"
+          aria-labelledby={titleId}
           style={popStyle}
         >
-        <motion.div
-          key="dp"
-          initial={{ opacity: 0, scale: 0.93, y: -10 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.93, y: -10 }}
-          transition={{ type: "spring", damping: 28, stiffness: 440, mass: 0.6 }}
-          className="rounded-2xl border border-slate-200 dark:border-slate-700/80 bg-white dark:bg-slate-900 shadow-[0_20px_60px_-8px_rgba(0,0,0,0.18),0_0_0_1px_rgba(0,0,0,0.04)] dark:shadow-[0_20px_60px_-8px_rgba(0,0,0,0.6)] overflow-hidden select-none"
-        >
-          <div className="flex items-center justify-between px-4 pt-3.5 pb-3 border-b border-slate-100 dark:border-slate-700/60">
-            <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
-              <FaRegCalendarAlt className="w-3.5 h-3.5 opacity-60 shrink-0" />
-              <span className="text-[12.5px] font-semibold tracking-tight">
-                Выберите дату
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={cancel}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              aria-label="Закрыть"
-            >
-              <FaTimes className="w-3 h-3" />
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2 px-4 pt-3 pb-2.5">
-            {[
-              { label: "Сегодня", val: todayStr },
-              { label: "Вчера", val: yesterdayStr },
-            ].map(({ label: lbl, val }) => (
-              <button
-                key={lbl}
-                type="button"
-                onClick={() => apply(val)}
-                className={`px-3 py-1 rounded-full text-[11px] font-medium border transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
-                  value === val
-                    ? "bg-blue-600 text-white border-blue-600 shadow-sm"
-                    : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-600 hover:border-blue-400 hover:text-blue-600 dark:hover:text-blue-300"
-                }`}
-              >
-                {lbl}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex items-center justify-between px-3 pb-2">
-            <button
-              type="button"
-              onClick={prevMonth}
-              className="p-1.5 rounded-lg text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              aria-label="Предыдущий месяц"
-            >
-              <FaChevronLeft className="w-3 h-3" />
-            </button>
-
-            <span className="text-[13px] font-semibold text-slate-700 dark:text-slate-200">
-              {MONTHS_RU[viewMonth]}&nbsp;{viewYear}
-            </span>
-
-            <button
-              type="button"
-              onClick={nextMonth}
-              disabled={isNextDisabled}
-              className="p-1.5 rounded-lg text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors disabled:opacity-25 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              aria-label="Следующий месяц"
-            >
-              <FaChevronRight className="w-3 h-3" />
-            </button>
-          </div>
-
-          <div className="grid grid-cols-7 px-3 mb-0.5">
-            {WEEKDAYS_SHORT.map((wd, i) => (
-              <div
-                key={wd}
-                className={`text-center text-[10px] font-medium py-1 ${
-                  i >= 5
-                    ? "text-rose-400/80 dark:text-rose-400/50"
-                    : "text-slate-400 dark:text-slate-500"
-                }`}
-              >
-                {wd}
+          <motion.div
+            key="dp"
+            initial={{ opacity: 0, scale: 0.93, y: -10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.93, y: -10 }}
+            transition={{
+              type: "spring",
+              damping: 28,
+              stiffness: 440,
+              mass: 0.6,
+            }}
+            className="rounded-2xl border border-slate-200 dark:border-slate-700/80 bg-white dark:bg-slate-900 shadow-[0_20px_60px_-8px_rgba(0,0,0,0.18),0_0_0_1px_rgba(0,0,0,0.04)] dark:shadow-[0_20px_60px_-8px_rgba(0,0,0,0.6)] overflow-hidden select-none"
+          >
+            <div className="flex items-center justify-between px-4 pt-3.5 pb-3 border-b border-slate-100 dark:border-slate-700/60">
+              <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                <FaRegCalendarAlt className="w-3.5 h-3.5 opacity-60 shrink-0" />
+                <span id={titleId} className="text-sm font-semibold">
+                  Выберите дату
+                </span>
               </div>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-7 gap-px px-3 pb-3">
-            {cells.map((cell) => (
               <button
-                key={cell.dateStr}
                 type="button"
-                disabled={cell.isDisabled}
-                tabIndex={cell.isDisabled ? -1 : 0}
-                onClick={() => {
-                  if (!cell.isDisabled) {
-                    setDraft(cell.dateStr);
-                    apply(cell.dateStr);
-                  }
-                }}
-                className={cellCls(cell)}
+                onClick={cancel}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                aria-label="Закрыть"
               >
-                {cell.day}
-                {cell.isToday && !cell.isSelected && (
-                  <span className="absolute bottom-[3px] left-1/2 -translate-x-1/2 w-[3px] h-[3px] rounded-full bg-blue-500" />
-                )}
+                <FaTimes className="w-3 h-3" />
               </button>
-            ))}
-          </div>
-
-          {footerLabel && (
-            <div className="px-4 pt-2 pb-3.5 border-t border-slate-100 dark:border-slate-700/60">
-              <p className="text-center text-[11px] text-slate-400 dark:text-slate-500 leading-snug capitalize">
-                {footerLabel}
-              </p>
             </div>
-          )}
-        </motion.div>
+
+            <div className="px-4 pt-3">
+              <label htmlFor={inputId} className="sr-only">
+                Дата
+              </label>
+              <input
+                id={inputId}
+                type="date"
+                value={draft}
+                max={maxDateStr}
+                autoFocus
+                className="min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-base text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                onChange={(event) => {
+                  const date = event.target.value;
+                  if (
+                    validRange({ startDate: date, endDate: date }) &&
+                    date <= maxDateStr
+                  )
+                    apply(date);
+                }}
+              />
+            </div>
+
+            <div className="flex items-center gap-2 px-4 pt-3 pb-2.5">
+              {[
+                { label: "Сегодня", val: todayStr },
+                { label: "Вчера", val: yesterdayStr },
+              ].map(({ label: lbl, val }) => (
+                <button
+                  key={lbl}
+                  type="button"
+                  onClick={() => apply(val)}
+                  className={`px-3 py-1 rounded-full text-[11px] font-medium border transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 ${
+                    value === val
+                      ? "bg-primary-600 text-white border-primary-600 shadow-sm"
+                      : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-600 hover:border-primary-400 hover:text-primary-600 dark:hover:text-primary-300"
+                  }`}
+                >
+                  {lbl}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between px-3 pb-2">
+              <button
+                type="button"
+                onClick={prevMonth}
+                className="p-1.5 rounded-lg text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                aria-label="Предыдущий месяц"
+              >
+                <FaChevronLeft className="w-3 h-3" />
+              </button>
+
+              <span className="text-[13px] font-semibold text-slate-700 dark:text-slate-200">
+                {MONTHS_RU[viewMonth]}&nbsp;{viewYear}
+              </span>
+
+              <button
+                type="button"
+                onClick={nextMonth}
+                disabled={isNextDisabled}
+                className="p-1.5 rounded-lg text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors disabled:opacity-25 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                aria-label="Следующий месяц"
+              >
+                <FaChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-7 px-3 mb-0.5">
+              {WEEKDAYS_SHORT.map((wd, i) => (
+                <div
+                  key={wd}
+                  className={`text-center text-[10px] font-medium py-1 ${
+                    i >= 5
+                      ? "text-rose-400/80 dark:text-rose-400/50"
+                      : "text-slate-400 dark:text-slate-500"
+                  }`}
+                >
+                  {wd}
+                </div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-7 gap-px px-3 pb-3">
+              {cells.map((cell) => (
+                <button
+                  key={cell.dateStr}
+                  type="button"
+                  disabled={cell.isDisabled}
+                  tabIndex={cell.isDisabled ? -1 : 0}
+                  onClick={() => {
+                    if (!cell.isDisabled) {
+                      setDraft(cell.dateStr);
+                      apply(cell.dateStr);
+                    }
+                  }}
+                  className={cellCls(cell)}
+                >
+                  {cell.day}
+                  {cell.isToday && !cell.isSelected && (
+                    <span className="absolute bottom-[3px] left-1/2 -translate-x-1/2 w-[3px] h-[3px] rounded-full bg-primary-500" />
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {footerLabel && (
+              <div className="px-4 pt-2 pb-3.5 border-t border-slate-100 dark:border-slate-700/60">
+                <p className="text-center text-[11px] text-slate-400 dark:text-slate-500 leading-snug">
+                  {footerLabel}
+                </p>
+              </div>
+            )}
+          </motion.div>
         </div>
       )}
     </AnimatePresence>,
@@ -475,7 +521,9 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
   return (
     <div className={containerClassName ?? "flex flex-col items-center"}>
       {label && (
-        <label className={labelClassName ?? "mb-2 text-center text-sm text-white"}>
+        <label
+          className={labelClassName ?? "mb-2 text-center text-sm text-white"}
+        >
           {label}
         </label>
       )}
@@ -487,10 +535,10 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
         aria-label={ariaLabel ?? "Выбрать дату"}
         aria-expanded={isOpen}
         aria-haspopup="dialog"
-        className={displayClassName ?? defaultTriggerCls}
+        className={`date-field-trigger ${displayClassName ?? defaultTriggerCls}`}
       >
         {startIcon}
-        <span className={startIcon ? "capitalize" : undefined}>{triggerText}</span>
+        <span>{triggerText}</span>
         {isLoading && (
           <span
             aria-hidden

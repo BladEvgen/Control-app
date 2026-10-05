@@ -321,16 +321,16 @@ function ModeCard({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`group flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold transition-[background-color,color,box-shadow] duration-200 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-blue-300/70 dark:focus-visible:ring-offset-slate-950 ${
+      className={`group flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold transition-[background-color,color,box-shadow] duration-200 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-primary-300/70 dark:focus-visible:ring-offset-slate-950 ${
         active
-          ? "bg-white text-blue-950 shadow-sm dark:bg-slate-800 dark:text-blue-50"
+          ? "bg-white text-primary-950 shadow-sm dark:bg-slate-800 dark:text-primary-50"
           : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
       }`}
     >
       <span
         className={
           active
-            ? "text-blue-600 dark:text-blue-400"
+            ? "text-primary-600 dark:text-primary-400"
             : "text-slate-400 group-hover:text-slate-500 dark:text-slate-500"
         }
         aria-hidden
@@ -496,8 +496,8 @@ const FaceLabPage: React.FC = () => {
       createTheme({
         palette: {
           mode: muiDark ? "dark" : "light",
-          primary: { main: "#2563eb" },
-          secondary: { main: "#7c3aed" },
+          primary: { main: muiDark ? "#fafafa" : "#18181b" },
+          secondary: { main: muiDark ? "#a1a1aa" : "#52525b" },
         },
         shape: { borderRadius: 12 },
         typography: { fontFamily: '"Inter", "system-ui", "sans-serif"' },
@@ -1079,7 +1079,7 @@ const FaceLabPage: React.FC = () => {
   return (
     <ThemeProvider theme={muiTheme}>
       <div className="mx-auto w-full max-w-[92rem] px-3 py-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-slate-900 dark:text-slate-100 sm:px-5 sm:py-6 md:px-8 lg:px-10">
-        <header className="mb-5 rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-sm shadow-slate-200/40 backdrop-blur dark:border-slate-700/70 dark:bg-slate-950/55 dark:shadow-black/20 sm:p-5">
+        <header className="mb-5 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900 sm:p-5">
           <Breadcrumbs items={[{ label: "Face Lab", path: undefined }]} />
           <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -1127,9 +1127,9 @@ const FaceLabPage: React.FC = () => {
               className="w-full space-y-5"
             >
               <div
-                role="tablist"
+                role="group"
                 aria-label="Режим работы"
-                className="flex gap-1 rounded-xl border border-slate-200/90 bg-slate-100/80 p-1 dark:border-slate-700/80 dark:bg-slate-900/60"
+                className="flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-slate-100 p-1 dark:border-slate-700 dark:bg-slate-900"
               >
                 <ModeCard
                   active={mode === "search"}
@@ -1283,36 +1283,34 @@ const FaceLabPage: React.FC = () => {
                         "&:hover": {
                           borderColor:
                             theme.palette.mode === "dark"
-                              ? "rgba(96, 165, 250, 0.7)"
-                              : "rgba(37, 99, 235, 0.55)",
+                              ? "rgba(250, 250, 250, 0.35)"
+                              : "rgba(24, 24, 27, 0.35)",
                           backgroundColor:
                             theme.palette.mode === "dark"
-                              ? "rgba(37, 99, 235, 0.18)"
-                              : "rgba(239, 246, 255, 0.95)",
+                              ? "rgba(250, 250, 250, 0.08)"
+                              : "rgba(244, 244, 245, 0.95)",
                           color:
                             theme.palette.mode === "dark"
-                              ? "rgb(219, 234, 254)"
-                              : "rgb(30, 64, 175)",
+                              ? "rgb(250, 250, 250)"
+                              : "rgb(24, 24, 27)",
                         },
                         "&.Mui-selected": {
                           backgroundColor:
                             theme.palette.mode === "dark"
-                              ? "rgb(59, 130, 246)"
-                              : "rgb(37, 99, 235)",
+                              ? "rgb(63, 63, 70)"
+                              : "rgb(24, 24, 27)",
                           color: "#fff",
                           borderColor:
                             theme.palette.mode === "dark"
-                              ? "rgb(147, 197, 253)"
-                              : "rgb(37, 99, 235)",
+                              ? "rgb(113, 113, 122)"
+                              : "rgb(24, 24, 27)",
                           boxShadow:
-                            theme.palette.mode === "dark"
-                              ? "0 0 0 1px rgba(191,219,254,0.22), 0 6px 18px rgba(30,64,175,0.35)"
-                              : "0 0 0 1px rgba(37,99,235,0.16), 0 6px 18px rgba(37,99,235,0.22)",
+                            theme.palette.mode === "dark" ? "none" : "none",
                           "&:hover": {
                             backgroundColor:
                               theme.palette.mode === "dark"
-                                ? "rgb(37, 99, 235)"
-                                : "rgb(29, 78, 216)",
+                                ? "rgb(82, 82, 91)"
+                                : "rgb(39, 39, 42)",
                           },
                         },
                       },
@@ -1380,11 +1378,11 @@ const FaceLabPage: React.FC = () => {
                               textTransform: "none",
                               fontWeight: 700,
                               fontSize: "0.95rem",
-                              boxShadow: "0 4px 14px rgba(37, 99, 235, 0.3)",
+                              boxShadow: "0 4px 14px rgba(0, 0, 0, 0.16)",
                               transition:
                                 "box-shadow 0.18s ease, transform 0.18s ease, background-color 0.18s ease",
                               "&:hover": {
-                                boxShadow: "0 6px 18px rgba(37, 99, 235, 0.36)",
+                                boxShadow: "0 6px 18px rgba(0, 0, 0, 0.22)",
                                 transform: "translateY(-1px)",
                               },
                               "&:active": {
@@ -1563,12 +1561,11 @@ const FaceLabPage: React.FC = () => {
                                 borderRadius: 2,
                                 textTransform: "none",
                                 fontWeight: 700,
-                                boxShadow: "0 4px 14px rgba(37, 99, 235, 0.3)",
+                                boxShadow: "0 4px 14px rgba(0, 0, 0, 0.16)",
                                 transition:
                                   "box-shadow 0.18s ease, transform 0.18s ease",
                                 "&:hover": {
-                                  boxShadow:
-                                    "0 6px 18px rgba(37, 99, 235, 0.36)",
+                                  boxShadow: "0 6px 18px rgba(0, 0, 0, 0.22)",
                                   transform: "translateY(-1px)",
                                 },
                                 "&:active": { transform: "translateY(0)" },

@@ -227,7 +227,7 @@ export function FaceLabStaffCombobox({
         onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
         autoComplete="off"
-        className={`min-h-[44px] w-full rounded-lg border bg-white px-3 py-2.5 text-base text-slate-900 outline-none transition-[background-color,border-color,box-shadow] placeholder:text-slate-400 hover:border-blue-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/25 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:hover:border-blue-500/60 dark:focus:border-blue-400 dark:focus:ring-blue-400/20 sm:text-sm ${
+        className={`min-h-[44px] w-full rounded-lg border bg-white px-3 py-2.5 text-base text-slate-900 outline-none transition-[background-color,border-color,box-shadow] placeholder:text-slate-400 hover:border-primary-300 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/25 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:hover:border-primary-500/60 dark:focus:border-primary-400 dark:focus:ring-primary-400/20 sm:text-sm ${
           selected && value
             ? "border-emerald-400/80 ring-2 ring-emerald-500/25 dark:border-emerald-600/60 dark:ring-emerald-400/20"
             : "border-slate-300 dark:border-slate-600"
@@ -274,8 +274,8 @@ export function FaceLabStaffCombobox({
                 aria-selected={idx === highlight}
                 className={`cursor-pointer px-3 py-2.5 text-sm transition-colors ${
                   idx === highlight
-                    ? "bg-blue-50 text-blue-950 dark:bg-[#10254a] dark:text-blue-50"
-                    : "hover:bg-blue-50/70 dark:hover:bg-blue-500/10"
+                    ? "bg-primary-50 text-primary-950 dark:bg-[#10254a] dark:text-primary-50"
+                    : "hover:bg-primary-50/70 dark:hover:bg-primary-500/10"
                 }`}
                 onMouseDown={(ev) => ev.preventDefault()}
                 onClick={() => pick(o)}
@@ -286,7 +286,7 @@ export function FaceLabStaffCombobox({
                     <span
                       className={`font-medium ${
                         idx === highlight
-                          ? "text-blue-950 dark:text-blue-50"
+                          ? "text-primary-950 dark:text-primary-50"
                           : "text-slate-900 dark:text-slate-100"
                       }`}
                     >
@@ -295,7 +295,7 @@ export function FaceLabStaffCombobox({
                     <span
                       className={`mt-0.5 block text-xs leading-snug ${
                         idx === highlight
-                          ? "text-blue-900/70 dark:text-blue-100/75"
+                          ? "text-primary-900/70 dark:text-primary-100/75"
                           : "text-slate-600 dark:text-slate-400"
                       }`}
                     >

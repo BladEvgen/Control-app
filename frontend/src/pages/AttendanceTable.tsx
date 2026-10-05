@@ -213,11 +213,16 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
         custom={idx}
       >
         <div className="p-4">
-          <div className="flex justify-between items-start mb-3">
-            <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+          <div className="flex justify-between items-start gap-3 mb-3">
+            <span className="shrink-0 text-sm font-medium text-gray-900 dark:text-gray-100">
               {formatDateFromKeyRu(date)}
             </span>
-            <span className={"text-xs font-medium " + status.text}>
+            <span
+              className={
+                "min-w-0 text-right break-words text-xs font-medium " +
+                status.text
+              }
+            >
               {statusText}
             </span>
           </div>

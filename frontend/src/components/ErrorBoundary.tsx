@@ -48,7 +48,7 @@ class ErrorBoundary extends Component<Props, State> {
               <div className="mb-6 p-4 rounded-full bg-danger-100 dark:bg-danger-700/20">
                 <FaExclamationTriangle className="w-16 h-16 text-danger-600 dark:text-danger-400" />
               </div>
-              <h2 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-primary-600 to-secondary-600 bg-clip-text text-transparent dark:from-primary-400 dark:to-secondary-400 mb-3">
+              <h2 className="text-2xl md:text-3xl font-semibold text-gray-900 dark:text-gray-100 mb-3">
                 {chunkError
                   ? "Нужно перезапустить приложение"
                   : "Ошибка загрузки"}

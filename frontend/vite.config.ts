@@ -1,6 +1,6 @@
 import { defineConfig, type Plugin } from "vite";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import legacy from "@vitejs/plugin-legacy";
 
 type AppBuildMeta = {
   buildId: string;
@@ -50,39 +50,21 @@ const buildMetadataPlugin = (buildMeta: AppBuildMeta): Plugin => ({
   },
 });
 
-export default defineConfig(({ mode }) => {
-  const withLegacy = mode === "legacy";
+export default defineConfig(() => {
   const buildMeta = resolveBuildMeta();
 
   return {
     define: {
       __APP_BUILD_META__: JSON.stringify(buildMeta),
     },
-    plugins: [
-      react(),
-      buildMetadataPlugin(buildMeta),
-      ...(withLegacy
-        ? [
-            legacy({
-              targets: [
-                "defaults",
-                "chrome >= 61",
-                "ios_saf >= 12",
-                "android >= 7",
-              ],
-              renderLegacyChunks: true,
-              modernPolyfills: true,
-            }),
-          ]
-        : []),
-    ],
+    plugins: [tailwindcss(), react(), buildMetadataPlugin(buildMeta)],
     server: {
       host: "0.0.0.0",
       port: 5173,
     },
     build: {
       emptyOutDir: false,
-      cssTarget: withLegacy ? "chrome61" : "esnext",
+      cssTarget: "esnext",
       chunkSizeWarningLimit: 1000,
       rollupOptions: {
         output: {

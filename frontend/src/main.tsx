@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { Provider } from "react-redux";
+import { MotionConfig } from "framer-motion";
 import "@fontsource/inter/300.css";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
@@ -15,6 +16,7 @@ import "@fontsource/fira-code/500.css";
 import App from "./App.tsx";
 import ErrorBoundary from "./components/ErrorBoundary.tsx";
 import "./index.css";
+import "./workspace.css";
 import axios from "axios";
 import { store } from "./store";
 import { clearHardReloadParams } from "./utils/appAutoReload";
@@ -97,7 +99,9 @@ if (!rootEl) {
       <React.StrictMode>
         <ErrorBoundary>
           <Provider store={store}>
-            <App />
+            <MotionConfig reducedMotion="user">
+              <App />
+            </MotionConfig>
           </Provider>
         </ErrorBoundary>
       </React.StrictMode>,

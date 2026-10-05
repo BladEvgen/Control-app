@@ -4,12 +4,7 @@ import { memo, useId } from "react";
 const THUMB_OFFSET_PX = 20;
 
 type ToggleVariant =
-  | "default"
-  | "purple"
-  | "blue"
-  | "rose"
-  | "orange"
-  | "green";
+  "default" | "purple" | "blue" | "rose" | "orange" | "green";
 
 type Props = {
   checked: boolean;
@@ -106,7 +101,7 @@ function ToggleInner({
     <label
       htmlFor={inputId}
       className={[
-        "inline-flex items-center gap-3 select-none cursor-pointer rounded-lg",
+        "inline-flex min-h-11 items-center gap-3 select-none cursor-pointer rounded-lg",
         hitAreaClasses,
         disabled ? "opacity-60 cursor-not-allowed" : "",
         "transition-opacity duration-200",
@@ -116,7 +111,11 @@ function ToggleInner({
       <span
         className={[
           "relative inline-block",
-          labelPosition === "left" ? "order-1" : checked ? "order-1" : "order-0",
+          labelPosition === "left"
+            ? "order-1"
+            : checked
+              ? "order-1"
+              : "order-0",
         ].join(" ")}
       >
         <input
@@ -172,7 +171,11 @@ function ToggleInner({
         <span
           className={[
             "text-sm text-slate-900 dark:text-slate-100/90 transition-colors duration-200",
-            labelPosition === "left" ? "order-0" : checked ? "order-0" : "order-1",
+            labelPosition === "left"
+              ? "order-0"
+              : checked
+                ? "order-0"
+                : "order-1",
             labelClassName ?? "",
           ].join(" ")}
         >

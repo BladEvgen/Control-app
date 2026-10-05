@@ -26,22 +26,20 @@ const Notification: React.FC<NotificationProps> = ({
       ? "text-yellow-700 dark:text-yellow-300"
       : "text-red-700 dark:text-red-300";
 
-  const animationClass = type === "warning" ? "animate-bounce" : "animate-once";
-
   return (
-    <div className="flex flex-col justify-center items-center h-screen px-4">
+    <div className="my-4">
       <div
-        className={`${bgColor} ${borderColor} ${textColor} px-8 py-6 rounded-lg shadow-lg transition transform duration-500 ease-in-out ${animationClass} max-w-lg w-full mx-auto`}
+        className={`${bgColor} ${borderColor} ${textColor} border px-4 py-4 rounded-lg w-full`}
         role="alert"
       >
-        <p className="font-bold text-xl md:text-2xl">
+        <p className="font-semibold text-base">
           {type === "warning" ? "Предупреждение!" : "Ошибка!"}
         </p>
-        <p className="text-lg md:text-xl">{message}</p>
+        <p className="mt-1 text-sm">{message}</p>
         {link && (
           <Link
             to={link}
-            className="mt-6 bg-gray-800 text-white px-6 py-3 rounded-lg shadow-md hover:bg-gray-900 transition transform hover:-translate-y-1 hover:scale-105 flex items-center justify-center"
+            className="mt-3 min-h-11 underline underline-offset-4 inline-flex items-center"
           >
             <FaHome className="mr-2" />
             {linkText ? linkText : "Вернуться на главную"}

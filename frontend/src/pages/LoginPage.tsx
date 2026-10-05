@@ -10,59 +10,14 @@ import {
   FaEye,
   FaEyeSlash,
   FaSignInAlt,
-  FaSpinner,
   FaUser,
   FaLock,
   FaCheckCircle,
 } from "react-icons/fa";
-import { FaBug } from "react-icons/fa6";
+import logoSrc from "../assets/logo.png";
 import { apiUrl, isDebug } from "../../apiConfig";
-import { motion, AnimatePresence, Variants } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../store/hooks";
-
-const errorVariants = {
-  hidden: { opacity: 0, y: -10 },
-  visible: { opacity: 1, y: 0 },
-  exit: { opacity: 0, y: 10 },
-};
-
-const pulseVariants: Variants = {
-  initial: { scale: 1 },
-  animate: {
-    scale: [1, 1.05, 1],
-    transition: { duration: 1.5, repeat: Infinity, ease: "easeInOut" as const },
-  },
-};
-
-const containerVariants: Variants = {
-  hidden: { opacity: 0, y: 20 },
-  visible: {
-    opacity: 1,
-    y: 0,
-    transition: {
-      duration: 0.5,
-      staggerChildren: 0.1,
-    },
-  },
-};
-
-const itemVariants: Variants = {
-  hidden: { opacity: 0, y: 10 },
-  visible: { opacity: 1, y: 0 },
-};
-
-const successVariants: Variants = {
-  hidden: { scale: 0, opacity: 0 },
-  visible: {
-    scale: 1,
-    opacity: 1,
-    transition: {
-      type: "spring",
-      stiffness: 200,
-      damping: 15,
-    },
-  },
-};
 
 const LoginPage = () => {
   const [username, setUsername] = useState("");
@@ -242,272 +197,165 @@ const LoginPage = () => {
     }
   };
 
+  const fieldState = (field: "username" | "password") =>
+    touchedFields[field] && fieldErrors[field] ? "true" : undefined;
+
   return (
-    <div className="flex flex-col min-h-screen">
-      <div className="flex-grow flex flex-col items-center justify-center p-4">
-        <motion.div
-          className="card w-full max-w-md p-8 md:p-10 relative"
-          variants={containerVariants}
-          initial="hidden"
-          animate="visible"
-        >
-          <motion.div variants={itemVariants} className="relative z-10">
-            <h2 className="text-2xl md:text-3xl font-bold text-center text-gray-800 dark:text-gray-100 mb-2">
-              Добро пожаловать!
-            </h2>
-            <p className="text-center text-gray-600 dark:text-gray-400 mb-8 text-sm md:text-base">
-              Войдите в свою учётную запись
-            </p>
-          </motion.div>
-          <motion.form
-            variants={itemVariants}
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleSubmit();
-            }}
-            className="space-y-5 relative z-10"
-          >
-            <div className="space-y-5">
-              <div>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                    <FaUser
-                      className="text-gray-400 dark:text-gray-500"
-                      size={18}
-                    />
-                  </div>
-                  <input
-                    ref={usernameInputRef}
-                    className={`w-full rounded-lg border bg-white py-3 pl-12 pr-4 text-base text-gray-900 transition-all duration-300 placeholder:text-gray-400 focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-900/90 dark:text-gray-100 dark:placeholder:text-gray-500 ${
-                      touchedFields.username && fieldErrors.username
-                        ? "border-danger-500 focus:border-danger-500 focus:ring-danger-500/30 dark:border-danger-500"
-                        : touchedFields.username && username.trim()
-                          ? "border-primary-500 focus:border-primary-500 focus:ring-primary-500/35 dark:border-primary-400 dark:focus:border-primary-400"
-                          : "border-gray-200 focus:border-primary-500 focus:ring-primary-500/30 dark:border-gray-600 dark:focus:border-primary-400"
-                    }`}
-                    value={username}
-                    onChange={(e) => {
-                      setUsername(e.target.value);
-                      if (touchedFields.username) {
-                        setFieldErrors((prev) => ({
-                          ...prev,
-                          username: undefined,
-                        }));
-                      }
-                    }}
-                    onBlur={() => handleFieldBlur("username")}
-                    placeholder="Логин"
-                    type="text"
-                    name="username"
-                    autoComplete="username"
-                    disabled={isSubmitting}
-                    aria-label="Логин"
-                    aria-invalid={
-                      touchedFields.username && !!fieldErrors.username
-                    }
-                    aria-describedby={
-                      touchedFields.username && fieldErrors.username
-                        ? "username-error"
-                        : undefined
-                    }
-                  />
-                  {touchedFields.username &&
-                    username.trim() &&
-                    !fieldErrors.username && (
-                      <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none">
-                        <FaCheckCircle
-                          className="text-primary-600 dark:text-primary-400"
-                          size={18}
-                        />
-                      </div>
-                    )}
-                </div>
-                <AnimatePresence>
-                  {touchedFields.username && fieldErrors.username && (
-                    <motion.p
-                      id="username-error"
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="mt-1 text-sm text-red-600 dark:text-red-400"
-                    >
-                      {fieldErrors.username}
-                    </motion.p>
-                  )}
-                </AnimatePresence>
-              </div>
+    <div className="login">
+      <div className="shell-crest shell-crest-page" aria-hidden />
+      <div className="shell-crest login-crest" aria-hidden />
+      <motion.form
+        className="login-panel"
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          handleSubmit();
+        }}
+        noValidate
+      >
+        <div className="login-brand">
+          <img src={logoSrc} alt="" />
+          <div>
+            <h1>Посещаемость</h1>
+            <p>КРМУ · вход в систему</p>
+          </div>
+        </div>
 
-              <div>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                    <FaLock
-                      className="text-gray-400 dark:text-gray-500"
-                      size={18}
-                    />
-                  </div>
-                  <input
-                    className={`w-full rounded-lg border bg-white py-3 pl-12 pr-12 text-base text-gray-900 transition-all duration-300 placeholder:text-gray-400 focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-900/90 dark:text-gray-100 dark:placeholder:text-gray-500 ${
-                      touchedFields.password && fieldErrors.password
-                        ? "border-danger-500 focus:border-danger-500 focus:ring-danger-500/30 dark:border-danger-500"
-                        : touchedFields.password &&
-                            password &&
-                            !fieldErrors.password
-                          ? "border-primary-500 focus:border-primary-500 focus:ring-primary-500/35 dark:border-primary-400 dark:focus:border-primary-400"
-                          : "border-gray-200 focus:border-primary-500 focus:ring-primary-500/30 dark:border-gray-600 dark:focus:border-primary-400"
-                    }`}
-                    value={password}
-                    onChange={(e) => {
-                      setPassword(e.target.value);
-                      if (touchedFields.password) {
-                        setFieldErrors((prev) => ({
-                          ...prev,
-                          password: undefined,
-                        }));
-                      }
-                    }}
-                    onBlur={() => handleFieldBlur("password")}
-                    onKeyDown={handleKeyPress}
-                    placeholder="Пароль"
-                    type={showPassword ? "text" : "password"}
-                    name="password"
-                    autoComplete="current-password"
-                    disabled={isSubmitting}
-                    aria-label="Пароль"
-                    aria-invalid={
-                      touchedFields.password && !!fieldErrors.password
-                    }
-                    aria-describedby={
-                      touchedFields.password && fieldErrors.password
-                        ? "password-error"
-                        : undefined
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="absolute top-1/2 right-3 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors duration-200 p-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700"
-                    onClick={() => setShowPassword(!showPassword)}
-                    tabIndex={-1}
-                    disabled={isSubmitting}
-                    aria-label={
-                      showPassword ? "Скрыть пароль" : "Показать пароль"
-                    }
-                  >
-                    {showPassword ? (
-                      <FaEyeSlash size={18} />
-                    ) : (
-                      <FaEye size={18} />
-                    )}
-                  </button>
-                  {touchedFields.password &&
-                    password &&
-                    !fieldErrors.password && (
-                      <div className="absolute inset-y-0 right-10 pr-4 flex items-center pointer-events-none">
-                        <FaCheckCircle
-                          className="text-primary-600 dark:text-primary-400"
-                          size={18}
-                        />
-                      </div>
-                    )}
-                </div>
-                <AnimatePresence>
-                  {touchedFields.password && fieldErrors.password && (
-                    <motion.p
-                      id="password-error"
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="mt-1 text-sm text-red-600 dark:text-red-400"
-                    >
-                      {fieldErrors.password}
-                    </motion.p>
-                  )}
-                </AnimatePresence>
-              </div>
-            </div>
-            <motion.button
-              type="submit"
-              disabled={isSubmitting || isSuccess}
-              className="btn-primary w-full mt-6 py-3.5 flex items-center justify-center gap-2 text-base font-semibold disabled:opacity-70 disabled:cursor-not-allowed"
-              whileHover={
-                isSubmitting || isSuccess ? {} : { scale: 1.02, y: -1 }
-              }
-              whileTap={isSubmitting || isSuccess ? {} : { scale: 0.98 }}
-              animate={
-                isSubmitting
-                  ? { opacity: [1, 0.8, 1] }
-                  : isSuccess
-                    ? { scale: [1, 1.05, 1] }
-                    : {}
-              }
-              transition={{ duration: 0.3 }}
-            >
-              {isSuccess ? (
-                <>
-                  <motion.div
-                    variants={successVariants}
-                    initial="hidden"
-                    animate="visible"
-                  >
-                    <FaCheckCircle size={20} />
-                  </motion.div>
-                  <span>Успешно!</span>
-                </>
-              ) : isSubmitting ? (
-                <>
-                  <motion.div
-                    animate={{ rotate: 360 }}
-                    transition={{
-                      duration: 1,
-                      repeat: Infinity,
-                      ease: "linear",
-                    }}
-                  >
-                    <FaSpinner size={20} />
-                  </motion.div>
-                  <span>Вход...</span>
-                </>
-              ) : (
-                <>
-                  <FaSignInAlt size={20} />
-                  <span>Войти</span>
-                </>
-              )}
-            </motion.button>
-          </motion.form>
-          <motion.div variants={itemVariants} className="relative z-10">
-            <AnimatePresence>
-              {loginError && (
-                <motion.div
-                  className="mt-4 flex items-center justify-center px-5 py-3 bg-red-500 dark:bg-red-600 text-white rounded-lg text-center font-medium text-sm shadow-lg"
-                  variants={errorVariants}
-                  initial="hidden"
-                  animate="visible"
-                  exit="exit"
-                >
-                  <FaBug className="inline mr-2" size={18} />
-                  <span>{loginError}</span>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            <motion.div
-              className="mt-6 text-center"
-              variants={failedAttempts >= 2 ? pulseVariants : undefined}
-              initial="initial"
-              animate={failedAttempts >= 2 ? "animate" : ""}
-            >
-              <a
-                className="inline-flex items-center text-sm text-primary-600 transition-colors duration-300 hover:text-primary-800 hover:underline dark:text-primary-400 dark:hover:text-primary-300"
-                href={`${apiUrl}/password-reset`}
-                target="_blank"
-                rel="noopener noreferrer"
+        <div className="ws-field">
+          <label htmlFor="login-username">Логин</label>
+          <div className="ws-input" data-invalid={fieldState("username")}>
+            <FaUser aria-hidden />
+            <input
+              id="login-username"
+              ref={usernameInputRef}
+              value={username}
+              onChange={(e) => {
+                setUsername(e.target.value);
+                if (touchedFields.username)
+                  setFieldErrors((prev) => ({ ...prev, username: undefined }));
+              }}
+              onBlur={() => handleFieldBlur("username")}
+              placeholder="Логин"
+              type="text"
+              name="username"
+              autoComplete="username"
+              disabled={isSubmitting}
+              aria-invalid={!!fieldState("username")}
+              aria-describedby={fieldState("username") && "username-error"}
+            />
+          </div>
+          <AnimatePresence>
+            {fieldState("username") && (
+              <motion.p
+                id="username-error"
+                className="ws-field-error"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
               >
-                Забыли пароль?
-              </a>
-            </motion.div>
-          </motion.div>
-        </motion.div>
-      </div>
+                {fieldErrors.username}
+              </motion.p>
+            )}
+          </AnimatePresence>
+        </div>
+
+        <div className="ws-field">
+          <label htmlFor="login-password">Пароль</label>
+          <div className="ws-input" data-invalid={fieldState("password")}>
+            <FaLock aria-hidden />
+            <input
+              id="login-password"
+              value={password}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                if (touchedFields.password)
+                  setFieldErrors((prev) => ({ ...prev, password: undefined }));
+              }}
+              onBlur={() => handleFieldBlur("password")}
+              onKeyDown={handleKeyPress}
+              placeholder="Пароль"
+              type={showPassword ? "text" : "password"}
+              name="password"
+              autoComplete="current-password"
+              disabled={isSubmitting}
+              aria-invalid={!!fieldState("password")}
+              aria-describedby={fieldState("password") && "password-error"}
+            />
+            <button
+              type="button"
+              className="ws-input-action"
+              onClick={() => setShowPassword(!showPassword)}
+              aria-pressed={showPassword}
+              disabled={isSubmitting}
+              aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
+            >
+              {showPassword ? (
+                <FaEyeSlash aria-hidden />
+              ) : (
+                <FaEye aria-hidden />
+              )}
+            </button>
+          </div>
+          <AnimatePresence>
+            {fieldState("password") && (
+              <motion.p
+                id="password-error"
+                className="ws-field-error"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+              >
+                {fieldErrors.password}
+              </motion.p>
+            )}
+          </AnimatePresence>
+        </div>
+
+        <button
+          type="submit"
+          className="ws-btn-primary login-submit"
+          disabled={isSubmitting || isSuccess}
+        >
+          {isSuccess ? (
+            <FaCheckCircle aria-hidden />
+          ) : isSubmitting ? (
+            <span className="ws-spinner" aria-hidden />
+          ) : (
+            <FaSignInAlt aria-hidden />
+          )}
+          {isSuccess ? "Готово" : isSubmitting ? "Входим…" : "Войти"}
+        </button>
+
+        <AnimatePresence>
+          {loginError && (
+            <motion.p
+              role="alert"
+              className="login-error"
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+            >
+              {loginError}
+            </motion.p>
+          )}
+        </AnimatePresence>
+
+        <a
+          className="login-link"
+          href={`${apiUrl}/password-reset`}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {failedAttempts >= 2
+            ? "Не получается войти? Сбросить пароль"
+            : "Забыли пароль?"}
+        </a>
+      </motion.form>
+      <p className="login-credit">
+        © {new Date().getFullYear()} КРМУ · Учёт посещаемости
+      </p>
     </div>
   );
 };

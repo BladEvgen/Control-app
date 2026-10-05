@@ -20,11 +20,11 @@ import Breadcrumbs, { BreadcrumbItem } from "../../components/Breadcrumbs";
 import { formatDepartmentName } from "../../utils/utils";
 import { collectStaffAttendanceLegendChips } from "../../utils/attendanceDayPresentation";
 
-import MobileActionButtons from "./MobileActionButtons";
 import StaffHeader from "./StaffHeader";
 import EmployeeInfo from "./EmployeeInfo";
 import AttendanceSection from "./AttendanceSection";
 import { lazyWithRetry } from "../../utils/lazyWithRetry";
+import { useReportDates } from "../../hooks/useReportDates";
 import {
   consumeSkipPageMotion,
   pageMotionInitial,
@@ -47,19 +47,12 @@ const containerVariants = {
 const StaffDetail: React.FC = () => {
   const { pin } = useParams<{ pin: string }>();
   const skipPageMotion = useMemo(() => consumeSkipPageMotion(), []);
-  const today = useMemo(() => new Date().toISOString().split("T")[0], []);
+  const { startDate, endDate, setStartDate, setEndDate, today } =
+    useReportDates();
 
   const [staffData, setStaffData] = useState<StaffData | null>(null);
   const [attendance, setAttendance] = useState<Record<string, AttendanceData>>(
     {},
-  );
-  const [startDate, setStartDate] = useState<string>(
-    new Date(new Date().setDate(new Date().getDate() - 7))
-      .toISOString()
-      .split("T")[0],
-  );
-  const [endDate, setEndDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
   );
   const [notificationMessage, setNotificationMessage] = useState("");
   const [notificationType, setNotificationType] = useState<"warning" | "error">(
@@ -67,7 +60,8 @@ const StaffDetail: React.FC = () => {
   );
   const [showNotification, setShowNotification] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [isFirstLoad, setIsFirstLoad] = useState(true);
+  const loadedPin = useRef<string | undefined>(undefined);
+  const requestSequence = useRef(0);
   const [showAbsenceModal, setShowAbsenceModal] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const avatarCameraRef = useRef<FaceCameraOverlayRef>(null);
@@ -106,18 +100,20 @@ const StaffDetail: React.FC = () => {
 
   const fetchAttendanceData = useCallback(async () => {
     if (startDate && endDate && new Date(startDate) <= new Date(endDate)) {
-      if (isFirstLoad) {
-        setLoading(true);
-        setIsFirstLoad(false);
-      }
+      const request = ++requestSequence.current;
+      if (loadedPin.current !== pin) setLoading(true);
       try {
         const params = { start_date: startDate, end_date: endDate };
         const res = await axiosInstance.get(`${apiUrl}/api/staff/${pin}`, {
           params,
         });
+        if (request !== requestSequence.current) return;
+        loadedPin.current = pin;
         setStaffData(res.data);
         setAttendance(res.data.attendance);
+        setShowNotification(false);
       } catch (error: unknown) {
+        if (request !== requestSequence.current) return;
         if (
           error &&
           typeof error === "object" &&
@@ -137,13 +133,17 @@ const StaffDetail: React.FC = () => {
           console.error(`Error fetching attendance data: ${error}`);
         }
       } finally {
-        setLoading(false);
+        if (request === requestSequence.current) setLoading(false);
       }
     }
-  }, [startDate, endDate, pin, isFirstLoad]);
+  }, [startDate, endDate, pin]);
 
   useEffect(() => {
+    const sequence = requestSequence;
     fetchAttendanceData();
+    return () => {
+      sequence.current++;
+    };
   }, [startDate, endDate, fetchAttendanceData]);
 
   useEffect(() => {
@@ -306,7 +306,7 @@ const StaffDetail: React.FC = () => {
 
   return (
     <motion.div
-      className="min-h-screen min-w-0 py-4 px-4 sm:py-6 sm:px-6 lg:py-8 lg:px-10 xl:px-16"
+      className="min-w-0"
       variants={containerVariants}
       initial={pageMotionInitial(skipPageMotion) ?? "hidden"}
       animate="visible"
@@ -322,14 +322,6 @@ const StaffDetail: React.FC = () => {
               link="/"
             />
           )}
-
-          {/* Мобильные кнопки */}
-          <MobileActionButtons
-            setShowAbsenceModal={setShowAbsenceModal}
-            handleDownloadExcel={handleDownloadExcel}
-            handleDownloadZip={handleDownloadZip}
-            hasAbsenceWithReason={hasAbsenceWithReason}
-          />
 
           {/* Модальное окно для добавления отсутствия */}
           {showAbsenceModal && pin && (
@@ -354,7 +346,7 @@ const StaffDetail: React.FC = () => {
                 <Breadcrumbs items={breadcrumbs} />
               </motion.div>
 
-              <div className="min-w-0 overflow-hidden rounded-lg border border-gray-200/90 bg-white shadow-lg sm:rounded-xl sm:shadow-2xl dark:border-gray-800 dark:bg-gray-950">
+              <div className="min-w-0">
                 {pin ? (
                   <>
                     <input

@@ -27,7 +27,7 @@ const EmployeeInfo: React.FC<EmployeeInfoProps> = ({ staffData }) => {
   }
 
   return (
-    <div className="hidden sm:block px-6 lg:px-8 pb-4">
+    <div className="px-4 sm:px-6 pb-4">
       <motion.div
         variants={bonusVariants}
         initial="hidden"

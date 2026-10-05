@@ -73,7 +73,7 @@ function StepDot({
         done
           ? "bg-emerald-500 text-white shadow-md shadow-emerald-500/30"
           : active
-            ? "bg-blue-600 text-white shadow-md shadow-blue-600/25 ring-4 ring-blue-200/50 dark:bg-blue-500 dark:ring-blue-500/25"
+            ? "bg-primary-600 text-white shadow-md shadow-primary-600/25 ring-4 ring-primary-200/50 dark:bg-primary-500 dark:ring-primary-500/25"
             : "border-2 border-slate-200 bg-white text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-500"
       }`}
     >
@@ -311,7 +311,7 @@ export function FaceLabBootstrapPanel({
           </p>
         </div>
         {status && (!allDone || inRetake) ? (
-          <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
+          <p className="text-xs font-medium text-primary-700 dark:text-primary-300">
             {inRetake && retakeAngle
               ? `Пересъёмка: ${ANGLE_SHORT[retakeAngle]}`
               : `Шаг ${Math.min(currentStepIndex + 1, 3)} из 3`}
@@ -349,7 +349,7 @@ export function FaceLabBootstrapPanel({
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
             <motion.div
-              className="h-full rounded-full bg-blue-600 dark:bg-blue-500"
+              className="h-full rounded-full bg-primary-600 dark:bg-primary-500"
               initial={false}
               animate={{ width: `${progressFraction * 100}%` }}
               transition={{ duration: 0.4, ease: smoothEase }}
@@ -426,7 +426,7 @@ export function FaceLabBootstrapPanel({
             type="button"
             disabled={busy || !file}
             onClick={() => void saveSample()}
-            className="w-full rounded-xl bg-blue-600 py-3.5 text-base font-semibold text-white shadow-lg shadow-blue-600/25 transition hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:cursor-not-allowed disabled:opacity-45 dark:bg-blue-500 dark:hover:bg-blue-600 dark:focus-visible:ring-blue-300/80 dark:focus-visible:ring-offset-slate-950"
+            className="w-full rounded-xl bg-primary-600 py-3.5 text-base font-semibold text-white shadow-lg shadow-primary-600/25 transition hover:bg-primary-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:cursor-not-allowed disabled:opacity-45 dark:bg-primary-500 dark:hover:bg-primary-600 dark:focus-visible:ring-primary-300/80 dark:focus-visible:ring-offset-slate-950"
           >
             {busy
               ? "Сохраняем…"
@@ -473,7 +473,7 @@ export function FaceLabBootstrapPanel({
                 type="button"
                 disabled={busy || !lastSampleId}
                 onClick={() => void applyAvatar()}
-                className="w-full rounded-lg py-2.5 text-sm font-medium text-blue-700 transition hover:bg-blue-50 hover:text-blue-800 disabled:opacity-45 dark:text-blue-300 dark:hover:bg-blue-500/10 dark:hover:text-blue-200"
+                className="w-full rounded-lg py-2.5 text-sm font-medium text-primary-700 transition hover:bg-primary-50 hover:text-primary-800 disabled:opacity-45 dark:text-primary-300 dark:hover:bg-primary-500/10 dark:hover:text-primary-200"
               >
                 Поставить последний кадр в профиль
               </button>
@@ -499,7 +499,7 @@ export function FaceLabBootstrapPanel({
                 type="button"
                 disabled={busy}
                 onClick={() => void applyAvatar()}
-                className="w-full rounded-lg py-2.5 text-sm font-medium text-blue-700 transition hover:bg-blue-50 hover:text-blue-800 dark:text-blue-300 dark:hover:bg-blue-500/10 dark:hover:text-blue-200"
+                className="w-full rounded-lg py-2.5 text-sm font-medium text-primary-700 transition hover:bg-primary-50 hover:text-primary-800 dark:text-primary-300 dark:hover:bg-primary-500/10 dark:hover:text-primary-200"
               >
                 Взять последний сохранённый кадр для профиля
               </button>

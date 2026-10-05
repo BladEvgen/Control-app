@@ -21,30 +21,22 @@ const DateForm: React.FC<DateFormProps> = ({
   idPrefix = "attendance",
 }) => {
   return (
-    <div className="min-w-0">
-      <div className="flex flex-col gap-4 lg:flex-row lg:gap-4">
-        <div className="date-field-slot">
-          <DateInput
-            label="Начальная дата"
-            id={`${idPrefix}-startDate`}
-            value={startDate}
-            onChange={handleStartDateChange}
-            max={maxDate}
-          />
-        </div>
-        <div className="date-field-slot">
-          <DateInput
-            label="Конечная дата"
-            id={`${idPrefix}-endDate`}
-            value={endDate}
-            onChange={handleEndDateChange}
-            max={maxDate}
-          />
-        </div>
-      </div>
-      {error ? (
-        <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>
-      ) : null}
+    <div className="ws-date-range">
+      <DateInput
+        label="С"
+        id={`${idPrefix}-startDate`}
+        value={startDate}
+        onChange={handleStartDateChange}
+        max={maxDate}
+      />
+      <DateInput
+        label="По"
+        id={`${idPrefix}-endDate`}
+        value={endDate}
+        onChange={handleEndDateChange}
+        max={maxDate}
+      />
+      {error ? <p className="ws-field-error">{error}</p> : null}
     </div>
   );
 };

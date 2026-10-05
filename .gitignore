@@ -326,3 +326,4 @@ scripts/git-commit-grouped-tracked.sh
 **/.claude/**
 **/pad_ml/**
 uv.lock
+frontend/dist-tmp/**

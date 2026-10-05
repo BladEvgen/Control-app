@@ -1,57 +1,4 @@
 import React from "react";
-import { motion } from "framer-motion";
-
-const getButtonStyles = (variant: string, disabled: boolean = false) => {
-  const baseStyles =
-    "inline-flex items-center justify-center px-5 py-2.5 rounded-lg font-medium shadow-sm transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2";
-
-  const variantStyles = {
-    home: `
-      ${disabled ? "opacity-60" : ""}
-      bg-gradient-to-r from-secondary-600 to-secondary-700
-      hover:from-secondary-700 hover:to-secondary-800
-      active:from-secondary-800 active:to-secondary-900
-      text-white
-      focus:ring-secondary-500
-    `,
-    back: `
-      ${disabled ? "opacity-60" : ""}
-      bg-gradient-to-r from-primary-600 to-primary-700
-      hover:from-primary-700 hover:to-primary-800
-      active:from-primary-800 active:to-primary-900
-      text-white
-      focus:ring-primary-500
-    `,
-    download: `
-      ${disabled ? "opacity-60" : ""}
-      bg-gradient-to-r from-success-500 to-success-600
-      hover:from-success-600 hover:to-success-700
-      active:from-success-700 active:to-success-800
-      text-white
-      focus:ring-success-500
-    `,
-    danger: `
-      ${disabled ? "opacity-60" : ""}
-      bg-gradient-to-r from-danger-500 to-danger-600
-      hover:from-danger-600 hover:to-danger-700
-      active:from-danger-700 active:to-danger-800
-      text-white
-      focus:ring-danger-500
-    `,
-    outline: `
-      ${disabled ? "opacity-60" : ""}
-      !shadow-none border-2 border-slate-500 bg-slate-800/90
-      hover:bg-slate-700 hover:border-slate-400
-      active:bg-slate-800
-      text-slate-100
-      focus:ring-slate-400
-    `,
-  };
-
-  return `${baseStyles} ${
-    variantStyles[variant as keyof typeof variantStyles]
-  }`;
-};
 
 export interface ModernButtonProps {
   variant: "home" | "back" | "download" | "danger" | "outline";
@@ -64,7 +11,17 @@ export interface ModernButtonProps {
   type?: "button" | "submit" | "reset";
 }
 
-const ModernButton: React.FC<ModernButtonProps> = ({
+const tones: Record<ModernButtonProps["variant"], string> = {
+  home: "bg-gray-100 text-gray-900 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700",
+  back: "bg-gray-100 text-gray-900 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700",
+  download:
+    "bg-primary-700 text-white hover:bg-primary-800 dark:bg-primary-600 dark:hover:bg-primary-700",
+  danger: "bg-danger-700 text-white hover:bg-danger-800",
+  outline:
+    "border border-gray-300 bg-white text-gray-900 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:hover:bg-gray-800",
+};
+
+export default function ModernButton({
   variant,
   children,
   icon,
@@ -73,49 +30,28 @@ const ModernButton: React.FC<ModernButtonProps> = ({
   loading = false,
   className = "",
   type = "button",
-}) => {
+}: ModernButtonProps) {
   return (
-    <motion.button
+    <button
       type={type}
       onClick={onClick}
-      disabled={disabled}
-      className={`${getButtonStyles(variant, disabled && !loading)} ${className}`}
-      whileHover={disabled ? {} : { scale: 1.03 }}
-      whileTap={disabled ? {} : { scale: 0.97 }}
-      transition={{ duration: 0.2 }}
+      disabled={disabled || loading}
+      aria-busy={loading}
+      className={`inline-flex min-h-11 items-center justify-center rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 ${tones[variant]} ${className}`}
     >
       {loading ? (
-        <>
-          <svg
-            className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            ></circle>
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-            ></path>
-          </svg>
-          <span>{children}</span>
-        </>
+        <span
+          className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
+          aria-hidden
+        />
       ) : (
-        <>
-          {icon && <span className="mr-2">{icon}</span>}
-          <span>{children}</span>
-        </>
+        icon && (
+          <span className="mr-2" aria-hidden>
+            {icon}
+          </span>
+        )
       )}
-    </motion.button>
+      <span>{children}</span>
+    </button>
   );
-};
-
-export default ModernButton;
+}

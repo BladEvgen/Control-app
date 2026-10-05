@@ -51,7 +51,7 @@ export function ProfileAvatarWithPhotoMenu({
         type="button"
         className="group relative rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900"
         aria-expanded={open}
-        aria-haspopup="menu"
+        aria-label="Изменить фото профиля"
         aria-controls={menuId}
         disabled={busy}
         onClick={() => !busy && setOpen((v) => !v)}
@@ -77,17 +77,16 @@ export function ProfileAvatarWithPhotoMenu({
         {open ? (
           <motion.div
             id={menuId}
-            role="menu"
+            role="group"
             aria-label="Изменить фото профиля"
             initial={{ opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -2 }}
             transition={{ duration: 0.15 }}
-            className="absolute z-[60] mt-1.5 w-[min(calc(100vw-2rem),15rem)] rounded-xl border border-gray-200/90 bg-white py-1 shadow-lg ring-1 ring-black/5 dark:border-gray-600 dark:bg-gray-800 dark:ring-white/10 left-1/2 -translate-x-1/2 sm:left-0 sm:translate-x-0"
+            className="absolute left-0 z-[60] mt-1.5 w-[min(calc(100vw-5rem),15rem)] rounded-xl border border-gray-200/90 bg-white py-1 shadow-lg dark:border-gray-600 dark:bg-gray-800"
           >
             <button
               type="button"
-              role="menuitem"
               className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm font-medium text-gray-900 transition hover:bg-gray-50 dark:text-gray-100 dark:hover:bg-gray-700/60"
               onClick={() => {
                 onOpenCamera();
@@ -99,7 +98,6 @@ export function ProfileAvatarWithPhotoMenu({
             </button>
             <button
               type="button"
-              role="menuitem"
               className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm font-medium text-gray-900 transition hover:bg-gray-50 dark:text-gray-100 dark:hover:bg-gray-700/60"
               onClick={() => {
                 onPickFile();

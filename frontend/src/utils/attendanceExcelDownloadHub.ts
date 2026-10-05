@@ -2,7 +2,7 @@ import axiosInstance from "../api";
 
 export type AttendanceExcelHubState = {
   active: number;
-  /** Snapshot: how many in-flight downloads were started for each hold key (e.g. department id). */
+  failedDownload: { filename: string; retry: () => Promise<void> } | null;
   holdCounts: Map<string, number>;
 };
 
@@ -10,6 +10,7 @@ type HubListener = (state: AttendanceExcelHubState) => void;
 
 const listeners = new Set<HubListener>();
 let active = 0;
+let failedDownload: AttendanceExcelHubState["failedDownload"] = null;
 const holdCounts = new Map<string, number>();
 
 function snapshotHolds(): Map<string, number> {
@@ -17,7 +18,11 @@ function snapshotHolds(): Map<string, number> {
 }
 
 function emit(): void {
-  const state: AttendanceExcelHubState = { active, holdCounts: snapshotHolds() };
+  const state: AttendanceExcelHubState = {
+    active,
+    holdCounts: snapshotHolds(),
+    failedDownload,
+  };
   listeners.forEach((l) => l(state));
 }
 
@@ -46,7 +51,7 @@ export function subscribeAttendanceExcelDownloads(
   listener: HubListener,
 ): () => void {
   listeners.add(listener);
-  listener({ active, holdCounts: snapshotHolds() });
+  listener({ active, holdCounts: snapshotHolds(), failedDownload });
   return () => {
     listeners.delete(listener);
   };
@@ -56,14 +61,19 @@ export function getAttendanceExcelDownloadActive(): number {
   return active;
 }
 
+export function dismissAttendanceExcelError(): void {
+  failedDownload = null;
+  emit();
+}
+
 export function runAttendanceExcelDownload(options: {
   url: string;
   params: Record<string, string>;
   filename: string;
-  /** When set, that entity’s UI can stay disabled until this request finishes (e.g. department id). */
   holdKey?: string;
 }): Promise<void> {
   const holdKey = options.holdKey;
+  failedDownload = null;
   beginHold(holdKey);
   return axiosInstance
     .get(options.url, {
@@ -82,8 +92,11 @@ export function runAttendanceExcelDownload(options: {
       link.remove();
       window.URL.revokeObjectURL(fileUrl);
     })
-    .catch((err) => {
-      console.error("Attendance Excel download failed:", err);
+    .catch(() => {
+      failedDownload = {
+        filename: options.filename,
+        retry: () => runAttendanceExcelDownload(options),
+      };
     })
     .finally(() => {
       endHold(holdKey);

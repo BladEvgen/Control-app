@@ -22,11 +22,13 @@ import {
 import { AttendanceStats } from "../schemas/IData";
 import Notification from "../components/Notification";
 import LoaderComponent from "../components/LoaderComponent";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import useWindowSize from "../hooks/useWindowSize";
 import EditableDateField from "../components/EditableDateField";
 import { FaCompress, FaExpand } from "react-icons/fa";
 import { useAppSelector } from "../store/hooks";
+import { localDate } from "../utils/reportDates";
+import { useMuiDarkSync } from "../faceLab/useMuiDarkSync";
 
 ChartJS.register(...registerables);
 
@@ -154,13 +156,16 @@ function setCachedStats(
 }
 
 const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
+  const reducedMotion = useReducedMotion();
+  const isDark = useMuiDarkSync();
+  const chartLabelColor = isDark ? "#afbdd1" : "#52627a";
   const location = useLocation();
   const navigate = useNavigate();
   const isKiosk = new URLSearchParams(location.search).get("kiosk") === "1";
   const initialDate = (() => {
     const date = new Date();
     date.setDate(date.getDate() - 1);
-    return date.toISOString().split("T")[0];
+    return localDate(date);
   })();
 
   const [selectedDate, setSelectedDate] = useState<string>(initialDate);
@@ -387,119 +392,6 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
     },
     [],
   );
-
-  const forceResizeCharts = useCallback(() => {
-    const charts: DashboardChartInstance[] = [];
-    if (chartBarRef.current) charts.push(chartBarRef.current);
-    if (chartDoughnutRef.current) charts.push(chartDoughnutRef.current);
-
-    charts.forEach((chart) => {
-      const canvas = chart.canvas;
-      const chartCtx = (chart as { ctx?: unknown }).ctx;
-      if (!canvas || !canvas.isConnected || !chartCtx) return;
-      try {
-        chart.resize();
-        chart.update("resize");
-      } catch (error) {
-        console.warn("Chart resize skipped due to transient state:", error);
-      }
-    });
-  }, []);
-
-  const scheduleChartResizeBurst = useCallback(() => {
-    const runResize = () => {
-      window.dispatchEvent(new Event("resize"));
-      forceResizeCharts();
-    };
-
-    const rafId = requestAnimationFrame(runResize);
-    const resizeDelays = [90, 180, 320, 520, 760, 1000, 1400];
-    const timeouts = resizeDelays.map((delay) =>
-      window.setTimeout(runResize, delay),
-    );
-
-    return () => {
-      cancelAnimationFrame(rafId);
-      timeouts.forEach((id) => window.clearTimeout(id));
-    };
-  }, [forceResizeCharts]);
-
-  useEffect(() => {
-    const el = diagramRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-
-    let resizeTimeout: number | null = null;
-    const ro = new ResizeObserver(() => {
-      if (resizeTimeout !== null) {
-        window.clearTimeout(resizeTimeout);
-      }
-      resizeTimeout = window.setTimeout(() => {
-        const chart = getActiveChart();
-        if (!chart) return;
-        const canvas = chart.canvas;
-        const chartCtx = (chart as { ctx?: unknown }).ctx;
-        if (!canvas || !canvas.isConnected || !chartCtx) return;
-        try {
-          chart.resize();
-          chart.update("resize");
-        } catch (error) {
-          console.warn(
-            "Observed resize skipped due to transient state:",
-            error,
-          );
-        }
-      }, 90);
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      if (resizeTimeout !== null) {
-        window.clearTimeout(resizeTimeout);
-      }
-    };
-  }, [getActiveChart]);
-
-  useEffect(() => {
-    return scheduleChartResizeBurst();
-  }, [scheduleChartResizeBurst, isFullscreen, isKiosk, width, height]);
-
-  useEffect(() => {
-    let cancelBurst: (() => void) | null = null;
-    const onViewportMutation = () => {
-      if (cancelBurst) {
-        cancelBurst();
-      }
-      cancelBurst = scheduleChartResizeBurst();
-    };
-
-    window.addEventListener("orientationchange", onViewportMutation);
-    document.addEventListener("fullscreenchange", onViewportMutation);
-    document.addEventListener("webkitfullscreenchange", onViewportMutation);
-    document.addEventListener("mozfullscreenchange", onViewportMutation);
-    document.addEventListener("MSFullscreenChange", onViewportMutation);
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", onViewportMutation);
-      window.visualViewport.addEventListener("scroll", onViewportMutation);
-    }
-
-    return () => {
-      if (cancelBurst) {
-        cancelBurst();
-      }
-      window.removeEventListener("orientationchange", onViewportMutation);
-      document.removeEventListener("fullscreenchange", onViewportMutation);
-      document.removeEventListener(
-        "webkitfullscreenchange",
-        onViewportMutation,
-      );
-      document.removeEventListener("mozfullscreenchange", onViewportMutation);
-      document.removeEventListener("MSFullscreenChange", onViewportMutation);
-      if (window.visualViewport) {
-        window.visualViewport.removeEventListener("resize", onViewportMutation);
-        window.visualViewport.removeEventListener("scroll", onViewportMutation);
-      }
-    };
-  }, [scheduleChartResizeBurst]);
 
   const activeLegendIndex =
     selectedLegendIndex !== null ? selectedLegendIndex : hoveredLegendIndex;
@@ -824,7 +716,10 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
     () => ({
       responsive: true,
       maintainAspectRatio: false,
-      animation: { duration: 400, easing: "easeOutQuart" as const },
+      animation: {
+        duration: reducedMotion ? 0 : 400,
+        easing: "easeOutQuart" as const,
+      },
       interaction: {
         mode: "index" as const,
         axis: "x" as const,
@@ -871,7 +766,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
           ticks: {
             stepSize: chartData?.niceStep,
             precision: 0,
-            color: "#6B7280",
+            color: chartLabelColor,
             font: { size: 16, weight: "bold" as const },
             padding: 8,
           },
@@ -882,7 +777,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
           title: {
             display: true,
             text: "Количество сотрудников",
-            color: "#6B7280",
+            color: chartLabelColor,
             font: { size: 16, weight: "bold" as const },
           },
         },
@@ -894,7 +789,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
             maxRotation: 0,
             minRotation: 0,
             padding: 8,
-            color: "#6B7280",
+            color: chartLabelColor,
             font: { size: 16, weight: "bold" as const },
           },
           grid: {
@@ -905,7 +800,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
           title: {
             display: true,
             text: "Процент времени на работе",
-            color: "#6B7280",
+            color: chartLabelColor,
             font: { size: 16, weight: "bold" as const },
           },
         },
@@ -918,7 +813,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
         },
       },
     }),
-    [chartData, syncChartActiveState],
+    [chartData, syncChartActiveState, chartLabelColor, reducedMotion],
   );
 
   const doughnutChartData = useMemo<
@@ -952,7 +847,10 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
     () => ({
       responsive: true,
       maintainAspectRatio: false,
-      animation: { duration: 420, easing: "easeOutQuart" as const },
+      animation: {
+        duration: reducedMotion ? 0 : 420,
+        easing: "easeOutQuart" as const,
+      },
       interaction: { mode: "nearest" as const, intersect: true },
       hover: { mode: "nearest" as const, intersect: true },
       onHover: (event: ChartEvent, activeElements: ActiveElement[]) => {
@@ -988,7 +886,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
           display: true,
           position: "bottom" as const,
           labels: {
-            color: "#6B7280",
+            color: chartLabelColor,
             font: { size: 12, weight: 600 as const },
             boxWidth: 14,
             boxHeight: 14,
@@ -1013,7 +911,13 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
         },
       },
     }),
-    [chartData?.totalWithAbsent, formatBucketTooltip, syncChartActiveState],
+    [
+      chartData?.totalWithAbsent,
+      formatBucketTooltip,
+      syncChartActiveState,
+      chartLabelColor,
+      reducedMotion,
+    ],
   );
 
   const renderDatePicker = () => (
@@ -1135,7 +1039,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
               Наведение или нажатие подсвечивает столбец и показывает tooltip
             </p>
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
-              <span className="inline-flex items-center rounded-full px-2 py-0.5 bg-blue-100 text-blue-700 dark:bg-blue-900/35 dark:text-blue-200">
+              <span className="inline-flex items-center rounded-full px-2 py-0.5 bg-primary-100 text-primary-700 dark:bg-primary-900/35 dark:text-primary-200">
                 Всего по графику:{" "}
                 <b className="ml-1">{chartData.totalWithAbsent}</b>
               </span>
@@ -1185,7 +1089,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
                       tabIndex={0}
                       className={`border-b border-gray-100 dark:border-gray-700/70 transition-all duration-200 ease-out cursor-pointer touch-manipulation select-none ${
                         isActive
-                          ? "bg-blue-100 dark:bg-blue-900/30 ring-2 ring-inset ring-blue-500/50"
+                          ? "bg-primary-100 dark:bg-primary-900/30 ring-2 ring-inset ring-primary-500/50"
                           : "hover:bg-gray-50 dark:hover:bg-gray-700/30"
                       }`}
                       onClick={() => handleLegendToggle(i)}
@@ -1250,7 +1154,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
             : "container mx-auto p-3 sm:p-4 md:p-5 max-w-screen-2xl"
         }`}
       >
-        <h1 className="text-xl sm:text-2xl md:text-3xl lg:text-4xl xl:text-5xl font-bold mb-1 text-center text-text-dark dark:text-text-light flex-shrink-0">
+        <h1 className="text-xl sm:text-2xl font-semibold mb-4 text-center text-text-dark dark:text-text-light flex-shrink-0 break-words">
           Посещаемость отдела {stats.department_name}
         </h1>
 
@@ -1299,7 +1203,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
           <motion.div
             layout
             transition={layoutTransition}
-            className={`bg-white dark:bg-gray-800 shadow-xl rounded-xl transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+            className={`bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
               isKioskOrFullscreen
                 ? "flex-1 min-h-0 overflow-hidden"
                 : "mb-4 sm:mb-6"
@@ -1356,7 +1260,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
                     <Doughnut
                       ref={chartDoughnutRef}
                       key={`doughnut-${chartLayoutKey}`}
-                      redraw
+                      updateMode="none"
                       data={doughnutChartData}
                       options={doughnutOptions}
                     />
@@ -1365,7 +1269,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
                       <Bar
                         ref={chartBarRef}
                         key={`bar-${chartLayoutKey}`}
-                        redraw
+                        updateMode="none"
                         data={chartData.barData}
                         options={chartOptions}
                       />

@@ -1446,7 +1446,7 @@ const MapDashboard: React.FC = () => {
     if (fullscreenToggleLockRef.current) return;
     const fullscreenNow = !!getFullscreenElement();
     setIsFullscreen(fullscreenNow);
-    syncKioskQueryWithFullscreen(fullscreenNow);
+    if (fullscreenNow) syncKioskQueryWithFullscreen(true);
   }, [getFullscreenElement, location.search, syncKioskQueryWithFullscreen]);
 
   useEffect(() => {
@@ -1784,7 +1784,7 @@ const MapDashboard: React.FC = () => {
 
   return (
     <motion.div
-      className="relative min-h-screen overflow-hidden"
+      className="map-dashboard relative min-h-screen overflow-hidden"
       variants={containerVariants}
       initial="hidden"
       animate="visible"
@@ -1796,7 +1796,7 @@ const MapDashboard: React.FC = () => {
       >
         <motion.div
           ref={controlsRef}
-          className={`border shadow-lg backdrop-blur-md flex flex-col ${panelPaddingClass} ${
+          className={`map-controls border flex flex-col ${panelPaddingClass} ${
             isFullscreen
               ? "border-white/55 dark:border-slate-700/70 bg-white/65 dark:bg-slate-900/45"
               : "border-white/65 dark:border-slate-700/80 bg-white/70 dark:bg-slate-900/55"
@@ -1832,13 +1832,13 @@ const MapDashboard: React.FC = () => {
                     className={`mt-1 flex flex-wrap items-center gap-1.5 sm:gap-2 ${summaryTextClass}`}
                   >
                     <span
-                      className={`${summaryChipClass} border-sky-200/90 dark:border-sky-700/70 bg-sky-50/90 dark:bg-sky-900/30 text-sky-700 dark:text-sky-200`}
+                      className={`${summaryChipClass} border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200`}
                     >
                       <FiMapPin className="w-3 h-3" />
                       {NUMBER_FORMATTER.format(locations.length)} точек
                     </span>
                     <span
-                      className={`${summaryChipClass} border-violet-200/90 dark:border-violet-700/70 bg-violet-50/90 dark:bg-violet-900/30 text-violet-700 dark:text-violet-200`}
+                      className={`${summaryChipClass} border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200`}
                     >
                       <FiUsers className="w-3 h-3" />
                       {NUMBER_FORMATTER.format(totalEmployees)} посещений
@@ -1870,13 +1870,13 @@ const MapDashboard: React.FC = () => {
                   {shouldInlineSummaryChips && (
                     <>
                       <span
-                        className={`${summaryChipClass} border-sky-200/90 dark:border-sky-700/70 bg-sky-50/90 dark:bg-sky-900/30 text-sky-700 dark:text-sky-200`}
+                        className={`${summaryChipClass} border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200`}
                       >
                         <FiMapPin className="w-3 h-3" />
                         {NUMBER_FORMATTER.format(locations.length)} точек
                       </span>
                       <span
-                        className={`${summaryChipClass} border-violet-200/90 dark:border-violet-700/70 bg-violet-50/90 dark:bg-violet-900/30 text-violet-700 dark:text-violet-200`}
+                        className={`${summaryChipClass} border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200`}
                       >
                         <FiUsers className="w-3 h-3" />
                         {NUMBER_FORMATTER.format(totalEmployees)} посещений
@@ -1900,7 +1900,7 @@ const MapDashboard: React.FC = () => {
                       onChange={handleDateChange}
                       containerClassName="m-0 p-0 inline-flex items-center"
                       displayClassName="font-semibold text-gray-800 dark:text-gray-200 hover:text-primary-600 dark:hover:text-primary-400 cursor-pointer leading-none"
-                      inputClassName={`border border-gray-300 rounded-md px-2 text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                      inputClassName={`border border-gray-300 rounded-md px-2 text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 ${
                         isPhoneLandscapeCompact
                           ? "h-6 text-[9px]"
                           : isDenseHeaderViewport
@@ -1955,6 +1955,7 @@ const MapDashboard: React.FC = () => {
               >
                 <motion.button
                   onClick={handleFocusFirst}
+                  aria-pressed={mapFocusMode === "first"}
                   title="Перейти к первой точке и открыть popup"
                   aria-label="Перейти к первой точке и открыть popup"
                   className={`${actionButtonClass} ${
@@ -1973,6 +1974,7 @@ const MapDashboard: React.FC = () => {
 
                 <motion.button
                   onClick={handleFocusAll}
+                  aria-pressed={mapFocusMode === "all"}
                   title="Показать все точки на карте"
                   aria-label="Показать все точки на карте"
                   className={`${actionButtonClass} ${

@@ -56,11 +56,7 @@ const VERDICT_SKIP_MODAL_CLOSE_REDUCED_MS = 800;
 const PHOTO_CARD_GRID_STAGGER_STEP = 0.03;
 
 type PhotoUiStatus =
-  | "clean"
-  | "check"
-  | "check_error"
-  | "suspicious_auto"
-  | "suspicious_manual";
+  "clean" | "check" | "check_error" | "suspicious_auto" | "suspicious_manual";
 
 type PhotoDashboardBaseMode = "fresh" | "all";
 type PhotoDashboardViewMode = PhotoDashboardBaseMode | "risk";
@@ -89,13 +85,13 @@ const PHOTO_STATUS_STYLE: Record<
   },
   check: {
     cardClass: "card-state-check",
-    badgeClass: "bg-amber-500/90 text-amber-50 border border-amber-300/70",
+    badgeClass: "bg-amber-800 text-white border border-amber-700",
     label: "Проверка",
     showBadgeOnCard: true,
   },
   check_error: {
     cardClass: "card-state-check-error",
-    badgeClass: "bg-orange-600/90 text-orange-50 border border-orange-300/70",
+    badgeClass: "bg-orange-800 text-white border border-orange-700",
     label: "Ошибка",
     showBadgeOnCard: true,
   },
@@ -1110,6 +1106,22 @@ const PhotoDashboard: React.FC = () => {
   const [photos, setPhotos] = useState<PhotoData[]>([]);
   const photosRef = useRef<PhotoData[]>([]);
   const [selectedPhoto, setSelectedPhoto] = useState<PhotoData | null>(null);
+  const photoDialogRef = useRef<HTMLDialogElement>(null);
+  const selectedPhotoId = selectedPhoto?.id;
+  const photoOpen = selectedPhoto !== null;
+  useEffect(() => {
+    if (!photoOpen) return;
+    const dialog = photoDialogRef.current;
+    const opener =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    dialog?.showModal();
+    return () => {
+      dialog?.close();
+      opener?.focus();
+    };
+  }, [photoOpen, selectedPhotoId]);
   const selectedPhotoRef = useRef<PhotoData | null>(null);
   const [verdictSubmittingPhotoId, setVerdictSubmittingPhotoId] = useState<
     number | null
@@ -1182,7 +1194,8 @@ const PhotoDashboard: React.FC = () => {
     document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
     document.addEventListener("mozfullscreenchange", handleFullscreenChange);
     document.addEventListener("MSFullscreenChange", handleFullscreenChange);
-    handleFullscreenChange();
+    // Read initial state without treating a direct kiosk link as a fullscreen exit.
+    setIsFullscreen(!!getFullscreenElement());
     return () => {
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
       document.removeEventListener(
@@ -1198,7 +1211,7 @@ const PhotoDashboard: React.FC = () => {
         handleFullscreenChange,
       );
     };
-  }, [handleFullscreenChange]);
+  }, [handleFullscreenChange, getFullscreenElement]);
 
   const handleFullscreenToggle = useCallback(async () => {
     if (fullscreenToggleLockRef.current) return;
@@ -2484,31 +2497,11 @@ const PhotoDashboard: React.FC = () => {
       transition={{ duration: 0.22 }}
       className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none"
     >
-      <div className="relative pointer-events-auto">
-        {/* Ambient glow blobs */}
-        <div
-          className="absolute rounded-full bg-primary-500/18 blur-3xl pointer-events-none"
-          style={{
-            inset: "-4rem",
-            animation: "loaderGlowPulse 3.2s ease-in-out infinite",
-          }}
-        />
-        <div
-          className="absolute rounded-full bg-secondary-500/12 blur-2xl pointer-events-none"
-          style={{
-            inset: "-2.5rem",
-            animation: "loaderGlowPulse 3.2s ease-in-out infinite",
-            animationDelay: "1.6s",
-          }}
-        />
-        {/* Frosted glass card */}
-        <div className="relative rounded-[28px] border border-white/30 dark:border-white/10 bg-white/82 dark:bg-slate-900/82 backdrop-blur-2xl shadow-2xl shadow-primary-900/15 px-14 py-11 flex flex-col items-center gap-4">
-          <LoaderComponent fullscreen={false} className="min-h-0" message="" />
-          <p className="text-sm text-gray-500 dark:text-gray-400 tracking-wide">
-            Загрузка посещаемости…
-          </p>
-        </div>
-      </div>
+      <LoaderComponent
+        fullscreen={false}
+        className="ws-loader-card pointer-events-auto"
+        message="Загрузка посещаемости…"
+      />
     </motion.div>
   );
 
@@ -3158,7 +3151,7 @@ const PhotoDashboard: React.FC = () => {
               <motion.button
                 onClick={handleFullscreenToggle}
                 disabled={isFullscreenBusy}
-                className={`flex w-full shrink-0 items-center justify-center gap-1 rounded-lg font-semibold text-white transition-colors px-2 py-1 text-xs sm:w-auto sm:justify-start lg:gap-2 lg:px-4 lg:py-2 lg:text-sm ${
+                className={`flex min-h-11 w-full shrink-0 items-center justify-center gap-1 rounded-lg font-semibold text-white transition-colors px-2 py-1 text-xs sm:w-auto sm:justify-start lg:gap-2 lg:px-4 lg:py-2 lg:text-sm ${
                   isFullscreenBusy
                     ? "bg-primary-400 cursor-not-allowed"
                     : "bg-primary-600 hover:bg-primary-700"
@@ -3196,7 +3189,7 @@ const PhotoDashboard: React.FC = () => {
                   <FaRegCalendarAlt className="opacity-80 w-3 h-3 lg:w-4 lg:h-4 shrink-0" />
                 }
                 containerClassName="w-full shrink-0 sm:w-auto"
-                displayClassName="inline-flex w-full items-center justify-center gap-1 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2 py-1 text-[10px] sm:w-auto sm:justify-start sm:text-xs lg:gap-2 lg:px-4 lg:py-2 lg:text-base hover:bg-white/75 dark:hover:bg-slate-800/70 transition-colors capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                displayClassName="ws-chip w-full justify-center sm:w-auto"
               />
             </div>
           </div>
@@ -3221,7 +3214,7 @@ const PhotoDashboard: React.FC = () => {
                   <FaRegCalendarAlt className="w-3.5 h-3.5 md:w-4 md:h-4 opacity-80 shrink-0" />
                 }
                 containerClassName="w-full shrink-0 sm:w-auto"
-                displayClassName="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/50 dark:border-slate-700/80 bg-white/55 dark:bg-slate-900/55 text-gray-600 dark:text-gray-300 whitespace-nowrap px-2.5 py-1.5 text-xs sm:w-auto sm:justify-start sm:gap-2 sm:px-3 sm:text-sm md:px-4 md:py-2 md:text-base hover:bg-white/75 dark:hover:bg-slate-800/70 transition-colors capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                displayClassName="ws-chip w-full justify-center sm:w-auto"
               />
             </div>
             <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3 md:gap-4">
@@ -3268,7 +3261,7 @@ const PhotoDashboard: React.FC = () => {
               <motion.button
                 onClick={handleFullscreenToggle}
                 disabled={isFullscreenBusy}
-                className={`flex w-full shrink-0 items-center justify-center gap-2 rounded-lg font-semibold text-white transition-colors px-3.5 py-1.5 text-xs sm:ml-auto sm:w-auto sm:px-3.5 md:px-4 md:py-2 md:text-sm ${
+                className={`flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-lg font-semibold text-white transition-colors px-3.5 py-1.5 text-xs sm:ml-auto sm:w-auto sm:px-3.5 md:px-4 md:py-2 md:text-sm ${
                   isFullscreenBusy
                     ? "bg-primary-400 cursor-not-allowed"
                     : "bg-primary-600 hover:bg-primary-700"
@@ -3447,9 +3440,6 @@ const PhotoDashboard: React.FC = () => {
   );
 
   const renderSelectedPhoto = () => {
-    const lightboxBackdropTransition = prefersReducedMotion
-      ? { duration: 0.12 }
-      : { duration: 0.32, ease: [0.4, 0, 0.2, 1] as const };
     const lightboxModalTransition = prefersReducedMotion
       ? { duration: 0.18 }
       : { type: "spring" as const, damping: 30, stiffness: 320, mass: 0.85 };
@@ -3460,14 +3450,16 @@ const PhotoDashboard: React.FC = () => {
     return (
       <AnimatePresence initial={false}>
         {selectedPhoto && (
-          <motion.div
+          <dialog
+            ref={photoDialogRef}
             key={selectedPhoto.id}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 sm:p-5 md:p-6"
+            className="photo-lightbox"
+            aria-labelledby="photo-lightbox-title"
+            onCancel={(event) => {
+              event.preventDefault();
+              setSelectedPhoto(null);
+            }}
             onClick={() => setSelectedPhoto(null)}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={lightboxBackdropTransition}
           >
             <motion.div
               className="relative w-full max-w-md sm:max-w-lg md:max-w-xl lg:max-w-2xl rounded-2xl md:rounded-3xl overflow-hidden bg-white dark:bg-gray-800 shadow-2xl flex flex-col max-h-[90vh] md:max-h-[85vh] [@media(orientation:landscape)]:max-w-4xl [@media(orientation:landscape)]:max-h-[90vh]"
@@ -3525,7 +3517,10 @@ const PhotoDashboard: React.FC = () => {
                     </div>
 
                     <div className="p-5 sm:p-6 md:p-7 flex flex-col gap-3 flex-shrink-0 [@media(orientation:landscape)]:flex-1 [@media(orientation:landscape)]:min-w-0 [@media(orientation:landscape)]:overflow-y-auto [@media(orientation:landscape)]:justify-center">
-                      <h2 className="text-xl md:text-2xl font-semibold text-gray-800 dark:text-white pr-10 md:pr-12">
+                      <h2
+                        id="photo-lightbox-title"
+                        className="text-xl md:text-2xl font-semibold text-gray-800 dark:text-white pr-10 md:pr-12 break-words"
+                      >
                         {p.staffFullName}
                       </h2>
                       <div className="flex flex-col gap-1.5 text-sm">
@@ -3648,7 +3643,7 @@ const PhotoDashboard: React.FC = () => {
                 );
               })()}
             </motion.div>
-          </motion.div>
+          </dialog>
         )}
       </AnimatePresence>
     );

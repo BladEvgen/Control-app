@@ -25,7 +25,16 @@ const router = createBrowserRouter([
   {
     element: (
       <Layout>
-        <Suspense fallback={<LoaderComponent />}>
+        <Suspense
+          fallback={
+            <LoaderComponent
+              fullscreen={false}
+              showGlow={false}
+              className="py-24"
+              message=""
+            />
+          }
+        >
           <Outlet />
         </Suspense>
       </Layout>

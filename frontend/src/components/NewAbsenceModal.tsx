@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import ReactDOM from "react-dom";
 import axiosInstance from "../api";
 import { apiUrl } from "../../apiConfig";
@@ -16,6 +16,7 @@ import {
 import { log } from "../api";
 import { useDropzone, FileRejection } from "react-dropzone";
 import { Toggle } from "./Toggle";
+import { localDate } from "../utils/reportDates";
 
 interface NewAbsenceModalProps {
   staffPin: string;
@@ -29,7 +30,6 @@ const ABSENT_REASON_CHOICES: { key: string; label: string }[] = [
   { key: "other", label: "Другая причина" },
 ];
 
-/** Dark/light parity with DateForm and staff profile date fields */
 const CONTROL_FOCUS =
   "focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/30 dark:focus:border-primary-500 dark:focus:ring-primary-500/40";
 
@@ -69,6 +69,19 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const opener =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    dialog?.showModal();
+    return () => {
+      dialog?.close();
+      opener?.focus();
+    };
+  }, []);
   const [reason, setReason] = useState<string>("sick_leave");
 
   const getInitialDates = () => {
@@ -77,9 +90,9 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
     return {
-      start: yesterday.toISOString().split("T")[0],
-      end: today.toISOString().split("T")[0],
-      max: today.toISOString().split("T")[0],
+      start: localDate(yesterday),
+      end: localDate(today),
+      max: localDate(today),
     };
   };
 
@@ -94,7 +107,7 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
   const maxDate = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    return today.toISOString().split("T")[0];
+    return localDate(today);
   }, []);
 
   const daysDifference = useMemo(() => {
@@ -136,7 +149,7 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
         setErrorMessage("Файл слишком большой. Максимальный размер: 10 МБ.");
       } else if (rejection.errors.some((e) => e.code === "file-invalid-type")) {
         setErrorMessage(
-          "Неверный формат файла. Допустимые форматы: PDF, JPG, JPEG, PNG."
+          "Неверный формат файла. Допустимые форматы: PDF, JPG, JPEG, PNG.",
         );
       } else {
         setErrorMessage("Ошибка при загрузке файла. Попробуйте еще раз.");
@@ -321,7 +334,16 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
           </div>
         </motion.div>
       )}
-      <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/35 p-2 backdrop-blur-[3px] dark:bg-slate-950/40 sm:p-4">
+      <dialog
+        ref={dialogRef}
+        className="absence-dialog"
+        aria-labelledby="absence-title"
+        aria-busy={isSubmitting}
+        onCancel={(event) => {
+          event.preventDefault();
+          if (!isSubmitting) onClose();
+        }}
+      >
         <motion.div
           className="relative flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl ring-1 ring-black/[0.06] dark:border-gray-800 dark:bg-gray-950 dark:ring-white/10 sm:max-h-[95vh]"
           variants={modalVariants}
@@ -330,9 +352,12 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
           exit="exit"
         >
           {/* Заголовок */}
-          <div className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-gray-200 bg-gradient-to-r from-primary-50 via-white to-white px-4 py-4 dark:border-gray-800 dark:from-gray-950 dark:via-gray-950 dark:to-gray-950 dark:shadow-[inset_0_-1px_0_0_rgba(59,130,246,0.12)] sm:px-5 sm:py-4 md:px-6">
+          <div className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-gray-200 px-4 py-4 dark:border-gray-800 sm:px-5 md:px-6">
             <div className="min-w-0 flex-1">
-              <h2 className="text-lg font-semibold tracking-tight text-gray-900 dark:text-gray-50 sm:text-xl md:text-2xl">
+              <h2
+                id="absence-title"
+                className="text-lg font-semibold tracking-tight text-gray-900 dark:text-gray-50 sm:text-xl"
+              >
                 Добавить отсутствие
               </h2>
               <p className="mt-0.5 hidden text-xs text-gray-600 dark:text-gray-400 sm:block">
@@ -383,11 +408,15 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
             >
               {/* Поле "Причина отсутствия" */}
               <div>
-                <label className="mb-2 block text-sm font-medium text-gray-800 dark:text-gray-200">
+                <label
+                  htmlFor="absence-reason"
+                  className="mb-2 block text-sm font-medium text-gray-800 dark:text-gray-200"
+                >
                   Причина отсутствия
                 </label>
                 <div className="relative">
                   <motion.select
+                    id="absence-reason"
                     value={reason}
                     onChange={(e) => {
                       log.info("Выбрана причина", e.target.value);
@@ -426,6 +455,7 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
                     </div>
                     <motion.input
                       type="date"
+                      required
                       id="startDate"
                       value={startDate}
                       onChange={handleStartDateChange}
@@ -457,6 +487,7 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
                     </div>
                     <motion.input
                       type="date"
+                      required
                       id="endDate"
                       value={endDate}
                       onChange={handleEndDateChange}
@@ -489,12 +520,11 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
                     {daysDifference === 1
                       ? "день"
                       : daysDifference < 5
-                      ? "дня"
-                      : "дней"}
+                        ? "дня"
+                        : "дней"}
                   </p>
                 </motion.div>
               )}
-              {/* Утверждено — общий Toggle */}
               <div className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3.5 dark:border-gray-800 dark:bg-gray-900/80">
                 <Toggle
                   checked={approved}
@@ -554,6 +584,7 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
                       {/* Кнопка удаления */}
                       <motion.button
                         type="button"
+                        aria-label="Удалить прикреплённый документ"
                         onClick={(e) => {
                           e.stopPropagation();
                           setDocumentFile(null);
@@ -577,7 +608,11 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
                         : "border-gray-300 bg-gray-50 hover:border-primary-400 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-950/60 dark:hover:border-primary-600 dark:hover:bg-gray-900/70"
                     } ${isSubmitting ? "cursor-not-allowed opacity-50" : ""}`}
                   >
-                    <input {...getInputProps()} disabled={isSubmitting} />
+                    <input
+                      {...getInputProps()}
+                      aria-label="Прикрепить документ"
+                      disabled={isSubmitting}
+                    />
                     <div className="flex flex-col items-center justify-center p-6 sm:p-8 gap-4">
                       {/* Иконка загрузки */}
                       <div className="relative">
@@ -679,9 +714,9 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
             </form>
           </div>
         </motion.div>
-      </div>
+      </dialog>
     </>,
-    document.body
+    document.body,
   );
 };
 
