@@ -958,3 +958,11 @@ class AttendanceSyncRangeTests(TransactionTestCase):
         self.assertEqual(summary["created_records"] + summary["updated_records"], 0)
         manual.refresh_from_db()
         self.assertIsNotNone(manual.first_in)
+
+
+class FileKindTests(TestCase):
+    def test_department_export_passed_as_humans_is_rejected_before_writing(self):
+        path = dep_csv([["1", "КРМУ", "", ""], ["3", "студенты", "1", "КРМУ"]])
+        with self.assertRaisesMessage(staff_csv_import.ImportAborted, "--departments"):
+            staff_csv_import.run_import(humans_path=path)
+        self.assertFalse(ChildDepartment.objects.filter(id="КРМУ").exists())

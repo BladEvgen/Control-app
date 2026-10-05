@@ -204,6 +204,35 @@ def iter_rows(path: str, expected_columns: int) -> Iterator[List[str]]:
     return read_csv_rows(path, expected_columns)
 
 
+FILE_KINDS = {"отдел": "--departments", "сотрудник": "--humans"}
+
+
+def _file_kind(path: str) -> str:
+    if path.lower().endswith((".xlsx", ".xlsm")):
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        try:
+            sheet = workbook.active
+            first = next(sheet.iter_rows(max_row=1, values_only=True), ()) if sheet else ()
+        finally:
+            workbook.close()
+        cell = first[0] if first else ""
+    else:
+        with open(path, encoding=CSV_ENCODING, errors=CSV_ERRORS, newline="") as handle:
+            cell = (next(csv.reader(handle), None) or [""])[0]
+    return str(cell or "").strip().lower()
+
+
+def check_file_kind(path: str, expected: str) -> None:
+    kind = _file_kind(path)
+    if kind in FILE_KINDS and kind != expected:
+        raise ImportAborted(
+            f"{path}: это выгрузка «{kind.capitalize()}», её нужно передавать "
+            f"через {FILE_KINDS[kind]}, а не {FILE_KINDS[expected]}."
+        )
+
+
 def _chunked(rows: Iterable[List[str]], size: int) -> Iterator[List[List[str]]]:
     chunk: List[List[str]] = []
     for row in rows:
@@ -758,6 +787,11 @@ def run_import(
     """
     if not departments_path and not humans_path:
         raise ValueError("Не передан ни файл отделов, ни файл сотрудников.")
+
+    if departments_path:
+        check_file_kind(departments_path, "отдел")
+    if humans_path:
+        check_file_kind(humans_path, "сотрудник")
 
     stats = ImportStats(dry_run=dry_run)
     merge_aliases = dict(LEGACY_DEPARTMENT_ALIASES)
