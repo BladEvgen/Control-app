@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -602,7 +603,9 @@ TEMPLATES = [
 ASGI_APPLICATION = "django_settings.asgi.application"
 
 # Cache configurations
-if DEBUG:
+# Tests must never touch the shared Redis: Cache.clear() there is FLUSHDB.
+TESTING = len(sys.argv) > 1 and sys.argv[1] == "test"
+if DEBUG or TESTING:
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.locmem.LocMemCache",

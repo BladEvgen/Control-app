@@ -3,6 +3,7 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar, Union, cast
 
 from django.core.cache import caches
 from django.core.cache.backends.base import BaseCache
+from django.core.cache.backends.locmem import LocMemCache
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,13 @@ def invalidate_cache_pattern(pattern: str, cache: BaseCache = Cache) -> int:
                 )
                 return deleted_count or 0
             return 0
+        if isinstance(cache, LocMemCache):
+            needle = pattern.rstrip("*")
+            with backend._lock:
+                keys = [key for key in backend._cache if needle in key]
+                for key in keys:
+                    backend._delete(key)
+            return len(keys)
         if hasattr(cache, "keys"):
             keys = backend.keys(pattern)
             if keys:

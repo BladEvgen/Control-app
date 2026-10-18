@@ -2,11 +2,7 @@ from django.urls import path, re_path
 from drf_yasg import openapi
 from drf_yasg.generators import OpenAPISchemaGenerator
 from drf_yasg.views import get_schema_view
-from rest_framework import permissions
-from rest_framework_simplejwt.authentication import JWTAuthentication
-from rest_framework_simplejwt.exceptions import AuthenticationFailed, InvalidToken
 
-from monitoring_app import models
 from monitoring_app.swagger_views import swagger_json_with_login, swagger_ui_with_login
 
 
@@ -105,92 +101,8 @@ class DynamicSchemeGenerator(OpenAPISchemaGenerator):
         return schema
 
 
-class SwaggerUIAccessPermission(permissions.BasePermission):
-    """Разрешает доступ к Swagger UI по JWT, API ключу или сессии.
-
-    Поддерживает следующие способы аутентификации:
-    - Django сессия (Django admin/собственная аутентификация)
-    - JWT токен (Bearer token)
-    - API ключ (X-API-KEY заголовок)
-    """
-
-    def has_permission(self, request, view):
-        """Проверяет наличие прав доступа к Swagger UI.
-
-        Args:
-            request: HTTP запрос.
-            view: View класс или функция.
-
-        Returns:
-            bool: True если доступ разрешен, False иначе.
-        """
-        if request.user and request.user.is_authenticated:
-            return True
-
-        jwt_authenticator = JWTAuthentication()
-        try:
-            auth_result = jwt_authenticator.authenticate(request)
-            if auth_result is not None:
-                _, token = auth_result
-                if token.payload.get("token_type") == "access":
-                    return True
-        except (InvalidToken, AuthenticationFailed):
-            pass
-
-        api_key = request.headers.get("X-API-KEY") or request.headers.get("x-api-key")
-        if api_key:
-            try:
-                key_obj = models.APIKey.objects.get(key=api_key)
-                if key_obj.is_active:
-                    return True
-            except models.APIKey.DoesNotExist:
-                pass
-
-        return False
 
 
-class SchemaAccessPermission(permissions.BasePermission):
-    """Разрешает доступ к JSON схеме по JWT, API ключу или сессии.
-
-    Поддерживает следующие способы аутентификации:
-    - Django сессия
-    - JWT токен (Bearer token)
-    - API ключ (X-API-KEY заголовок)
-    """
-
-    def has_permission(self, request, view):
-        """Проверяет наличие прав доступа к JSON схеме.
-
-        Args:
-            request: HTTP запрос.
-            view: View класс или функция.
-
-        Returns:
-            bool: True если доступ разрешен, False иначе.
-        """
-        if request.user and request.user.is_authenticated:
-            return True
-
-        jwt_authenticator = JWTAuthentication()
-        try:
-            auth_result = jwt_authenticator.authenticate(request)
-            if auth_result is not None:
-                _, token = auth_result
-                if token.payload.get("token_type") == "access":
-                    return True
-        except (InvalidToken, AuthenticationFailed):
-            pass
-
-        api_key = request.headers.get("X-API-KEY") or request.headers.get("x-api-key")
-        if api_key:
-            try:
-                key_obj = models.APIKey.objects.get(key=api_key)
-                if key_obj.is_active:
-                    return True
-            except models.APIKey.DoesNotExist:
-                pass
-
-        return False
 
 
 class SchemaViewCache:
