@@ -34,8 +34,8 @@ Control-app is a system designed for managing employee attendance, calculating w
 - `frontend/src/`: Source directory with React components, utilities, and styles
 - `frontend/src/components/`: Core components like `HeaderComponent`, `LoginPage`, etc.
 - `frontend/src/api.ts`: API requests and authentication logic
-- `tailwind.config.js`: Tailwind CSS configuration
-- `vite.config.js`: Vite build tool configuration
+- `src/index.css`: Tailwind CSS 4 configuration (`@theme` tokens)
+- `vite.config.ts`: Vite 8 (Rolldown bundler, Oxc minifier) build configuration
 
 ## Setup and Installation
 
@@ -259,6 +259,8 @@ npm run dev
 ```bash
 npm run build
 ```
+
+`scripts/build-release.mjs` runs the type-check (`tsc`, incremental) and `vite build` in parallel and publishes into `dist/` keeping the last 5 releases. Cold build ≈ 7 s, repeat ≈ 3 s.
 
 # Nginx Conf Example
 

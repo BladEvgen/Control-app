@@ -66,13 +66,26 @@ export default defineConfig(() => {
       emptyOutDir: false,
       cssTarget: "esnext",
       chunkSizeWarningLimit: 1000,
-      rollupOptions: {
+      rolldownOptions: {
         output: {
-          manualChunks: {
-            "chart-vendor": ["chart.js", "react-chartjs-2"],
-            "axios-vendor": ["axios"],
-            "react-router-vendor": ["react-router-dom"],
-            "exceljs-vendor": ["exceljs"],
+          codeSplitting: {
+            groups: [
+              {
+                name: "react-vendor",
+                test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+                priority: 20,
+              },
+              {
+                name: "chart-vendor",
+                test: /node_modules[\\/](chart\.js|react-chartjs-2)[\\/]/,
+              },
+              { name: "axios-vendor", test: /node_modules[\\/]axios[\\/]/ },
+              {
+                name: "react-router-vendor",
+                test: /node_modules[\\/](react-router|react-router-dom)[\\/]/,
+              },
+              { name: "exceljs-vendor", test: /node_modules[\\/]exceljs[\\/]/ },
+            ],
           },
         },
       },

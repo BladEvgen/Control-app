@@ -225,12 +225,10 @@ const main = async () => {
   await ensureDir(DIST_ASSETS_DIR);
 
   try {
-    await runNodeScript(TSC_BIN, ["-p", "tsconfig.json"], env);
-    await runNodeScript(
-      VITE_BIN,
-      ["build", "--mode", mode, "--outDir", tempOutDir],
-      env,
-    );
+    await Promise.all([
+      runNodeScript(TSC_BIN, ["-p", "tsconfig.json"], env),
+      runNodeScript(VITE_BIN, ["build", "--mode", mode, "--outDir", tempOutDir], env),
+    ]);
 
     const tempAssetsDir = path.join(tempOutDir, "assets");
     const tempIndexPath = path.join(tempOutDir, "index.html");
