@@ -3,6 +3,7 @@ from django.views.generic import RedirectView
 
 from monitoring_app import custom_jwt, face_lab_tts, views
 from monitoring_app.department_navigation_api import department_navigation
+from monitoring_app.import_api import data_import, import_status
 from monitoring_app.schedule_presence_api import SchedulePresenceView
 from monitoring_app.swagger import urlpatterns as doc_urls
 from monitoring_app.swagger_views import swagger_session_login, swagger_session_logout
@@ -22,12 +23,9 @@ urlpatterns = [
     ),
     path("login_view/", views.login_view, name="login_view"),
     path("logout/", views.logout_view, name="logout"),
-    path("upload/", views.UploadFileView.as_view(), name="uploadFile"),
-    path(
-        "upload/status/<str:task_id>/",
-        views.upload_task_status,
-        name="upload-task-status",
-    ),
+    path("upload/", RedirectView.as_view(url="/app/import", permanent=True), name="uploadFile"),
+    path("api/import/", data_import, name="data-import"),
+    path("api/import/status/<str:task_id>/", import_status, name="data-import-status"),
     path("fetcher/", views.fetch_data_view, name="fetcher"),
     path("api/app-version/", views.app_version, name="app-version"),
     path(

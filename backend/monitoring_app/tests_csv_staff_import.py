@@ -573,7 +573,7 @@ class PhotoZipTests(TestCase):
         self.assertEqual(result["skipped_unknown_pin"], 1)
 
 
-class UploadViewTests(TestCase):
+class DataImportApiTests(TestCase):
     def setUp(self):
         from monitoring_app.models import FileCategory
 
@@ -584,16 +584,21 @@ class UploadViewTests(TestCase):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
         response = self.client.post(
-            "/upload/",
+            "/api/import/",
             {
                 "category": "staff",
                 "file": SimpleUploadedFile("hum.csv", b"x", content_type="text/csv"),
             },
         )
 
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("/login_view/", response["Location"])
+        self.assertIn(response.status_code, (401, 403))
         self.assertFalse(Staff.objects.exists())
+
+    def test_get_lists_templates_and_limit(self):
+        self.client.force_login(self.user)
+        data = self.client.get("/api/import/").json()
+        self.assertEqual(data["categories"], [{"slug": "staff", "name": "Сотрудники"}])
+        self.assertGreater(data["maxUploadMb"], 0)
 
     def test_wrong_extension_is_rejected_before_enqueue(self):
         from unittest.mock import patch
@@ -603,14 +608,15 @@ class UploadViewTests(TestCase):
         self.client.force_login(self.user)
         with patch("monitoring_app.tasks.process_uploaded_file.delay") as delay:
             response = self.client.post(
-                "/upload/",
+                "/api/import/",
                 {
                     "category": "staff",
                     "file": SimpleUploadedFile("photos.zip", b"PK", "application/zip"),
                 },
             )
 
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(".csv", response.json()["error"])
         delay.assert_not_called()
 
     def test_valid_upload_is_enqueued_and_not_processed_inline(self):
@@ -623,33 +629,40 @@ class UploadViewTests(TestCase):
         with patch("monitoring_app.tasks.process_uploaded_file.delay") as delay:
             delay.return_value.id = "task-123"
             response = self.client.post(
-                "/upload/",
+                "/api/import/",
                 {
                     "category": "staff",
+                    "archiveMissing": "true",
                     "file": SimpleUploadedFile(
                         "hum.csv", payload.encode("utf-8-sig"), content_type="text/csv"
                     ),
                 },
             )
 
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["taskId"], "task-123")
         delay.assert_called_once()
         stored_path, category, options = delay.call_args[0]
         self.addCleanup(lambda: os.path.exists(stored_path) and os.remove(stored_path))
         self.assertEqual(category, "staff")
         self.assertTrue(os.path.exists(stored_path), "файл должен лежать на диске")
-        self.assertIn("archive_missing", options)
-        self.assertEqual(self.client.session["upload_task_id"], "task-123")
+        self.assertTrue(options["archive_missing"])
+        self.assertFalse(options["force"])
 
     def test_status_endpoint_requires_auth(self):
-        response = self.client.get("/upload/status/task-123/")
-        self.assertEqual(response.status_code, 403)
+        response = self.client.get("/api/import/status/task-123/")
+        self.assertIn(response.status_code, (401, 403))
 
     def test_status_endpoint_reports_state(self):
         self.client.force_login(self.user)
-        response = self.client.get("/upload/status/task-123/")
+        response = self.client.get("/api/import/status/task-123/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["task_id"], "task-123")
+        self.assertEqual(response.json()["taskId"], "task-123")
+
+    def test_old_upload_url_redirects_to_react_page(self):
+        response = self.client.get("/upload/")
+        self.assertEqual(response.status_code, 301)
+        self.assertEqual(response["Location"], "/app/import")
 
 
 class AttendanceFetcherAggregationTests(TestCase):

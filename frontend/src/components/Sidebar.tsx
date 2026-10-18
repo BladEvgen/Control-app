@@ -16,7 +16,6 @@ import Dropdown from "./Dropdown";
 import logoSrc from "../assets/logo.png";
 import { Link, useNavigate } from "../RouterUtils";
 import { useAuth } from "../store/hooks";
-import { apiUrl } from "../../apiConfig";
 
 const sections = [
   { to: "/", label: "Структура", icon: FaSitemap },
@@ -124,10 +123,10 @@ export default function Sidebar({ theme, toggleTheme }: ShellNavProps) {
         >
           {(close) => (
             <>
-              <a className="ws-menu-item" href={`${apiUrl}/upload/`}>
+              <Link className="ws-menu-item" to="/import" onClick={close}>
                 <FaUpload aria-hidden />
                 Импорт данных
-              </a>
+              </Link>
               <div className="ws-menu-sep" />
               <button
                 type="button"
@@ -212,10 +211,10 @@ export function MobileDock({ theme, toggleTheme }: ShellNavProps) {
               <ThemeIcon theme={theme} />
               {theme === "dark" ? "Светлая тема" : "Тёмная тема"}
             </button>
-            <a className="ws-menu-item" href={`${apiUrl}/upload/`}>
+            <Link className="ws-menu-item" to="/import" onClick={close}>
               <FaUpload aria-hidden />
               Импорт данных
-            </a>
+            </Link>
             <div className="ws-menu-sep" />
             <button
               type="button"
