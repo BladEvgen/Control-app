@@ -718,7 +718,7 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
             longitude=76.90,
             acceptance_radius_m=80,
         )
-        lesson_time = timezone.make_aware(datetime(2026, 3, 10, 9, 0))
+        lesson_time = timezone.now() - timedelta(days=10)  # inside the rolling 180-day window
         for offset in range(3):
             LessonAttendance.objects.create(
                 staff=self.staff,
@@ -798,7 +798,7 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
             longitude=76.8910,
             acceptance_radius_m=250,
         )
-        lesson_time = timezone.make_aware(datetime(2026, 3, 10, 9, 0))
+        lesson_time = timezone.now() - timedelta(days=10)  # inside the rolling 180-day window
         LessonAttendance.objects.create(
             staff=self.staff,
             subject_name="Nearest",
