@@ -59,54 +59,64 @@ export default function Layout({ children }: { children: ReactNode }) {
     </motion.div>
   );
 
-  if (isLoginRoute || isKioskRoute) {
+  if (isLoginRoute) {
     return (
       <div className="workspace">
         <AuthSessionWakeBridge />
-        {!isLoginRoute && <AuthWebSocketInitializer />}
-        <main
-          className={
-            isKioskRoute ? "workspace-kiosk-content" : "workspace-login"
-          }
-        >
-          {children}
-        </main>
+        <main className="workspace-login">{children}</main>
       </div>
     );
   }
 
+  const chrome = !isKioskRoute;
   return (
-    <div className="workspace shell">
-      <div className="shell-crest shell-crest-page" aria-hidden />
+    <div className={chrome ? "workspace shell" : "workspace"}>
+      {chrome && (
+        <>
+          <div className="shell-crest shell-crest-page" aria-hidden />
+          <a href="#main-content" className="workspace-skip-link">
+            К содержимому
+          </a>
+          <aside className="shell-rail">
+            <Sidebar theme={theme} toggleTheme={toggleTheme} />
+          </aside>
+        </>
+      )}
       <AuthSessionWakeBridge />
       <AuthWebSocketInitializer />
-      <a href="#main-content" className="workspace-skip-link">
-        К содержимому
-      </a>
-      <aside className="shell-rail">
-        <Sidebar theme={theme} toggleTheme={toggleTheme} />
-      </aside>
-      <div className="shell-canvas">
-        <div className="shell-crests" aria-hidden>
-          <div className="shell-crest shell-crest-canvas" />
-        </div>
-        <div className="shell-mobilebar">
-          <Brand />
-        </div>
-        <main id="main-content" tabIndex={-1} className="shell-main">
+      <div className={chrome ? "shell-canvas" : undefined}>
+        {chrome && (
+          <>
+            <div className="shell-crests" aria-hidden>
+              <div className="shell-crest shell-crest-canvas" />
+            </div>
+            <div className="shell-mobilebar">
+              <Brand />
+            </div>
+          </>
+        )}
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className={chrome ? "shell-main" : "workspace-kiosk-content"}
+        >
           {isStructure ? (
-            <div className="explorer">
-              <StructureTree />
+            <div className={chrome ? "explorer" : undefined}>
+              {chrome && <StructureTree />}
               {page}
             </div>
           ) : (
             page
           )}
         </main>
-        <ShellFooter />
+        {chrome && <ShellFooter />}
       </div>
-      <MobileDock theme={theme} toggleTheme={toggleTheme} />
-      <AttendanceExcelDownloadBanner />
+      {chrome && (
+        <>
+          <MobileDock theme={theme} toggleTheme={toggleTheme} />
+          <AttendanceExcelDownloadBanner />
+        </>
+      )}
     </div>
   );
 }
