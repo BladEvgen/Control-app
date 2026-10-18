@@ -55,5 +55,6 @@
     "**/control_image/**": true,
     "**/graphify-out/**": true,
     "**/DB/**": true
-  }
+  },
+  "python.terminal.useEnvFile": true
 }
