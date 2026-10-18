@@ -2200,6 +2200,8 @@ class PhotoConsumerProtocolTest(SimpleTestCase):
         self.assertEqual([payload["chunkIndex"] for payload in payloads], [1, 2, 3])
         self.assertTrue(all(payload["totalChunks"] == 3 for payload in payloads))
         self.assertTrue(all(payload["protocol"] == PHOTO_WS_PROTOCOL for payload in payloads))
+        # Clients drop frames whose date differs from the day they display.
+        self.assertTrue(all(payload["date"] == consumer.date.isoformat() for payload in payloads))
 
     def test_deleted_event_is_sent_without_photo_payload(self):
         consumer = TestablePhotoConsumer()

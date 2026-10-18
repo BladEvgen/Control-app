@@ -31,11 +31,20 @@ STATE_UPDATED_META = "UPDATED_META"
 STATE_DELETED = "DELETED"
 
 
+def _deleted_event(attendance_id: int, version_ts: str) -> dict[str, Any]:
+    return {
+        "id": attendance_id,
+        "op": "deleted",
+        "stateCode": STATE_DELETED,
+        "versionTs": version_ts,
+    }
+
+
 class PhotoConsumer(AsyncJsonWebsocketConsumer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.date = timezone.now().date()
+        self.date = timezone.localdate()
         self.group_name = ""
         self._heartbeat_task = None
         self._photo_update_buffer: dict[int, dict[str, Any]] = {}
@@ -157,9 +166,9 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             try:
                 self.date = datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
-                self.date = timezone.now().date()
+                self.date = timezone.localdate()
         else:
-            self.date = timezone.now().date()
+            self.date = timezone.localdate()
 
         self.group_name = f"photos_{self.date}"
 
@@ -169,7 +178,8 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-        await self._send_initial_snapshot()
+        if str(params.get("defer", "0")).strip().lower() not in {"1", "true", "yes", "on"}:
+            await self._send_initial_snapshot()
 
     async def disconnect(self, code):
         _ = code
@@ -347,6 +357,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         return {
             "type": message_type,
             "protocol": PHOTO_WS_PROTOCOL,
+            "date": self.date.isoformat(),
             "batchId": batch_id,
             "chunkIndex": chunk_index,
             "totalChunks": total_chunks,
@@ -432,7 +443,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         больше не приходят, а значит устаревший снимок с данными до ручных
         вердиктов (manual verdict) никогда не будет исправлен через сокет.
         """
-        today = timezone.now().date()
+        today = timezone.localdate()
         is_today = date == today
 
         cache_key = f"photos_for_{date}"
@@ -571,24 +582,10 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                 if op == "deleted":
                     if self._risk_only:
                         if was_visible:
-                            events.append(
-                                {
-                                    "id": attendance_id,
-                                    "op": "deleted",
-                                    "stateCode": STATE_DELETED,
-                                    "versionTs": version_ts,
-                                }
-                            )
+                            events.append(_deleted_event(attendance_id, version_ts))
                         self._visible_ids.discard(attendance_id)
                     else:
-                        events.append(
-                            {
-                                "id": attendance_id,
-                                "op": "deleted",
-                                "stateCode": STATE_DELETED,
-                                "versionTs": version_ts,
-                            }
-                        )
+                        events.append(_deleted_event(attendance_id, version_ts))
                     continue
                 photo_payload = fetched_by_id.get(attendance_id)
                 if photo_payload is None:
@@ -599,24 +596,10 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                     )
                     if self._risk_only:
                         if was_visible:
-                            events.append(
-                                {
-                                    "id": attendance_id,
-                                    "op": "deleted",
-                                    "stateCode": STATE_DELETED,
-                                    "versionTs": version_ts,
-                                }
-                            )
+                            events.append(_deleted_event(attendance_id, version_ts))
                         self._visible_ids.discard(attendance_id)
                     else:
-                        events.append(
-                            {
-                                "id": attendance_id,
-                                "op": "deleted",
-                                "stateCode": STATE_DELETED,
-                                "versionTs": version_ts,
-                            }
-                        )
+                        events.append(_deleted_event(attendance_id, version_ts))
                     continue
                 normalized_event = self._photo_payload_to_event(
                     photo_payload,
@@ -630,14 +613,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
                         events.append(normalized_event)
                         self._visible_ids.add(attendance_id)
                     elif was_visible:
-                        events.append(
-                            {
-                                "id": attendance_id,
-                                "op": "deleted",
-                                "stateCode": STATE_DELETED,
-                                "versionTs": version_ts,
-                            }
-                        )
+                        events.append(_deleted_event(attendance_id, version_ts))
                         self._visible_ids.discard(attendance_id)
                 else:
                     events.append(normalized_event)

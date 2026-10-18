@@ -19,7 +19,7 @@ const WS_CLOSE_AUTH_FAILED = 4004;
 
 interface UseWebSocketOptions {
   url: string | null;
-  onMessage: (event: MessageEvent) => void;
+  onMessage: (event: MessageEvent, data: unknown) => void;
   onOpen?: () => void;
   onClose?: (event: CloseEvent) => void;
   onError?: (event: Event) => void;
@@ -58,7 +58,7 @@ const useWebSocket = ({
   const onOpenRef = useRef<() => void>();
   const onCloseRef = useRef<(event: CloseEvent) => void>();
   const onErrorRef = useRef<(event: Event) => void>();
-  const onMessageRef = useRef<(event: MessageEvent) => void>();
+  const onMessageRef = useRef<(event: MessageEvent, data: unknown) => void>();
   const onTokenExpiredRef = useRef<(() => void) | undefined>();
   const onRefreshExpiredRef = useRef<(() => void) | undefined>();
 
@@ -213,10 +213,7 @@ const useWebSocket = ({
         if (data.type === "pong") {
           handlePong();
           if (data.user_profile) {
-            onMessageRef.current?.({
-              ...event,
-              data: dataStr,
-            } as MessageEvent);
+            onMessageRef.current?.(event, data);
           }
           return;
         }
@@ -231,7 +228,7 @@ const useWebSocket = ({
           return;
         }
 
-        onMessageRef.current?.({ ...event, data: dataStr } as MessageEvent);
+        onMessageRef.current?.(event, data);
       } catch (error) {
         wsLog("ошибка обработки", error);
         log.error("Ошибка при обработке сообщения WebSocket:", error);
