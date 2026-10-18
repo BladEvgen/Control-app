@@ -590,6 +590,9 @@ def process_lesson_attendance_batch(attendance_data, _image_name, image_content)
         logger.warning("%s empty attendance_data list, nothing to process", log_prefix)
         return {"success_records": [], "error_records": []}
 
+    staff_by_pin = models.Staff.objects.in_bulk(
+        {record.get("staff_pin") for record in attendance_data}, field_name="pin"
+    )
     for idx, record in enumerate(attendance_data):
         staff_pin = record.get("staff_pin")
         tutor_id = record.get("tutor_id")
@@ -600,7 +603,9 @@ def process_lesson_attendance_batch(attendance_data, _image_name, image_content)
             longitude = record.get("longitude")
             subject_name = record.get("subject_name") or ""
 
-            staff = models.Staff.objects.get(pin=staff_pin)
+            staff = staff_by_pin.get(staff_pin)
+            if staff is None:
+                raise models.Staff.DoesNotExist
 
             file_path = None
             if image_content:
