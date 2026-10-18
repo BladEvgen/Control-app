@@ -170,9 +170,9 @@ class StaffDetailTest(TestCase):
             datetime(2023, 1, 31).date(),
         )
 
-        self.assertIn("10-01-2023", detail["attendance"])  # review
-        self.assertIn("12-01-2023", detail["attendance"])  # clean
-        self.assertNotIn("11-01-2023", detail["attendance"])  # suspicious
+        self.assertIn("10-01-2023", detail["attendance"])
+        self.assertIn("12-01-2023", detail["attendance"])
+        self.assertNotIn("11-01-2023", detail["attendance"])
         self.assertIn("10-01-2023", detail["lesson_attendance_audit"])
         day = detail["lesson_attendance_audit"]["10-01-2023"]
         self.assertEqual(day["lesson_day_status"], "pending_manual_review")
@@ -288,6 +288,30 @@ class StaffDetailTest(TestCase):
             0,
             "percent_for_period must reflect days with effective_work_seconds only",
         )
+
+    def test_one_sided_turnstile_day_is_zero_percent_without_penalty(self):
+        """Only an entry on the turnstile: shown as missing exit, 0% day, no absence penalty."""
+        full_day = timezone.make_aware(datetime(2023, 1, 17, 9, 0))
+        one_sided = timezone.make_aware(datetime(2023, 1, 18, 9, 0))
+        StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=full_day.date() + timedelta(days=1),
+            first_in=full_day,
+            last_out=full_day + timedelta(hours=8),
+            effective_work_seconds=8 * 3600,
+        )
+        StaffAttendance.objects.create(
+            staff=self.staff, date_at=one_sided.date() + timedelta(days=1), first_in=one_sided
+        )
+        detail = get_staff_detail(
+            self.staff, datetime(2023, 1, 1).date(), datetime(2023, 1, 31).date()
+        )
+        day = detail["attendance"]["18-01-2023"]
+        self.assertEqual(day["turnstile_missing"], "out")
+        self.assertEqual(day["percent_day"], 0)
+        self.assertIsNone(detail["attendance"]["17-01-2023"]["turnstile_missing"])
+        full_percent = detail["attendance"]["17-01-2023"]["percent_day"]
+        self.assertAlmostEqual(detail["percent_for_period"], full_percent / 2, places=1)
 
 
 class LessonAttendanceDayLevelApiFiltersTest(APITestCase):
@@ -1849,7 +1873,6 @@ class AttendanceFetcherExitResolutionTest(TestCase):
         self.assertEqual(len(day.variants["all"]["effective_work_intervals"]), 2)
 
     def test_qjt_followed_by_hard_exit_is_bridge_transfer_and_last_out(self):
-        # T19T 25.09.2026: мост ЦОС в 15:43, выход через турникет Абылайхана в 17:07.
         day = compute_day(
             [
                 self._event(7, 5, "CN3R230260010", "АБЫЛАЙХАНА"),
@@ -1892,7 +1915,6 @@ class AttendanceFetcherExitResolutionTest(TestCase):
         self.assertEqual(self._hhmm(turnstile["last_out"]), "18:00")
         self.assertEqual(turnstile["effective_work_seconds"], 9 * 3600)
         self.assertEqual(turnstile["area_name_out"], "АБЫЛАЙХАНА")
-        # история — по всем устройствам
         self.assertEqual(len(day.area_sequence or []), 4)
 
     def test_turnstile_mode_without_turnstile_is_absent(self):
@@ -1909,7 +1931,6 @@ class AttendanceFetcherExitResolutionTest(TestCase):
         self.assertIsNone(turnstile["effective_work_seconds"])
 
     def test_repeat_tap_on_same_turnstile_is_not_an_exit(self):
-        # T19T 22.09.2026: две отметки на турникете в 07:05 и 07:06, уход в 18:15.
         day = compute_day(
             [
                 self._event(7, 5, "CN3R230260001", "АБЫЛАЙХАНА"),
@@ -1922,8 +1943,7 @@ class AttendanceFetcherExitResolutionTest(TestCase):
         self.assertEqual(self._hhmm(turnstile["first_in"]), "07:05")
         self.assertEqual(self._hhmm(turnstile["last_out"]), "18:15")
         self.assertEqual(turnstile["effective_work_seconds"], 11 * 3600 + 10 * 60)
-        self.assertEqual(len(day.area_sequence or []), 4)  # история — со всеми отметками
-        # Повтор наследует флаги: вторая отметка в 07:06 — тоже вход (без is_exit).
+        self.assertEqual(len(day.area_sequence or []), 4)
         self.assertNotIn("is_exit", (day.area_sequence or [])[1])
 
     def test_repeat_exit_tap_keeps_exit_flag_in_history(self):
@@ -1937,7 +1957,6 @@ class AttendanceFetcherExitResolutionTest(TestCase):
         self.assertEqual([i.get("is_exit") for i in day.area_sequence or []], [None, "1", "1"])
 
     def test_single_turnstile_exit_is_departure_only(self):
-        # T19T 23.09.2026: вход через ЦОС, единственный турникет — выход в 16:51.
         day = compute_day(
             [
                 self._event(9, 52, "COVS222560013", "ЦОС"),

@@ -4783,6 +4783,14 @@ def child_department_detail(request, child_department_id):
                                     nullable=True,
                                     description="Время последнего выхода в формате ISO 8601",
                                 ),
+                                "turnstile_missing": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    enum=["in", "out"],
+                                    nullable=True,
+                                    description="Какой отметки на турникете нет: in — входа, "
+                                    "out — выхода; null — есть обе или нет ни одной. "
+                                    "Такой день считается 0% без штрафа за отсутствие.",
+                                ),
                                 "area_name_in": openapi.Schema(
                                     type=openapi.TYPE_STRING,
                                     nullable=True,
@@ -5389,6 +5397,7 @@ def get_staff_detail(staff, start_date, end_date):
         )
 
         if attendance_record:
+            attendance_record["turnstile_missing"] = (attendance or {}).get("turnstile_missing")
             date_key = event_date.strftime("%d-%m-%Y")
             if date_key in lesson_attendance_audit:
                 attendance_record = {
@@ -5725,7 +5734,7 @@ def process_attendance(
             percent_day = 0
             total_minutes_worked = 0
 
-        if effective_work_seconds is not None or (first_in and last_out):
+        if effective_work_seconds is not None or first_in or last_out:
             total_minutes_for_period += total_minutes_worked
             total_days_with_data += 1
             percent_for_period += percent_day
@@ -7579,6 +7588,7 @@ def staff_detail_by_department_id(request, department_id):
                             "staff_fio": "Иванов Иван",
                             "first_in": "2024-10-29T08:00:00+05:00",
                             "last_out": "2024-10-29T17:00:00+05:00",
+                            "turnstile_missing": null,
                             "area_name": "Улица примерочная 1",
                             "remote_work": false,
                             "absence_reason": null
@@ -7587,6 +7597,7 @@ def staff_detail_by_department_id(request, department_id):
                             "staff_fio": "Петров Петр",
                             "first_in": "2024-10-29T09:15:00+05:00",
                             "last_out": "2024-10-29T16:45:00+05:00",
+                            "turnstile_missing": null,
                             "area_name": "Проспект примеров 7",
                             "remote_work": true,
                             "absence_reason": "business_trip"
@@ -7793,6 +7804,7 @@ def staff_detail_by_department_id(request, department_id):
                         "staff_fio": staff_fio,
                         "first_in": first_in.isoformat() if first_in else None,
                         "last_out": last_out.isoformat() if last_out else None,
+                        "turnstile_missing": day["turnstile_missing"],
                         "area_name": area_name,
                         "remote_work": remote_work,
                         "absence_reason": absence_reason,

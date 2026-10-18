@@ -165,7 +165,8 @@ def merge_day(sa_records, la_records, location_searcher=None) -> dict:
     Returns:
         first_in, last_out (aware UTC или None), area_name_in/out, first_in_source,
         last_out_source ("staff_attendance" / "lesson_attendance" / None),
-        effective_work_seconds, area_sequence. O(r) для строк из load_days.
+        effective_work_seconds, area_sequence, turnstile_missing ("in" / "out" / None —
+        какой отметки нет). O(r) для строк из load_days.
     """
     combined: dict[str, Any] = {
         "first_in": None,
@@ -224,13 +225,25 @@ def merge_day(sa_records, la_records, location_searcher=None) -> dict:
         if name:
             combined["area_name_out"] = name
 
-    intervals = parse_intervals(sa_records[0].get("effective_work_intervals")) if sa_records else []
+    sa_intervals = (
+        parse_intervals(sa_records[0].get("effective_work_intervals")) if sa_records else []
+    )
+    intervals = list(sa_intervals)
     for la in la_records:
         fi, lo = la.get("first_in"), la.get("last_out")
         if fi is not None and lo is not None and lo > fi:
             intervals.append((fi, lo))
     total = utils.merge_work_intervals_to_total_seconds(intervals)
+    if not sa_intervals and sa_records and sa_records[0].get("effective_work_seconds"):
+        total = max(total, sa_records[0]["effective_work_seconds"])
     combined["effective_work_seconds"] = total or None
+    combined["turnstile_missing"] = (
+        "out"
+        if combined["first_in"] and not combined["last_out"]
+        else "in"
+        if combined["last_out"] and not combined["first_in"]
+        else None
+    )
     if "lesson_attendance" in (combined["first_in_source"], combined["last_out_source"]):
         combined["area_sequence"] = None
     return combined

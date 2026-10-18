@@ -12,6 +12,13 @@ export function hasMeaningfulInOut(data: AttendanceData): boolean {
   return fi !== "" && lo !== "";
 }
 
+export function turnstileMissingLabel(data: AttendanceData): string | null {
+  if (data.turnstile_missing === "out")
+    return "Нет отметки выхода на турникете";
+  if (data.turnstile_missing === "in") return "Нет отметки входа на турникете";
+  return null;
+}
+
 export type StaffAttendanceLegendTone =
   | "sky"
   | "violet"
@@ -160,6 +167,24 @@ export function resolveStaffAttendanceDayVisual(
       },
       "Выходной день",
       { id: "weekend_off", label: "Выходной день", tone: "amber" },
+    );
+  }
+
+  const missing = turnstileMissingLabel(data);
+  if (missing) {
+    return withStyle(
+      {
+        ...ROW_BASE,
+        text: "text-amber-900/90 dark:text-amber-300/90",
+        borderLeft:
+          "border-l-[3px] border-amber-400/80 dark:border-amber-500/50",
+      },
+      missing,
+      {
+        id: "turnstile_missing",
+        label: "Одна отметка на турникете",
+        tone: "amber",
+      },
     );
   }
 

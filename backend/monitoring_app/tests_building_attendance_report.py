@@ -730,7 +730,7 @@ class DepartmentAttendanceExcelTests(APITestCase):
             target_day=self.target_day,
         )
 
-        self.assertIn("10:00:00 - 11:00:00", str(attendance_value))
+        self.assertIn("09:00:00 - 10:00:00", str(attendance_value))
         self.assertNotIn("Подозрение на обман FaceID", str(attendance_value))
         self.assertFalse(
             _get_attendance_cell_fill_rgb(

@@ -7,7 +7,12 @@ import {
   hasMeaningfulInOut,
   STAFF_ABSENCE_WITHOUT_REASON_ROW_LABEL,
 } from "./attendanceDayPresentation";
-import { formatDepartmentName, formatTimeRange, formatMinutes } from "./utils";
+import {
+  formatDepartmentName,
+  formatTimeRange,
+  formatTimeWithSeconds,
+  formatMinutes,
+} from "./utils";
 
 export const generateAndDownloadExcel = async (
   staffData: StaffData,
@@ -225,6 +230,11 @@ export const generateAndDownloadExcel = async (
       }
     } else if (hasInOut && record.first_in && record.last_out) {
       attendanceInfo = formatTimeRange(record.first_in, record.last_out);
+    } else if (record.turnstile_missing) {
+      attendanceInfo =
+        record.turnstile_missing === "out"
+          ? `${formatTimeWithSeconds(record.first_in)} - нет отметки выхода`
+          : `нет отметки входа - ${formatTimeWithSeconds(record.last_out)}`;
     } else {
       attendanceInfo = STAFF_ABSENCE_WITHOUT_REASON_ROW_LABEL;
     }

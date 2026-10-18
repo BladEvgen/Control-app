@@ -142,6 +142,8 @@ export interface AreaSequencePoint {
 export interface AttendanceData {
   first_in: string | null;
   last_out: string | null;
+  /** Which turnstile mark is missing on a one-sided day. */
+  turnstile_missing?: "in" | "out" | null;
   percent_day: number;
   total_minutes: number;
   effective_work_seconds?: number | null;
@@ -217,9 +219,13 @@ export type PhotoStateCode =
 
 export type PhotoWsOp = "snapshot" | "created" | "updated" | "deleted";
 
+export type PhotoWsMessageType =
+  "initial_photos" | "photos_updated" | "heartbeat" | "ping" | "pong";
+
 export interface PhotoWsMessage {
-  type?: "initial_photos" | "photos_updated" | "heartbeat" | "ping" | "pong";
+  type?: PhotoWsMessageType;
   protocol?: string;
+  date?: string;
   batchId?: string;
   chunkIndex?: number;
   totalChunks?: number;

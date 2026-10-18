@@ -39,8 +39,15 @@ const cardVariants = {
 };
 
 const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
-  const renderTime = (time: string | undefined) => {
-    return time ? formatDate(time) : "";
+  const renderTime = (time: string | undefined, missing = false) => {
+    if (time) return formatDate(time);
+    return missing ? (
+      <span className="text-xs text-amber-700 dark:text-amber-400">
+        нет отметки
+      </span>
+    ) : (
+      ""
+    );
   };
 
   const renderTotalTime = (data: AttendanceData) => {
@@ -131,10 +138,16 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
                         </div>
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
-                        {renderTime(data.first_in ?? undefined)}
+                        {renderTime(
+                          data.first_in ?? undefined,
+                          data.turnstile_missing === "in",
+                        )}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
-                        {renderTime(data.last_out ?? undefined)}
+                        {renderTime(
+                          data.last_out ?? undefined,
+                          data.turnstile_missing === "out",
+                        )}
                       </td>
                       <td className="px-6 py-4">{renderProgressBar(data)}</td>
                       <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">

@@ -1988,16 +1988,8 @@ def _collect_attendance_data_impl(
                 if first_in or last_out:
                     raw_area = att_data.get("area_name", "Неизвестная локация")
                     display_area = resolve_area_address(raw_area) or raw_area
-                    t_in = (
-                        (first_in or last_out).strftime("%H:%M:%S")
-                        if (first_in or last_out)
-                        else "—"
-                    )
-                    t_out = (
-                        (last_out or first_in).strftime("%H:%M:%S")
-                        if (last_out or first_in)
-                        else "—"
-                    )
+                    t_in = first_in.strftime("%H:%M:%S") if first_in else "нет отметки входа"
+                    t_out = last_out.strftime("%H:%M:%S") if last_out else "нет отметки выхода"
                     attendance_info = f"{t_in} - {t_out}\n({display_area})"
                     if effective_work_seconds is not None:
                         mins = int(effective_work_seconds // 60)
