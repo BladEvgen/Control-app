@@ -8,6 +8,10 @@ import RequireAuth from "./RequireAuth";
 import { lazyWithRetry } from "./utils/lazyWithRetry";
 import LoginPage from "./pages/LoginPage";
 
+const PasswordResetPage = lazyWithRetry(
+  () => import("./pages/PasswordResetPage"),
+);
+
 const MainPage = lazyWithRetry(() => import("./pages/MainPage"));
 const DepartmentPage = lazyWithRetry(() => import("./pages/DepartmentPage"));
 const ChildDepartmentPage = lazyWithRetry(
@@ -47,6 +51,11 @@ const router = createBrowserRouter([
     ),
     children: [
       { path: addPrefix("/login"), element: <LoginPage /> },
+      { path: addPrefix("/password-reset"), element: <PasswordResetPage /> },
+      {
+        path: addPrefix("/password-reset/:token"),
+        element: <PasswordResetPage />,
+      },
 
       {
         element: <RequireAuth />,

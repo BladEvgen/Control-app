@@ -371,8 +371,8 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL")
 
 # Authentication URLs
-LOGIN_URL = "/login_view/"
-LOGOUT_URL = "/logout/"
+LOGIN_URL = "/admin/login/"
+LOGOUT_URL = "/admin/logout/"
 
 
 # Function to get the local IP address
@@ -764,8 +764,8 @@ SIMPLE_JWT.update(
 
 # Swagger settings
 SWAGGER_SETTINGS = {
-    "LOGIN_URL": "login_view",
-    "LOGOUT_URL": "logout",
+    "LOGIN_URL": "admin:login",
+    "LOGOUT_URL": "admin:logout",
     "VALIDATOR_URL": None,
     "SECURITY_DEFINITIONS": {
         "Bearer": {

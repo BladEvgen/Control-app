@@ -20,7 +20,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const reducedMotion = useReducedMotion();
   const path = location.pathname.toLowerCase();
-  const isLoginRoute = /\/login\/?$/.test(path);
+  const isLoginRoute = /\/(login|password-reset(\/[^/]+)?)\/?$/.test(path);
   const isKioskRoute =
     new URLSearchParams(location.search).get("kiosk") === "1" &&
     (/\/(photo|map|dashboard)\/?$/.test(path) ||

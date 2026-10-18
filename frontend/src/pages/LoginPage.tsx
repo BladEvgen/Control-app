@@ -5,7 +5,7 @@ import {
   jwtCookieMaxAgeSeconds,
   scheduleNextRefreshBeforeExpiry,
 } from "../authSession/index.ts";
-import { useNavigate } from "../RouterUtils";
+import { Link, useNavigate } from "../RouterUtils";
 import {
   FaEye,
   FaEyeSlash,
@@ -15,7 +15,7 @@ import {
   FaCheckCircle,
 } from "react-icons/fa";
 import logoSrc from "../assets/logo.png";
-import { apiUrl, isDebug } from "../../apiConfig";
+import { isDebug } from "../../apiConfig";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../store/hooks";
 
@@ -342,16 +342,11 @@ const LoginPage = () => {
           )}
         </AnimatePresence>
 
-        <a
-          className="login-link"
-          href={`${apiUrl}/password-reset`}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
+        <Link className="login-link" to="/password-reset">
           {failedAttempts >= 2
             ? "Не получается войти? Сбросить пароль"
             : "Забыли пароль?"}
-        </a>
+        </Link>
       </motion.form>
       <p className="login-credit">
         © {new Date().getFullYear()} КРМУ · Учёт посещаемости

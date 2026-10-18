@@ -47,23 +47,11 @@ def boolean_field(default_value: bool, **kwargs: Any) -> models.BooleanField:
     return field
 
 
-class PasswordResetTokenManager(models.Manager):
-    def mark_as_used(self, token):
-        token_obj = self.filter(token=token, _used=False).first()
-        if token_obj and token_obj.is_valid():
-            token_obj.used = True
-            token_obj.save(update_fields=["_used"])
-            return True
-        return False
-
-
 class PasswordResetToken(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, verbose_name="Пользователь")
     token = models.CharField(max_length=64, unique=True, verbose_name="Токен")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     _used = boolean_field(False, verbose_name="Статус использования")
-
-    objects: "PasswordResetTokenManager" = PasswordResetTokenManager()
 
     @property
     def used(self):
@@ -101,13 +89,6 @@ class PasswordResetRequestLog(models.Model):
     )
     ip_address = models.GenericIPAddressField(verbose_name="IP-адрес")
     requested_at = models.DateTimeField(auto_now_add=True, verbose_name="Время запроса")
-
-    @staticmethod
-    def is_recent_request(user, ip_address):
-        five_minutes_ago = timezone.now() - timedelta(minutes=5)
-        return PasswordResetRequestLog.objects.filter(
-            user=user, ip_address=ip_address, requested_at__gte=five_minutes_ago
-        ).exists()
 
     @staticmethod
     def get_last_request_time(user, ip_address):

@@ -20,20 +20,17 @@ from typing import Any, Generator, List, Optional, Tuple, cast
 
 from celery.result import AsyncResult
 from django.conf import settings
-from django.contrib import messages
-from django.contrib.auth import authenticate, get_user_model, login, logout
-from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.db import connection, transaction
 from django.db.models import Count, Prefetch, Q
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
-from django.shortcuts import get_object_or_404, redirect, render
+from django.shortcuts import get_object_or_404, render
 from django.template import TemplateDoesNotExist
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.cache import never_cache
-from django.views.generic import View
 from drf_yasg import openapi
 from drf_yasg.inspectors import SwaggerAutoSchema
 from drf_yasg.utils import merge_params, no_body, swagger_auto_schema
@@ -955,19 +952,6 @@ token_param_config = openapi.Parameter(
     description="Token [access_token]",
     type=openapi.TYPE_STRING,
 )
-
-
-@permission_classes([AllowAny])
-@never_cache
-def home(request):
-    response = render(
-        request,
-        "index.html",
-    )
-    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response["Pragma"] = "no-cache"
-    response["Expires"] = "0"
-    return response
 
 
 def _get_frontend_app_version_path() -> Path:
@@ -7953,24 +7937,6 @@ def user_register(request):
         )
 
 
-def logout_view(request):
-    logout(request)
-    return redirect("login_view")
-
-
-def login_view(request):
-    if request.method == "POST":
-        username = request.POST.get("username")
-        password = request.POST.get("password")
-        user = authenticate(request, username=username, password=password)
-
-        if user is not None:
-            login(request, user)
-            return redirect("uploadFile")
-
-    return render(request, "login.html", context={})
-
-
 @swagger_auto_schema(
     method="get",
     operation_summary="Запуск синхронизации посещаемости с внешним СКУД",
@@ -8632,84 +8598,6 @@ class APIKeyCheckView(APIView):
                 {"message": "Invalid API Key", "error": str(e)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-
-def password_reset_request_view(request):
-    if request.method == "POST":
-        identifier = request.POST.get("identifier")
-        ip_address = utils.get_client_ip(request)
-        logger.error(str(ip_address))
-        user = (
-            User.objects.filter(username=identifier).first()
-            or User.objects.filter(email=identifier).first()
-        )
-
-        user_timezone = utils.get_user_timezone(request)
-
-        if user:
-            last_request_time = models.PasswordResetRequestLog.get_last_request_time(
-                user, ip_address
-            )
-            if not models.PasswordResetRequestLog.can_request_again(user, ip_address):
-                if last_request_time:
-                    next_possible_time = timezone.localtime(
-                        last_request_time + datetime.timedelta(minutes=5),
-                        user_timezone,
-                    )
-                    last_request_time_local = timezone.localtime(last_request_time, user_timezone)
-                    messages.warning(
-                        request,
-                        f"Запрос уже был отправлен. Повторный запрос возможен в {next_possible_time.strftime('%H:%M:%S %Z')} ({next_possible_time.tzinfo}). Последний запрос был в {last_request_time_local.strftime('%H:%M:%S %Z')} ({last_request_time_local.tzinfo}).",
-                    )
-                else:
-                    current_time_local = timezone.localtime(timezone.now(), user_timezone)
-                    messages.warning(
-                        request,
-                        f"Запрос уже был отправлен. Повторный запрос возможен в ближайшее время. Последний запрос: неизвестен. Текущее время {current_time_local.strftime('%H:%M:%S %Z')} ({current_time_local.tzinfo}).",
-                    )
-            else:
-                utils.send_password_reset_email(user, request)
-                models.PasswordResetRequestLog.log_request(user, ip_address)
-                current_time_local = timezone.localtime(timezone.now(), user_timezone)
-                messages.success(
-                    request,
-                    f"Если пользователь существует, ссылка для сброса пароля была отправлена на его электронную почту. Последний запрос был в {current_time_local.strftime('%H:%M:%S %Z')} ({current_time_local.tzinfo}).",
-                )
-        else:
-            messages.info(
-                request,
-                "Если пользователь существует, ссылка для сброса пароля была отправлена на его электронную почту.",
-            )
-
-        return redirect("password_reset_request")
-
-    return render(request, "password_reset_request.html")
-
-
-def password_reset_confirm_view(request, token):
-    reset_token = get_object_or_404(models.PasswordResetToken, token=token)
-
-    if not reset_token.is_valid():
-        messages.error(request, "Этот токен для сброса пароля больше не действителен.")
-        return redirect("password_reset_request")
-
-    if request.method == "POST":
-        new_password = request.POST.get("password")
-        user = reset_token.user
-        user.set_password(new_password)
-        user.save()
-
-        if models.PasswordResetToken.objects.mark_as_used(token):
-            messages.success(
-                request,
-                "Пароль успешно сброшен. Вы можете войти в систему с новым паролем.",
-            )
-            return redirect("react_app")
-        else:
-            messages.error(request, "Ошибка при обновлении токена. Попробуйте снова.")
-            return redirect("password_reset_confirm", token=token)
-
-    return render(request, "password_reset_confirm.html", {"token": token})
 
 
 def download_examples_zip(request):

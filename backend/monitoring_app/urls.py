@@ -4,6 +4,7 @@ from django.views.generic import RedirectView
 from monitoring_app import custom_jwt, face_lab_tts, views
 from monitoring_app.department_navigation_api import department_navigation
 from monitoring_app.import_api import data_import, import_status
+from monitoring_app.password_reset_api import password_reset_confirm, password_reset_request
 from monitoring_app.schedule_presence_api import SchedulePresenceView
 from monitoring_app.swagger import urlpatterns as doc_urls
 from monitoring_app.swagger_views import swagger_session_login, swagger_session_logout
@@ -21,8 +22,7 @@ urlpatterns = [
         views.frontend_public_asset,
         name="frontend-public-asset",
     ),
-    path("login_view/", views.login_view, name="login_view"),
-    path("logout/", views.logout_view, name="logout"),
+    path("login_view/", RedirectView.as_view(pattern_name="admin:login", permanent=True)),
     path("upload/", RedirectView.as_view(url="/app/import", permanent=True), name="uploadFile"),
     path("api/import/", data_import, name="data-import"),
     path("api/import/status/<str:task_id>/", import_status, name="data-import-status"),
@@ -166,13 +166,19 @@ urlpatterns = [
     path("api/user/register/", views.user_register, name="userRegister"),
     path(
         "password-reset/",
-        views.password_reset_request_view,
+        RedirectView.as_view(url="/app/password-reset", permanent=True),
         name="password_reset_request",
     ),
     path(
         "password-reset/<str:token>/",
-        views.password_reset_confirm_view,
+        RedirectView.as_view(url="/app/password-reset/%(token)s", permanent=True),
         name="password_reset_confirm",
+    ),
+    path("api/password-reset/", password_reset_request, name="api_password_reset"),
+    path(
+        "api/password-reset/<str:token>/",
+        password_reset_confirm,
+        name="api_password_reset_confirm",
     ),
     path(
         "api/face-lab/departments/",
