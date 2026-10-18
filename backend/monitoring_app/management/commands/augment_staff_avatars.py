@@ -178,6 +178,6 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.NOTICE(
                 "Галочка «Требуется обучение» здесь не меняется: её снимает "
-                "generate_encoding_train_model после успешного обучения модели по сотруднику."
+                "generate_encoding_train_model после аугментации."
             )
         )

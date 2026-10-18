@@ -210,9 +210,8 @@ FACE_GALLERY_REAL_META_REJECTED_DETAIL_LIMIT = int(
     os.getenv("FACE_GALLERY_REAL_META_REJECTED_DETAIL_LIMIT", "24")
 )
 
-FACE_VERIFY_THRESHOLD_VERIFIED = float(
-    os.getenv("FACE_VERIFY_THRESHOLD_VERIFIED", str(FACE_RECOGNITION_THRESHOLD))
-)
+# 0.62 -> 0.07% genuine rejected, no impostor accepted (0.72 rejected 1.5%).
+FACE_VERIFY_THRESHOLD_VERIFIED = float(os.getenv("FACE_VERIFY_THRESHOLD_VERIFIED", "0.62"))
 # Weak gallery: fewer distinct enrollment sources or templates than FACE_VERIFY_MIN_*.
 # Compare is still binary YES/NO: weak path requires score >= this stricter cosine floor
 # (strong gallery uses FACE_VERIFY_THRESHOLD_VERIFIED only).
@@ -241,9 +240,6 @@ FACE_VERIFY_PROBE_DET_SCORE_MIN = float(os.getenv("FACE_VERIFY_PROBE_DET_SCORE_M
 FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN = float(
     os.getenv("FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN", "0.008")
 )
-FACE_VERIFY_PROBE_BLUR_MIN = float(os.getenv("FACE_VERIFY_PROBE_BLUR_MIN", "8.0"))
-FACE_VERIFY_PROBE_BRIGHTNESS_MIN = float(os.getenv("FACE_VERIFY_PROBE_BRIGHTNESS_MIN", "22.0"))
-FACE_VERIFY_PROBE_BRIGHTNESS_MAX = float(os.getenv("FACE_VERIFY_PROBE_BRIGHTNESS_MAX", "238.0"))
 FACE_VERIFY_PROBE_MAX_ABS_YAW = float(os.getenv("FACE_VERIFY_PROBE_MAX_ABS_YAW", "40.0"))
 FACE_VERIFY_PROBE_MAX_ABS_PITCH = float(os.getenv("FACE_VERIFY_PROBE_MAX_ABS_PITCH", "35.0"))
 FACE_VERIFY_IMPOSTOR_GAP_ENABLE = os.getenv(

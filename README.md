@@ -182,13 +182,14 @@ python manage.py migrate
 python manage.py runserver
 ```
 
-### Face recognition models (ArcFace + optional face parsing)
+### Face recognition models (AdaFace + optional face parsing)
 
 Everything runs on **ordinary RGB photos**; no depth/IR sensors are required.
 
 | Component | Role | Install |
 |-----------|------|---------|
-| **InsightFace `buffalo_l`** | Face detection, 5-point landmarks, ArcFace embeddings | Pulled automatically on first use into `~/.insightface/models/buffalo_l/` (via `pip install insightface`). |
+| **YuNet (OpenCV Zoo, 2023)** | Face detection + 5 keypoints (alignment, head pose) via built-in `cv2.FaceDetectorYN` | `backend/models/face_detection_yunet_2023mar.onnx` (in git, 230 KB). |
+| **AdaFace IR101 (WebFace12M, ONNX)** | Face embeddings for verify / recognize (quality-adaptive, robust to dark and blurry selfies) | Build once: `bash backend/scripts/export_adaface_onnx.sh` → `backend/models/adaface_ir101_webface12m.onnx` (~260 MB, git-ignored). |
 | **BiSeNet face parsing (ONNX)** | Segments facial parts including **eyeglasses** (`eye_g`) — better gallery aug (add/remove glasses) and extra fields on `verify_face` | Place **`face_parsing_resnet18.onnx`** (~53 MB) under `GENERAL_MODELS_ROOT` (default: `backend/models/`). |
 
 **Download parsing ONNX manually:**

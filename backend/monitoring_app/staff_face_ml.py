@@ -92,38 +92,6 @@ def _safe_mtime(path: Path) -> Optional[datetime]:
         return None
 
 
-def _npy_shape_line(path: Path) -> str:
-    """Human-readable shape line for a NumPy ``.npy`` file (mmap read)."""
-    try:
-        import numpy as np
-
-        arr = np.load(str(path), mmap_mode="r")
-        shp = arr.shape
-        if len(shp) == 2:
-            return f"векторов {shp[0]}, размерность {shp[1]}"
-        return f"форма {shp}"
-    except Exception as exc:
-        return f"не читается: {exc}"
-
-
-def allowed_ml_basenames(pin: str) -> frozenset[str]:
-    """Basenames allowed for admin download/preview of staff ML files.
-
-    Args:
-        pin: Staff PIN embedded in filenames.
-
-    Returns:
-        Frozen set of whitelisted filenames next to the avatar.
-    """
-    return frozenset(
-        {
-            f"{pin}_embeddings.npy",
-            f"{pin}_model.pt",
-            f"{pin}_best_model.pt",
-        }
-    )
-
-
 def allowed_augment_basename(pin: str, name: str) -> bool:
     """Return True if ``name`` is a safe augment image filename for ``pin``.
 
@@ -155,26 +123,6 @@ def list_augment_basenames(pin: str) -> list[str]:
     return names
 
 
-def media_url_for_file(path: Path) -> Optional[str]:
-    """Public MEDIA URL for a file under ``MEDIA_ROOT``, if any.
-
-    Args:
-        path: Absolute file path.
-
-    Returns:
-        URL string or ``None`` if not under ``MEDIA_ROOT`` or not a file.
-    """
-    if not path.is_file():
-        return None
-    try:
-        root = Path(settings.MEDIA_ROOT).resolve()
-        rel = path.resolve().relative_to(root)
-        base = str(settings.MEDIA_URL).rstrip("/")
-        return f"{base}/{rel.as_posix()}"
-    except Exception:
-        return None
-
-
 def collect_staff_face_ml_infos(staff) -> list[_FileInfo]:
     """Build table rows for embeddings, checkpoints, and augment folder summary.
 
@@ -185,37 +133,7 @@ def collect_staff_face_ml_infos(staff) -> list[_FileInfo]:
         List of ``_FileInfo`` entries for admin display.
     """
     pin = staff.pin
-    ws = staff_workspace_dir(staff)
     items: list[_FileInfo] = []
-
-    def add_file(label: str, basename: str, *, npy_meta: bool = False) -> None:
-        downloadable = basename in allowed_ml_basenames(pin)
-        if ws is None:
-            items.append(_FileInfo(label, basename, False, downloadable=downloadable))
-            return
-        fp = ws / basename
-        if not fp.is_file():
-            items.append(_FileInfo(label, basename, False, downloadable=downloadable))
-            return
-        st = fp.stat()
-        detail = ""
-        if npy_meta and basename.endswith(".npy"):
-            detail = _npy_shape_line(fp)
-        items.append(
-            _FileInfo(
-                label=label,
-                basename=basename,
-                exists=True,
-                size_bytes=st.st_size,
-                mtime=_safe_mtime(fp),
-                detail=detail,
-                downloadable=downloadable,
-            )
-        )
-
-    add_file("Эмбеддинги галереи", f"{pin}_embeddings.npy", npy_meta=True)
-    add_file("Чекпоинт обучения", f"{pin}_model.pt")
-    add_file("Лучший чекпоинт", f"{pin}_best_model.pt")
 
     aug_n, aug_dir_exists = count_augment_images(pin)
     aug_path = augment_dir_for_pin(pin)
@@ -238,22 +156,17 @@ def collect_staff_face_ml_infos(staff) -> list[_FileInfo]:
 def render_staff_face_ml_table(
     staff,
     *,
-    file_download_url: Optional[str] = None,
-    file_preview_url: Optional[str] = None,
     augment_gallery_url: Optional[str] = None,
 ) -> SafeString:
     """Render the readonly admin HTML table for staff ML artifacts.
 
     Args:
         staff: ``Staff`` instance.
-        file_download_url: Base URL for ``?f=basename`` download (whitelisted files).
-        file_preview_url: Base URL for HTML preview of ``.npy`` / ``.pt``.
         augment_gallery_url: URL opening the augment image gallery page.
 
     Returns:
         ``SafeString`` HTML fragment (Grappelli-compatible).
     """
-    from urllib.parse import quote
 
     rows_html: list[str] = []
     pin = escape(staff.pin)
@@ -278,34 +191,6 @@ def render_staff_face_ml_table(
             extra = f'<div style="font-size:11px;color:#64748b;margin-top:2px;">{escape(info.detail)}</div>'
 
         link = ""
-        if info.downloadable and file_download_url:
-            q = quote(info.basename, safe="")
-            href = f"{file_download_url}?f={q}"
-            link = (
-                f' <a href="{escape(href)}" style="font-size:12px;margin-left:6px;">' "скачать</a>"
-            )
-            if file_preview_url and info.basename.endswith((".npy", ".pt")):
-                href_pv = f"{file_preview_url}?f={q}"
-                link += (
-                    f' <a href="{escape(href_pv)}" target="_blank" rel="noopener" '
-                    f'style="font-size:12px;margin-left:6px;">просмотр</a>'
-                )
-        elif info.exists and info.basename.endswith((".npy", ".pt")) and file_preview_url:
-            q = quote(info.basename, safe="")
-            href_pv = f"{file_preview_url}?f={q}"
-            link = (
-                f' <a href="{escape(href_pv)}" target="_blank" rel="noopener" '
-                f'style="font-size:12px;margin-left:6px;">просмотр</a>'
-            )
-        elif info.exists and info.basename.endswith((".npy", ".pt")):
-            fp = (ws or Path()) / info.basename
-            mu = media_url_for_file(fp)
-            if mu:
-                link = (
-                    f' <a href="{escape(mu)}" target="_blank" rel="noopener" '
-                    f'style="font-size:12px;margin-left:6px;">медиа</a>'
-                )
-
         if info.label.startswith("Аугментации") and info.exists and augment_gallery_url:
             link += (
                 f' <a href="{escape(augment_gallery_url)}" target="_blank" rel="noopener" '
@@ -332,9 +217,8 @@ def render_staff_face_ml_table(
         "Статус</th>"
         "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table>"
         '<p style="margin:10px 0 0 0;font-size:11px;color:#94a3b8;">'
-        "Эмбеддинги: больше строк — обычно богаче галерея (аугментации). Сравнивайте размер .npy и даты после "
-        "переобучения. «Просмотр» — HTML-сводка (.npy) или описание чекпоинта (.pt); «Галерея» — картинки "
-        "аугментаций (доступ только из админки). Скачивание .npy/.pt — только whitelisted имена из каталога сотрудника."
+        "«Галерея» — картинки аугментаций (доступ только из админки). Эмбеддинги считаются "
+        "на лету из аватара, маски и аугментаций и кэшируются."
         "</p>"
         "</div>"
     )
@@ -342,7 +226,7 @@ def render_staff_face_ml_table(
 
 
 def face_ml_list_badge(staff) -> SafeString:
-    """Compact colored badge for ``Staff`` changelist (emb/pt/best/aug counts).
+    """Compact colored badge for ``Staff`` changelist (augment count).
 
     Args:
         staff: ``Staff`` instance.
@@ -350,25 +234,10 @@ def face_ml_list_badge(staff) -> SafeString:
     Returns:
         ``SafeString`` HTML span for ``list_display``.
     """
-    ws = staff_workspace_dir(staff)
     pin = staff.pin
-    emb = mask = best = False
-    if ws:
-        emb = (ws / f"{pin}_embeddings.npy").is_file()
-        mask = (ws / f"{pin}_model.pt").is_file()
-        best = (ws / f"{pin}_best_model.pt").is_file()
     n_aug, _ = count_augment_images(pin)
 
     parts = []
-    parts.append(
-        f'<span style="color:{"#16a34a" if emb else "#cbd5e1"};" title="embeddings.npy">emb</span>'
-    )
-    parts.append(
-        f'<span style="color:{"#16a34a" if mask else "#cbd5e1"};" title="model.pt">pt</span>'
-    )
-    parts.append(
-        f'<span style="color:{"#16a34a" if best else "#cbd5e1"};" title="best_model.pt">★</span>'
-    )
     aug_color = "#16a34a" if n_aug >= 10 else ("#ca8a04" if n_aug else "#cbd5e1")
     parts.append(f'<span style="color:{aug_color};" title="аугментации">aug{n_aug}</span>')
     html = (

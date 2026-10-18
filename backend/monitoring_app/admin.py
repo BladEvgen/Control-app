@@ -81,17 +81,11 @@ from monitoring_app.pad_admin_summary import (
 from monitoring_app.services import attendance_day
 from monitoring_app.staff_face_ml import (
     allowed_augment_basename,
-    allowed_ml_basenames,
     augment_dir_for_pin,
     count_augment_images,
     face_ml_list_badge,
     list_augment_basenames,
     render_staff_face_ml_table,
-    staff_workspace_dir,
-)
-from monitoring_app.staff_ml_preview_viz import (
-    build_npy_embeddings_preview_body,
-    build_pt_checkpoint_preview_body,
 )
 
 logger = logging.getLogger("monitoring_app.admin")
@@ -488,15 +482,7 @@ class DepartmentHierarchyFilter(SimpleListFilter):
             except (ValueError, TypeError):
                 dept_id = department_id
 
-            queue = [dept_id]
-            descendants = set(queue)
-            while queue:
-                current = queue.pop(0)
-                children = ChildDepartment.objects.filter(parent_id=current).values_list(
-                    "id", flat=True
-                )
-                queue.extend(children)
-                descendants.update(children)
+            descendants = {dept_id, *ChildDepartment(pk=dept_id).subtree_ids()}
             cache.set(cache_key, descendants, 3600)
 
         return descendants
@@ -1342,8 +1328,7 @@ class StaffAdmin(admin.ModelAdmin):
             "Машинное обучение (лица)",
             {
                 "fields": ("needs_training", "face_recognition_ml_panel"),
-                "description": "Файлы рядом с аватаром: embeddings.npy, model.pt, best_model.pt; "
-                "аугментации — в каталоге AUGMENT_ROOT (см. строку «Аугментации» в таблице).",
+                "description": "аугментации — в каталоге AUGMENT_ROOT (см. строку «Аугментации» в таблице).",
                 "classes": ("wide", "grp-collapse grp-open"),
             },
         ),
@@ -1423,7 +1408,7 @@ class StaffAdmin(admin.ModelAdmin):
 
     @admin.display(description="Эмбеддинги / .pt / аугментации")
     def face_recognition_ml_panel(self, obj):
-        """Read-only ML artifact table with download, preview, and augment gallery links.
+        """Read-only ML artifact table with the augment gallery link.
 
         Args:
             obj: ``Staff`` instance (unsaved records show a short help message).
@@ -1435,27 +1420,17 @@ class StaffAdmin(admin.ModelAdmin):
             return mark_safe(
                 '<p class="help" style="margin:0;">Сохраните запись — появится таблица файлов и ссылки.</p>'
             )
-        dl = reverse(
-            "admin:monitoring_app_staff_ml_file",
-            kwargs={"object_id": obj.pk},
-        )
-        pv = reverse(
-            "admin:monitoring_app_staff_ml_preview",
-            kwargs={"object_id": obj.pk},
-        )
         gal = reverse(
             "admin:monitoring_app_staff_ml_augment_gallery",
             kwargs={"object_id": obj.pk},
         )
         return render_staff_face_ml_table(
             obj,
-            file_download_url=dl,
-            file_preview_url=pv,
             augment_gallery_url=gal,
         )
 
     def get_urls(self):
-        """Register staff-scoped ML file, preview, and augment gallery routes.
+        """Register staff-scoped augment image and gallery routes.
 
         Returns:
             URL patterns with custom paths prepended before default ``ModelAdmin`` URLs.
@@ -1463,16 +1438,6 @@ class StaffAdmin(admin.ModelAdmin):
         urls = super().get_urls()
         info = self.model._meta.app_label, self.model._meta.model_name
         custom = [
-            path(
-                "<int:object_id>/ml-file/",
-                self.admin_site.admin_view(self.staff_ml_file_download),
-                name=f"{info[0]}_{info[1]}_ml_file",
-            ),
-            path(
-                "<int:object_id>/ml-preview/",
-                self.admin_site.admin_view(self.staff_ml_preview),
-                name=f"{info[0]}_{info[1]}_ml_preview",
-            ),
             path(
                 "<int:object_id>/ml-augment/",
                 self.admin_site.admin_view(self.staff_ml_augment_serve),
@@ -1485,99 +1450,6 @@ class StaffAdmin(admin.ModelAdmin):
             ),
         ]
         return custom + urls
-
-    def staff_ml_file_download(self, request, object_id):
-        """Stream a whitelisted ML file from the staff workspace as a download.
-
-        Args:
-            request: HTTP request; query ``f`` is the basename.
-            object_id: ``Staff`` primary key.
-
-        Returns:
-            ``FileResponse`` with ``Content-Disposition: attachment``, or 400/404.
-        """
-        fname = (request.GET.get("f") or "").strip()
-        staff = get_object_or_404(Staff, pk=object_id)
-        if fname not in allowed_ml_basenames(staff.pin):
-            return HttpResponse(
-                "Недопустимое имя файла".encode("utf-8"),
-                status=400,
-                content_type="text/plain; charset=utf-8",
-            )
-        ws = staff_workspace_dir(staff)
-        if ws is None:
-            raise Http404("Нет каталога сотрудника")
-        fp = (ws / fname).resolve()
-        try:
-            fp.relative_to(ws.resolve())
-        except ValueError:
-            raise Http404()
-        if not fp.is_file():
-            raise Http404()
-        return FileResponse(open(fp, "rb"), as_attachment=True, filename=fname)
-
-    def staff_ml_preview(self, request, object_id):
-        """Return an HTML page with a human-friendly overview of ``.npy`` or ``.pt`` files.
-
-        Args:
-            request: HTTP request; query ``f`` is the whitelisted basename.
-            object_id: ``Staff`` primary key.
-
-        Returns:
-            ``HttpResponse`` ``text/html`` or 400/404.
-        """
-        fname = (request.GET.get("f") or "").strip()
-        staff = get_object_or_404(Staff, pk=object_id)
-        if fname not in allowed_ml_basenames(staff.pin):
-            return HttpResponse(
-                "Недопустимое имя файла".encode("utf-8"),
-                status=400,
-                content_type="text/plain; charset=utf-8",
-            )
-        ws = staff_workspace_dir(staff)
-        if ws is None:
-            raise Http404("Нет каталога сотрудника")
-        fp = (ws / fname).resolve()
-        try:
-            fp.relative_to(ws.resolve())
-        except ValueError:
-            raise Http404()
-        if not fp.is_file():
-            raise Http404()
-
-        pin_s = escape(staff.pin)
-        file_s = escape(fname)
-        back = reverse("admin:monitoring_app_staff_change", args=[staff.pk])
-        dl_href = (
-            reverse(
-                "admin:monitoring_app_staff_ml_file",
-                kwargs={"object_id": staff.pk},
-            )
-            + "?f="
-            + quote(fname, safe="")
-        )
-
-        if fname.endswith(".npy"):
-            try:
-                body = build_npy_embeddings_preview_body(fp, fname)
-            except Exception as exc:
-                body = f"<p>Не удалось прочитать .npy: <code>{escape(str(exc))}</code></p>"
-        else:
-            body = build_pt_checkpoint_preview_body(fp, fname, dl_href)
-
-        html = (
-            '<!DOCTYPE html><html><head><meta charset="utf-8"/><title>'
-            f"Обзор файла {file_s}</title>"
-            "<style>body{font-family:system-ui,sans-serif;margin:20px;max-width:960px;line-height:1.45;}"
-            "a{color:#2563eb;}</style></head><body>"
-            f'<p><a href="{escape(back)}">← к карточке сотрудника ({pin_s})</a></p>'
-            '<h1 style="font-size:20px;font-weight:600;color:#0f172a;">Обзор ML-файла</h1>'
-            f'<p style="color:#64748b;font-size:13px;margin:-6px 0 18px 0;">{file_s}</p>{body}</body></html>'
-        )
-        return HttpResponse(
-            html.encode("utf-8"),
-            content_type="text/html; charset=utf-8",
-        )
 
     def staff_ml_augment_serve(self, request, object_id):
         """Serve one augment image inline from ``AUGMENT_ROOT`` (basename allowlist).
@@ -2316,7 +2188,7 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
 
     augmented_images.short_description = "Аугментированные фото"
 
-    @admin.display(description="Эмбеддинги / .pt / аугментации (сотрудник)")
+    @admin.display(description="Аугментации (сотрудник)")
     def staff_face_ml_bridge(self, obj):
         """Reuse ``StaffAdmin`` ML table links on the ``StaffFaceMask`` change form.
 
@@ -2329,22 +2201,12 @@ class StaffFaceMaskAdmin(admin.ModelAdmin):
         s = obj.staff
         if not s.pk:
             return mark_safe('<p class="help">—</p>')
-        dl = reverse(
-            "admin:monitoring_app_staff_ml_file",
-            kwargs={"object_id": s.pk},
-        )
-        pv = reverse(
-            "admin:monitoring_app_staff_ml_preview",
-            kwargs={"object_id": s.pk},
-        )
         gal = reverse(
             "admin:monitoring_app_staff_ml_augment_gallery",
             kwargs={"object_id": s.pk},
         )
         return render_staff_face_ml_table(
             s,
-            file_download_url=dl,
-            file_preview_url=pv,
             augment_gallery_url=gal,
         )
 

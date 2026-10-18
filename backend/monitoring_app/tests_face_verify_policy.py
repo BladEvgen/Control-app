@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from monitoring_app.face_verification_contract import (
     R_COLD_START_QUALITY_INSUFFICIENT,
@@ -966,3 +966,64 @@ class FaceVerifyPadGateTests(SimpleTestCase):
             quality_penalty=0.0,
         )
         self.assertEqual(pad_public_decision_from_result(pad), "NO")
+
+
+class NightProbeQualityTests(SimpleTestCase):
+    """A dark (night) selfie with a detectable face must not fail probe quality."""
+
+    def test_dark_face_passes_quality(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        import numpy as np
+
+        from monitoring_app import ml
+
+        night = np.full((600, 337, 3), 12, dtype=np.uint8)
+        face = SimpleNamespace(det_score=0.9, bbox=[60, 120, 280, 420], pose=None)
+        with (
+            patch.object(ml, "load_arcface_model"),
+            patch.object(
+                ml, "_create_face_encoding_from_bgr", return_value=([0.1] * 512, face, [face])
+            ),
+        ):
+            emb, meta = ml.create_face_encoding_with_probe_meta(night)
+        self.assertIsNotNone(emb)
+        self.assertTrue(meta["quality_pass"])
+        brightness = meta["brightness_mean"]
+        assert isinstance(brightness, float)
+        self.assertLess(brightness, 22.0)
+
+
+class TrustedSamplePrefetchTests(TestCase):
+    """1:N search loads every staff's trusted samples in one query, not one per staff."""
+
+    def test_collector_uses_prefetched_samples(self) -> None:
+        from monitoring_app import ml
+        from monitoring_app.models import Staff
+
+        staff = [Staff.objects.create(pin=f"S90{i}S", name="N", surname="S") for i in range(3)]
+        ml._prefetch_trusted_face_samples(staff)
+        with self.assertNumQueries(0):
+            for s in staff:
+                self.assertEqual(ml._collect_trusted_staff_face_sample_records_for_staff(s), [])
+
+
+class PoseFromKeypointsTests(SimpleTestCase):
+    """Head pose from YuNet's 5 keypoints feeds the yaw/pitch probe gates."""
+
+    def test_frontal_turned_and_tilted(self) -> None:
+        import numpy as np
+
+        from monitoring_app.ml import _pose_from_kps
+
+        frontal = np.array([[40, 50], [80, 50], [60, 70], [45, 90], [75, 90]], np.float32)
+        yaw, _pitch, roll = _pose_from_kps(frontal)
+        self.assertLess(abs(yaw), 3)
+        self.assertLess(abs(roll), 1)
+        turned = frontal.copy()
+        turned[2, 0] += 16
+        self.assertGreater(_pose_from_kps(turned)[0], 25)
+        tilted = frontal.copy()
+        tilted[1, 1] += 40
+        self.assertGreater(abs(_pose_from_kps(tilted)[2]), 30)

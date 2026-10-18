@@ -7,17 +7,13 @@ from django.core.management.base import BaseCommand, CommandError
 
 from monitoring_app import models
 from monitoring_app.augment import run_staff_avatar_augmentation
-from monitoring_app.ml import (
-    create_face_encoding,
-    train_face_recognition_model,
-    train_general_model,
-)
+from monitoring_app.ml import create_face_encoding
 
 logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = "Create masks for staff, augment images, generate embeddings, and train models"
+    help = "Create face masks for staff and refresh their augmented gallery images"
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -28,11 +24,6 @@ class Command(BaseCommand):
                 "Only staff in this ChildDepartment and subtree: создание масок, аугментация и обучение. "
                 "Без флага — по всем отделам."
             ),
-        )
-        parser.add_argument(
-            "--skip-general-model",
-            action="store_true",
-            help="Do not train the general multi-class model (useful after a department-only run).",
         )
 
     def handle(self, *args, **options):
@@ -48,7 +39,6 @@ class Command(BaseCommand):
         )
 
         department_id = options.get("department_id")
-        skip_general = options.get("skip_general_model", False)
 
         dept_subtree = None
         dept_child = None
@@ -132,100 +122,18 @@ class Command(BaseCommand):
             )
 
         if staff_needing_training.exists():
-            self.stdout.write(self.style.SUCCESS("Starting image augmentation and training..."))
+            self.stdout.write(self.style.SUCCESS("Starting image augmentation..."))
             try:
                 train_pks = list(staff_needing_training.order_by("pk").values_list("pk", flat=True))
                 run_staff_avatar_augmentation(
                     staff_queryset=models.Staff.objects.filter(pk__in=train_pks)
                 )
-                train_ok = 0
-                train_skip = 0
-                train_err = 0
-                for pk in train_pks:
-                    staff = models.Staff.objects.filter(pk=pk).first()
-                    if staff is None:
-                        continue
-                    if not staff.avatar or not staff.avatar.path:
-                        logger.warning(
-                            "Staff %s: нет файла аватара на диске — обучение пропущено.",
-                            staff.pin,
-                        )
-                        self.stdout.write(
-                            self.style.WARNING(
-                                f"Пропуск обучения {staff.pin} ({staff.name} {staff.surname}): "
-                                "нет файла аватара (проверьте MEDIA и ImageField)."
-                            )
-                        )
-                        train_skip += 1
-                        continue
-
-                    self.stdout.write(
-                        f"Training model for {staff.name} {staff.surname} (PIN: {staff.pin})"
-                    )
-                    try:
-                        train_face_recognition_model(staff)
-                        updated = models.Staff.objects.filter(pk=pk).update(needs_training=False)
-                        if updated:
-                            logger.info(
-                                "Successfully trained model for %s; needs_training=False",
-                                staff.pin,
-                            )
-                            self.stdout.write(
-                                self.style.SUCCESS(
-                                    f"Successfully trained model for {staff.pin}; "
-                                    "needs_training снят."
-                                )
-                            )
-                            train_ok += 1
-                        else:
-                            self.stdout.write(
-                                self.style.WARNING(
-                                    f"Обучение {staff.pin} завершено, но запись сотрудника не обновлена."
-                                )
-                            )
-                            train_skip += 1
-                    except Exception as e:
-                        train_err += 1
-                        logger.error(
-                            f"Error training model for {staff.pin}: {str(e)}\n{traceback.format_exc()}"
-                        )
-                        self.stdout.write(
-                            self.style.ERROR(f"Error training model for {staff.pin}: {str(e)}")
-                        )
-                self.stdout.write(
-                    self.style.NOTICE(
-                        f"Итого по персональным моделям: успех {train_ok}, "
-                        f"пропуск {train_skip}, ошибки {train_err}."
-                    )
-                )
-                self.stdout.write(self.style.SUCCESS("Image augmentation and training completed."))
-
-                if skip_general:
-                    self.stdout.write(
-                        self.style.WARNING("Skipping general model (--skip-general-model).")
-                    )
-                else:
-                    self.stdout.write(
-                        self.style.SUCCESS("Starting training of the general model...")
-                    )
-                    try:
-                        train_general_model()
-                        self.stdout.write(
-                            self.style.SUCCESS("General model successfully trained and saved.")
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"Error training the general model: {str(e)}\n{traceback.format_exc()}"
-                        )
-                        self.stdout.write(
-                            self.style.ERROR(f"Error training the general model: {str(e)}")
-                        )
+                done = models.Staff.objects.filter(pk__in=train_pks).update(needs_training=False)
+                self.stdout.write(self.style.SUCCESS(f"Augmentation completed for {done} staff."))
             except Exception as e:
                 logger.error(f"Error during augmentation: {str(e)}\n{traceback.format_exc()}")
                 self.stdout.write(self.style.ERROR(f"Error during augmentation: {str(e)}"))
         else:
             self.stdout.write(
-                self.style.WARNING(
-                    "No staff members require training. Skipping augmentation and training."
-                )
+                self.style.WARNING("No staff members require augmentation. Skipping.")
             )

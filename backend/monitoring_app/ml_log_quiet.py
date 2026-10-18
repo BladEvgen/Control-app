@@ -34,7 +34,7 @@ def apply_ml_third_party_log_quiet(*, verbose: bool = False) -> None:
           ONNX Runtime provider spam.
         * Raises log level for ``insightface`` and ``onnxruntime`` family loggers.
         * Registers ``warnings`` filters for known noisy ``FutureWarning`` /
-          ``UserWarning`` paths in InsightFace and DeepFace FasNet.
+          ``UserWarning`` paths in InsightFace.
 
     Args:
         verbose: If True, skip all adjustments.
@@ -56,14 +56,4 @@ def apply_ml_third_party_log_quiet(*, verbose: bool = False) -> None:
         "ignore",
         category=FutureWarning,
         module=r"insightface\.utils\.transform",
-    )
-    warnings.filterwarnings(
-        "ignore",
-        category=FutureWarning,
-        module=r"deepface\.models\.spoofing\.FasNet",
-    )
-    warnings.filterwarnings(
-        "ignore",
-        category=UserWarning,
-        module=r"deepface\.models\.spoofing\.FasNet",
     )
