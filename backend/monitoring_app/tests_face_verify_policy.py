@@ -937,11 +937,11 @@ class FaceVerifyPadGateTests(SimpleTestCase):
         self.assertFalse(pad_blocks_bootstrap_sample(suspicious))
         self.assertFalse(pad_blocks_bootstrap_sample(insufficient))
 
-    def test_public_pad_decision_soft_spoof_is_review(self) -> None:
+    def test_public_pad_decision_review_is_review(self) -> None:
         pad = PadResult(
-            status="suspicious",
+            status="review",
             risk_score=0.32,
-            trust_confirmed=False,
+            trust_confirmed=None,
             tags=["face_reflection"],
             model_version="pad_v10",
             elapsed_ms=1.0,

@@ -514,86 +514,84 @@
         z-index: -1;
 }
 
-@property --electric-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
+.card-state::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 var(--state-width, 3px) var(--state-color);
 }
 
 .card-state-check {
-  outline: 2px solid rgba(245, 158, 11, 0.72);
-  outline-offset: 1px;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16);
+  --state-color: rgb(245 158 11);
+  box-shadow: 0 10px 28px -14px rgb(245 158 11 / 0.7);
 }
-
-.card-state-check-error {
-  outline: 2px solid rgba(249, 115, 22, 0.78);
-  outline-offset: 1px;
-  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.18);
+.card-state-check::after {
+  animation: cardStateBreathe 2.4s ease-in-out infinite;
 }
 
 .card-state-suspicious-auto {
-  outline: 2px solid rgba(239, 68, 68, 0.85);
-  outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.16);
-  animation: cardRingRed 3.5s ease-in-out infinite;
+  --state-color: rgb(220 38 38);
+  --state-width: 4px;
+  box-shadow: 0 12px 32px -12px rgb(220 38 38 / 0.75);
+}
+.card-state-suspicious-auto::after {
+  animation: cardStateFlash 0.9s ease-out 3;
 }
 
 .card-state-suspicious-manual {
-  outline: 2px solid rgba(168, 85, 247, 0.85);
-  outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.16);
-  animation: cardRingPurple 3.0s ease-in-out infinite;
+  --state-color: rgb(124 58 237);
+  --state-width: 4px;
 }
 
-@keyframes cardRingRed {
-  0%, 100% {
-    outline-color: rgba(239, 68, 68, 0.55);
-    box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.10);
-  }
-  50% {
-    outline-color: rgba(239, 68, 68, 1);
-    box-shadow: 0 0 0 5px rgba(239, 68, 68, 0.30);
-  }
+.card-state-check-error::after,
+.card-state-pending::after {
+  box-shadow: none;
+  border: 2px dashed var(--state-color);
+}
+.card-state-check-error {
+  --state-color: rgb(234 88 12 / 0.9);
+}
+.card-state-pending {
+  --state-color: rgb(100 116 139 / 0.75);
 }
 
-@keyframes cardRingPurple {
-  0%, 100% {
-    outline-color: rgba(168, 85, 247, 0.55);
-    box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.10);
-  }
-  50% {
-    outline-color: rgba(168, 85, 247, 1);
-    box-shadow: 0 0 0 5px rgba(168, 85, 247, 0.30);
-  }
+@keyframes cardStateBreathe {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@keyframes cardStateFlash {
+  0% { opacity: 1; }
+  45% { opacity: 0.25; }
+  100% { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .card-state-suspicious-auto,
-  .card-state-suspicious-manual {
-    animation: none !important;
-    outline-color: rgba(239, 68, 68, 1);
-    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.22);
-  }
-  .card-state-suspicious-manual {
-    outline-color: rgba(168, 85, 247, 1);
-    box-shadow: 0 0 0 4px rgba(168, 85, 247, 0.22);
+  .card-state-check::after,
+  .card-state-suspicious-auto::after {
+    animation: none;
   }
 }
 
-.photo-marquee-track {
-  display: flex;
-  animation: photoMarquee linear infinite;
+@keyframes photoCardEnter {
+  from { opacity: 0; transform: translateY(14px) scale(0.96); }
+  to { opacity: 1; transform: none; }
 }
 
-.photo-marquee-track:hover,
-.photo-marquee-track.photo-marquee-paused {
-  animation-play-state: paused !important;
+.photo-card-enter {
+  animation: photoCardEnter 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-@keyframes photoMarquee {
-  0% { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
+.photo-grid-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 300px auto 412px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .photo-card-enter { animation-duration: 0.01ms; }
 }
 
 .neon-glow {

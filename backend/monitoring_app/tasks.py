@@ -167,6 +167,9 @@ def _run_lesson_attendance_pad_scan(
                 status_counts["error"] += 1
                 checked_count += 1
                 continue
+            if not os.path.isfile(image_path):
+                logger.info("%s skip_missing_file pk=%s", log_prefix, record.pk)
+                continue
             if not acquire_lesson_attendance_pad_lock(record.id):
                 logger.info("%s skip_locked mode=%s pk=%s", log_prefix, mode, record.pk)
                 continue
@@ -355,6 +358,19 @@ def rebuild_staff_attendance_report(mode=None):
     from monitoring_app.attendance_fetcher import apply_report_mode
 
     return apply_report_mode(mode=mode)
+
+
+@shared_task(name="monitoring_app.tasks.retrain_photo_pad", queue="control_app_queue")
+def retrain_photo_pad() -> str:
+    """Refit the PAD head on operator verdicts and re-score open photos (``train_photo_pad``)."""
+    import io
+
+    from django.core.management import call_command
+
+    out = io.StringIO()
+    call_command("train_photo_pad", stdout=out)
+    logger.info("[retrain_photo_pad] %s", out.getvalue())
+    return out.getvalue()
 
 
 @shared_task(name="monitoring_app.tasks.backup_db_task")

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from django.conf import settings
-
 from monitoring_app.face_verification_contract import LivenessPayload
 from monitoring_app.pad_diagnostics import (
     diagnostics_from_pad_result,
@@ -27,45 +25,9 @@ def pad_operator_action_from_diagnostics(diagnostics: dict[str, object]) -> str:
     return str(decision.get("operator_action") or "").strip()
 
 
-def _pad_num(name: str, default: float) -> float:
-    numbers = getattr(settings, "PHOTO_PAD_NUMBERS", {})
-    if not isinstance(numbers, dict):
-        return default
-    value = numbers.get(name, default)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def pad_has_hard_spoof_evidence(pad: PadResult) -> bool:
-    """Return true only for PAD signals strong enough to block immediately."""
-    if pad.status != STATUS_SUSPICIOUS or pad.trust_confirmed is not False:
-        return False
-
-    risk = float(getattr(pad, "risk_score", 0.0) or 0.0)
-    model = float(getattr(pad, "deepface_score", 0.0) or 0.0)
-    device = float(getattr(pad, "device_score", 0.0) or 0.0)
-    frame = float(getattr(pad, "frame_score", 0.0) or 0.0)
-    recapture = float(getattr(pad, "recapture_score", 0.0) or 0.0)
-    color = float(getattr(pad, "color_hist_score", 0.0) or 0.0)
-
-    if risk >= _pad_num("public_no_risk_min", 0.72):
-        return True
-    if model >= _pad_num("decision_deepfake_mid_suspicious_min", 0.82):
-        return True
-    if device >= _pad_num("decision_suspicious_device_min", 0.34):
-        return True
-    if frame >= _pad_num("decision_suspicious_frame_min", 0.42):
-        return True
-
-    recapture_strong = recapture >= _pad_num("recapture_strong", 0.38)
-    color_strong = color >= _pad_num("color_hist_strong", 0.40)
-    has_geometry = device >= _pad_num("decision_weak_device_min", 0.16) or frame >= _pad_num(
-        "decision_weak_frame_min", 0.20
-    )
-    has_model = model >= _pad_num("decision_deepfake_review_min", 0.65)
-    return (recapture_strong or color_strong) and (has_geometry or has_model)
+    """A ``suspicious`` verdict is already calibrated to high precision: block on it."""
+    return pad.status == STATUS_SUSPICIOUS and pad.trust_confirmed is False
 
 
 def pad_public_decision_from_result(pad: PadResult) -> str:

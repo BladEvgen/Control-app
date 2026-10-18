@@ -2513,6 +2513,9 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
             department=None,
         )
         self.now = timezone.now()
+        self.isfile_patcher = patch("monitoring_app.tasks.os.path.isfile", return_value=True)
+        self.isfile_patcher.start()
+        self.addCleanup(self.isfile_patcher.stop)
 
     def _create_lesson(
         self,
@@ -2607,6 +2610,24 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
         self.assertEqual(payload["stateCode"], "UPDATED_META")
         self.assertEqual(payload["attendance_ids"], [lesson.id])
         self.assertEqual(payload["attendance_id"], lesson.id)
+
+    @patch("monitoring_app.photo_pad.check_photo")
+    def test_scan_keeps_verdict_when_photo_file_is_gone(self, mock_check_photo):
+        self.isfile_patcher.stop()
+        with patch("monitoring_app.tasks.os.path.isfile", return_value=False):
+            lesson = self._create_lesson(
+                image_path="/tmp/hourly-pad-deleted.jpg",
+                auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_ERROR,
+            )
+            monitoring_tasks.scan_lesson_attendance_photos_hourly(
+                batch_size=10,
+                max_records=10,
+                only_today=True,
+            )
+        lesson.refresh_from_db()
+        mock_check_photo.assert_not_called()
+        self.assertEqual(lesson.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_ERROR)
+        self.isfile_patcher.start()
 
     @patch("monitoring_app.photo_ws_broadcast.get_channel_layer")
     @patch("monitoring_app.photo_pad.check_photo")

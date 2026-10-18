@@ -1,11 +1,7 @@
 import type { PhotoData, PhotoSpoofStatus } from "../schemas/IData";
 
 export type PhotoPadVerdictVariant =
-  | "clean"
-  | "review"
-  | "suspicious"
-  | "error"
-  | "pending";
+  "clean" | "review" | "suspicious" | "error" | "pending";
 
 export type PhotoPadVerdictDisplay = {
   variant: PhotoPadVerdictVariant;
@@ -13,14 +9,15 @@ export type PhotoPadVerdictDisplay = {
   summary: string;
   riskPercent: number | null;
   manualOverride: "clean" | "suspicious" | null;
+  autoNote: string | null;
 };
 
 const PAD_UI_REASON_PREFIX = "pad_ui_reason:";
 
 const HEADLINE: Record<PhotoPadVerdictVariant, string> = {
-  clean: "Нормально",
+  clean: "Живое фото",
   review: "Нужна проверка",
-  suspicious: "Подмена вероятна",
+  suspicious: "Подмена",
   error: "Ошибка проверки",
   pending: "Проверяется…",
 };
@@ -36,7 +33,10 @@ const FALLBACK_SUMMARY: Record<PhotoPadVerdictVariant, string> = {
 const shortenSummary = (text: string): string => {
   let s = text.trim();
   const firstSentence = s.split(/(?<=[.!?])\s+/)[0] ?? s;
-  s = firstSentence.replace(/\s*\([^)]*\)/g, "").replace(/\s+/g, " ").trim();
+  s = firstSentence
+    .replace(/\s*\([^)]*\)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (s.length > 120) {
     s = `${s.slice(0, 117).trim()}…`;
   }
@@ -87,23 +87,30 @@ export const buildPhotoPadVerdictDisplay = (
   const manualOverride =
     manual === "clean" || manual === "suspicious" ? manual : null;
 
-  let variant = resolvePhotoPadVariant(effectiveStatus);
-  if (manualOverride === "suspicious") variant = "suspicious";
-  if (manualOverride === "clean") variant = "clean";
+  const autoVariant = resolvePhotoPadVariant(
+    (photo.photoSpoofStatus ?? effectiveStatus) as PhotoSpoofStatus,
+  );
+  const variant: PhotoPadVerdictVariant = manualOverride
+    ? manualOverride
+    : resolvePhotoPadVariant(effectiveStatus);
 
-  let headline = HEADLINE[variant];
-  if (manualOverride === "suspicious") headline = "Подозрительное (вручную)";
-  if (manualOverride === "clean") headline = "Нормально (вручную)";
-
-  const raw = extractUiReason(tags) || FALLBACK_SUMMARY[variant];
-  const summary = shortenSummary(raw);
+  const riskPercent = riskPercentFromPhoto(photo);
+  const autoReason = shortenSummary(
+    extractUiReason(tags) || FALLBACK_SUMMARY[autoVariant],
+  );
+  const autoNote = manualOverride
+    ? `Автопроверка: ${HEADLINE[autoVariant].toLowerCase()}${
+        riskPercent != null ? `, вероятность подмены ${riskPercent}%` : ""
+      }.`
+    : null;
 
   return {
     variant,
-    headline,
-    summary,
-    riskPercent: riskPercentFromPhoto(photo),
+    headline: HEADLINE[variant],
+    summary: manualOverride ? "" : autoReason,
+    riskPercent,
     manualOverride,
+    autoNote,
   };
 };
 
@@ -136,5 +143,20 @@ export const photoPadVerdictRiskClass = (
       return "text-orange-700 dark:text-orange-200";
     default:
       return "text-emerald-700 dark:text-emerald-200";
+  }
+};
+
+export const photoPadVerdictBarClass = (
+  variant: PhotoPadVerdictVariant,
+): string => {
+  switch (variant) {
+    case "suspicious":
+      return "bg-rose-500";
+    case "review":
+      return "bg-amber-500";
+    case "error":
+      return "bg-orange-500";
+    default:
+      return "bg-emerald-500";
   }
 };

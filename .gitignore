@@ -327,3 +327,7 @@ scripts/git-commit-grouped-tracked.sh
 **/pad_ml/**
 uv.lock
 frontend/dist-tmp/**
+
+backend/models/pad_clip_embeddings.npz
+backend/models/*.json
+backend/models/adaface_ir101_webface12m.onnx

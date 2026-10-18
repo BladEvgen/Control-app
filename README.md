@@ -211,19 +211,26 @@ curl -fL -o backend/models/face_parsing_resnet18.onnx \
 
 **Useful `.env` flags:**
 
-- `FACE_PARSING_ENABLE` — `1`/`0` (default `1`; if the ONNX file is missing, parsing is skipped and ArcFace still works).
+- `FACE_PARSING_ENABLE` — `1`/`0` (default `1`; if the ONNX file is missing, parsing is skipped and face recognition still works).
 - `FACE_PARSING_MODEL_PATH` — absolute path to the `.onnx` if not using `GENERAL_MODELS_ROOT/face_parsing_resnet18.onnx`.
 - `FACE_PARSING_GLASSES_FRAC_MIN` — minimum fraction of “glasses” class pixels to treat as wearing glasses (default `0.00035`).
 - `FACE_PARSING_USE_FOR_AUGMENT` / `FACE_PARSING_USE_FOR_API` — turn parsing off for augmentation only or for the verify API only.
-- `FACE_ENCODING_TTA_ENABLE` — `1`/`0` (default `1`): average ArcFace embeddings over mild camera-condition variants (gamma/CLAHE/sharpen/JPEG) when extracting one probe/avatar embedding.
+- `FACE_ENCODING_TTA_ENABLE` — `1`/`0` (default `1`): average face embeddings over mild camera-condition variants (gamma/CLAHE/sharpen/JPEG) when extracting one probe/avatar embedding.
 - `FACE_RUNTIME_INCLUDE_AUGMENTED_GALLERY` — `1`/`0` (default `1`): let runtime verify/recognize use capped validated face-ID augment crops in addition to mask/avatar/`gallery_real.npy`; `FACE_RUNTIME_AUGMENTED_GALLERY_MAX` caps the count (default `24`).
 - `FACE_RUNTIME_ADD_CENTROID_PROTOTYPES` — `1`/`0` (default `1`): add robust centroid templates over available face samples, improving matching when each person has several real/augmented frames.
-- `FACE_VERIFY_PROBE_BLUR_MIN`, `FACE_VERIFY_PROBE_BRIGHTNESS_MIN/MAX`, `FACE_VERIFY_PROBE_MAX_ABS_YAW/PITCH` — conservative quality gates for ordinary phone/laptop camera frames.
+- `FACE_VERIFY_PROBE_MAX_ABS_YAW/PITCH` — pose gates for ordinary phone/laptop camera frames.
 - `FACE_VERIFY_IMPOSTOR_GAP_ENABLE` — `1`/`0` (default `1`): during 1:1 verify, also compare the probe with the nearest other staff member and reject when the gap is too small (`FACE_VERIFY_IMPOSTOR_GAP_MIN`, default `0.035`).
 
 `verify_face` is intentionally binary: uncertain liveness/PAD, weak probe quality, or a nearest-other-staff gap that is too small returns `final_decision: "NO"`, not a manual-review state.
 
-After changing augmentation, rebuild staff gallery embeddings as you usually do in this project.
+`monitoring_app/photo_pad.py` scores every attendance photo with a frozen OpenCLIP ViT-L/14 (`openai`): three views — whole frame squashed to a square (bezels, print edges) plus top and bottom 30% strips enlarged (notch / status bar, messenger buttons, phone chin) — feed a logistic head that outputs a spoof probability. Thresholds stored with the head split it into clean / review / suspicious; night and blurry selfies are not penalised.
+
+- Weights auto-download to `~/.cache/huggingface` (~1.7 GB).
+- Head lives in `backend/models/pad_clip_head.json`. Retrain with `python manage.py train_photo_pad` (Celery beat weekly, re-scores the open review queue).
+- Embeddings are cached in `backend/models/pad_clip_embeddings.npz` (gitignored) so labels survive photo deletion.
+- On a new server: `bash backend/scripts/sync_ml_models.sh user@host:/path/to/backend`.
+
+After changing augmentation or the face model, rebuild the gallery cache: `python manage.py warm_face_galleries --purge-stale` (5003 staff ≈ 1.5 h cold, seconds when cached).
 
 Parsing weights: [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) (MIT), ResNet18 ONNX.
 

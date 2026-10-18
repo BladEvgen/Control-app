@@ -357,7 +357,7 @@ def _primary_reason_ru(
     status: str,
 ) -> Optional[str]:
     """Operator-facing reason: persisted ``pad_ui_reason`` first, then branch copy."""
-    from monitoring_app.photo_pad import _PAD_UI_REASON_RU
+    from monitoring_app.photo_pad import _UI_REASON_RU
 
     ui = parse_pad_ui_reason_from_tags(_lesson_attendance_tags(obj))
     if ui:
@@ -365,8 +365,8 @@ def _primary_reason_ru(
     if branch_str:
         if branch_str in _BRANCH_EXPLANATION_RU:
             return _BRANCH_EXPLANATION_RU[branch_str]
-        if branch_str in _PAD_UI_REASON_RU:
-            return _PAD_UI_REASON_RU[branch_str]
+        if branch_str in _UI_REASON_RU:
+            return _UI_REASON_RU[branch_str]
     if status == LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS:
         return "Автопроверка: согласованные признаки подмены."
     if status == LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW:
