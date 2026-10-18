@@ -1900,13 +1900,6 @@ const MapDashboard: React.FC = () => {
                       onChange={handleDateChange}
                       containerClassName="m-0 p-0 inline-flex items-center"
                       displayClassName="font-semibold text-gray-800 dark:text-gray-200 hover:text-primary-600 dark:hover:text-primary-400 cursor-pointer leading-none"
-                      inputClassName={`border border-gray-300 rounded-md px-2 text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 ${
-                        isPhoneLandscapeCompact
-                          ? "h-6 text-[9px]"
-                          : isDenseHeaderViewport
-                            ? "h-7 text-xs"
-                            : "h-8 text-sm"
-                      }`}
                     />
                   </div>
                 </div>
@@ -1931,7 +1924,6 @@ const MapDashboard: React.FC = () => {
                         onChange={handleDateChange}
                         containerClassName="map-priority-date-chip__date-wrap"
                         displayClassName="map-priority-date-chip__date"
-                        inputClassName="map-priority-date-chip__input"
                       />
                     </span>
                   </div>

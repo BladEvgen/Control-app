@@ -972,22 +972,6 @@
     color: rgb(186 230 253);
 }
 
-.map-priority-date-chip__input {
-    height: 1.1rem;
-    border-radius: 0.35rem;
-    border: 1px solid rgba(125, 211, 252, 0.62);
-    background: rgba(15, 23, 42, 0.52);
-    color: rgb(241 245 249);
-    font-size: 10px;
-    line-height: 1;
-    padding: 0 0.34rem;
-    outline: none;
-}
-
-.map-priority-date-chip__input:focus {
-    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.32);
-}
-
 .map-priority-date-chip__sep {
     color: rgba(186, 230, 253, 0.85);
     font-size: 10px;

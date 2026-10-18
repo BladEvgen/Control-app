@@ -931,7 +931,6 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
             setDateMismatchFromBackend(null);
           }}
           containerClassName="inline-block"
-          inputClassName="bg-transparent border-b border-gray-400 text-center focus:outline-none transition-all duration-200 text-text-dark dark:text-text-light"
           displayClassName="cursor-pointer hover:underline transition-all duration-200 text-text-dark dark:text-text-light"
         />
       </div>

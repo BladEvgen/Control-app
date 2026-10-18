@@ -1025,7 +1025,8 @@ body.is-resizing {
   display: grid;
   gap: 6px;
 }
-.ws-field > label {
+.ws-field > label,
+.ws-field-label {
   font-size: 13px;
   font-weight: 500;
   color: var(--ws-muted);
@@ -1053,7 +1054,7 @@ body.is-resizing {
 .ws-input[data-invalid] {
   border-color: #ef4444;
 }
-.ws-input input:focus-visible {
+.ws-input :is(input, select, textarea):focus-visible {
   outline: none;
 }
 .ws-input input {
@@ -1412,9 +1413,117 @@ body.is-resizing {
   min-width: 44px;
   touch-action: manipulation;
 }
-.date-popover button {
-  min-height: 36px;
+.date-popover {
+  position: fixed;
+  z-index: 9999;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  overflow-y: auto;
+  border: 1px solid var(--ws-line);
+  border-radius: 14px;
+  background: var(--ws-surface-solid);
+  color: var(--ws-ink);
+  box-shadow: var(--ws-shadow-pop);
+  user-select: none;
+  animation: datePopoverIn 0.18s var(--ws-ease) both;
+}
+@keyframes datePopoverIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+.date-popover-head,
+.date-popover-month {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 600;
+}
+.date-popover-month > span {
+  font-variant-numeric: tabular-nums;
+}
+.date-popover .ws-input-action:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.date-popover-quick {
+  display: flex;
+  gap: 8px;
+}
+.date-popover-quick .ws-chip {
+  height: 32px;
+  font-size: 13px;
+}
+.date-popover-quick .ws-chip[aria-pressed="true"] {
+  border-color: var(--ws-accent);
+  background: var(--ws-accent);
+  color: var(--ws-accent-ink);
+}
+.date-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+}
+.date-popover-weekday {
+  padding-bottom: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+  color: var(--ws-faint);
+}
+.date-popover-day {
+  aspect-ratio: 1;
   min-width: 36px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--ws-ink);
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+.date-popover-day:hover:not(:disabled) {
+  background: var(--ws-hover);
+}
+.date-popover-day[data-weekend] {
+  color: var(--ws-muted);
+}
+.date-popover-day[data-outside] {
+  color: var(--ws-faint);
+}
+.date-popover-day[data-today] {
+  box-shadow: inset 0 0 0 1px var(--ws-ink);
+}
+.date-popover-day[aria-pressed="true"] {
+  background: var(--ws-accent);
+  color: var(--ws-accent-ink);
+  box-shadow: none;
+}
+.date-popover-day:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.date-popover-day:focus-visible,
+.date-popover .ws-chip:focus-visible,
+.date-popover .ws-input-action:focus-visible {
+  outline: 2px solid var(--ws-ink);
+  outline-offset: 2px;
+}
+.date-popover-foot {
+  padding-top: 10px;
+  border-top: 1px solid var(--ws-line);
+  font-size: 12px;
+  text-align: center;
+  color: var(--ws-muted);
+}
+@media (prefers-reduced-motion: reduce) {
+  .date-popover {
+    animation: none;
+  }
 }
 .map-controls {
   background: var(--ws-surface);
