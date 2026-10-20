@@ -29,7 +29,7 @@ class IsAuthenticatedOrAPIKey(BasePermission):
             pass
         except Exception as e:
             logger.warning(
-                f"Unexpected error during JWT authentication for {method} {path}: {str(e)}"
+                "Unexpected error during JWT authentication for %s %s: %s", method, path, e
             )
 
         api_key = request.headers.get("X-API-KEY") or request.headers.get("x-api-key")
@@ -41,10 +41,21 @@ class IsAuthenticatedOrAPIKey(BasePermission):
             except models.APIKey.DoesNotExist:
                 pass
             except Exception as e:
-                logger.warning(f"Error checking API key for {method} {path}: {str(e)}")
+                logger.warning("Error checking API key for %s %s: %s", method, path, e)
 
         logger.warning(
-            f"Permission denied for {method} {path}. "
-            f"User authenticated: {request.user.is_authenticated if hasattr(request.user, 'is_authenticated') else False}"
+            "Permission denied for %s %s. User authenticated: %s",
+            method,
+            path,
+            request.user.is_authenticated if hasattr(request.user, "is_authenticated") else False,
         )
         return False
+
+
+class IsStaffToken(BasePermission):
+    """Только запросы с токеном сотрудника (StaffJWTAuthentication), не админки и не ключа."""
+
+    def has_permission(self, request, view):
+        from monitoring_app.authentication import StaffPrincipal
+
+        return isinstance(request.user, StaffPrincipal)

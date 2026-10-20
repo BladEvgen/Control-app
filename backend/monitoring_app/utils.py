@@ -19,7 +19,6 @@ from typing import (
     cast,
 )
 
-import pytz
 from cryptography.fernet import Fernet
 from django.conf import settings
 from django.contrib.admin import SimpleListFilter
@@ -49,7 +48,7 @@ from monitoring_app.geo import is_within_radius as is_within_radius
 
 DAYS = settings.DAYS
 
-logger = logging.getLogger("django")
+logger = logging.getLogger(__name__)
 
 
 def get_lesson_attendance_photo_path(staff_pin: str):
@@ -57,8 +56,9 @@ def get_lesson_attendance_photo_path(staff_pin: str):
     Возвращает (base_dir, full_file_path) для сохранения фото посещаемости.
     base_dir нужно создать (makedirs); full_file_path — куда писать файл.
     """
-    date_path = timezone.now().strftime("%Y-%m-%d")
-    timestamp = int(timezone.now().timestamp())
+    now = timezone.now()
+    date_path = timezone.localdate(now).isoformat()
+    timestamp = int(now.timestamp())
     if settings.DEBUG:
         base_dir = os.path.join(settings.MEDIA_ROOT, "control_image", staff_pin, date_path)
     else:
@@ -94,8 +94,6 @@ def merge_work_intervals_to_total_seconds(
             merged.append((start, end))
     return sum(int((e - s).total_seconds()) for s, e in merged)
 
-
-ARCFACE_MODEL = None
 
 CANONICAL_ADDRESSES: dict[str, str] = {
     "abilai": "Проспект Абылай хана, 51/53",
@@ -328,7 +326,7 @@ class HierarchicalDepartmentFilter(SimpleListFilter):
             needed = set(match_ids)
             for mid in list(match_ids):
                 pid = parent_by_id.get(mid)
-                while pid:
+                while pid and pid not in needed:
                     needed.add(pid)
                     pid = parent_by_id.get(pid)
             qs = base.filter(id__in=needed)
@@ -364,24 +362,10 @@ class HierarchicalDepartmentFilter(SimpleListFilter):
                     department = models.ChildDepartment.objects.only("id").get(pk=self.value())
                 except models.ChildDepartment.DoesNotExist:
                     return queryset
-                descendant_ids = self.get_all_descendant_ids(department.id)
+                descendant_ids = set(department.subtree_ids())
                 cache.set(cache_key, descendant_ids, self._lookups_cache_ttl)
             return queryset.filter(staff__department__in=descendant_ids)
         return queryset
-
-    def get_all_descendant_ids(self, department_id):
-        descendant_ids = {department_id}
-        queue = [department_id]
-        while queue:
-            current_id = queue.pop(0)
-            children = list(
-                models.ChildDepartment.objects.filter(parent_id=current_id).values_list(
-                    "id", flat=True
-                )
-            )
-            queue.extend(children)
-            descendant_ids.update(children)
-        return descendant_ids
 
 
 class APIKeyUtility:
@@ -478,12 +462,13 @@ def send_password_reset_email(user, request):
         site_name = getattr(settings, "SITE_NAME", "KRMU")
 
         reset_scheme = "https" if request.is_secure() else request.scheme
-        reset_link = f"{reset_scheme}://{request.get_host()}{reverse('password_reset_confirm', args=[token])}"
+        reset_path = reverse("spa_password_reset", kwargs={"token": token})
+        reset_link = f"{reset_scheme}://{request.get_host()}{reset_path}"
 
         expiry_time = timezone.now() + datetime.timedelta(hours=1)
-        expiry_time_str = expiry_time.strftime("%H:%M %d.%m.%Y")
+        expiry_time_str = timezone.localtime(expiry_time).strftime("%H:%M %d.%m.%Y")
 
-        current_year = timezone.now().year
+        current_year = timezone.localdate().year
 
         user_display_name = getattr(user, "first_name", user.username) or user.username
 
@@ -631,7 +616,7 @@ def send_password_reset_email(user, request):
         )
 
         if success:
-            logger.info(f"Password reset email sent for user ID: {user.id}")
+            logger.info("Password reset email sent for user ID: %s", user.id)
 
             if hasattr(models, "SecurityAuditLog"):
                 models.SecurityAuditLog.objects.create(  # type: ignore[attr-defined]
@@ -643,19 +628,12 @@ def send_password_reset_email(user, request):
 
             return True
         else:
-            logger.error(f"Failed to send password reset email to user ID: {user.id}")
+            logger.error("Failed to send password reset email to user ID: %s", user.id)
             return False
 
     except Exception as e:
-        logger.error(f"Failed to send password reset email: {str(e)}")
+        logger.error("Failed to send password reset email: %s", e)
         return False
-
-
-def get_user_timezone(request):
-    user_timezone = request.session.get("timezone")
-    if not user_timezone:
-        user_timezone = settings.TIME_ZONE
-    return pytz.timezone(user_timezone)
 
 
 def transliterate(name):
@@ -761,7 +739,9 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
         try:
             data_insert_date = attendance_day.sa_date_at(date_at)
             logger.info(
-                f"Начинаем обработку StaffAttendance для даты вставки: {data_insert_date} (дата события: {date_at})"
+                "Начинаем обработку StaffAttendance для даты вставки: %s (дата события: %s)",
+                data_insert_date,
+                date_at,
             )
 
             staff_attendances = (
@@ -775,13 +755,14 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
             )
 
             if not staff_attendances:
-                logger.warning(f"Нет записей StaffAttendance для даты вставки {data_insert_date}")
+                logger.warning("Нет записей StaffAttendance для даты вставки %s", data_insert_date)
             else:
                 for attendance in staff_attendances:
                     area_name_in = attendance.get("area_name_in")
                     if not area_name_in:
                         logger.warning(
-                            f"Найдена запись StaffAttendance без area_name_in для даты вставки {data_insert_date}"
+                            "Найдена запись StaffAttendance без area_name_in для даты вставки %s",
+                            data_insert_date,
                         )
                         continue
                     address = resolve_area_address(area_name_in)
@@ -793,14 +774,15 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
                             staff_by_address[original_address] += attendance.get("count", 0)
                         else:
                             logger.warning(
-                                f"Оригинальный адрес для '{area_name_in}' не найден в ClassLocation"
+                                "Оригинальный адрес для '%s' не найден в ClassLocation",
+                                area_name_in,
                             )
                     else:
                         logger.warning(
-                            f"Название зоны '{area_name_in}' не найдено в AREA_ADDRESS_MAPPING"
+                            "Название зоны '%s' не найдено в AREA_ADDRESS_MAPPING", area_name_in
                         )
 
-                logger.info(f"Обработано StaffAttendance: {dict(staff_by_address)}")
+                logger.info("Обработано StaffAttendance: %s", dict(staff_by_address))
 
             staff_with_attendance_qs = models.StaffAttendance.objects.filter(
                 date_at=data_insert_date,
@@ -809,9 +791,9 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
             ).values_list("staff_id", flat=True)
             staff_with_attendance = list(staff_with_attendance_qs)
             staff_count = len(staff_with_attendance)
-            logger.info(f"Количество сотрудников с посещением: {staff_count}")
+            logger.info("Количество сотрудников с посещением: %s", staff_count)
 
-            logger.info(f"Начинаем обработку LessonAttendance для даты: {date_at}")
+            logger.info("Начинаем обработку LessonAttendance для даты: %s", date_at)
 
             lesson_attendances_qs = models.LessonAttendance.exclude_report_invalid_days(
                 models.LessonAttendance.objects.filter(
@@ -820,7 +802,7 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
             ).exclude(staff_id__in=staff_with_attendance)
 
             lesson_count = lesson_attendances_qs.count()
-            logger.info(f"Количество LessonAttendance для обработки: {lesson_count}")
+            logger.info("Количество LessonAttendance для обработки: %s", lesson_count)
 
             if lesson_count > 0:
                 lesson_attendances_list = list(
@@ -850,7 +832,7 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
                 coordinates = []
                 for lesson_id, lesson_lat, lesson_lon in lesson_attendances_list:
                     if lesson_lat is None or lesson_lon is None:
-                        logger.warning(f"LessonAttendance {lesson_id} не имеет координат")
+                        logger.warning("LessonAttendance %s не имеет координат", lesson_id)
                         continue
                     coordinates.append((float(lesson_lat), float(lesson_lon)))
                 nearest_addresses = [
@@ -865,11 +847,11 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
                 address_counts = Counter(nearest_addresses)
                 lesson_attendance_by_address = defaultdict(int, address_counts)
 
-                logger.info(f"Обработано LessonAttendance: {dict(lesson_attendance_by_address)}")
+                logger.info("Обработано LessonAttendance: %s", dict(lesson_attendance_by_address))
             else:
                 logger.info("Нет записей LessonAttendance для обработки.")
         except Exception as e:
-            logger.error(f"Ошибка при обработке данных посещений: {str(e)}", exc_info=True)
+            logger.exception("Ошибка при обработке данных посещений: %s", e)
             raise
 
     try:
@@ -878,9 +860,9 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
             aggregated_data[address] += count
         for address, count in lesson_attendance_by_address.items():
             aggregated_data[address] += count
-        logger.info(f"Агрегированные данные: {dict(aggregated_data)}")
+        logger.info("Агрегированные данные: %s", dict(aggregated_data))
     except Exception as e:
-        logger.error(f"Ошибка при агрегации данных: {str(e)}", exc_info=True)
+        logger.exception("Ошибка при агрегации данных: %s", e)
         raise
 
     result_list = []
@@ -902,9 +884,9 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
                 else:
                     continue
             result_list.append(location_data)
-        logger.info(f"Сформирован список результатов с {len(result_list)} локациями.")
+        logger.info("Сформирован список результатов с %s локациями.", len(result_list))
     except Exception as e:
-        logger.error(f"Ошибка при формировании списка результатов: {str(e)}", exc_info=True)
+        logger.exception("Ошибка при формировании списка результатов: %s", e)
         raise
 
     try:
@@ -928,7 +910,7 @@ def generate_map_data(locations, date_at, search_staff_attendance=True, filter_e
             result_list.sort(key=lambda x: x["name"])
             logger.info("Основная локация не найдена. Список отсортирован по имени.")
     except Exception as e:
-        logger.error(f"Ошибка при сортировке списка результатов: {str(e)}", exc_info=True)
+        logger.exception("Ошибка при сортировке списка результатов: %s", e)
 
     return result_list
 
@@ -1552,12 +1534,6 @@ def get_bonus_percentage(num_days, percent_for_period):
     return 0.0
 
 
-def get_all_child_departments(department):
-
-    ids = department.subtree_ids()
-    return list(models.ChildDepartment.objects.filter(id__in=ids))
-
-
 def collect_attendance_data(
     staff_list: Iterable[models.Staff],
     start_date: datetime.date,
@@ -1618,6 +1594,28 @@ def collect_attendance_data(
     return cached_results or []
 
 
+def _hm(minutes: float) -> str:
+    hours, mins = divmod(int(minutes), 60)
+    return f"{hours} ч {mins:02d} мин"
+
+
+def _remote_credit_note(att_data: dict | None, credit_percent: int, digital: list) -> str:
+    """Строки Excel про удалёнку: работа в системе (подтверждена) и зачёт без СКУД."""
+    from monitoring_app.services import attendance_day
+
+    att = att_data or {}
+    office = (
+        [(att["first_in"], att["last_out"])] if att.get("first_in") and att.get("last_out") else []
+    )
+    in_system = attendance_day.activity_beyond_office_seconds(office, digital) / 60
+    verified = (att.get("effective_work_seconds") or 0) / 60 + in_system
+    credited = attendance_day.remote_credit_minutes(verified, credit_percent)
+    note = f"\nВ системе: {_hm(in_system)}" if in_system >= 1 else ""
+    if credited >= 1:
+        note += f"\nЗачтено удалённо: {_hm(credited)} (без СКУД)"
+    return note
+
+
 def _collect_attendance_data_impl(
     staff_list: Sequence[models.Staff],
     start_date: datetime.date,
@@ -1654,7 +1652,10 @@ def _collect_attendance_data_impl(
     staff_ids = [s.id for s in staff_list]
     local_tz = timezone.get_current_timezone()
     logger.info(
-        f"Collecting attendance data from {start_date} to {end_date} for {len(staff_list)} staff members"
+        "Collecting attendance data from %s to %s for %s staff members",
+        start_date,
+        end_date,
+        len(staff_list),
     )
 
     holidays = (
@@ -1679,7 +1680,7 @@ def _collect_attendance_data_impl(
     )
     location_searcher = LocationSearcher(location_data) if location_data else None
     if location_searcher is not None:
-        logger.info(f"LocationSearcher initialized with {len(location_data)} locations")
+        logger.info("LocationSearcher initialized with %s locations", len(location_data))
 
     attendance_qs = models.StaffAttendance.objects.filter(
         staff_id__in=staff_ids,
@@ -1725,7 +1726,7 @@ def _collect_attendance_data_impl(
     remote_work_qs = models.RemoteWork.objects.filter(
         Q(staff_id__in=staff_ids)
         & (Q(start_date__lte=end_date, end_date__gte=start_date) | Q(permanent_remote=True))
-    ).values("id", "staff_id", "permanent_remote", "start_date", "end_date")
+    ).only("staff_id", "permanent_remote", "start_date", "end_date", "credit_percent")
 
     absence_qs = models.AbsentReason.objects.filter(
         staff_id__in=staff_ids, start_date__lte=end_date, end_date__gte=start_date
@@ -1891,36 +1892,15 @@ def _collect_attendance_data_impl(
             rec.pop("la_intervals", None)
             rec.pop("effective_work_intervals", None)
 
-    remote_work_map = defaultdict(set)
+    remote_by_staff = defaultdict(list)
     for rw in remote_work_qs.iterator(chunk_size=1000):
-        staff_id = int(rw["staff_id"])
+        remote_by_staff[rw.staff_id].append(rw)
+    remote_work_map: dict[str, dict[int, int]] = defaultdict(dict)
+    for staff_id, rows in remote_by_staff.items():
+        for day, share in attendance_day.remote_credit_by_day(rows, start_date, end_date).items():
+            remote_work_map[day.strftime("%Y-%m-%d")][staff_id] = share
 
-        if rw["permanent_remote"]:
-            rw_start = start_date
-            rw_end = end_date
-        else:
-            rw_start_raw = rw.get("start_date")
-            rw_end_raw = rw.get("end_date")
-            if rw_start_raw is None or rw_end_raw is None:
-                logger.warning(
-                    "RemoteWork id=%s for staff_id=%s skipped because start/end dates are missing",
-                    rw.get("id"),
-                    staff_id,
-                )
-                continue
-            rw_start = max(rw_start_raw, start_date)
-            rw_end = min(rw_end_raw, end_date)
-
-        if rw_start > rw_end:
-            continue
-
-        date_keys = [
-            (rw_start + datetime.timedelta(days=i)).strftime("%Y-%m-%d")
-            for i in range((rw_end - rw_start).days + 1)
-        ]
-
-        for date_key in date_keys:
-            remote_work_map[date_key].add(staff_id)
+    digital = attendance_day.activity_intervals(remote_by_staff, start_date, end_date)
 
     absence_map = defaultdict(lambda: defaultdict(list))
     absence_reason_display_map = {
@@ -1955,6 +1935,7 @@ def _collect_attendance_data_impl(
 
     date_info = [
         (
+            d,
             d.strftime("%Y-%m-%d"),
             d.strftime("%d.%m.%Y"),
             (d.weekday() >= 5) or (d in holidays and not holidays.get(d, False)),
@@ -1962,9 +1943,9 @@ def _collect_attendance_data_impl(
         for d in date_range
     ]
 
-    for date_str, date_display, is_off_day in date_info:
+    for date_obj, date_str, date_display, is_off_day in date_info:
         date_attendance = attendance_map.get(date_str, {})
-        date_remote = remote_work_map.get(date_str, set())
+        date_remote = remote_work_map.get(date_str, {})
         date_absence = absence_map.get(date_str, {})
 
         for staff_id, staff_fio, department_name in staff_entries:
@@ -2000,8 +1981,13 @@ def _collect_attendance_data_impl(
                             attendance_info += f"\n{mins} мин"
 
             if is_off_day:
-                if attendance_info:
-                    status_info = attendance_info
+                home_note = (
+                    _remote_credit_note(att_data, 0, digital.get((staff_id, date_obj), []))
+                    if is_remote
+                    else ""
+                )
+                if attendance_info or home_note:
+                    status_info = (attendance_info or "Выходной") + home_note
                     meta = "holiday_with_attendance"
                 else:
                     status_info = "Выходной"
@@ -2038,6 +2024,8 @@ def _collect_attendance_data_impl(
                         f"Удаленная работа + Присутствие\n{attendance_info}"
                         if attendance_info
                         else "Удаленная работа"
+                    ) + _remote_credit_note(
+                        att_data, date_remote[staff_id], digital.get((staff_id, date_obj), [])
                     )
                     meta = "remote_work"
                 elif has_attendance and has_absence:
@@ -2063,7 +2051,9 @@ def _collect_attendance_data_impl(
                     status_info = attendance_info
                     meta = "workday"
                 elif is_remote:
-                    status_info = "Удаленная работа"
+                    status_info = "Удаленная работа" + _remote_credit_note(
+                        None, date_remote[staff_id], digital.get((staff_id, date_obj), [])
+                    )
                     meta = "remote_work"
                 elif has_absence:
                     absence_info = date_absence[staff_id][0]
@@ -2087,7 +2077,7 @@ def _collect_attendance_data_impl(
                 ]
             )
 
-    logger.info(f"Collected {len(results)} attendance records with combined status information")
+    logger.info("Collected %s attendance records with combined status information", len(results))
     return results
 
 

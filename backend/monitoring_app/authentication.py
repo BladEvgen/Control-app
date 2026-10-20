@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from rest_framework.authentication import SessionAuthentication
+from rest_framework.authentication import BaseAuthentication, SessionAuthentication
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework_simplejwt.exceptions import TokenError
 
 
 class SessionAuthenticationAllowTokenOrApiKey(SessionAuthentication):
@@ -26,3 +28,37 @@ class SessionAuthenticationAllowTokenOrApiKey(SessionAuthentication):
         if self._has_bearer_or_api_key(request):
             return None
         return super().authenticate(request)
+
+
+class StaffPrincipal:
+    """request.user для запросов с токеном сотрудника (не учётная запись Django)."""
+
+    is_authenticated = True
+    is_anonymous = False
+
+    def __init__(self, staff):
+        self.staff = staff
+
+
+class StaffJWTAuthentication(BaseAuthentication):
+    """``Authorization: Bearer <staff_access>`` → StaffPrincipal. Архивный — отказ."""
+
+    def authenticate(self, request):
+        from monitoring_app import models
+        from monitoring_app.custom_jwt import STAFF_ID_CLAIM, StaffAccessToken
+
+        parts = request.META.get("HTTP_AUTHORIZATION", "").split()
+        if len(parts) != 2 or parts[0] != "Bearer":
+            return None
+        try:
+            token = StaffAccessToken(cast(Any, parts[1]))
+        except TokenError as exc:
+            raise AuthenticationFailed(f"Токен сотрудника недействителен: {exc}") from None
+        staff = models.Staff.objects.filter(id=token.get(STAFF_ID_CLAIM)).first()
+        if staff is None:
+            raise AuthenticationFailed("Сотрудник недоступен")
+        return StaffPrincipal(staff), token
+
+    def authenticate_header(self, request):
+        _ = request
+        return 'Bearer realm="staff"'

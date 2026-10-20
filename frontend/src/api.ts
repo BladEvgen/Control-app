@@ -139,6 +139,15 @@ export const getCookie = (name: string): string | null => {
 };
 
 export const clearAuthData = () => {
+  const refresh = getCookie("refresh_token");
+  if (refresh) {
+    void fetch(`${apiUrl}/api/token/blacklist/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh }),
+      keepalive: true,
+    }).catch(() => undefined);
+  }
   try {
     removeCookie("access_token", {
       secure: !isDebug,
@@ -181,7 +190,6 @@ const MAX_REFRESH_ATTEMPTS = 3;
 
 export const ACCESS_TOKEN_REFRESH_LEAD_MS = 2 * 60 * 1000;
 
-/** If access JWT is valid longer than this, skip POST /token/refresh/ (another tab refreshed first). */
 const ACCESS_SKIP_REFRESH_IF_VALID_BEYOND_MS = 60_000;
 
 let refreshScheduleTimeoutId: ReturnType<typeof setTimeout> | null = null;

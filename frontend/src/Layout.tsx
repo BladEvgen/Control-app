@@ -7,6 +7,7 @@ import ShellFooter from "./components/ShellFooter";
 import AuthWebSocketInitializer from "./components/AuthWebSocketInitializer";
 import AttendanceExcelDownloadBanner from "./components/AttendanceExcelDownloadBanner";
 import { AuthSessionWakeBridge } from "./authSession/AuthSessionWakeBridge";
+import { useActivityHeartbeat } from "./hooks/useActivityHeartbeat";
 
 const readTheme = (): string => {
   try {
@@ -27,6 +28,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       /\/childdepartment\/[^/]+\/?$/.test(path));
   const isStructure = /\/app\/?$|\/(department|childdepartment)\//.test(path);
   const [theme, setTheme] = useState(readTheme);
+  useActivityHeartbeat(!isLoginRoute && !isKioskRoute);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");

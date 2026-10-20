@@ -22,11 +22,13 @@ import logging
 from collections import defaultdict
 from typing import Any, Iterable, List, Optional, Tuple
 
+from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from monitoring_app import models, utils
 
-logger = logging.getLogger("django")
+logger = logging.getLogger(__name__)
 
 SA_DAY_SHIFT = datetime.timedelta(days=1)
 SA_PRESENT = Q(first_in__isnull=False) | Q(last_out__isnull=False)
@@ -51,6 +53,221 @@ LA_FIELDS = (
     "longitude",
     "duration_seconds",
 )
+
+
+DAY_NORM_MINUTES = 8 * 60
+
+
+def remote_credit_by_day(
+    remote_works: Iterable["models.RemoteWork"], start: datetime.date, end: datetime.date
+) -> dict:
+    """{рабочий день: % нормы, зачитываемый без СКУД} для дней [start, end] под удалёнкой.
+
+    Пересекающиеся периоды не суммируются: берётся наибольший процент.
+    """
+    out: dict = {}
+    works = list(remote_works)
+    day = start
+    while day <= end:
+        shares = [rw.credit_percent for rw in works if rw.covers(day)]
+        if shares:
+            out[day] = max(shares)
+        day += datetime.timedelta(days=1)
+    return out
+
+
+def remote_credit_minutes(
+    verified_minutes: float, credit_percent: int, norm: float = DAY_NORM_MINUTES
+) -> float:
+    """Минуты, зачтённые за удалённую работу, которую терминалы не видят.
+
+    Подтверждённое СКУД время остаётся как есть; удалённо добирается только разрыв
+    до нормы и не больше credit_percent нормы. Пришёл на 4 ч при 100% → +4 ч,
+    отработал в здании 9 ч → +0, не пришёл при 50% → +4 ч.
+    """
+    return max(0.0, min(norm * credit_percent / 100, norm - verified_minutes))
+
+
+ACTIVITY_SESSION_GAP = datetime.timedelta(minutes=15)
+
+
+def record_interval(
+    staff_id: int, start: datetime.datetime, end: datetime.datetime, source: str
+) -> None:
+    """Добавляет интервал цифровой явки, склеивая сеансы с паузой ≤ ACTIVITY_SESSION_GAP.
+
+    Интервал через полночь делится по локальным дням. Хранится как [начало, конец, источник].
+    """
+    start, end = min(start, end), max(start, end)
+    while True:
+        day = timezone.localdate(start)
+        next_midnight = timezone.make_aware(
+            datetime.datetime.combine(day + datetime.timedelta(days=1), datetime.time.min)
+        )
+        piece_end = min(end, next_midnight)
+        _merge_into_day(staff_id, day, start, piece_end, source)
+        if end <= next_midnight:
+            return
+        start = next_midnight
+
+
+def _merge_into_day(staff_id, day, start, end, source) -> None:
+    with transaction.atomic():
+        row, _ = models.RemoteActivityDay.objects.select_for_update().get_or_create(
+            staff_id=staff_id, day=day
+        )
+        spans = [
+            (
+                datetime.datetime.fromisoformat(s),
+                datetime.datetime.fromisoformat(e),
+                rest[0] if rest else "web",
+            )
+            for s, e, *rest in row.intervals
+        ]
+        spans.append((start, end, source))
+        spans.sort()
+        merged: list[tuple[datetime.datetime, datetime.datetime, str]] = [spans[0]]
+        for s, e, src in spans[1:]:
+            last_s, last_e, last_src = merged[-1]
+            if s - last_e <= ACTIVITY_SESSION_GAP:
+                sources = last_src if src in last_src.split("+") else f"{last_src}+{src}"
+                merged[-1] = (last_s, max(last_e, e), sources)
+            else:
+                merged.append((s, e, src))
+        row.intervals = [[s.isoformat(), e.isoformat(), src] for s, e, src in merged]
+        row.active_seconds = int(sum((e - s).total_seconds() for s, e, _ in merged))
+        row.save(update_fields=["intervals", "active_seconds"])
+
+
+def record_activity(staff_id: int, now: datetime.datetime, source: str = "web") -> None:
+    """Точечная отметка «пользователь что-то сделал» — продлевает текущий сеанс."""
+    record_interval(staff_id, now, now, source)
+
+
+TOUCH_TICK_SECONDS = 60
+STAFF_LOOKUP_TTL = 300
+
+
+def touch_activity(user, source: str) -> None:
+    """Отметка активности учётной записи: не чаще раза в минуту, только для сотрудника."""
+    from django.core.cache import cache
+
+    if not cache.add(f"activity_tick:{user.pk}", 1, TOUCH_TICK_SECONDS):
+        return
+    staff_id = cache.get(f"activity_staff:{user.pk}")
+    if staff_id is None:
+        staff_id = staff_id_for_user(user)
+        cache.set(f"activity_staff:{user.pk}", staff_id, STAFF_LOOKUP_TTL)
+    if staff_id:
+        record_activity(staff_id, timezone.now(), source)
+
+
+_TRANSLIT = str.maketrans(
+    {
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "g",
+        "д": "d",
+        "е": "e",
+        "ё": "e",
+        "ж": "zh",
+        "з": "z",
+        "и": "i",
+        "й": "y",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "kh",
+        "ц": "ts",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "sch",
+        "ъ": "",
+        "ы": "y",
+        "ь": "",
+        "э": "e",
+        "ю": "yu",
+        "я": "ya",
+        "ә": "a",
+        "ғ": "g",
+        "қ": "k",
+        "ң": "n",
+        "ө": "o",
+        "ұ": "u",
+        "ү": "u",
+        "һ": "h",
+        "і": "i",
+    }
+)
+
+
+def _latin(value: Optional[str]) -> str:
+    return (value or "").strip().lower().translate(_TRANSLIT)
+
+
+def staff_id_for_user(user) -> int:
+    """Сотрудник учётной записи; без ручной привязки — автопривязка дистанционщика.
+
+    Автопривязка: среди сотрудников с удалёнкой и без учётной записи ровно один, чьи
+    фамилия и имя (латиницей) есть в логине/ФИО/почте пользователя. Связь сохраняется
+    в Staff.user — её видно и можно исправить в админке. Ноль совпадений или больше
+    одного — ничего не связываем: лучше не засчитать, чем засчитать чужому.
+    """
+    linked = models.Staff.all_objects.filter(user_id=user.pk).values_list("id", flat=True).first()
+    if linked:
+        return linked
+    account = " ".join(
+        _latin(getattr(user, field, ""))
+        for field in ("username", "first_name", "last_name", "email")
+    )
+    matches = [
+        staff_id
+        for staff_id, name, surname in models.Staff.all_objects.filter(
+            user__isnull=True, remote_work__isnull=False
+        )
+        .distinct()
+        .values_list("id", "name", "surname")
+        if _latin(name)
+        and _latin(surname)
+        and _latin(name) in account
+        and _latin(surname) in account
+    ]
+    if len(matches) != 1:
+        return 0
+    models.Staff.all_objects.filter(id=matches[0], user__isnull=True).update(user=user)
+    logger.info("Auto-linked user_id=%s to staff_id=%s for digital presence", user.pk, matches[0])
+    return matches[0]
+
+
+def activity_intervals(staff_ids: Iterable[int], start: datetime.date, end: datetime.date) -> dict:
+    """{(staff_id, день): [(начало, конец), ...]} цифровой явки за период. Один запрос."""
+    out: dict = {}
+    for staff_id, day, spans in models.RemoteActivityDay.objects.filter(
+        staff_id__in=list(staff_ids), day__range=(start, end)
+    ).values_list("staff_id", "day", "intervals"):
+        out[(staff_id, day)] = [
+            (datetime.datetime.fromisoformat(s), datetime.datetime.fromisoformat(e))
+            for s, e, *_ in spans
+        ]
+    return out
+
+
+def activity_beyond_office_seconds(office: list, digital: list) -> int:
+    """Секунды цифровой явки вне интервалов СКУД: работа в системе из офиса не считается дважды."""
+    if not digital:
+        return 0
+    return utils.merge_work_intervals_to_total_seconds(
+        office + digital
+    ) - utils.merge_work_intervals_to_total_seconds(office)
 
 
 def to_date(value: Any) -> Optional[datetime.date]:
@@ -237,12 +454,14 @@ def merge_day(sa_records, la_records, location_searcher=None) -> dict:
     if not sa_intervals and sa_records and sa_records[0].get("effective_work_seconds"):
         total = max(total, sa_records[0]["effective_work_seconds"])
     combined["effective_work_seconds"] = total or None
+    if not intervals and combined["first_in"] and combined["last_out"]:
+        if combined["last_out"] > combined["first_in"]:
+            intervals = [(combined["first_in"], combined["last_out"])]
+    combined["work_intervals"] = intervals
     combined["turnstile_missing"] = (
         "out"
         if combined["first_in"] and not combined["last_out"]
-        else "in"
-        if combined["last_out"] and not combined["first_in"]
-        else None
+        else "in" if combined["last_out"] and not combined["first_in"] else None
     )
     if "lesson_attendance" in (combined["first_in_source"], combined["last_out_source"]):
         combined["area_sequence"] = None

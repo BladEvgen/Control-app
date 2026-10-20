@@ -1,14 +1,18 @@
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, cast
 
+from django.conf import settings
 from django.utils.decorators import method_decorator
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import exceptions
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.serializers import (
     TokenObtainPairSerializer,
     TokenRefreshSerializer,
 )
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
@@ -19,7 +23,26 @@ from monitoring_app import models
 
 if TYPE_CHECKING:
     from django.contrib.auth.models import AbstractUser
-    from rest_framework_simplejwt.tokens import RefreshToken
+
+
+SESSION_START_CLAIM = "session_start"
+
+
+def _enforce_session_max_age(raw_refresh: Any) -> None:
+    """Сессия живёт не дольше JWT_SESSION_MAX_HOURS с момента входа, сколько ни ротируй.
+
+    Просроченный refresh сразу отзывается (blacklist), повторно его не предъявить.
+    """
+    if not raw_refresh:
+        return
+    try:
+        token = RefreshToken(raw_refresh)
+    except TokenError:
+        return
+    started = int(token.get(SESSION_START_CLAIM) or token.get("iat") or 0)
+    if time.time() - started > settings.JWT_SESSION_MAX_HOURS * 3600:
+        token.blacklist()
+        raise InvalidToken("Сессия истекла: войдите заново.")
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -42,12 +65,18 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         }
     """
 
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token[SESSION_START_CLAIM] = int(time.time())
+        return token
+
     def validate(self, attrs):
         data = cast(Dict[str, Any], super().validate(attrs))
         if self.user is None:
             raise exceptions.AuthenticationFailed("User is not authenticated")
         user = cast("AbstractUser", self.user)
-        token = cast("RefreshToken", self.get_token(user))
+        token = RefreshToken(data["refresh"])
         access_exp_seconds = float(token.access_token["exp"])
         refresh_exp_seconds = float(token["exp"])
         access_exp = datetime.fromtimestamp(access_exp_seconds, tz=timezone.utc)
@@ -172,6 +201,7 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
     """
 
     def validate(self, attrs):
+        _enforce_session_max_age(attrs.get("refresh"))
         data = cast(Dict[str, Any], super().validate(attrs))
 
         access_token_str = data.get("access")
@@ -181,7 +211,7 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
             raise exceptions.ValidationError("Access token not found in response")
 
         try:
-            from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
+            from rest_framework_simplejwt.tokens import AccessToken
 
             access_token = AccessToken(access_token_str)
             access_exp_seconds = float(access_token["exp"])
@@ -340,3 +370,31 @@ class CustomTokenVerifyView(TokenVerifyView):
     """
     Custom view for verifying JWT tokens.
     """
+
+
+STAFF_ID_CLAIM = "staff_id"
+
+
+class StaffAccessToken(AccessToken):
+    token_type = "staff_access"
+    lifetime = timedelta(minutes=settings.STAFF_JWT_ACCESS_MINUTES)
+
+
+class StaffRefreshToken(RefreshToken):
+    token_type = "staff_refresh"
+    lifetime = timedelta(minutes=settings.STAFF_JWT_REFRESH_MINUTES)
+    access_token_class = StaffAccessToken
+
+
+def issue_staff_tokens(staff_id: int, session_start: int | None = None) -> dict:
+    """Пара staff-токенов. session_start переносится при обновлении — потолок сессии общий."""
+    started = int(time.time()) if session_start is None else session_start
+    refresh = StaffRefreshToken()
+    refresh[STAFF_ID_CLAIM] = staff_id
+    refresh[SESSION_START_CLAIM] = started
+    return {
+        "access": str(refresh.access_token),
+        "refresh": str(refresh),
+        "access_expires_in": settings.STAFF_JWT_ACCESS_MINUTES * 60,
+        "session_expires_at": started + settings.STAFF_JWT_SESSION_MAX_HOURS * 3600,
+    }

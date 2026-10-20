@@ -14,8 +14,6 @@ from rest_framework_simplejwt.tokens import AccessToken
 logger = logging.getLogger(__name__)
 
 
-
-
 def get_refresh_url():
     """
     Формирует URL для обновления токена на основе MAIN_IP из настроек.
@@ -126,3 +124,46 @@ class JWTAuthMiddleware:
 
 def JWTAuthMiddlewareStack(inner):
     return JWTAuthMiddleware(inner)
+
+
+class StaffActivityMiddleware:
+    """Цифровая явка по действиям пользователя, привязанного к Staff.user.
+
+    Считаются только действия человека: изменяющие запросы и страницы админки.
+    (POST /api/activity/heartbeat/), который фронт шлёт только при реальном вводе.
+
+    request.user читается после ответа: DRF аутентифицирует JWT внутри view и
+    проставляет пользователя в исходный HttpRequest.
+
+    Args:
+        get_response (Callable[[HttpRequest], HttpResponse]): Функция получения
+            следующего middleware или view в цепочке Django.
+
+    Returns:
+        HttpResponse: HTTP-ответ, возвращенный нижележащими слоями.
+
+    Raises:
+        Exception: Исключения, возникающие при выполнении `get_response`, пробрасываются
+            дальше. Ошибки сервиса `touch_activity` перехватываются и логируются внутри метода.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        user = getattr(request, "user", None)
+        if user is None or not user.is_authenticated or response.status_code >= 400:
+            return response
+        if not hasattr(user, "pk"):
+            return response
+        user_action = request.method not in ("GET", "HEAD", "OPTIONS")
+        if not (user_action or request.path.startswith("/admin/")):
+            return response
+        from monitoring_app.services.attendance_day import touch_activity
+
+        try:
+            touch_activity(user, "admin" if request.path.startswith("/admin/") else "web")
+        except Exception:
+            logger.exception("touch_activity failed user_id=%s", user.pk)
+        return response

@@ -1,7 +1,9 @@
 from django.urls import path, re_path
 from django.views.generic import RedirectView
+from rest_framework_simplejwt.views import TokenBlacklistView
 
 from monitoring_app import custom_jwt, face_lab_tts, views
+from monitoring_app.activity_api import activity_heartbeat, activity_ingest
 from monitoring_app.department_navigation_api import department_navigation
 from monitoring_app.import_api import data_import, import_status
 from monitoring_app.password_reset_api import password_reset_confirm, password_reset_request
@@ -163,6 +165,7 @@ urlpatterns = [
         "api/token/verify/",
         custom_jwt.CustomTokenVerifyView.as_view(),
     ),
+    path("api/token/blacklist/", TokenBlacklistView.as_view(), name="token_blacklist"),
     path("api/user/register/", views.user_register, name="userRegister"),
     path(
         "password-reset/",
@@ -171,9 +174,14 @@ urlpatterns = [
     ),
     path(
         "password-reset/<str:token>/",
-        RedirectView.as_view(url="/app/password-reset/%(token)s", permanent=True),
+        RedirectView.as_view(pattern_name="spa_password_reset", permanent=True),
         name="password_reset_confirm",
     ),
+    path("api/activity/heartbeat/", activity_heartbeat, name="activity-heartbeat"),
+    path("api/activity/", activity_ingest, name="activity-ingest"),
+    path("api/staff-auth/login/", views.staff_login, name="staff-login"),
+    path("api/staff-auth/refresh/", views.staff_refresh, name="staff-refresh"),
+    path("api/staff-auth/logout/", views.staff_logout, name="staff-logout"),
     path("api/password-reset/", password_reset_request, name="api_password_reset"),
     path(
         "api/password-reset/<str:token>/",
@@ -231,5 +239,6 @@ urlpatterns = [
 urlpatterns += doc_urls
 
 urlpatterns += [
+    path("app/password-reset/<str:token>", views.react_app, name="spa_password_reset"),
     re_path(r"^app/.*$", views.react_app, name="react_app"),
 ]

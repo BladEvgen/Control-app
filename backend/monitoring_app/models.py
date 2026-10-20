@@ -1,21 +1,20 @@
+import logging
 import os
 import shutil
 import uuid
-from contextlib import AbstractContextManager
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, cast
 
 from django.conf import settings
-from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.core.validators import FileExtensionValidator
-from django.db import models, transaction
+from django.core.validators import FileExtensionValidator, MaxValueValidator, MinValueValidator
+from django.db import models
 from django.db.models import Exists, OuterRef, Q
 from django.db.models.fields.files import FieldFile
-from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django.utils import timezone
 from django.utils.crypto import get_random_string
@@ -24,21 +23,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 User = get_user_model()
 
-
-class AtomicBlock(AbstractContextManager[None]):
-    def __init__(self) -> None:
-        self._context = transaction.atomic()
-
-    def __enter__(self) -> None:
-        self._context.__enter__()
-        return None
-
-    def __exit__(self, exc_type, exc_value, traceback) -> bool | None:
-        return self._context.__exit__(exc_type, exc_value, traceback)
-
-
-def atomic_block() -> AtomicBlock:
-    return AtomicBlock()
+logger = logging.getLogger(__name__)
 
 
 def boolean_field(default_value: bool, **kwargs: Any) -> models.BooleanField:
@@ -225,10 +210,6 @@ class ParentDepartment(models.Model):
     def __str__(self) -> str:
         return str(self.name)
 
-    @classmethod
-    def len_parent_departments(cls) -> int:
-        return cls.objects.count()
-
     class Meta:
         verbose_name = "Родительский отдел"
         verbose_name_plural = "Родительские отделы"
@@ -253,10 +234,6 @@ class ChildDepartment(models.Model):
 
     def __str__(self) -> str:
         return str(self.name)
-
-    @classmethod
-    def len_child_departments(cls) -> int:
-        return cls.objects.count()
 
     def save(self, *args, **kwargs):
         if not self.id:
@@ -351,6 +328,7 @@ class Staff(models.Model):
     if TYPE_CHECKING:
         id: int
         department_id: Optional[str]
+        user_id: Optional[int]
 
     pin = models.CharField(
         max_length=100,
@@ -365,6 +343,19 @@ class Staff(models.Model):
     department = models.ForeignKey(
         ChildDepartment, on_delete=models.SET_NULL, null=True, verbose_name="Отдел"
     )
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="staff_profile",
+        verbose_name="Учётная запись в системе",
+        help_text=(
+            "Для дистанционщиков: работа в системе под этой учётной записью "
+            "засчитывается как подтверждённое удалённое время (без кнопок и отчётов). "
+            "Заполняется автоматически, если ФИО учётной записи однозначно совпадает."
+        ),
+    )
     date_of_creation = models.DateTimeField(
         default=timezone.now, editable=False, verbose_name="Дата добавления"
     )
@@ -377,7 +368,6 @@ class Staff(models.Model):
         verbose_name="Фото Пользователя",
         validators=[FileExtensionValidator(allowed_extensions=["jpg", "jpeg", "png"])],
     )
-    needs_training = boolean_field(True, verbose_name="Требуется обучение модели распознавания лиц")
     FACE_PROFILE_STATE_READY = "ready"
     FACE_PROFILE_STATE_WEAK_GALLERY = "weak_gallery"
     FACE_PROFILE_STATE_BOOTSTRAP_REQUIRED = "bootstrap_required"
@@ -430,7 +420,7 @@ class Staff(models.Model):
                     if os.path.exists(old_avatar_path):
                         os.remove(old_avatar_path)
                 except Exception as e:
-                    print(f"Ошибка при удалении старой аватарки: {e}")
+                    logger.warning("Ошибка при удалении старой аватарки: %s", e)
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -443,7 +433,7 @@ class Staff(models.Model):
                     try:
                         shutil.rmtree(avatar_dir)
                     except Exception as e:
-                        print(f"Ошибка при удалении директории с аватаркой: {e}")
+                        logger.warning("Ошибка при удалении директории с аватаркой: %s", e)
         return super().delete(*args, **kwargs)
 
     class Meta:
@@ -468,11 +458,11 @@ def delete_avatar_on_staff_delete(sender, instance, **kwargs):
                 try:
                     shutil.rmtree(avatar_dir)
                 except Exception as e:
-                    print(
-                        f"Ошибка при удалении директории с аватаркой после удаления сотрудника: {e}"
+                    logger.warning(
+                        "Ошибка при удалении директории с аватаркой после удаления сотрудника: %s",
+                        e,
                     )
             return
-    print("Аватар отсутствует, ничего не удаляется.")
 
 
 def staff_face_sample_upload_to(instance: models.Model, filename: str) -> str:
@@ -638,6 +628,9 @@ class AbsentReason(models.Model):
 
 
 class RemoteWork(models.Model):
+    if TYPE_CHECKING:
+        staff_id: int
+
     staff = models.ForeignKey(
         Staff,
         on_delete=models.CASCADE,
@@ -647,6 +640,21 @@ class RemoteWork(models.Model):
     start_date = models.DateField(verbose_name="Дата начала", null=True, blank=True)
     end_date = models.DateField(verbose_name="Дата окончания", null=True, blank=True)
     permanent_remote = boolean_field(False, verbose_name="Постоянная дистанционная работа")
+    credit_percent = models.PositiveSmallIntegerField(
+        default=100,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        verbose_name="Зачёт без подтверждения СКУД, % нормы",
+        help_text=(
+            "Сколько процентов дневной нормы засчитывать за работу из дома, которую "
+            "терминалы не видят. Время, отмеченное терминалами, засчитывается всегда; "
+            "удалённо добирается только недостающее до нормы, но не больше этой доли."
+        ),
+    )
+
+    def covers(self, day: date) -> bool:
+        if self.permanent_remote:
+            return True
+        return bool(self.start_date and self.end_date and self.start_date <= day <= self.end_date)
 
     def clean(self):
         if self.start_date and self.end_date and self.start_date > self.end_date:
@@ -671,6 +679,29 @@ class RemoteWork(models.Model):
         ]
         verbose_name = "Дистанционная работа"
         verbose_name_plural = "Дистанционная работа"
+
+
+class RemoteActivityDay(models.Model):
+    """Цифровая явка: интервалы работы сотрудника в системе за календарный день.
+
+    Пишется middleware автоматически. Запросы с разрывом ≤ ACTIVITY_SESSION_GAP
+    продлевают текущий интервал, больший разрыв открывает новый.
+    """
+
+    staff = models.ForeignKey(
+        Staff, on_delete=models.CASCADE, related_name="activity_days", verbose_name="Сотрудник"
+    )
+    day = models.DateField(verbose_name="День")
+    intervals = models.JSONField(default=list, verbose_name="Интервалы активности (ISO)")
+    active_seconds = models.PositiveIntegerField(default=0, verbose_name="Активность, сек")
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["staff", "day"], name="uniq_activity_day")]
+        verbose_name = "Активность в системе"
+        verbose_name_plural = "Активность в системе"
+
+    def __str__(self):
+        return f"{self.staff} — {self.day}: {self.active_seconds // 60} мин"
 
 
 class AttendanceSettings(models.Model):
@@ -1016,10 +1047,6 @@ class LessonAttendance(models.Model, GeoItem):
                 return f"{settings.MEDIA_URL.rstrip('/')}/{media_tail.lstrip('/')}"
         return "/static/media/images/no-avatar.png"
 
-    def is_photo_expired(self):
-        lesson_date = cast(date, self.date_at)
-        return (timezone.now().date() - lesson_date).days > 31
-
     @property
     def geomap_longitude(self):
         return str(self.longitude)
@@ -1188,107 +1215,6 @@ class ClassLocation(models.Model, GeoItem):
     @property
     def geomap_longitude(self):
         return str(self.longitude)
-
-
-class Salary(models.Model):
-    CONTRACT_TYPE_CHOICES = [
-        ("full_time", "Полная занятость"),
-        ("part_time", "Частичная занятость"),
-        ("gph", "ГПХ"),
-    ]
-    staff = models.ForeignKey(
-        Staff,
-        on_delete=models.CASCADE,
-        related_name="salaries",
-        verbose_name="Сотрудник",
-    )
-
-    net_salary = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        blank=False,
-        null=False,
-        verbose_name="Чистая зарплата",
-    )
-    total_salary = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        blank=True,
-        null=True,
-        editable=False,
-        verbose_name="Итоговая зарплата",
-    )
-    contract_type = models.CharField(
-        max_length=20,
-        choices=CONTRACT_TYPE_CHOICES,
-        default="full_time",
-        verbose_name="Тип контракта",
-    )
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["staff"]),
-            models.Index(fields=["contract_type"]),
-        ]
-        verbose_name = "Зарплата"
-        verbose_name_plural = "Зарплаты"
-
-    def clean(self):
-        total_rate = sum(position.rate for position in Position.objects.filter(staff=self.staff))
-        if total_rate > 1.5:
-            raise ValidationError(
-                "Суммарная ставка не может превышать 1.5. Пожалуйста, измените ставки должностей."
-            )
-
-    @staticmethod
-    def calculate_total_salary(net_salary, rate):
-        return net_salary * rate
-
-    def calculate_salaries(self):
-        self.clean()
-        total_rate = sum(position.rate for position in Position.objects.filter(staff=self.staff))
-        self.total_salary = self.calculate_total_salary(self.net_salary, total_rate)
-
-    def save(self, *args, **kwargs):
-        try:
-            with atomic_block():
-                self.calculate_salaries()
-                super().save(*args, **kwargs)
-        except ValidationError:
-            request_context = getattr(self, "request_context", None)
-            if request_context:
-                messages.error(
-                    request_context,
-                    "Суммарная ставка не может превышать 1.5. Изменения не сохранены.",
-                )
-            previous_instance = Salary.objects.get(pk=self.pk)
-            self.total_salary = previous_instance.total_salary
-
-
-@receiver(pre_save, sender=Salary)
-def calculate_salaries(sender, instance, **kwargs):
-    _ = sender
-    instance.calculate_salaries()
-
-
-@receiver(m2m_changed, sender=Staff.positions.through)
-def update_salary_on_position_change(sender, instance, action, **kwargs):
-    _ = sender
-    if action in ["post_add", "post_remove", "post_clear"]:
-        for salary in instance.salaries.all():
-            try:
-                with atomic_block():
-                    salary.calculate_salaries()
-                    salary.save(update_fields=["total_salary"])
-            except ValidationError:
-                request_context = getattr(salary, "request_context", None)
-                if request_context:
-                    messages.error(
-                        request_context,
-                        "Суммарная ставка не может превышать 1.5. Изменения не сохранены.",
-                    )
-                previous_instance = Salary.objects.get(pk=salary.pk)
-                salary.total_salary = previous_instance.total_salary
 
 
 class PublicHoliday(models.Model):
