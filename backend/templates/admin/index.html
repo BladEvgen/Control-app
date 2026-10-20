@@ -1,0 +1,14 @@
+{% extends "admin/index.html" %}
+{% load unfold %}
+
+{% block content %}
+    <div class="grid gap-4 mb-8 grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
+        {% for kpi in kpis %}
+            {% component "unfold/components/card.html" with href=kpi.href icon=kpi.icon %}
+                <p class="text-sm text-font-default-light dark:text-font-default-dark">{{ kpi.title }}</p>
+                <p class="font-semibold text-2xl text-font-important-light dark:text-font-important-dark">{{ kpi.value }}</p>
+            {% endcomponent %}
+        {% endfor %}
+    </div>
+    {{ block.super }}
+{% endblock %}

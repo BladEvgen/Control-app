@@ -1,114 +1,117 @@
+"""Unfold admin: sidebar navigation and the index-page dashboard (settings.UNFOLD)."""
+
+from django.apps import apps
 from django.urls import reverse
-from django.utils.translation import gettext_lazy as _
-from grappelli.dashboard import Dashboard, modules
-from grappelli.dashboard.utils import get_admin_site_name
+from django.utils import timezone
+
+ADMIN_MODEL_GROUPS = (
+    (
+        "Посещаемость и локации",
+        (
+            ("attendancesettings", "tune"),
+            ("staffattendance", "door_front"),
+            ("lessonattendance", "photo_camera"),
+            ("classlocation", "location_on"),
+            ("publicholiday", "event"),
+        ),
+    ),
+    (
+        "Персонал и отделы",
+        (
+            ("staff", "badge"),
+            ("position", "work"),
+            ("stafffacemask", "face"),
+            ("absentreason", "event_busy"),
+            ("remotework", "home_work"),
+            ("remoteactivityday", "laptop_chromebook"),
+            ("parentdepartment", "corporate_fare"),
+            ("childdepartment", "account_tree"),
+        ),
+    ),
+    (
+        "Авторизация и настройки",
+        (
+            ("passwordresettoken", "password"),
+            ("passwordresetrequestlog", "history"),
+            ("apikey", "key"),
+            ("userprofile", "manage_accounts"),
+            ("filecategory", "folder"),
+            ("performancebonusrule", "military_tech"),
+        ),
+    ),
+)
 
 
-class CustomIndexDashboard(Dashboard):
-    """Дашборд главной страницы админки с моделями и ссылками."""
+def _changelist(model_name: str) -> str:
+    return reverse(f"monitoring_admin:monitoring_app_{model_name}_changelist")
 
-    def init_with_context(self, context):
-        site_name = get_admin_site_name(context)
-        assert self.children is not None
 
-        self.children.append(
-            modules.LinkList(
-                _("Быстрые ссылки"),
-                column=1,
-                collapsible=False,
-                children=[
-                    [_("На главную"), "/"],
-                    [_("Сменить пароль"), reverse("%s:password_change" % site_name)],
-                    [_("Выйти"), reverse("%s:logout" % site_name)],
-                ],
-            )
-        )
+def sidebar_navigation(request):
+    """Groups for UNFOLD["SIDEBAR"]["navigation"]; links the user cannot open are hidden."""
+    _ = request
+    return [
+        {
+            "title": title,
+            "collapsible": True,
+            "items": [
+                {
+                    "title": apps.get_model("monitoring_app", model)._meta.verbose_name_plural,
+                    "icon": icon,
+                    "link": _changelist(model),
+                    "permission": lambda req, m=model: req.user.has_perm(
+                        f"monitoring_app.view_{m}"
+                    ),
+                }
+                for model, icon in items
+            ],
+        }
+        for title, items in ADMIN_MODEL_GROUPS
+    ]
 
-        self.children.append(
-            modules.ModelList(
-                _("Посещаемость и локации"),
-                column=1,
-                collapsible=True,
-                models=(
-                    "monitoring_app.models.AttendanceSettings",
-                    "monitoring_app.models.StaffAttendance",
-                    "monitoring_app.models.LessonAttendance",
-                    "monitoring_app.models.ClassLocation",
-                    "monitoring_app.models.PublicHoliday",
-                ),
-            )
-        )
 
-        self.children.append(
-            modules.ModelList(
-                _("Персонал и отделы"),
-                column=1,
-                collapsible=True,
-                models=(
-                    "monitoring_app.models.Staff",
-                    "monitoring_app.models.Position",
-                    "monitoring_app.models.StaffFaceMask",
-                    "monitoring_app.models.Salary",
-                    "monitoring_app.models.AbsentReason",
-                    "monitoring_app.models.RemoteWork",
-                    "monitoring_app.models.ParentDepartment",
-                    "monitoring_app.models.ChildDepartment",
-                ),
-            )
-        )
+def dashboard_callback(request, context):
+    """KPI cards for templates/admin/index.html. Each figure is one indexed COUNT."""
+    from monitoring_app import models
+    from monitoring_app.services import attendance_day
 
-        self.children.append(
-            modules.ModelList(
-                _("Авторизация и настройки"),
-                column=1,
-                collapsible=True,
-                models=(
-                    "monitoring_app.models.PasswordResetToken",
-                    "monitoring_app.models.PasswordResetRequestLog",
-                    "monitoring_app.models.APIKey",
-                    "monitoring_app.models.UserProfile",
-                    "monitoring_app.models.FileCategory",
-                    "monitoring_app.models.PerformanceBonusRule",
-                ),
-            )
-        )
-
-        self.children.append(
-            modules.AppList(
-                _("Администрирование"),
-                column=1,
-                collapsible=True,
-                models=("django.contrib.*",),
-            )
-        )
-
-        self.children.append(
-            modules.RecentActions(
-                _("Последние действия"),
-                limit=10,
-                column=2,
-                collapsible=False,
-            )
-        )
-
-        self.children.append(
-            modules.LinkList(
-                _("Ссылки"),
-                column=2,
-                collapsible=True,
-                children=[
-                    {
-                        "title": _("Django документация"),
-                        "url": "https://docs.djangoproject.com/",
-                        "external": True,
-                        "target": "_blank",
-                    },
-                    {
-                        "title": _("Grappelli документация"),
-                        "url": "https://django-grappelli.readthedocs.io/",
-                        "external": True,
-                        "target": "_blank",
-                    },
-                ],
-            )
-        )
+    _ = request
+    today = timezone.localdate()
+    la = models.LessonAttendance.objects.filter(date_at=today)
+    context["kpis"] = [
+        {
+            "title": "Сотрудники",
+            "value": models.Staff.objects.count(),
+            "icon": "badge",
+            "href": _changelist("staff"),
+        },
+        {
+            "title": "Отметки СКУД сегодня",
+            "value": models.StaffAttendance.objects.filter(
+                date_at=attendance_day.sa_date_at(today)
+            ).count(),
+            "icon": "door_front",
+            "href": _changelist("staffattendance"),
+        },
+        {
+            "title": "Отметки занятий сегодня",
+            "value": la.count(),
+            "icon": "photo_camera",
+            "href": _changelist("lessonattendance"),
+        },
+        {
+            "title": "Фото на проверке",
+            "value": la.filter(
+                photo_spoof_status=models.LessonAttendance.PHOTO_SPOOF_STATUS_REVIEW,
+                photo_manual_verdict=models.LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+            ).count(),
+            "icon": "fact_check",
+            "href": _changelist("lessonattendance"),
+        },
+        {
+            "title": "На удалёнке",
+            "value": models.RemoteWork.objects.values("staff").distinct().count(),
+            "icon": "home_work",
+            "href": _changelist("remotework"),
+        },
+    ]
+    return context

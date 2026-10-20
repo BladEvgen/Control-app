@@ -1,51 +1,30 @@
 """Теги шаблона админки для StaffAttendance (группировка строк по date_at)."""
 
 from django import template
-from django.contrib.admin.templatetags.admin_list import (
-    items_for_result,
-    result_headers,
-)
-from django.contrib.admin.templatetags.admin_list import result_list as build_result_list_context
-from django.utils.html import escape
-from django.utils.safestring import mark_safe
+from unfold.templatetags import unfold_list
 
 from monitoring_app.services import attendance_day
 
 register = template.Library()
 
 
-@register.simple_tag
-def staffattendance_grouped_tbody(cl):
-    """Строки таблицы changelist с разделителями по дате выгрузки (date_at)."""
-    headers = list(result_headers(cl))
-    ncol = len(headers)
-    parts: list[str] = []
-    prev_date = object()
-    row_idx = 0
-    for res in cl.result_list:
-        if getattr(res, "date_at", None) != prev_date:
-            prev_date = res.date_at
-            if res.date_at:
-                shift = attendance_day.event_day(res.date_at)
-                label = (
-                    f"Смена {shift.strftime('%d.%m.%Y')} · запись в БД "
-                    f"{res.date_at.strftime('%d.%m.%Y')}"
-                )
-            else:
-                label = "—"
-            parts.append(
-                f'<tr class="staffatt-day-divider grp-row">'
-                f'<td colspan="{ncol}" class="staffatt-day-divider__cell">'
-                f"{escape(label)}</td></tr>"
-            )
-        cells = items_for_result(cl, res, None)
-        parity = "grp-row-even" if row_idx % 2 == 0 else "grp-row-odd"
-        row_idx += 1
-        parts.append(f'<tr class="grp-row {parity}">' + "".join(str(c) for c in cells) + "</tr>")
-    return mark_safe("".join(parts))
+def _day_label(date_at) -> str:
+    if not date_at:
+        return "—"
+    shift = attendance_day.event_day(date_at)
+    return f"Смена {shift:%d.%m.%Y} · запись в БД {date_at:%d.%m.%Y}"
 
 
-@register.inclusion_tag("admin/monitoring_app/staffattendance/change_list_results_grouped.html")
-def staffattendance_grouped_result_list(cl):
-    """Таблица changelist как у Django admin, но tbody с группами по date_at."""
-    return build_result_list_context(cl)
+@register.inclusion_tag(
+    "admin/monitoring_app/staffattendance/change_list_results_grouped.html", takes_context=True
+)
+def staffattendance_grouped_result_list(context, cl):
+    """Таблица changelist unfold с разделителем перед каждой новой датой выгрузки."""
+    ctx = unfold_list.result_list(context, cl)
+    rows, prev = [], object()
+    for record, row in zip(cl.result_list, ctx["results"]):
+        label = None if record.date_at == prev else _day_label(record.date_at)
+        prev = record.date_at
+        rows.append((label, row))
+    ctx["grouped_rows"] = rows
+    return ctx

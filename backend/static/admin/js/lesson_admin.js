@@ -116,10 +116,7 @@
 
     panel.append(statsWrap, filtersWrap);
 
-    const target =
-      qs("#grp-changelist") ||
-      qs(".grp-changelist-results") ||
-      table.parentElement;
+    const target = table.parentElement;
     if (!target || !target.parentNode) return;
     target.parentNode.insertBefore(panel, target);
   };

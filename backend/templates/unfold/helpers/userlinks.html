@@ -1,0 +1,53 @@
+{% load unfold %}
+
+<div class="flex flex-row gap-4 items-center ml-auto">
+    {% if environment %}
+        {% include "unfold/helpers/label.html" with text=environment.0 type=environment.1 %}
+    {% endif %}
+
+    {% if has_permission %}
+        <div class="adm-palette" x-data="{ paletteOpen: false }" x-on:keydown.escape.stop.prevent="paletteOpen = false; $refs.paletteTrigger.focus()">
+            <button type="button" class="adm-palette-trigger" x-ref="paletteTrigger" x-on:click="paletteOpen = !paletteOpen; if (paletteOpen) $nextTick(() => $refs.paletteMenu.querySelector('[aria-pressed=true]').focus())" x-bind:aria-expanded="paletteOpen" aria-controls="admin-palette-menu">
+                <span class="material-symbols-outlined" aria-hidden="true">palette</span>
+                Палитра
+                <span class="material-symbols-outlined adm-palette-chevron" aria-hidden="true" x-bind:class="{ 'adm-palette-chevron-open': paletteOpen }">expand_more</span>
+            </button>
+            <section id="admin-palette-menu" class="adm-palette-panel" aria-labelledby="admin-palette-title" x-ref="paletteMenu" x-cloak x-show="paletteOpen" x-on:click.outside="paletteOpen = false">
+                <div class="adm-palette-heading">
+                    <div>
+                        <h2 id="admin-palette-title">Цвет интерфейса</h2>
+                        <p>Выберите свой акцент</p>
+                    </div>
+                    <button type="button" class="adm-palette-close" aria-label="Закрыть палитру" x-on:click="paletteOpen = false; $refs.paletteTrigger.focus()">
+                        <span class="material-symbols-outlined" aria-hidden="true">close</span>
+                    </button>
+                </div>
+                <form method="post" action="{{ admin_palette_url }}" class="adm-palette-form">
+                    {% csrf_token %}
+                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                    <div class="adm-palette-grid">
+                        {% for choice in admin_palette_choices %}
+                            <button type="submit" name="palette" value="{{ choice.name }}" class="adm-palette-option" style="{{ choice.style }}" aria-pressed="{{ choice.selected|yesno:'true,false' }}">
+                                <span class="adm-palette-swatch" aria-hidden="true">
+                                    <span></span><span></span><span></span>
+                                    {% if choice.selected %}<span class="adm-palette-check material-symbols-outlined">check</span>{% endif %}
+                                </span>
+                                <span class="adm-palette-name">{{ choice.label }}</span>
+                            </button>
+                        {% endfor %}
+                    </div>
+                    <div class="adm-palette-footer">
+                        <span>Только в этом браузере</span>
+                        <button type="submit" name="palette" value="">Сбросить</button>
+                    </div>
+                </form>
+            </section>
+        </div>
+    {% endif %}
+
+    {% action_list %}
+
+    {% if nav_global_side %}
+        {{ nav_global_side }}
+    {% endif %}
+</div>

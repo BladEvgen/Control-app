@@ -74,7 +74,7 @@
       createElement("span", "sa-kpi-badge sa-kpi-badge--info", `Удалённо: ${remote}`),
     );
 
-    const target = qs("#grp-changelist") || qs(".grp-changelist-results") || table.parentElement;
+    const target = table.parentElement;
     if (!target || !target.parentNode) return;
     target.parentNode.insertBefore(panel, target);
   };

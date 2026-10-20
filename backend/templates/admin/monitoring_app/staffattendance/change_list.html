@@ -13,6 +13,7 @@
         {% endif %}
       </p>
     </div>
+    {% if can_toggle_report_mode %}
     <form class="report-mode__switch" method="post"
           action="{% url 'admin:monitoring_app_staffattendance_toggle_report_mode' %}"
           data-confirm="Сменить источник времени? Отчёты (Excel, карточки сотрудников) будут пересчитаны за весь период — это займёт несколько минут.">
@@ -27,6 +28,7 @@
         {% endif %}
       </div>
     </form>
+    {% endif %}
   </section>
   {{ block.super }}
 {% endblock %}
