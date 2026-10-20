@@ -87,6 +87,19 @@ class DepartmentAttendanceConfirmationPinsModeTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_range_longer_than_a_year_is_rejected(self):
+        params = {"child_department_id": "x", "date_from": "2025-01-01"}
+        ok = self.client.get(
+            self.url, {**params, "date_to": "2026-01-01"}, HTTP_X_STAFF_PINS="S9614S"
+        )
+        too_long = self.client.get(
+            self.url, {**params, "date_to": "2026-01-02"}, HTTP_X_STAFF_PINS="S9614S"
+        )
+
+        self.assertEqual(ok.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(ok.data["results"]), 366)
+        self.assertEqual(too_long.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_pins_mode_cache_is_order_insensitive(self):
         mocked_payload = {
             "date": "2026-03-10",

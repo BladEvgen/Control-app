@@ -26,6 +26,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
 from monitoring_app import models, utils
 
@@ -150,4 +151,6 @@ def password_reset_confirm(request: Request, token: str) -> Response:
     user.set_password(password)
     user.save(update_fields=["password"])
     _live_tokens().filter(user=user).update(_used=True)
+    for outstanding in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=outstanding)
     return Response({"message": "Пароль изменён. Войдите с новым паролем."})

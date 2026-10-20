@@ -174,7 +174,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
 
         await self.accept()
         await self.channel_layer.group_add(self.group_name, self.channel_name)
-        logger.info(f"Client connected and joined group {self.group_name}")
+        logger.info("Client connected and joined group %s", self.group_name)
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
@@ -202,7 +202,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             except asyncio.CancelledError:
                 pass
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
-        logger.info(f"Client disconnected and left group {self.group_name}")
+        logger.info("Client disconnected and left group %s", self.group_name)
 
     async def receive_json(self, content, **kwargs):
         if content.get("type") == "ping":
@@ -239,7 +239,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             self._visible_ids.clear()
 
             await self._send_initial_snapshot()
-            logger.info(f"Client switched to group {self.group_name}")
+            logger.info("Client switched to group %s", self.group_name)
 
     @staticmethod
     def _resolve_event_state(
@@ -826,37 +826,6 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             if len(chunk) == 1:
                 event_payload["attendance_id"] = chunk[0]
             await self.channel_layer.group_send(self.group_name, event_payload)
-
-    @sync_to_async
-    def get_photo_data(self, attendance_id):
-        try:
-            record = (
-                models.LessonAttendance.objects.select_related("staff__department")
-                .only(
-                    "id",
-                    "first_in",
-                    "staff_image_path",
-                    "tutor",
-                    "tutor_id",
-                    "subject_name",
-                    "photo_spoof_status",
-                    "photo_spoof_score",
-                    "photo_spoof_tags",
-                    "photo_spoof_checked_at",
-                    "photo_spoof_model_version",
-                    "photo_trust_confirmed",
-                    "photo_manual_verdict",
-                    "staff__pin",
-                    "staff__surname",
-                    "staff__name",
-                    "staff__department__name",
-                )
-                .get(id=attendance_id)
-            )
-            return self._record_to_photo_payload(record)
-        except models.LessonAttendance.DoesNotExist:
-            logger.error("LessonAttendance with id %s does not exist", attendance_id)
-            return None
 
     @sync_to_async
     def get_photo_data_bulk(self, attendance_ids):

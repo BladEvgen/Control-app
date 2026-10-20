@@ -101,10 +101,6 @@ class DynamicSchemeGenerator(OpenAPISchemaGenerator):
         return schema
 
 
-
-
-
-
 class SchemaViewCache:
     """Кэш для schema view, используется для избежания циклических импортов."""
 

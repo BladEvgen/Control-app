@@ -4,7 +4,6 @@ from django.contrib import admin
 from django.urls import include, path
 
 urlpatterns = [
-    path("grappelli/", include("grappelli.urls")),
     path("api-auth/", include("rest_framework.urls", namespace="rest_framework")),
     path("admin/", admin.site.urls),
     path("", include("monitoring_app.urls")),
@@ -13,4 +12,3 @@ urlpatterns = [
 
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-    urlpatterns += static(settings.AUGMENT_URL, document_root=settings.MEDIA_ROOT / "user_images")

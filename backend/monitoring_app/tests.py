@@ -45,6 +45,7 @@ from monitoring_app.consumers import (
     PhotoConsumer,
 )
 from monitoring_app.models import (
+    AbsentReason,
     APIKey,
     ChildDepartment,
     ClassLocation,
@@ -65,8 +66,7 @@ else:
 
 class FaceRecognitionRuntimeScoringTest(SimpleTestCase):
     @override_settings(
-        FACE_RECOGNITION_THRESHOLD=0.90,
-        FACE_RECOGNITION_THRESHOLD_RELAXED=0.70,
+        FACE_RECOGNITION_THRESHOLD=0.70,
         FACE_RECOGNITION_MIN_NEIGHBOR_GAP=0.055,
     )
     def test_neighbor_gap_uses_nearest_other_staff_not_same_staff_proto(self):
@@ -94,6 +94,25 @@ class FaceRecognitionRuntimeScoringTest(SimpleTestCase):
         self.assertEqual(recognized, [])
         self.assertEqual(len(unknown), 1)
         self.assertAlmostEqual(unknown[0]["neighbor_gap"], 0.03, places=6)
+
+    def test_probe_loader_caps_phone_photos_and_keeps_small_ones(self):
+        import cv2
+
+        for h, w, expect in ((3000, 4000, (960, 1280)), (600, 800, (600, 800))):
+            _, jpg = cv2.imencode(".jpg", np.zeros((h, w, 3), np.uint8))
+            img = ml.load_image_from_memory(SimpleUploadedFile("p.jpg", jpg.tobytes()))
+            self.assertEqual(img.shape[:2], expect)
+
+    @override_settings(FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN=0.008)
+    def test_recognize_ignores_tiny_detector_fragments(self):
+        fragment = SimpleNamespace(bbox=np.asarray([0, 0, 5, 5]), embedding=np.ones(4))
+        with (
+            patch.object(ml, "load_face_engine"),
+            patch.object(ml, "load_image_from_memory", return_value=np.zeros((1000, 1000, 3))),
+            patch.object(ml, "detect_faces", return_value=[fragment]),
+        ):
+            with self.assertRaisesMessage(ml.ValidationError, "Лица не найдены"):
+                ml.recognize_faces_in_image(object())
 
 
 class RemoteWorkAdminTest(TestCase):
@@ -144,8 +163,6 @@ class StaffDetailTest(TestCase):
         start_date = datetime(2023, 1, 1).date()
         end_date = datetime(2023, 1, 31).date()
         detail = get_staff_detail(self.staff, start_date, end_date)
-        self.assertIn("contract_type", detail)
-        self.assertIn("salary", detail)
         self.assertIn("lesson_attendance_audit", detail)
         self.assertIsInstance(detail["lesson_attendance_audit"], dict)
 
@@ -310,6 +327,31 @@ class StaffDetailTest(TestCase):
         self.assertEqual(day["turnstile_missing"], "out")
         self.assertEqual(day["percent_day"], 0)
         self.assertIsNone(detail["attendance"]["17-01-2023"]["turnstile_missing"])
+        full_percent = detail["attendance"]["17-01-2023"]["percent_day"]
+        self.assertAlmostEqual(detail["percent_for_period"], full_percent / 2, places=1)
+
+    def test_unconfirmed_absence_is_zero_day_without_extra_penalty(self):
+        full_day = timezone.make_aware(datetime(2023, 1, 17, 9, 0))
+        absent_day = full_day.date() + timedelta(days=1)
+        StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=full_day.date() + timedelta(days=1),
+            first_in=full_day,
+            last_out=full_day + timedelta(hours=8),
+            effective_work_seconds=8 * 3600,
+        )
+        AbsentReason.objects.create(
+            staff=self.staff,
+            reason="other",
+            start_date=absent_day,
+            end_date=absent_day,
+            approved=False,
+        )
+
+        detail = get_staff_detail(
+            self.staff, datetime(2023, 1, 1).date(), datetime(2023, 1, 31).date()
+        )
+
         full_percent = detail["attendance"]["17-01-2023"]["percent_day"]
         self.assertAlmostEqual(detail["percent_for_period"], full_percent / 2, places=1)
 
@@ -509,6 +551,74 @@ class LessonTaskStatusTest(APITestCase):
             self.assertIn("message", response.data)
 
 
+class LessonAttendanceBatchTaskTest(TestCase):
+    def test_matches_staff_pin_case_insensitively(self):
+        staff = Staff.objects.create(pin="S27932S", name="Test", surname="Staff")
+        first_in = timezone.now()
+
+        result = monitoring_tasks.process_lesson_attendance_batch(
+            [
+                {
+                    "staff_pin": "s27932s",
+                    "subject_name": "Subject",
+                    "tutor_id": 1067,
+                    "tutor": "Tutor",
+                    "first_in": first_in,
+                    "latitude": 43.2,
+                    "longitude": 76.8,
+                }
+            ],
+            None,
+            None,
+        )
+
+        self.assertEqual(result["error_records"], [])
+        self.assertEqual(LessonAttendance.objects.get().staff, staff)
+
+    def test_uses_local_first_in_date(self):
+        staff = Staff.objects.create(pin="S38234S", name="Test", surname="Staff")
+
+        monitoring_tasks.process_lesson_attendance_batch(
+            [
+                {
+                    "staff_pin": staff.pin,
+                    "subject_name": None,
+                    "tutor_id": 185,
+                    "tutor": "Tutor",
+                    "first_in": "2026-10-16T03:00:41+05:00",
+                    "latitude": 43.2,
+                    "longitude": 76.8,
+                }
+            ],
+            None,
+            None,
+        )
+
+        self.assertEqual(LessonAttendance.objects.get().date_at, date(2026, 10, 16))
+
+    def test_logs_recovery_record_without_photo_on_failure(self):
+        first_in = timezone.make_aware(datetime(2026, 10, 20, 9, 15))
+        record = {
+            "staff_pin": "s404s",
+            "subject_name": "Физиология",
+            "tutor_id": 1067,
+            "tutor": "Иванов И. И.",
+            "first_in": first_in,
+            "latitude": 43.2389,
+            "longitude": 76.8897,
+        }
+
+        with self.assertLogs("monitoring_app.tasks", level="WARNING") as captured:
+            monitoring_tasks.process_lesson_attendance_batch(
+                [record], None, b"photo-must-not-be-logged"
+            )
+
+        recovery_log = next(line for line in captured.output if "recovery_record=" in line)
+        recovery_record = json.loads(recovery_log.split("recovery_record=", 1)[1])
+        self.assertEqual(recovery_record, {**record, "first_in": str(first_in)})
+        self.assertNotIn("photo-must-not-be-logged", recovery_log)
+
+
 class LessonAttendanceAutoCloseTaskTest(TestCase):
     def setUp(self):
         self.staff = Staff.objects.create(
@@ -613,6 +723,307 @@ class LessonAttendanceAutoCloseTaskTest(TestCase):
         lesson.refresh_from_db()
         self.assertIsNone(lesson.last_out)
 
+    def test_update_lesson_attendance_last_out_closes_every_batch(self):
+        first_in = timezone.make_aware(
+            datetime.combine(timezone.localdate() - timedelta(days=1), datetime.min.time())
+        ).replace(hour=10)
+        LessonAttendance.objects.bulk_create(
+            LessonAttendance(
+                staff=self.staff,
+                subject_name="Duty",
+                tutor_id=1,
+                tutor="Tutor",
+                first_in=first_in,
+                latitude=43.2389,
+                longitude=76.8897,
+                date_at=first_in.date(),
+            )
+            for _ in range(2500)
+        )
+
+        monitoring_tasks.update_lesson_attendance_last_out()
+
+        self.assertFalse(LessonAttendance.objects.filter(last_out__isnull=True).exists())
+
+
+class RemoteWorkCreditTest(TestCase):
+    """Удалёнка: время СКУД — как есть, недостающее до нормы — зачёт без подтверждения."""
+
+    def setUp(self):
+        Cache.clear()
+        self.staff = Staff.objects.create(pin="T0001T", name="И. И.", surname="Иванов")
+
+    def _office(self, day, hours):
+        first_in = timezone.make_aware(datetime.combine(day, datetime.min.time())).replace(hour=9)
+        StaffAttendance.objects.create(
+            staff=self.staff,
+            date_at=day + timedelta(days=1),
+            first_in=first_in,
+            last_out=first_in + timedelta(hours=hours),
+            effective_work_seconds=hours * 3600,
+        )
+
+    def test_half_day_in_office_rest_from_home(self):
+        RemoteWork.objects.create(staff=self.staff, permanent_remote=True)
+        self._office(date(2026, 3, 10), 4)
+
+        detail = get_staff_detail(self.staff, date(2026, 3, 10), date(2026, 3, 11))
+
+        came, stayed_home = detail["attendance"]["10-03-2026"], detail["attendance"]["11-03-2026"]
+        self.assertEqual(
+            (came["total_minutes"], came["remote_credited_minutes"], came["percent_day"]),
+            (240, 240, 100),
+        )
+
+        self.assertEqual(
+            (stayed_home["total_minutes"], stayed_home["remote_credited_minutes"]), (0, 480)
+        )
+
+    def test_credit_share_caps_unverified_time(self):
+        RemoteWork.objects.create(staff=self.staff, permanent_remote=True, credit_percent=50)
+
+        detail = get_staff_detail(self.staff, date(2026, 3, 11), date(2026, 3, 11))
+
+        self.assertEqual(detail["attendance"]["11-03-2026"]["percent_day"], 50)
+
+    def _digital(self, day, *spans):
+        from monitoring_app.models import RemoteActivityDay
+
+        def aware(hour):
+            return timezone.make_aware(datetime.combine(day, datetime.min.time())).replace(
+                hour=hour
+            )
+
+        RemoteActivityDay.objects.create(
+            staff=self.staff,
+            day=day,
+            intervals=[[aware(a).isoformat(), aware(b).isoformat()] for a, b in spans],
+        )
+
+    def test_sunday_work_from_home_counts_without_any_button(self):
+        RemoteWork.objects.create(staff=self.staff, permanent_remote=True)
+        self._digital(date(2026, 3, 15), (10, 12))
+
+        day = get_staff_detail(self.staff, date(2026, 3, 15), date(2026, 3, 15))["attendance"][
+            "15-03-2026"
+        ]
+
+        self.assertEqual((day["is_weekend"], day["remote_activity_minutes"]), (True, 120))
+        self.assertEqual(day["total_minutes"], 120)
+
+    def test_weekday_office_plus_home_not_double_counted(self):
+        RemoteWork.objects.create(staff=self.staff, permanent_remote=True)
+        self._office(date(2026, 3, 10), 4)
+        self._digital(date(2026, 3, 10), (10, 11), (14, 16))
+
+        day = get_staff_detail(self.staff, date(2026, 3, 10), date(2026, 3, 10))["attendance"][
+            "10-03-2026"
+        ]
+
+        self.assertEqual(
+            (day["total_minutes"], day["remote_activity_minutes"], day["remote_credited_minutes"]),
+            (360, 120, 120),
+        )
+
+    def test_activity_sessions_merge_short_gaps(self):
+        from monitoring_app.models import RemoteActivityDay
+        from monitoring_app.services.attendance_day import record_activity
+
+        start = timezone.make_aware(datetime(2026, 3, 10, 10))
+        for minutes in (0, 5, 10, 40):
+            record_activity(self.staff.id, start + timedelta(minutes=minutes))
+
+        row = RemoteActivityDay.objects.get(staff=self.staff)
+        self.assertEqual((len(row.intervals), row.active_seconds), (2, 600))
+
+    def test_middleware_records_linked_user(self):
+        from monitoring_app.models import RemoteActivityDay
+
+        user = User.objects.create_user("ivanov", password="pass12345")
+        self.staff.user = user
+        self.staff.save(update_fields=["user"])
+        Cache.clear()
+        self.client.force_login(user)
+
+        self.client.get("/api/app-version/")
+        self.assertFalse(RemoteActivityDay.objects.filter(staff=self.staff).exists())
+
+        self.assertEqual(self.client.post("/api/activity/heartbeat/").status_code, 204)
+        self.assertTrue(RemoteActivityDay.objects.filter(staff=self.staff).exists())
+
+    def test_excel_remote_day_without_presence_shows_credit(self):
+        RemoteWork.objects.create(staff=self.staff, permanent_remote=True)
+
+        rows = utils.collect_attendance_data([self.staff], date(2026, 3, 11), date(2026, 3, 11))
+
+        self.assertIn("Зачтено удалённо: 8 ч 00 мин", rows[0][3])
+
+    def test_sunday_end_to_end_without_manual_link(self):
+        """Иванов И. И. на удалёнке работает в воскресенье: ни кнопок, ни ручной привязки."""
+        from monitoring_app.models import RemoteActivityDay
+
+        RemoteWork.objects.create(staff=self.staff, permanent_remote=True)
+        user = User.objects.create_user(
+            "ivanov", password="pass12345", last_name="Ivanov", first_name="I. I."
+        )
+        self.client.force_login(user)
+        sunday = timezone.make_aware(datetime(2026, 3, 15, 10))
+        for minutes in (0, 10):
+            Cache.delete(f"activity_tick:{user.pk}")
+            with patch(
+                "django.utils.timezone.now", return_value=sunday + timedelta(minutes=minutes)
+            ):
+                self.assertEqual(self.client.post("/api/activity/heartbeat/").status_code, 204)
+
+        self.staff.refresh_from_db()
+        self.assertEqual(self.staff.user_id, user.pk)
+        self.assertEqual(RemoteActivityDay.objects.get(staff=self.staff).active_seconds, 600)
+        day = get_staff_detail(self.staff, date(2026, 3, 15), date(2026, 3, 15))["attendance"][
+            "15-03-2026"
+        ]
+        self.assertEqual((day["is_weekend"], day["remote_activity_minutes"]), (True, 10))
+
+    def test_ambiguous_account_is_not_linked(self):
+        from monitoring_app.services.attendance_day import staff_id_for_user
+
+        twin = Staff.objects.create(pin="T0003T", name="И. И.", surname="Иванов")
+        for person in (self.staff, twin):
+            RemoteWork.objects.create(staff=person, permanent_remote=True)
+        user = User.objects.create_user("ivanov2", last_name="Ivanov", first_name="I. I.")
+
+        self.assertEqual(staff_id_for_user(user), 0)
+
+    def test_kazakh_name_is_linked_by_latin_login(self):
+        from monitoring_app.services.attendance_day import staff_id_for_user
+
+        kazakh = Staff.objects.create(pin="T0004T", name="Ұлан", surname="Несіпбеков")
+        RemoteWork.objects.create(staff=kazakh, permanent_remote=True)
+        user = User.objects.create_user("ulan.nesipbekov")
+
+        self.assertEqual(staff_id_for_user(user), kazakh.id)
+
+    def test_full_office_day_gets_no_credit(self):
+        from monitoring_app.services import attendance_day
+
+        self.assertEqual(attendance_day.remote_credit_minutes(9 * 60, 100), 0)
+        self.assertEqual(attendance_day.remote_credit_minutes(2 * 60, 50), 240)
+
+
+class AdminPagesSmokeTest(TestCase):
+    def test_touched_admin_pages_render(self):
+        user = User.objects.create_superuser("admin-smoke", "a@example.com", "pass12345")
+        self.client.force_login(user)
+        staff = Staff.objects.create(pin="S9100S", name="И. И.", surname="Иванов")
+        StaffAttendance.objects.create(staff=staff, date_at=date(2026, 3, 11))
+        editable = ("apikey", "classlocation", "staff", "remotework", "childdepartment")
+        pages = [
+            "/admin/",
+            "/admin/monitoring_app/staffattendance/",
+            "/admin/monitoring_app/lessonattendance/",
+        ] + [f"/admin/monitoring_app/{m}/{suffix}" for m in editable for suffix in ("", "add/")]
+        statuses = {url: self.client.get(url).status_code for url in pages}
+        self.assertEqual(statuses, dict.fromkeys(pages, 200))
+        index = self.client.get("/admin/").content.decode()
+        self.assertIn("Фото на проверке", index)
+        self.assertIn("Персонал и отделы", index)
+
+
+class AttendanceCacheScopeTest(TestCase):
+    def test_drops_only_keys_touching_changed_staff_day(self):
+        from monitoring_app.cache_conf import (
+            invalidate_attendance_scope,
+            staff_detail_cache_version,
+        )
+
+        Cache.clear()
+        root = ChildDepartment.objects.create(id="ROOT-C", name="Root")
+        dept = ChildDepartment.objects.create(id="LEAF-C", name="Leaf", parent=root)
+        staff = Staff.objects.create(pin="S9001S", name="A", surname="B", department=dept)
+        v = staff_detail_cache_version()
+        keys = {
+            f"staff_detail_{v}_S9001S_2026-03-01_2026-03-31": False,
+            f"staff_detail_{v}_S9001S_2026-04-01_2026-04-30": True,
+            f"staff_detail_{v}_S9002S_2026-03-01_2026-03-31": True,
+            f"staff_detail_{v}_ROOT-C_2026-03-01_2026-03-31": False,
+            f"map_location_{v}_2026-03-10_True": False,
+            f"map_location_{v}_2026-03-11_True": True,
+        }
+        for key in keys:
+            Cache.set(key, 1)
+
+        invalidate_attendance_scope([staff.id], [date(2026, 3, 10)])
+
+        self.assertEqual({key: Cache.get(key) is not None for key in keys}, keys)
+
+
+class AttendanceCacheRedisIndexTest(TestCase):
+    """Точечная инвалидация на Redis читает индекс set_tracked, а не весь keyspace."""
+
+    def test_index_drives_deletion_and_prunes_expired(self):
+        from django.core.cache.backends.redis import RedisCache
+
+        from monitoring_app.cache_conf import (
+            invalidate_attendance_scope,
+            set_tracked,
+            staff_detail_cache_version,
+        )
+
+        redis = RedisCache("redis://127.0.0.1:6379/15", {"KEY_PREFIX": "idx-test"})
+        try:
+            redis.clear()
+        except Exception as exc:
+            self.skipTest(f"Redis недоступен: {exc}")
+        staff = Staff.objects.create(pin="S9300S", name="И. И.", surname="Иванов")
+        v = staff_detail_cache_version()
+        march, april = (
+            f"staff_detail_{v}_S9300S_2026-03-01_2026-03-31",
+            f"staff_detail_{v}_S9300S_2026-04-01_2026-04-30",
+        )
+        set_tracked(march, 1, 60, cache=redis)
+        set_tracked(april, 1, 60, cache=redis)
+        set_tracked(f"map_location_{v}_2026-03-01_x", 1, 60, cache=redis)
+        redis.delete(f"map_location_{v}_2026-03-01_x")
+        redis.set("unrelated_key", 1, 60)
+
+        invalidate_attendance_scope([staff.id], [date(2026, 3, 10)], cache=redis)
+
+        client = cast(Any, redis)._cache.get_client(write=True)
+        self.assertEqual(
+            (redis.get(march), redis.get(april), redis.get("unrelated_key")), (None, 1, 1)
+        )
+        self.assertEqual(
+            client.smembers(redis.make_key("attendance_cache_index")),
+            {redis.make_key(april).encode()},
+        )
+        redis.clear()
+
+
+class DepartmentStatsPaginationTest(APITestCase):
+    def setUp(self):
+        Cache.clear()
+        department = ChildDepartment.objects.create(id="D-PAGES", name="Pages")
+        Staff.objects.create(pin="S7001S", name="A", surname="B", department=department)
+        user = User.objects.create_user(username="pages-api", password="12345")
+        key = APIKey.objects.create(key_name="Pages", created_by=user)
+        self.client.credentials(HTTP_X_API_KEY=key.key)
+
+    def test_requires_auth(self):
+        self.client.credentials()
+        url = "/api/department/stats/D-PAGES/?start_date=2026-03-09&end_date=2026-03-10"
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_pages_slice_one_cached_result(self):
+        url = "/api/department/stats/D-PAGES/?start_date=2026-03-09&end_date=2026-03-10"
+        first = self.client.get(url + "&page_size=1&page=1").json()
+        second = self.client.get(url + "&page_size=1&page=2").json()
+        whole = self.client.get(url).json()
+
+        self.assertEqual((first["count"], second["count"], whole["count"]), (2, 2, 2))
+        self.assertEqual(
+            [*first["results"], *second["results"]],
+            whole["results"],
+        )
+
 
 class StaffAdminAttendanceHistoryTest(TestCase):
     def setUp(self):
@@ -643,7 +1054,29 @@ class StaffAdminAttendanceHistoryTest(TestCase):
 
         self.assertRegex(
             html,
-            r'(?s)data-attendance-day="2026-03-10".*?09:05.*?Выгрузка.*?11\.03\.2026',
+            r'(?s)data-attendance-day="2026-03-10".*?09:05.*?Запись СКУД.*?11\.03\.2026',
+        )
+
+
+class StaffAdminRemoteHistoryTest(TestCase):
+    def test_history_shows_same_remote_split_as_reports(self):
+        staff = Staff.objects.create(pin="T0004T", name="И. И.", surname="Иванов")
+        RemoteWork.objects.create(staff=staff, permanent_remote=True)
+        first_in = timezone.make_aware(datetime(2026, 3, 10, 9))
+        StaffAttendance.objects.create(
+            staff=staff,
+            date_at=date(2026, 3, 11),
+            first_in=first_in,
+            last_out=first_in + timedelta(hours=4),
+            effective_work_seconds=4 * 3600,
+        )
+        with patch("monitoring_app.admin.timezone.localdate", return_value=date(2026, 3, 11)):
+            html = StaffAdmin(Staff, admin_site).attendance_history(staff)
+
+        self.assertRegex(
+            html,
+            r'(?s)data-attendance-day="2026-03-10" data-attendance-source="remote".*?'
+            r"100%.*?В здании.*?4 ч 00 мин.*?Зачтено.*?4 ч 00 мин",
         )
 
 
@@ -718,7 +1151,7 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
             longitude=76.90,
             acceptance_radius_m=80,
         )
-        lesson_time = timezone.now() - timedelta(days=10)  # inside the rolling 180-day window
+        lesson_time = timezone.now() - timedelta(days=10)
         for offset in range(3):
             LessonAttendance.objects.create(
                 staff=self.staff,
@@ -798,7 +1231,7 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
             longitude=76.8910,
             acceptance_radius_m=250,
         )
-        lesson_time = timezone.now() - timedelta(days=10)  # inside the rolling 180-day window
+        lesson_time = timezone.now() - timedelta(days=10)
         LessonAttendance.objects.create(
             staff=self.staff,
             subject_name="Nearest",
@@ -934,8 +1367,6 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
     def test_period_filter_uses_active_admin_theme_template(self):
         from django.template.loader import get_template
 
-        from monitoring_app.admin import _admin_theme_name
-
         self.assertEqual(
             ClassLocationAdmin.AttendancePeriodFilter.template,
             "admin/attendance_period_filter.html",
@@ -943,7 +1374,6 @@ class ClassLocationAdminAttendanceStatsTest(TestCase):
         template = get_template("admin/attendance_period_filter.html")
         self.assertIn("Применить даты", cast(Any, template).template.source)
         self.assertIn("cloc-period-apply", cast(Any, template).template.source)
-        self.assertEqual(_admin_theme_name(), "grappelli")
 
 
 class PublicHolidayAdminInitialDataTest(SimpleTestCase):
@@ -2200,7 +2630,6 @@ class PhotoConsumerProtocolTest(SimpleTestCase):
         self.assertEqual([payload["chunkIndex"] for payload in payloads], [1, 2, 3])
         self.assertTrue(all(payload["totalChunks"] == 3 for payload in payloads))
         self.assertTrue(all(payload["protocol"] == PHOTO_WS_PROTOCOL for payload in payloads))
-        # Clients drop frames whose date differs from the day they display.
         self.assertTrue(all(payload["date"] == consumer.date.isoformat() for payload in payloads))
 
     def test_deleted_event_is_sent_without_photo_payload(self):
@@ -3178,6 +3607,23 @@ class CeleryBeatScheduleTest(SimpleTestCase):
             },
         )
 
+    def test_attendance_sync_runs_at_0005_in_project_timezone(self):
+        from celery.schedules import crontab
+
+        from django_settings import settings as project_settings
+
+        schedule = project_settings.build_celery_beat_schedule(debug=False)
+
+        self.assertEqual(project_settings.CELERY_TIMEZONE, "Asia/Almaty")
+        self.assertIs(project_settings.CELERY_ENABLE_UTC, True)
+        self.assertEqual(
+            schedule["get-attendance-every-day-0005"]["schedule"],
+            crontab(hour="0", minute="5"),
+        )
+        self.assertEqual(project_settings.BACKUP_DB_WEEKLY_DAY_OF_WEEK, "0")
+        self.assertEqual(project_settings.BACKUP_DB_WEEKLY_HOUR, 23)
+        self.assertEqual(project_settings.BACKUP_DB_WEEKLY_MINUTE, 30)
+
 
 class LessonAttendanceMediaAccessTest(SimpleTestCase):
     def setUp(self):
@@ -3192,7 +3638,7 @@ class LessonAttendanceMediaAccessTest(SimpleTestCase):
         )
         self.override.enable()
         self.addCleanup(self.override.disable)
-        self.staff = Staff(pin="T3587T", name="John", surname="Doe")
+        self.staff = Staff(pin="T0002T", name="И. И.", surname="Иванов")
 
     def _build_record(self, image_path: str | None) -> LessonAttendance:
         now_dt = timezone.now()
@@ -3524,5 +3970,32 @@ class AttendanceReportModeToggleAdminTest(TestCase):
         self.assertFalse(AttendanceSettings.load().turnstile_only)
         delay_mock.assert_called_once_with("all")
 
-    def test_get_is_rejected(self):
-        self.assertEqual(self.client.get(self.url).status_code, 403)
+    def test_get_after_login_redirects_without_changing_mode(self):
+        from monitoring_app.models import AttendanceSettings
+
+        response = self.client.get(self.url)
+        self.assertRedirects(
+            response,
+            reverse("admin:monitoring_app_staffattendance_changelist"),
+            fetch_redirect_response=False,
+        )
+        self.assertTrue(AttendanceSettings.load().turnstile_only)
+
+    def test_post_without_permission_is_forbidden(self):
+        staff_user = User.objects.create_user("viewer", "v@example.com", "pw", is_staff=True)
+        self.client.force_login(staff_user)
+        self.assertEqual(self.client.post(self.url).status_code, 403)
+
+    def test_switch_is_rendered_only_with_change_permission(self):
+        from django.contrib.auth.models import Permission
+
+        changelist = reverse("admin:monitoring_app_staffattendance_changelist")
+        viewer = User.objects.create_user("viewer2", "v2@example.com", "pw", is_staff=True)
+        viewer.user_permissions.add(Permission.objects.get(codename="view_staffattendance"))
+        self.client.force_login(viewer)
+        response = self.client.get(changelist)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "report-mode__switch")
+
+        self.client.force_login(self.user)
+        self.assertContains(self.client.get(changelist), "report-mode__switch")

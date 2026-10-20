@@ -14,9 +14,9 @@ from monitoring_app.services import attendance_day
 
 from .cache_conf import (
     Cache,
+    invalidate_attendance_scope,
     invalidate_cache,
     invalidate_cache_pattern,
-    invalidate_lesson_attendance_derived_caches,
     invalidate_staff_detail_for_department,
     invalidate_staff_detail_for_pin,
 )
@@ -137,10 +137,7 @@ def _enqueue_immediate_photo_pad_scan(instance: LessonAttendance) -> None:
 
 
 def _invalidate_lesson_attendance_cache(instance):
-    invalidate_lesson_attendance_derived_caches(
-        staff_ids=[instance.staff_id],
-        lesson_dates=[instance.date_at],
-    )
+    invalidate_attendance_scope([instance.staff_id], [instance.date_at])
     bump_suspicious_location_patterns_epoch()
 
 
@@ -182,29 +179,13 @@ def rebuild_attendance_report_on_mode_change(sender, instance, **kwargs):
 
 @receiver([post_save, post_delete], sender=StaffAttendance)
 def invalidate_attendance_cache(sender, instance, **kwargs):
-    """Инвалидирует кэш при изменении посещаемости сотрудников (в т.ч. после fetcher)."""
+    """Сбрасывает кэши этого сотрудника за этот рабочий день (SA.date_at = день + 1)."""
     _ = sender
     _ = kwargs
-    from .cache_conf import staff_detail_cache_version
-
-    invalidate_cache_pattern("attendance_data_*")
-    invalidate_cache_pattern("staffatt_count_*")
-    version = staff_detail_cache_version()
-    if hasattr(instance, "date_at") and instance.date_at:
-        work_day = attendance_day.event_day(instance.date_at)
-        work_day_str = work_day.strftime("%Y-%m-%d")
-        invalidate_cache_pattern(f"staff_attendance_stats_{version}_*")
-        invalidate_cache_pattern(f"map_location_{version}_*")
-        if hasattr(instance, "staff") and instance.staff and instance.staff.pin:
-            invalidate_staff_detail_for_pin(instance.staff.pin)
-        logger.info(f"Invalidated attendance cache for work_day: {work_day_str}")
-    dept_id = (
-        Staff.all_objects.filter(pk=instance.staff_id)
-        .values_list("department_id", flat=True)
-        .first()
-    )
-    if dept_id is not None:
-        invalidate_cache_pattern(f"department_confirmation_{dept_id}_*")
+    if instance.date_at:
+        invalidate_attendance_scope(
+            [instance.staff_id], [attendance_day.event_day(instance.date_at)]
+        )
 
 
 @receiver(post_save, sender=Staff)
@@ -219,7 +200,7 @@ def invalidate_staff_cache_on_save(sender, instance, created, **kwargs):
         if hasattr(instance, "department") and instance.department:
             invalidate_cache(f"child_department_detail_v2_{instance.department.id}")
         bump_suspicious_location_patterns_epoch()
-        logger.info(f"Invalidated staff cache for PIN: {instance.pin}")
+        logger.info("Invalidated staff cache for PIN: %s", instance.pin)
 
 
 @receiver(post_delete, sender=Staff)
@@ -234,7 +215,7 @@ def invalidate_staff_cache_on_delete(sender, instance, **kwargs):
             invalidate_cache(f"child_department_detail_v2_{instance.department.id}")
         invalidate_cache_pattern("staff_attendance_stats_*")
         bump_suspicious_location_patterns_epoch()
-        logger.info(f"Invalidated staff cache for PIN: {instance.pin}")
+        logger.info("Invalidated staff cache for PIN: %s", instance.pin)
 
 
 @receiver([post_save, post_delete], sender=ChildDepartment)
