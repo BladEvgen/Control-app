@@ -201,13 +201,13 @@ class Command(BaseCommand):
         parser.add_argument("--max-staff", type=int, default=250)
         parser.add_argument("--max-images-per-staff", type=int, default=6)
         parser.add_argument("--max-impostor-pairs", type=int, default=30000)
-        parser.add_argument("--threshold-start", type=float, default=0.60)
-        parser.add_argument("--threshold-stop", type=float, default=0.92)
+        parser.add_argument("--threshold-start", type=float, default=0.40)
+        parser.add_argument("--threshold-stop", type=float, default=0.80)
         parser.add_argument("--threshold-step", type=float, default=0.005)
         parser.add_argument(
             "--min-recommend-threshold",
             type=float,
-            default=0.72,
+            default=0.45,
             help="Не рекомендовать рабочий порог ниже этого значения.",
         )
         parser.add_argument(
@@ -219,8 +219,7 @@ class Command(BaseCommand):
             "--output",
             default="",
             help=(
-                "JSON output path. Default: "
-                "GENERAL_MODELS_ROOT/face_verification_calibration.json"
+                "JSON output path. Default: GENERAL_MODELS_ROOT/face_verification_calibration.json"
             ),
         )
 
@@ -279,7 +278,7 @@ class Command(BaseCommand):
         if image is None:
             return None
         image = ml.preprocess_image(image)
-        embedding, meta = ml.create_face_encoding_with_probe_meta(image, use_tta=True)
+        embedding, meta = ml.create_face_encoding_with_probe_meta(image)
         if embedding is None:
             return None
         row = np.asarray(embedding, dtype=np.float64).reshape(-1)
@@ -366,7 +365,7 @@ class Command(BaseCommand):
                 "face_verification_calibration.json",
             )
 
-        ml.load_arcface_model()
+        ml.load_face_engine()
 
         staff_manager = cast(Any, models.Staff).objects
         qs = (
@@ -456,8 +455,8 @@ class Command(BaseCommand):
         table = _threshold_table(
             genuine_scores,
             impostor_scores,
-            start=_option_float(opt, "threshold_start", 0.60),
-            stop=_option_float(opt, "threshold_stop", 0.92),
+            start=_option_float(opt, "threshold_start", 0.40),
+            stop=_option_float(opt, "threshold_stop", 0.80),
             step=_option_float(opt, "threshold_step", 0.005),
         )
 
@@ -488,19 +487,10 @@ class Command(BaseCommand):
             if focus_records:
                 staff = cast(Any, models.Staff).objects.filter(pin=pin_filter).first()
                 if staff is not None:
-                    rich, rich_bd = ml.build_runtime_gallery_embeddings(
-                        staff,
-                        rich_variants=True,
-                    )
-                    lean, lean_bd = ml.build_runtime_gallery_embeddings(
-                        staff,
-                        rich_variants=False,
-                    )
+                    gal, gal_bd = ml.build_runtime_gallery_embeddings(staff)
                     focus_report["runtime_gallery"] = {
-                        "rich_shape": None if rich is None else list(rich.shape),
-                        "rich_breakdown": rich_bd,
-                        "lean_shape": None if lean is None else list(lean.shape),
-                        "lean_breakdown": lean_bd,
+                        "shape": None if gal is None else list(gal.shape),
+                        "breakdown": gal_bd,
                     }
 
         quality_reasons: Counter[str] = Counter()
@@ -567,7 +557,7 @@ class Command(BaseCommand):
             "recommendations": _recommend_thresholds(
                 table,
                 targets=targets,
-                min_threshold=_option_float(opt, "min_recommend_threshold", 0.72),
+                min_threshold=_option_float(opt, "min_recommend_threshold", 0.45),
             ),
             "focus": focus_report,
         }

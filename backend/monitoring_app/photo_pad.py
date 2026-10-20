@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -96,19 +97,39 @@ def head_path() -> Path:
     return Path(settings.BASE_DIR) / "models" / "pad_clip_head.json"
 
 
+def _visual_weights(open_clip: Any, torch: Any) -> Path:
+    """CLIP image tower weights as one file, written once from the pretrained checkpoint."""
+    path = Path(settings.BASE_DIR) / "models" / "pad_clip_visual.pt"
+    if not path.exists():
+        full, _, _ = open_clip.create_model_and_transforms(CLIP_ARCH, pretrained=CLIP_PRETRAINED)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        torch.save(full.visual.state_dict(), tmp)
+        os.replace(tmp, path)
+    return path
+
+
 def _clip(device: str = DEVICE_AUTO) -> tuple[Any, Any, Any]:
-    """Load (once per process) the CLIP model, its preprocess and torch module."""
+    """CLIP image tower (once per process), its preprocess and the torch module."""
     with _lock:
         if "clip" not in _cache:
             import open_clip
             import torch
 
             want_cuda = device in (DEVICE_AUTO, DEVICE_CUDA) and torch.cuda.is_available()
-            model, _, preprocess = open_clip.create_model_and_transforms(
-                CLIP_ARCH, pretrained=CLIP_PRETRAINED
+            threads = int(getattr(settings, "PHOTO_PAD_TORCH_THREADS", 4))
+            if threads > 0:
+                torch.set_num_threads(threads)
+            weights = _visual_weights(open_clip, torch)
+            with torch.device("meta"):
+                model, _, preprocess = open_clip.create_model_and_transforms(
+                    CLIP_ARCH, device="meta"
+                )
+            visual = model.visual
+            visual.load_state_dict(
+                torch.load(weights, mmap=True, weights_only=True), assign=True, strict=True
             )
-            model.eval().to("cuda" if want_cuda else "cpu")
-            _cache["clip"] = (model, preprocess, torch)
+            visual.eval().to("cuda" if want_cuda else "cpu")
+            _cache["clip"] = (visual, preprocess, torch)
         return _cache["clip"]
 
 
@@ -141,10 +162,12 @@ def embed_bgr_batch(images_bgr: list[np.ndarray], device: str = DEVICE_AUTO) -> 
     per_view: list[list[Any]] = [[], [], []]
     for img in images_bgr:
         for k, view in enumerate(_views(img)):
-            per_view[k].append(preprocess(Image.fromarray(view).resize((224, 224), Image.Resampling.BICUBIC)))
+            per_view[k].append(
+                preprocess(Image.fromarray(view).resize((224, 224), Image.Resampling.BICUBIC))
+            )
     with torch.no_grad():
         parts = [
-            torch.nn.functional.normalize(model.encode_image(torch.stack(v).to(model_device)), dim=-1)
+            torch.nn.functional.normalize(model(torch.stack(v).to(model_device)), dim=-1)
             for v in per_view
         ]
     return torch.cat(parts, dim=-1).cpu().numpy().astype(np.float32)

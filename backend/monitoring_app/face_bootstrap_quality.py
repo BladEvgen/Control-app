@@ -108,3 +108,21 @@ def bootstrap_quality_decision(
         "reason": "bootstrap_relaxed_quality_passed",
         "reason_codes": soft_codes,
     }
+
+
+def avatar_rejection(image_bgr: Any) -> dict[str, Any] | None:
+    """Аватар единственный эталон лица: тот же фронтальный гейт, что у образцов Face Lab.
+
+    Returns:
+        ``None`` если фото годится, иначе ``{"message", "reason_codes"}``.
+    """
+    from monitoring_app import ml
+
+    _embedding, meta = ml.create_face_encoding_with_probe_meta(image_bgr)
+    ok, detail = bootstrap_quality_decision(meta, FRONT_ANGLE)
+    if ok:
+        return None
+    return {
+        "message": f"{detail['message']} Загрузите другое фото: нужно одно лицо, снятое прямо в камеру.",
+        "reason_codes": detail["reason_codes"],
+    }

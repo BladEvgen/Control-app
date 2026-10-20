@@ -9,10 +9,11 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from django.core.files.base import ContentFile
 from django.db import transaction
 
-from monitoring_app import models
+from monitoring_app import ml, models
+from monitoring_app.face_bootstrap_quality import avatar_rejection
 from monitoring_app.services.staff_csv_import import iter_rows
 
-logger = logging.getLogger("django")
+logger = logging.getLogger(__name__)
 
 ProgressFn = Callable[..., None]
 
@@ -64,6 +65,7 @@ def import_photos_zip(path: str, progress: ProgressFn = _noop_progress) -> Dict[
         "skipped_unknown_pin": 0,
         "skipped_bad_member": 0,
         "skipped_too_large": 0,
+        "skipped_bad_face": 0,
         "errors": [],
     }
 
@@ -116,6 +118,13 @@ def import_photos_zip(path: str, progress: ProgressFn = _noop_progress) -> Dict[
                     raise RuntimeError(
                         f"Суммарный распакованный объём превысил {MAX_ARCHIVE_UNPACKED_BYTES} байт — архив отклонён."
                     )
+                rejection = avatar_rejection(ml.decode_upload_image_bytes_to_bgr(payload))
+                if rejection:
+                    result["skipped_bad_face"] += 1
+                    if len(result["errors"]) < MAX_ERRORS_REPORTED:
+                        result["errors"].append(f"{base}: {rejection['message']}")
+                    progress("photos", index, total)
+                    continue
                 if staff.avatar:
                     staff.avatar.delete(save=False)
                 staff.avatar.save(base, ContentFile(payload), save=False)

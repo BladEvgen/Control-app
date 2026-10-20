@@ -187,10 +187,6 @@ def get_engine() -> Optional[FaceParsingEngine]:
     return _RT.engine
 
 
-def reset_engine_cache_for_tests() -> None:
-    _RT.reset()
-
-
 def glasses_frac_threshold() -> float:
     return float(getattr(settings, "FACE_PARSING_GLASSES_FRAC_MIN", 0.00035))
 

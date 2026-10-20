@@ -6,14 +6,13 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.core.management.base import BaseCommand, CommandError
 
 from monitoring_app import models
-from monitoring_app.augment import run_staff_avatar_augmentation
 from monitoring_app.ml import create_face_encoding
 
 logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = "Create face masks for staff and refresh their augmented gallery images"
+    help = "Create face masks (AdaFace embedding of the avatar) for staff without one"
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -21,8 +20,7 @@ class Command(BaseCommand):
             type=int,
             default=None,
             help=(
-                "Only staff in this ChildDepartment and subtree: создание масок, аугментация и обучение. "
-                "Без флага — по всем отделам."
+                "Only staff in this ChildDepartment and subtree. " "Без флага — по всем отделам."
             ),
         )
 
@@ -74,14 +72,14 @@ class Command(BaseCommand):
         for staff in staffs_without_mask:
             try:
                 if not staff.avatar or not staff.avatar.path:
-                    logger.warning(f"Staff {staff.pin} has no associated avatar file. Skipping.")
+                    logger.warning("Staff %s has no associated avatar file. Skipping.", staff.pin)
                     continue
 
                 avatar_path = staff.avatar.path
                 encoding = create_face_encoding(avatar_path)
 
                 if encoding is None:
-                    logger.warning(f"Failed to create encoding for {staff.pin}. Skipping.")
+                    logger.warning("Failed to create encoding for %s. Skipping.", staff.pin)
                     continue
 
                 models.StaffFaceMask.objects.create(staff=staff, mask_encoding=encoding)
@@ -89,11 +87,11 @@ class Command(BaseCommand):
                 success_count += 1
 
             except ObjectDoesNotExist:
-                logger.error(f"Avatar not found for staff {staff.pin}\n{traceback.format_exc()}")
+                logger.error("Avatar not found for staff %s\n%s", staff.pin, traceback.format_exc())
                 error_count += 1
             except Exception as e:
                 logger.error(
-                    f"Error creating mask for staff {staff.pin}: {str(e)}\n{traceback.format_exc()}"
+                    "Error creating mask for staff %s: %s\n%s", staff.pin, e, traceback.format_exc()
                 )
                 error_count += 1
 
@@ -107,33 +105,4 @@ class Command(BaseCommand):
                 self.style.ERROR(
                     f"Errors encountered while processing {error_count} staff members. Check logs for details."
                 )
-            )
-
-        staff_needing_training = models.Staff.objects.filter(
-            needs_training=True, avatar__isnull=False
-        )
-        if dept_subtree is not None and dept_child is not None:
-            staff_needing_training = staff_needing_training.filter(department__in=dept_subtree)
-            self.stdout.write(
-                self.style.NOTICE(
-                    f"Training scope: id={department_id} ({dept_child.name}), "
-                    f"staff to train: {staff_needing_training.count()}"
-                )
-            )
-
-        if staff_needing_training.exists():
-            self.stdout.write(self.style.SUCCESS("Starting image augmentation..."))
-            try:
-                train_pks = list(staff_needing_training.order_by("pk").values_list("pk", flat=True))
-                run_staff_avatar_augmentation(
-                    staff_queryset=models.Staff.objects.filter(pk__in=train_pks)
-                )
-                done = models.Staff.objects.filter(pk__in=train_pks).update(needs_training=False)
-                self.stdout.write(self.style.SUCCESS(f"Augmentation completed for {done} staff."))
-            except Exception as e:
-                logger.error(f"Error during augmentation: {str(e)}\n{traceback.format_exc()}")
-                self.stdout.write(self.style.ERROR(f"Error during augmentation: {str(e)}"))
-        else:
-            self.stdout.write(
-                self.style.WARNING("No staff members require augmentation. Skipping.")
             )

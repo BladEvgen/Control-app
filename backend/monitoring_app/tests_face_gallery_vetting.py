@@ -49,10 +49,7 @@ class FaceGalleryVettingTests(SimpleTestCase):
 
         def fake_encoding(
             image_bgr: np.ndarray,
-            *,
-            use_tta: bool | None = None,
         ) -> tuple[list[float], dict[str, object]]:
-            _ = use_tta
             idx = int(image_bgr[0, 0, 0])
             return embeddings[idx].tolist(), metas[idx]
 
@@ -83,7 +80,6 @@ class FaceGalleryVettingTests(SimpleTestCase):
         ):
             return ml.create_vetted_gallery_embeddings_from_images(
                 sources,
-                use_tta=True,
                 run_pad=True,
             )
 

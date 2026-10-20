@@ -22,57 +22,76 @@ logger = logging.getLogger(__name__)
 
 FACE_LAB_TTS_PHRASES: dict[str, dict[str, str]] = {
     "loading": {
-        "ru": "Готовим камеру.",
-        "kk": "Камера дайындалып жатыр.",
-        "en": "Preparing camera.",
+        "ru": "Включаю камеру. Подождите пару секунд.",
+        "kk": "Камераны қосып жатырмын. Бірнеше секунд күтіңіз.",
+        "en": "Starting the camera. Please wait a couple of seconds.",
+    },
+    "face": {
+        "ru": "Посмотрите в камеру. Лицо должно быть целиком в овале.",
+        "kk": "Камераға қараңыз. Бетіңіз толығымен сопақтың ішінде болсын.",
+        "en": "Look at the camera and keep your whole face inside the oval.",
     },
     "blink": {
-        "ru": "Моргните один раз.",
-        "kk": "Бір рет жыпылықтаңыз.",
-        "en": "Blink once.",
+        "ru": "Теперь медленно моргните.",
+        "kk": "Енді баяу көзіңізді жұмып ашыңыз.",
+        "en": "Now blink slowly.",
     },
-    "yaw": {
-        "ru": "Поверните голову в сторону.",
-        "kk": "Басыңызды сәл бұрыңыз.",
-        "en": "Turn your head slightly.",
+    "turn_left": {
+        "ru": "Плавно поверните голову влево, затем верните прямо.",
+        "kk": "Басыңызды баяу солға бұрып, қайта тура қараңыз.",
+        "en": "Slowly turn your head to the left, then back to the center.",
+    },
+    "turn_right": {
+        "ru": "Плавно поверните голову вправо, затем верните прямо.",
+        "kk": "Басыңызды баяу оңға бұрып, қайта тура қараңыз.",
+        "en": "Slowly turn your head to the right, then back to the center.",
     },
     "smile": {
-        "ru": "Слегка улыбнитесь.",
-        "kk": "Аздап күлімдеңіз.",
-        "en": "Smile slightly.",
+        "ru": "Улыбнитесь.",
+        "kk": "Күлімсіреңіз.",
+        "en": "Now smile.",
+    },
+    "mouth_open": {
+        "ru": "Приоткройте рот, как будто говорите «а».",
+        "kk": "Аузыңызды сәл ашыңыз, «а» дегендей.",
+        "en": 'Open your mouth a little, as if saying "ah".',
+    },
+    "hold": {
+        "ru": "Замрите.",
+        "kk": "Қозғалмаңыз.",
+        "en": "Hold still.",
     },
     "unavailable": {
-        "ru": "Автопроверка недоступна. Снимите вручную.",
-        "kk": "Автотексеру жоқ. Қолмен түсіріңіз.",
-        "en": "Auto check is unavailable. Capture manually.",
+        "ru": "Автоматическая проверка не запустилась. Сделайте снимок кнопкой внизу.",
+        "kk": "Автоматты тексеру іске қосылмады. Төмендегі батырмамен суретке түсіріңіз.",
+        "en": "The automatic check did not start. Take the photo with the button below.",
     },
-    # Ручная съёмка Face Lab / профиль (те же phase, что фронт: setup_<context>).
     "setup_profile_photo": {
-        "ru": "Лицо по центру. Смотрите прямо.",
-        "kk": "Бет ортада. Тік қараңыз.",
-        "en": "Center your face. Look straight.",
+        "ru": "Посмотрите прямо в камеру. Лицо в центре рамки, свет спереди.",
+        "kk": "Камераға тура қараңыз. Бетіңіз жақтаудың ортасында, жарық алдыңғы жақтан түссін.",
+        "en": "Look straight at the camera, face in the center, light in front of you.",
     },
     "setup_bootstrap_front": {
-        "ru": "Прямой кадр. Смотрите прямо.",
-        "kk": "Тік кадр. Тік қараңыз.",
-        "en": "Front photo. Look straight.",
+        "ru": "Первый снимок. Посмотрите прямо в камеру, голову держите ровно.",
+        "kk": "Бірінші сурет. Камераға тура қарап, басыңызды түзу ұстаңыз.",
+        "en": "First photo. Look straight at the camera and keep your head level.",
     },
     "setup_bootstrap_left": {
-        "ru": "Повернитесь левым ухом к камере. Голову не наклоняйте.",
-        "kk": "Сол құлағыңызды камераға қаратып бұрылыңыз. Басыңызды еңкейтпеңіз.",
-        "en": "Turn so your left ear faces the camera. Do not tilt your head.",
+        "ru": "Второй снимок. Немного поверните голову влево и не наклоняйте её.",
+        "kk": "Екінші сурет. Басыңызды сәл солға бұрыңыз, еңкейтпеңіз.",
+        "en": "Second photo. Turn your head a little to the left without tilting it.",
     },
     "setup_bootstrap_right": {
-        "ru": "Повернитесь правым ухом к камере. Голову не наклоняйте.",
-        "kk": "Оң құлағыңызды камераға қаратып бұрылыңыз. Басыңызды еңкейтпеңіз.",
-        "en": "Turn so your right ear faces the camera. Do not tilt your head.",
+        "ru": "Третий снимок. Немного поверните голову вправо и не наклоняйте её.",
+        "kk": "Үшінші сурет. Басыңызды сәл оңға бұрыңыз, еңкейтпеңіз.",
+        "en": "Third photo. Turn your head a little to the right without tilting it.",
     },
 }
 
 _ALLOWED_PHASES = frozenset(FACE_LAB_TTS_PHRASES.keys())
 _ALLOWED_LANGS = frozenset({"ru", "kk", "en"})
 
-_CACHE_PREFIX = "face_lab_tts:v4"
+_CACHE_PREFIX = "face_lab_tts:v6"
 _CACHE_TTL = 60 * 60 * 24 * 30
 
 
@@ -138,6 +157,5 @@ def face_lab_tts_view(request):
 
     response = HttpResponse(audio, content_type="audio/mpeg")
     response["Cache-Control"] = "private, max-age=86400"
-    # RFC 5987 encoding: HTTP headers are latin-1, Cyrillic/Kazakh text isn't.
     response["X-Tts-Text"] = quote(text)
     return response

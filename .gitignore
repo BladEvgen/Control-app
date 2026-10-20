@@ -330,4 +330,6 @@ frontend/dist-tmp/**
 
 backend/models/pad_clip_embeddings.npz
 backend/models/*.json
+backend/models/*.pt
 backend/models/adaface_ir101_webface12m.onnx
+backend/scripts/logrotate.cron

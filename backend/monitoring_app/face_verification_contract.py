@@ -14,13 +14,9 @@ VERIFY_MODE_1_1 = "VERIFY_1_1"
 
 R_PROBE_QUALITY_LOW = "PROBE_QUALITY_LOW"
 R_SCORE_BELOW_VERIFIED_THRESHOLD = "SCORE_BELOW_VERIFIED_THRESHOLD"
-R_SCORE_BELOW_WEAK_GALLERY_THRESHOLD = "SCORE_BELOW_WEAK_GALLERY_THRESHOLD"
 R_WEAK_ENROLLMENT = "WEAK_ENROLLMENT"
 R_LIVENESS_FAILED = "LIVENESS_FAILED"
-R_LIVENESS_UNCERTAIN = "LIVENESS_UNCERTAIN"
 R_PAD_PIPELINE_FAILED = "PAD_PIPELINE_FAILED"
-R_SCORE_BELOW_COLD_START_THRESHOLD = "SCORE_BELOW_COLD_START_THRESHOLD"
-R_COLD_START_QUALITY_INSUFFICIENT = "COLD_START_QUALITY_INSUFFICIENT"
 R_NEAREST_IMPOSTOR_TOO_CLOSE = "NEAREST_IMPOSTOR_TOO_CLOSE"
 
 
@@ -28,9 +24,6 @@ class GalleryBreakdownPayload(TypedDict, total=False):
     mask_prototypes: int
     avatar_prototypes: int
     face_sample_prototypes: int
-    augment_prototypes: int
-    condition_variant_prototypes: int
-    glasses_variant_prototypes: int
     centroid_prototypes: int
     gallery_real_npy_prototypes: int
 
@@ -47,35 +40,45 @@ class QualityPayload(TypedDict, total=False):
     reason_codes: list[str]
 
 
+def _optional_float(v: object) -> float | None:
+    if isinstance(v, bool):
+        return None
+    return float(v) if isinstance(v, (int, float)) else None
+
+
+_QUALITY_FLOAT_KEYS = (
+    "det_score",
+    "face_area_ratio",
+    "blur_laplacian_var",
+    "brightness_mean",
+    "pose_yaw",
+    "pose_pitch",
+    "pose_roll",
+)
+
+
+def quality_payload_from_probe_meta(probe_meta: dict[str, object]) -> QualityPayload:
+    """Блок ``quality`` ответа verify из метаданных пробы ``ml.create_face_encoding_with_probe_meta``."""
+    raw_codes = probe_meta.get("quality_reason_codes")
+    payload: QualityPayload = {
+        "passed": bool(probe_meta.get("quality_pass")),
+        "reason_codes": [str(x) for x in raw_codes] if isinstance(raw_codes, list) else [],
+    }
+    for key in _QUALITY_FLOAT_KEYS:
+        payload[key] = _optional_float(probe_meta.get(key))  # type: ignore[literal-required]
+    return payload
+
+
 class LivenessPayload(TypedDict, total=False):
     checked: bool
     decision: str
-    operator_action: str
-    trust_confirmed: bool | None
     status: str | None
     risk_score: float | None
     model_version: str | None
     tags: list[str]
     elapsed_ms: float
-    deepface_score: float
-    device_score: float
-    frame_score: float
-    quality_penalty: float
-    device_bg_score: float
-    frame_global_score: float
-    recapture_score: float
-    face_reflection_score: float
-    color_hist_score: float
-    diagnostics: dict[str, object]
-    note: str
 
 
-class GalleryInfoPayload(TypedDict, total=False):
-    total_templates: int
-    distinct_enrollment_sources: int
-
-
-GalleryStrength = Literal["strong", "weak"]
 FinalDecision = Literal["YES", "NO"]
 
 
@@ -83,19 +86,14 @@ class FaceVerifyContractPayload(TypedDict, total=False):
     matched: bool
     final_decision: str
     summary: str
-    decision_summary: str
     status: str
-    gallery_strength: str
     threshold_applied: float
     score: float
     max_cosine: float
-    threshold_verified_strong: float
-    threshold_verified_weak: float
     gallery_size: int
     reason_codes: list[str]
     quality: QualityPayload
     liveness: LivenessPayload
-    gallery: GalleryInfoPayload
     debug: dict[str, object]
 
 
@@ -104,19 +102,14 @@ __all__ = (
     "FaceVerifyStatus",
     "FinalDecision",
     "GalleryBreakdownPayload",
-    "GalleryInfoPayload",
-    "GalleryStrength",
     "FaceVerifyContractPayload",
     "LivenessPayload",
     "QualityPayload",
     "R_LIVENESS_FAILED",
-    "R_LIVENESS_UNCERTAIN",
     "R_PAD_PIPELINE_FAILED",
-    "R_SCORE_BELOW_COLD_START_THRESHOLD",
-    "R_COLD_START_QUALITY_INSUFFICIENT",
     "R_NEAREST_IMPOSTOR_TOO_CLOSE",
     "R_PROBE_QUALITY_LOW",
     "R_SCORE_BELOW_VERIFIED_THRESHOLD",
-    "R_SCORE_BELOW_WEAK_GALLERY_THRESHOLD",
     "R_WEAK_ENROLLMENT",
+    "quality_payload_from_probe_meta",
 )

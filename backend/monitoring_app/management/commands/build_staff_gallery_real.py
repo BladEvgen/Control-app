@@ -17,7 +17,7 @@ from monitoring_app.ml import (
     _dedupe_normalized_rows,
     _l2_normalize_embedding_rows,
     create_vetted_gallery_embeddings_from_images,
-    load_arcface_model,
+    load_face_engine,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ class Command(BaseCommand):
         dry = bool(options.get("dry_run"))
         run_pad = not bool(options.get("no_pad_validation"))
 
-        load_arcface_model()
+        load_face_engine()
 
         style = cast(Any, self.style)
         staff_manager = cast(Any, models.Staff).objects
@@ -167,7 +167,6 @@ class Command(BaseCommand):
 
                 vecs, report = create_vetted_gallery_embeddings_from_images(
                     uniq_sources,
-                    use_tta=True,
                     run_pad=run_pad,
                 )
                 if not vecs:

@@ -132,7 +132,7 @@ def broadcast_lesson_attendance_photo_meta_updates(
     if not updated_ids_by_date:
         return
 
-    from monitoring_app.cache_conf import invalidate_lesson_attendance_derived_caches
+    from monitoring_app.cache_conf import invalidate_attendance_scope
     from monitoring_app.models import LessonAttendance
 
     all_ids = [
@@ -146,9 +146,9 @@ def broadcast_lesson_attendance_photo_meta_updates(
         .values_list("staff_id", flat=True)
         .distinct()
     )
-    invalidate_lesson_attendance_derived_caches(
-        staff_ids=staff_ids,
-        lesson_dates=list(updated_ids_by_date.keys()),
+    invalidate_attendance_scope(
+        staff_ids,
+        list(updated_ids_by_date.keys()),
     )
 
     snapshot: dict[date, list[int]] = {

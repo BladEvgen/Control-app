@@ -14,14 +14,14 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 
-from monitoring_app import face_parsing, models
+from monitoring_app import models
 
 cv2 = cast(Any, importlib.import_module("cv2"))
 
 
 def imread_bgr(path: str) -> Optional[np.ndarray]:
     """
-    Чтение BGR для ArcFace. Сначала OpenCV; если не вышло — PIL (битые/усечённые JPEG).
+    Чтение BGR для AdaFace. Сначала OpenCV; если не вышло — PIL (битые/усечённые JPEG).
     """
     image = cv2.imread(path, cv2.IMREAD_COLOR)
     if image is not None:
@@ -39,28 +39,14 @@ def imread_bgr(path: str) -> Optional[np.ndarray]:
         return None
 
 
-# -----------------------------------
-# 1. Logging Setup
-# -----------------------------------
-
-logger = logging.getLogger("django")
+logger = logging.getLogger(__name__)
 
 
-# -----------------------------------
-# 2. Global Variables and Device Setup
-# -----------------------------------
-
-
-class _ArcFaceModelHolder:
-    instance: Optional[Any] = None
-
-
-arcface_model_holder = _ArcFaceModelHolder()
-
-arcface_lock = Lock()
+_face_engine: Optional[Any] = None
+face_engine_lock = Lock()
 runtime_gallery_cache_lock = Lock()
 
-RUNTIME_GALLERY_CACHE_VERSION = 8
+RUNTIME_GALLERY_CACHE_VERSION = 10
 _staff_runtime_gallery_mem_cache: dict[str, tuple[str, Optional[np.ndarray], dict[str, int]]] = {}
 _multi_staff_runtime_gallery_mem_cache: Optional[
     tuple[tuple[str, ...], np.ndarray, tuple[str, ...]]
@@ -97,7 +83,7 @@ def _pose_from_kps(kps: np.ndarray) -> np.ndarray:
 class _FaceEngine:
     """YuNet detection (5 keypoints) + AdaFace IR101 embeddings, one ``get(img)`` call.
 
-    Returns insightface-style ``Face`` objects (``bbox``, ``kps``, ``det_score``,
+    Returns ``Face``-объекты (контейнер insightface) (``bbox``, ``kps``, ``det_score``,
     ``pose``, ``embedding``). AdaFace ONNX is built by ``scripts/export_adaface_onnx.sh``.
     """
 
@@ -108,45 +94,83 @@ class _FaceEngine:
         self.detector = cv2.FaceDetectorYN.create(
             os.path.join(root, f"{FACE_DETECTOR_MODEL}.onnx"), "", (320, 320), 0.6, 0.3, 5000
         )
+        so = ort.SessionOptions()
+        so.enable_cpu_mem_arena = False
         self.session = ort.InferenceSession(
-            os.path.join(root, f"{FACE_EMBEDDING_MODEL}.onnx"), providers=providers
+            os.path.join(root, f"{FACE_EMBEDDING_MODEL}.onnx"), so, providers=providers
         )
         self.input_name = self.session.get_inputs()[0].name
 
-    def get(self, img: np.ndarray) -> list:
-        from insightface.app.common import Face
-        from insightface.utils.face_align import norm_crop
-
+    def _detect(self, img: np.ndarray) -> np.ndarray:
         h, w = img.shape[:2]
         self.detector.setInputSize((w, h))
         _, dets = self.detector.detect(img)
+        return np.empty((0, 15), np.float32) if dets is None else dets
+
+    def detect(self, img: np.ndarray) -> np.ndarray:
+        """YuNet rows ``[x, y, w, h, 5 kps, score]`` in ``img`` coordinates."""
+        dets = self._detect(img)
+        if len(dets):
+            return dets
+        scale = 640.0 / max(img.shape[:2])
+        small = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        pad = max(small.shape[:2]) // 4
+        for retry in (small, _gamma_bgr(small, 0.6)):
+            dets = self._detect(cv2.copyMakeBorder(retry, pad, pad, pad, pad, cv2.BORDER_REPLICATE))
+            if len(dets):
+                dets = dets.copy()
+                dets[:, :14] /= scale
+                dets[:, [0, 1, *range(4, 14)]] -= pad / scale
+                return dets
+        return dets
+
+    def get(self, img: np.ndarray) -> list:
+        """Each face's ``embedding`` = L2(original crop) + L2(mirrored crop).
+
+        Flip fusion is the standard AdaFace/ArcFace evaluation protocol; one batched run.
+        """
+        from insightface.app.common import Face
+        from insightface.utils.face_align import norm_crop
+
+        dets = self.detect(img)
+        if not len(dets):
+            return []
+        crops = []
+        for d in dets:
+            crop = cv2.cvtColor(
+                norm_crop(img, landmark=d[4:14].reshape(5, 2), image_size=112), cv2.COLOR_BGR2RGB
+            )
+            crops += [crop, crop[:, ::-1]]
+        x = ((np.stack(crops).astype(np.float32) - 127.5) / 127.5).transpose(0, 3, 1, 2)
+        emb = self.session.run(None, {self.input_name: np.ascontiguousarray(x)})[0]
+        emb /= np.maximum(np.linalg.norm(emb, axis=1, keepdims=True), 1e-10)
         faces = []
-        for d in [] if dets is None else dets:
+        for i, d in enumerate(dets):
             kps = d[4:14].reshape(5, 2).astype(np.float32)
             face = Face(
                 bbox=np.array([d[0], d[1], d[0] + d[2], d[1] + d[3]], dtype=np.float32),
                 kps=kps,
                 det_score=float(d[14]),
+                embedding=emb[2 * i] + emb[2 * i + 1],
             )
             face.pose = _pose_from_kps(kps)
-            crop = cv2.cvtColor(norm_crop(img, landmark=kps, image_size=112), cv2.COLOR_BGR2RGB)
-            x = ((crop.astype(np.float32) - 127.5) / 127.5).transpose(2, 0, 1)[None]
-            face.embedding = self.session.run(None, {self.input_name: x})[0][0]
             faces.append(face)
         return faces
 
 
-def load_arcface_model():
-    """Load the face engine once per process (name kept for existing callers)."""
-    if arcface_model_holder.instance is None:
-        with arcface_lock:
-            if arcface_model_holder.instance is None:
+def load_face_engine() -> "_FaceEngine":
+    """Load the face engine (YuNet + AdaFace) once per process."""
+    global _face_engine
+    if _face_engine is None:
+        with face_engine_lock:
+            if _face_engine is None:
                 providers = (
                     ["CUDAExecutionProvider", "CPUExecutionProvider"]
                     if torch.cuda.is_available()
                     else ["CPUExecutionProvider"]
                 )
-                arcface_model_holder.instance = _FaceEngine(providers)
+                _face_engine = _FaceEngine(providers)
+    return _face_engine
 
 
 def _runtime_gallery_cache_dir() -> str:
@@ -175,11 +199,7 @@ def _runtime_gallery_file_signature(path: Optional[str]) -> Optional[str]:
     return f"{stat.st_mtime_ns}:{stat.st_size}"
 
 
-def _staff_runtime_gallery_signature(
-    staff: "models.Staff",
-    *,
-    rich_variants: bool = True,
-) -> str:
+def _staff_runtime_gallery_signature(staff: "models.Staff") -> str:
     """Describe all runtime gallery sources for one staff row.
 
     Args:
@@ -213,11 +233,6 @@ def _staff_runtime_gallery_signature(
     except ObjectDoesNotExist:
         mask_present = False
 
-    augment_signatures: list[tuple[str, Optional[str]]] = []
-    if bool(getattr(settings, "FACE_RUNTIME_INCLUDE_AUGMENTED_GALLERY", True)):
-        for p in _collect_runtime_augment_paths_for_staff(staff):
-            augment_signatures.append((os.path.basename(p), _runtime_gallery_file_signature(p)))
-
     face_sample_signatures: list[tuple[object, ...]] = []
     if bool(getattr(settings, "FACE_RUNTIME_INCLUDE_FACE_SAMPLES", True)):
         for row in _collect_trusted_staff_face_sample_records_for_staff(staff):
@@ -237,21 +252,15 @@ def _staff_runtime_gallery_signature(
         "pin": pin,
         "avatar": _runtime_gallery_file_signature(avatar_path),
         "gallery_real": _runtime_gallery_file_signature(gallery_real_path),
-        "runtime_augments": augment_signatures,
         "face_samples": face_sample_signatures,
         "mask_present": mask_present,
         "mask_updated": mask_updated,
-        "rich_variants": bool(rich_variants),
         "version": RUNTIME_GALLERY_CACHE_VERSION,
     }
     return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
-def _staff_runtime_gallery_cache_path(
-    pin: str,
-    *,
-    rich_variants: bool = True,
-) -> str:
+def _staff_runtime_gallery_cache_path(pin: str) -> str:
     """Return file path for one staff runtime gallery cache.
 
     Args:
@@ -261,10 +270,9 @@ def _staff_runtime_gallery_cache_path(
         Absolute ``.npz`` path.
     """
     safe_pin = "".join(ch if ch.isalnum() else "_" for ch in pin.upper())
-    mode = "rich" if rich_variants else "lean"
     return os.path.join(
         _runtime_gallery_cache_dir(),
-        f"{safe_pin}_runtime_gallery_{mode}_v{RUNTIME_GALLERY_CACHE_VERSION}.npz",
+        f"{safe_pin}_runtime_gallery_v{RUNTIME_GALLERY_CACHE_VERSION}.npz",
     )
 
 
@@ -371,68 +379,6 @@ def _load_multi_staff_runtime_gallery_cache(
         return None
 
 
-def _load_cached_runtime_gallery_only(
-    staff: "models.Staff",
-) -> Optional[tuple[Optional[np.ndarray], dict[str, int]]]:
-    """Load one-staff gallery only from already prepared caches.
-
-    Args:
-        staff: Staff row to probe.
-
-    Returns:
-        Cached gallery payload or None when nothing is prepared yet.
-    """
-    signature = _staff_runtime_gallery_signature(staff, rich_variants=False)
-    pin = _staff_pin(staff)
-    cache_key = f"{pin}:lean"
-    mem_cached = _staff_runtime_gallery_mem_cache.get(cache_key)
-    if mem_cached and mem_cached[0] == signature:
-        return mem_cached[1], dict(mem_cached[2])
-    cache_path = _staff_runtime_gallery_cache_path(pin, rich_variants=False)
-    disk_cached = _load_staff_runtime_gallery_cache(cache_path, signature)
-    if disk_cached is not None:
-        gallery, breakdown = disk_cached
-        _staff_runtime_gallery_mem_cache[cache_key] = (
-            signature,
-            gallery,
-            dict(breakdown),
-        )
-    return disk_cached
-
-
-def build_cached_staff_runtime_gallery_matrix(
-    staff_iterable: Iterable["models.Staff"],
-) -> tuple[np.ndarray, list["models.Staff"]]:
-    """Stack only already cached runtime prototypes for fast early search.
-
-    Args:
-        staff_iterable: Searchable staff rows.
-
-    Returns:
-        Matrix and owner rows from existing caches only.
-
-    Raises:
-        ValueError: When no cached staff galleries exist yet.
-    """
-    owners: list[models.Staff] = []
-    blocks: list[np.ndarray] = []
-    staff_list = list(staff_iterable)
-    _prefetch_trusted_face_samples(staff_list)
-    for staff in staff_list:
-        cached = _load_cached_runtime_gallery_only(staff)
-        if cached is None:
-            continue
-        gal, _breakdown = cached
-        if gal is None or gal.size == 0:
-            continue
-        for i in range(int(gal.shape[0])):
-            owners.append(staff)
-            blocks.append(gal[i : i + 1])
-    if not blocks:
-        raise ValueError("No cached runtime gallery prototypes available.")
-    return np.vstack(blocks), owners
-
-
 def _save_multi_staff_runtime_gallery_cache(
     cache_path: str,
     staff_pins: tuple[str, ...],
@@ -468,18 +414,13 @@ def invalidate_runtime_gallery_caches(staff_pin: Optional[str] = None) -> None:
     with runtime_gallery_cache_lock:
         _multi_staff_runtime_gallery_mem_cache = None
         if staff_pin:
-            _staff_runtime_gallery_mem_cache.pop(f"{staff_pin}:rich", None)
-            _staff_runtime_gallery_mem_cache.pop(f"{staff_pin}:lean", None)
-            for rich_variants in (True, False):
-                staff_cache = _staff_runtime_gallery_cache_path(
-                    staff_pin,
-                    rich_variants=rich_variants,
-                )
-                if os.path.isfile(staff_cache):
-                    try:
-                        os.remove(staff_cache)
-                    except OSError:
-                        pass
+            _staff_runtime_gallery_mem_cache.pop(staff_pin, None)
+            staff_cache = _staff_runtime_gallery_cache_path(staff_pin)
+            if os.path.isfile(staff_cache):
+                try:
+                    os.remove(staff_cache)
+                except OSError:
+                    pass
         else:
             _staff_runtime_gallery_mem_cache.clear()
         global_cache = _multi_staff_runtime_gallery_cache_path()
@@ -490,9 +431,15 @@ def invalidate_runtime_gallery_caches(staff_pin: Optional[str] = None) -> None:
                 pass
 
 
-# -----------------------------------
-# 3. Image Processing Functions
-# -----------------------------------
+PROBE_MAX_SIDE = 1280
+
+
+def cap_long_side(image: np.ndarray, max_side: int = PROBE_MAX_SIDE) -> np.ndarray:
+    long_side = max(image.shape[:2])
+    if long_side <= max_side:
+        return image
+    scale = max_side / long_side
+    return cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
 
 def load_image_from_memory(file):
@@ -513,9 +460,9 @@ def load_image_from_memory(file):
         image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if image is None:
             raise ValidationError("Невозможно прочитать изображение.")
-        return image
+        return cap_long_side(image)
     except Exception as e:
-        logger.error(f"Ошибка при чтении изображения: {e}")
+        logger.error("Ошибка при чтении изображения: %s", e)
         raise ValidationError(f"Ошибка чтения изображения: {str(e)}")
 
 
@@ -552,7 +499,7 @@ def decode_upload_image_bytes_to_bgr(raw_bytes: bytes) -> np.ndarray:
             logger.warning("decode_upload_image_bytes_to_bgr PIL fallback failed: %s", exc)
             raise ValidationError("Невозможно прочитать изображение.") from exc
     _staff_upload_megapixel_guard(image)
-    return image
+    return cap_long_side(image)
 
 
 def reencode_bgr_to_canonical_jpeg_bytes(
@@ -595,7 +542,7 @@ def preprocess_image(image):
     return image
 
 
-def _bbox_area_insight(bbox) -> float:
+def _bbox_area(bbox) -> float:
     try:
         x1, y1, x2, y2 = (float(bbox[i]) for i in range(4))
         return max(0.0, x2 - x1) * max(0.0, y2 - y1)
@@ -603,41 +550,23 @@ def _bbox_area_insight(bbox) -> float:
         return 0.0
 
 
-def _bbox_iou_insight(a, b) -> float:
-    try:
-        ax1, ay1, ax2, ay2 = (float(a[i]) for i in range(4))
-        bx1, by1, bx2, by2 = (float(b[i]) for i in range(4))
-    except (TypeError, ValueError, IndexError):
-        return 0.0
-    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-    denom = area_a + area_b - inter
-    if denom <= 0.0:
-        return 0.0
-    return float(inter / denom)
-
-
-def _arcface_get_faces(image_bgr: np.ndarray) -> list:
+def detect_faces(image_bgr: np.ndarray) -> list:
     """Detect faces (YuNet runs at the image's own resolution, so no det_size retries)."""
-    load_arcface_model()
-    model = arcface_model_holder.instance
-    if model is None or not isinstance(image_bgr, np.ndarray):
+    model = load_face_engine()
+    if not isinstance(image_bgr, np.ndarray):
         return []
     img = preprocess_image(image_bgr)
-    with arcface_lock:
+    with face_engine_lock:
         return list(model.get(img))
 
 
-def _best_insight_face(faces: list) -> Optional[Any]:
+def _best_face(faces: list) -> Optional[Any]:
     """Pick the main face: mostly area, with detector confidence as a tie-breaker."""
     if not faces:
         return None
 
     def score(face: Any) -> float:
-        area = _bbox_area_insight(getattr(face, "bbox", None))
+        area = _bbox_area(getattr(face, "bbox", None))
         det = getattr(face, "det_score", None)
         if det is None:
             det_f = 0.75
@@ -668,130 +597,19 @@ def _gamma_bgr(image_bgr: np.ndarray, gamma: float) -> np.ndarray:
     return np.clip(y * 255.0, 0, 255).astype(np.uint8)
 
 
-def _clahe_luma_bgr(image_bgr: np.ndarray) -> np.ndarray:
-    lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
-    l_ch, a_ch, b_ch = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=1.4, tileGridSize=(8, 8))
-    return cv2.cvtColor(cv2.merge([clahe.apply(l_ch), a_ch, b_ch]), cv2.COLOR_LAB2BGR)
-
-
-def _unsharp_bgr(image_bgr: np.ndarray) -> np.ndarray:
-    blur = cv2.GaussianBlur(image_bgr, (0, 0), 0.8)
-    out = cv2.addWeighted(image_bgr, 1.18, blur, -0.18, 0)
-    return np.clip(out, 0, 255).astype(np.uint8)
-
-
-def _jpeg_roundtrip_bgr(image_bgr: np.ndarray, quality: int) -> np.ndarray:
-    ok, enc = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
-    if not ok or enc is None:
-        return image_bgr
-    dec = cv2.imdecode(enc, cv2.IMREAD_COLOR)
-    return dec if dec is not None else image_bgr
-
-
-def _face_encoding_tta_variants(image_bgr: np.ndarray) -> list[tuple[str, np.ndarray]]:
-    """Small camera-condition TTA; no identity-changing geometry or mirror flip."""
-    variants: list[tuple[str, np.ndarray]] = [
-        ("gamma_bright", _gamma_bgr(image_bgr, 0.92)),
-        ("gamma_dark", _gamma_bgr(image_bgr, 1.08)),
-        ("clahe_luma", _clahe_luma_bgr(image_bgr)),
-        ("unsharp", _unsharp_bgr(image_bgr)),
-        ("jpeg", _jpeg_roundtrip_bgr(image_bgr, 82)),
-    ]
-    max_extra = int(getattr(settings, "FACE_ENCODING_TTA_MAX_EXTRA_VARIANTS", 5))
-    return variants[: max(0, max_extra)]
-
-
-def _accepted_condition_variant_rows(
-    image_bgr: np.ndarray,
-    *,
-    base: np.ndarray,
-    base_face: Any,
-) -> list[np.ndarray]:
-    """Separate trusted one-photo variants for light/sharpness/JPEG robustness."""
-    if not bool(getattr(settings, "FACE_RUNTIME_CONDITION_VARIANTS_ENABLE", True)):
-        return []
-    cap = max(0, int(getattr(settings, "FACE_RUNTIME_CONDITION_VARIANTS_MAX", 3)))
-    if cap == 0:
-        return []
-    min_cos = float(getattr(settings, "FACE_RUNTIME_CONDITION_VARIANT_MIN_COS", 0.84))
-    min_iou = float(getattr(settings, "FACE_ENCODING_TTA_MIN_FACE_IOU", 0.20))
-    out: list[np.ndarray] = []
-    for name, variant in _face_encoding_tta_variants(image_bgr):
-        try:
-            vf = _best_insight_face(_arcface_get_faces(variant))
-            if vf is None:
-                continue
-            if _bbox_iou_insight(base_face.bbox, vf.bbox) < min_iou:
-                logger.debug("Runtime condition variant %s skipped: bbox moved too far", name)
-                continue
-            row = _normalized_embedding_row_from_face(vf)
-            if row is None:
-                continue
-            cos = float(row @ base.reshape(-1))
-            if cos >= min_cos:
-                out.append(row)
-                if len(out) >= cap:
-                    break
-            else:
-                logger.debug(
-                    "Runtime condition variant %s skipped: consensus %.4f",
-                    name,
-                    cos,
-                )
-        except Exception as exc:
-            logger.debug("Runtime condition variant %s failed: %s", name, exc)
-    return out
-
-
 def _create_face_encoding_from_bgr(
     image_bgr: np.ndarray,
-    *,
-    use_tta: Optional[bool] = None,
 ) -> tuple[Optional[list[float]], Optional[Any], list]:
-    faces = _arcface_get_faces(image_bgr)
-    face = _best_insight_face(faces)
+    """Main face and its unit embedding (original + mirrored crop, see ``_FaceEngine.get``).
+
+    Full-image light/JPEG TTA and synthetic glasses/condition variants were dropped on
+    """
+    faces = detect_faces(image_bgr)
+    face = _best_face(faces)
     if face is None:
         return None, None, faces
-
     base = _normalized_embedding_row_from_face(face)
-    if base is None:
-        return None, face, faces
-
-    if use_tta is None:
-        use_tta = bool(getattr(settings, "FACE_ENCODING_TTA_ENABLE", True))
-    if not use_tta:
-        return base.tolist(), face, faces
-
-    min_cos = float(getattr(settings, "FACE_ENCODING_TTA_MIN_CONSENSUS_COS", 0.76))
-    min_iou = float(getattr(settings, "FACE_ENCODING_TTA_MIN_FACE_IOU", 0.20))
-    rows: list[np.ndarray] = [base]
-    for name, variant in _face_encoding_tta_variants(image_bgr):
-        try:
-            vf = _best_insight_face(_arcface_get_faces(variant))
-            if vf is None:
-                continue
-            if _bbox_iou_insight(face.bbox, vf.bbox) < min_iou:
-                logger.debug("Face TTA variant %s skipped: bbox moved too far", name)
-                continue
-            row = _normalized_embedding_row_from_face(vf)
-            if row is None:
-                continue
-            cos = float(np.dot(row, base))
-            if cos >= min_cos:
-                rows.append(row)
-            else:
-                logger.debug("Face TTA variant %s skipped: consensus %.4f", name, cos)
-        except Exception as exc:
-            logger.debug("Face TTA variant %s failed: %s", name, exc)
-
-    if len(rows) == 1:
-        return base.tolist(), face, faces
-    mean = np.mean(np.stack(rows, axis=0), axis=0)
-    norm = float(np.linalg.norm(mean))
-    if norm < 1e-10:
-        return base.tolist(), face, faces
-    return (mean / norm).tolist(), face, faces
+    return (None if base is None else base.tolist()), face, faces
 
 
 def _face_crop_quality_metrics(image_bgr: np.ndarray, bbox) -> dict[str, Optional[float]]:
@@ -823,38 +641,6 @@ def _face_pose_meta(face: Any) -> dict[str, Optional[float]]:
     while len(vals) < 3:
         vals.append(None)
     return {"pose_yaw": vals[0], "pose_pitch": vals[1], "pose_roll": vals[2]}
-
-
-def _collect_runtime_augment_paths_for_staff(staff: "models.Staff") -> list[str]:
-    if not bool(getattr(settings, "FACE_RUNTIME_INCLUDE_AUGMENTED_GALLERY", True)):
-        return []
-    cap = max(0, int(getattr(settings, "FACE_RUNTIME_AUGMENTED_GALLERY_MAX", 24)))
-    if cap == 0:
-        return []
-    root_tmpl = getattr(settings, "AUGMENT_ROOT", "")
-    if not root_tmpl:
-        return []
-    try:
-        aug_dir = str(root_tmpl).format(staff_pin=staff.pin)
-    except Exception:
-        return []
-    if not os.path.isdir(aug_dir):
-        return []
-
-    names: list[str] = []
-    for name in os.listdir(aug_dir):
-        low = name.lower()
-        if not low.endswith((".jpg", ".jpeg", ".png", ".webp")):
-            continue
-        if name.startswith(f"{staff.pin}_aug_") or name.startswith(f"{staff.pin}_augmented_"):
-            names.append(name)
-    names.sort()
-    return [os.path.join(aug_dir, name) for name in names[:cap]]
-
-
-# -----------------------------------
-# 4. Embedding Creation Functions
-# -----------------------------------
 
 
 def _lesson_attendance_stored_path_allowed(abs_path: str) -> bool:
@@ -894,8 +680,7 @@ def _collect_readable_lesson_attendance_paths_for_staff(
     A manual "clean" verdict does not imply the file is intact; broken files are
     skipped so they never enter training.
 
-    Files are **not** copied into ``AUGMENT_ROOT``; only paths are returned and
-    read when the runtime gallery is built.
+    Only paths are returned; files are read when the gallery is built.
 
     Args:
         staff: ``Staff`` instance.
@@ -1041,282 +826,19 @@ def _collect_trusted_staff_face_sample_records_for_staff(
     return out
 
 
-def _runtime_glasses_variant_bgr(
-    image_bgr: np.ndarray,
-    *,
-    glasses_hint: bool = False,
-) -> Optional[np.ndarray]:
-    """Return a conservative glasses-inpainted frame for matching diversity."""
-    if not bool(getattr(settings, "FACE_RUNTIME_GLASSES_VARIANTS_ENABLE", True)):
-        return None
-    if image_bgr is None or image_bgr.size == 0:
-        return None
-
-    try:
-        probe = face_parsing.probe_bgr(image_bgr)
-        parser_says_glasses = probe.get("eyeglasses_likely") is True
-    except Exception:
-        parser_says_glasses = False
-    if not glasses_hint and not parser_says_glasses:
-        return None
-
-    eng = face_parsing.get_engine()
-    if eng is None:
-        return None
-
-    try:
-        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        dilate = int(getattr(settings, "FACE_RUNTIME_GLASSES_VARIANT_INPAINT_DILATE", 7))
-        mask = eng.eyeglasses_inpaint_mask_u8(rgb, dilate=dilate)
-        if mask is None or int(np.count_nonzero(mask)) < 10:
-            return None
-        radius = max(
-            1,
-            int(getattr(settings, "FACE_RUNTIME_GLASSES_VARIANT_INPAINT_RADIUS", 3)),
-        )
-        return cv2.inpaint(image_bgr, mask, radius, cv2.INPAINT_TELEA)
-    except Exception as exc:
-        logger.debug("runtime glasses variant failed: %s", exc)
-        return None
-
-
-def _runtime_synthetic_glasses_bgr(
-    image_bgr: np.ndarray,
-    *,
-    face: Any,
-    glasses_hint: bool = False,
-) -> Optional[np.ndarray]:
-    """Add a mild glasses overlay for bare-face one-photo galleries."""
-    if not bool(getattr(settings, "FACE_RUNTIME_GLASSES_VARIANTS_ENABLE", True)):
-        return None
-    if glasses_hint or image_bgr is None or image_bgr.size == 0:
-        return None
-    try:
-        probe = face_parsing.probe_bgr(image_bgr)
-        if probe.get("eyeglasses_likely") is True:
-            return None
-    except Exception:
-        pass
-
-    kps = getattr(face, "kps", None)
-    if kps is None:
-        return None
-    try:
-        pts = np.asarray(kps, dtype=np.float64).reshape(-1, 2)
-        if pts.shape[0] < 2:
-            return None
-        left_eye = pts[0]
-        right_eye = pts[1]
-        eye_dist = float(np.linalg.norm(right_eye - left_eye))
-        if eye_dist < 12.0:
-            return None
-        angle = float(
-            np.degrees(
-                np.arctan2(
-                    right_eye[1] - left_eye[1],
-                    right_eye[0] - left_eye[0],
-                )
-            )
-        )
-        rx = max(7, int(round(eye_dist * 0.24)))
-        ry = max(5, int(round(eye_dist * 0.15)))
-        thickness = max(1, int(round(eye_dist * 0.035)))
-        overlay = image_bgr.copy()
-        line_col = (32, 32, 36)
-        lens_col = (46, 48, 52)
-        for center in (left_eye, right_eye):
-            c = (int(round(center[0])), int(round(center[1])))
-            cv2.ellipse(overlay, c, (rx, ry), angle, 0, 360, lens_col, -1)
-            cv2.ellipse(overlay, c, (rx, ry), angle, 0, 360, line_col, thickness)
-        p1 = (
-            int(round(left_eye[0] + rx * 0.72)),
-            int(round(left_eye[1])),
-        )
-        p2 = (
-            int(round(right_eye[0] - rx * 0.72)),
-            int(round(right_eye[1])),
-        )
-        cv2.line(overlay, p1, p2, line_col, thickness)
-        return cv2.addWeighted(overlay, 0.20, image_bgr, 0.80, 0)
-    except Exception as exc:
-        logger.debug("runtime synthetic glasses variant failed: %s", exc)
-        return None
-
-
-def _runtime_embedding_rows_from_image(
-    image_bgr: np.ndarray,
-    *,
-    use_tta: Optional[bool] = None,
-    glasses_hint: bool = False,
-    rich_variants: bool = True,
-) -> tuple[list[np.ndarray], int, int]:
-    """Build base + one-photo condition/glasses variants for runtime matching."""
-    embedding, face, _faces = _create_face_encoding_from_bgr(
-        image_bgr,
-        use_tta=use_tta,
-    )
-    if embedding is None or face is None:
-        return [], 0, 0
-    base = _l2_normalize_embedding_rows(np.asarray(embedding, dtype=np.float64).reshape(1, -1))[0]
-
-    rows: list[np.ndarray] = [base]
-    condition_count = 0
-    if rich_variants:
-        for row in _accepted_condition_variant_rows(
-            image_bgr,
-            base=base,
-            base_face=face,
-        ):
-            rows.append(row)
-            condition_count += 1
-
-    variant_count = 0
-    if rich_variants:
-        for variant in (
-            _runtime_glasses_variant_bgr(image_bgr, glasses_hint=glasses_hint),
-            _runtime_synthetic_glasses_bgr(
-                image_bgr,
-                face=face,
-                glasses_hint=glasses_hint,
-            ),
-        ):
-            if variant is None:
-                continue
-            variant_embedding = create_face_encoding(variant, use_tta=False)
-            if variant_embedding is not None:
-                v = _l2_normalize_embedding_rows(
-                    np.asarray(variant_embedding, dtype=np.float64).reshape(1, -1)
-                )[0]
-                min_cos = float(getattr(settings, "FACE_RUNTIME_GLASSES_VARIANT_MIN_COS", 0.58))
-                if float(base @ v.reshape(-1)) >= min_cos:
-                    rows.append(v)
-                    variant_count += 1
-    return rows, variant_count, condition_count
-
-
-def _runtime_embedding_rows_from_path(
-    image_path: str,
-    *,
-    use_tta: Optional[bool] = None,
-    glasses_hint: bool = False,
-    rich_variants: bool = True,
-) -> tuple[list[np.ndarray], int, int]:
+def _runtime_embedding_rows_from_path(image_path: str) -> list[np.ndarray]:
     if not image_path or not os.path.isfile(image_path):
-        return [], 0, 0
+        return []
     image = imread_bgr(image_path)
     if image is None:
-        return [], 0, 0
-    image = preprocess_image(image)
-    return _runtime_embedding_rows_from_image(
-        image,
-        use_tta=use_tta,
-        glasses_hint=glasses_hint,
-        rich_variants=rich_variants,
-    )
-
-
-def create_embeddings_from_images(image_paths, *, use_tta: Optional[bool] = None):
-    """Create ArcFace embeddings for each readable image path.
-
-    Paths may include the avatar, files under ``AUGMENT_ROOT``, and any other
-    absolute image paths (e.g. lesson attendance photos); images are loaded
-    from disk per call—nothing is copied into the augment directory here.
-
-    Drops outliers whose cosine similarity to the L2-normalized geometric median
-    direction is below ``FACE_EMBEDDING_OUTLIER_COS_MIN`` (default ``0.35``). If
-    filtering would remove all rows, returns every successfully computed
-    embedding.
-
-    Args:
-        image_paths: Iterable of absolute paths to image files.
-
-    Returns:
-        List of embedding vectors (each a ``list`` of ``float``).
-    """
-    min_cos = float(getattr(settings, "FACE_EMBEDDING_OUTLIER_COS_MIN", 0.35))
-    raw_paths: list[str] = []
-    raw_vecs: list[np.ndarray] = []
-
-    for image_path in image_paths:
-        if not os.path.exists(image_path):
-            logger.warning("Image file does not exist: %s", image_path)
-            continue
-
-        image = imread_bgr(image_path)
-        if image is None:
-            logger.warning("Failed to load image (possibly corrupted): %s", image_path)
-            continue
-
-        image = preprocess_image(image)
-        bulk_tta = (
-            bool(getattr(settings, "FACE_ENCODING_TTA_FOR_BULK_BUILD", False))
-            if use_tta is None
-            else bool(use_tta)
-        )
-        embedding = create_face_encoding(image, use_tta=bulk_tta)
-        if embedding is not None:
-            raw_paths.append(image_path)
-            raw_vecs.append(np.asarray(embedding, dtype=np.float64))
-        else:
-            logger.warning("Failed to create embedding for image: %s", image_path)
-
-    n = len(raw_vecs)
-    logger.info(
-        "create_embeddings_from_images: %s paths, %s embeddings before filter",
-        len(image_paths),
-        n,
-    )
-    if n == 0:
         return []
-    if n <= 2:
-        return [v.tolist() for v in raw_vecs]
-
-    mat = np.stack(raw_vecs, axis=0)
-    median_vec = np.median(mat, axis=0)
-    median_norm = np.linalg.norm(median_vec)
-    if median_norm < 1e-8:
-        return [v.tolist() for v in raw_vecs]
-    median_unit = median_vec / median_norm
-
-    kept: list[np.ndarray] = []
-    dropped = 0
-    for path, vec in zip(raw_paths, raw_vecs):
-        vn = np.linalg.norm(vec)
-        if vn < 1e-8:
-            dropped += 1
-            logger.warning("Zero-norm embedding dropped: %s", path)
-            continue
-        cos = float(np.dot(vec / vn, median_unit))
-        if cos >= min_cos:
-            kept.append(vec)
-        else:
-            dropped += 1
-            logger.warning(
-                "Outlier embedding dropped: %s cosine_to_median=%.4f (min=%.4f)",
-                path,
-                cos,
-                min_cos,
-            )
-
-    if not kept:
-        logger.warning(
-            "All embeddings marked outliers; keeping unfiltered set of %s",
-            n,
-        )
-        return [v.tolist() for v in raw_vecs]
-
-    logger.info(
-        "Embedding filter: kept %s / %s (dropped %s)",
-        len(kept),
-        n,
-        dropped,
-    )
-    return [v.tolist() for v in kept]
+    embedding, _face, _faces = _create_face_encoding_from_bgr(preprocess_image(image))
+    return [] if embedding is None else [np.asarray(embedding, dtype=np.float64)]
 
 
-def create_face_encoding(image_or_path, *, use_tta: Optional[bool] = None):
+def create_face_encoding(image_or_path):
     """
-    Creates a face embedding using the ArcFace model.
+    Creates a face embedding using the AdaFace model.
 
     Args:
         image_or_path (numpy.ndarray or str): Image array or image file path.
@@ -1325,15 +847,15 @@ def create_face_encoding(image_or_path, *, use_tta: Optional[bool] = None):
         list or None: Face embedding or None if failed.
     """
     try:
-        load_arcface_model()
+        load_face_engine()
         if isinstance(image_or_path, str):
             if not os.path.exists(image_or_path):
-                logger.warning(f"Image file not found: {image_or_path}")
+                logger.warning("Image file not found: %s", image_or_path)
                 return None
 
             image = imread_bgr(image_or_path)
             if image is None:
-                logger.warning(f"Failed to load image: {image_or_path}")
+                logger.warning("Failed to load image: %s", image_or_path)
                 return None
 
             image = preprocess_image(image)
@@ -1343,10 +865,7 @@ def create_face_encoding(image_or_path, *, use_tta: Optional[bool] = None):
                 return None
             image = image_or_path
 
-        embedding, face, _faces = _create_face_encoding_from_bgr(
-            image,
-            use_tta=use_tta,
-        )
+        embedding, face, _faces = _create_face_encoding_from_bgr(image)
         if face is None or embedding is None:
             logger.warning("No face detected in image %s", str(image_or_path))
             return None
@@ -1354,30 +873,25 @@ def create_face_encoding(image_or_path, *, use_tta: Optional[bool] = None):
         return embedding
 
     except Exception as e:
-        logger.error(f"Ошибка при создании encoding: {e}")
+        logger.error("Ошибка при создании encoding: %s", e)
         return None
 
 
 def create_face_encoding_with_probe_meta(
     image_bgr: np.ndarray,
-    *,
-    use_tta: Optional[bool] = None,
 ) -> tuple[Optional[list[float]], dict[str, object]]:
     """
-    ArcFace embedding plus conservative probe quality hints (BGR image).
+    AdaFace embedding plus conservative probe quality hints (BGR image).
 
     Returns:
         (embedding list or None, meta with quality_pass, det_score, face_area_ratio, ...).
     """
     try:
-        load_arcface_model()
+        load_face_engine()
         if not isinstance(image_bgr, np.ndarray):
             return None, {"face_present": False, "quality_pass": False}
 
-        embedding, face, _faces = _create_face_encoding_from_bgr(
-            image_bgr,
-            use_tta=use_tta,
-        )
+        embedding, face, _faces = _create_face_encoding_from_bgr(image_bgr)
         if face is None or embedding is None:
             return None, {"face_present": False, "quality_pass": False}
 
@@ -1385,7 +899,7 @@ def create_face_encoding_with_probe_meta(
         det_f = float(det_raw) if det_raw is not None else None
         bbox = face.bbox
         h, w = int(image_bgr.shape[0]), int(image_bgr.shape[1])
-        area = _bbox_area_insight(bbox)
+        area = _bbox_area(bbox)
         denom = float(max(1, h * w))
         face_ratio = float(area) / denom
 
@@ -1595,7 +1109,6 @@ def _gallery_reject_record(
 def create_vetted_gallery_embeddings_from_images(
     image_sources: Iterable[object],
     *,
-    use_tta: Optional[bool] = True,
     run_pad: Optional[bool] = None,
 ) -> tuple[list[list[float]], dict[str, object]]:
     """Build a conservative real-person gallery from mixed live/photo sources.
@@ -1643,7 +1156,7 @@ def create_vetted_gallery_embeddings_from_images(
                 rejected.append(_gallery_reject_record(abs_path, source, pad_reasons, pad_meta))
                 continue
 
-        embedding, meta = create_face_encoding_with_probe_meta(image, use_tta=use_tta)
+        embedding, meta = create_face_encoding_with_probe_meta(image)
         if embedding is None:
             rejected.append(
                 _gallery_reject_record(
@@ -1860,7 +1373,7 @@ def _l2_normalize_embedding_rows(mat: np.ndarray) -> np.ndarray:
 
 
 def _probe_embedding_row(embedding) -> np.ndarray:
-    """Вектор лица (1D) из ArcFace; без «схлопывания» в (dim,) при одном лице."""
+    """Вектор лица (1D) из AdaFace; без «схлопывания» в (dim,) при одном лице."""
     v = np.asarray(embedding, dtype=np.float64)
     if v.size == 0:
         raise ValueError("Пустой эмбеддинг лица")
@@ -1949,27 +1462,24 @@ def _mask_json_to_matrix(mask_encoding: Any) -> Optional[np.ndarray]:
 
 def build_runtime_gallery_embeddings(
     staff: "models.Staff",
-    *,
-    rich_variants: bool = True,
 ) -> tuple[Optional[np.ndarray], dict[str, int]]:
     """
-    Runtime gallery only: stored mask, live avatar file, capped validated
-    augment crops, optional ``{pin}_gallery_real.npy``.
+    Runtime gallery only: stored mask, live avatar file, trusted Face Lab samples,
+    optional ``{pin}_gallery_real.npy``.
 
     Rows are L2-normalized and near-duplicate collapsed.
     """
     pin = _staff_pin(staff)
-    signature = _staff_runtime_gallery_signature(staff, rich_variants=rich_variants)
-    cache_key = f"{pin}:{'rich' if rich_variants else 'lean'}"
-    mem_cached = _staff_runtime_gallery_mem_cache.get(cache_key)
+    signature = _staff_runtime_gallery_signature(staff)
+    mem_cached = _staff_runtime_gallery_mem_cache.get(pin)
     if mem_cached and mem_cached[0] == signature:
         return mem_cached[1], dict(mem_cached[2])
 
-    cache_path = _staff_runtime_gallery_cache_path(pin, rich_variants=rich_variants)
+    cache_path = _staff_runtime_gallery_cache_path(pin)
     disk_cached = _load_staff_runtime_gallery_cache(cache_path, signature)
     if disk_cached is not None:
         gallery, breakdown = disk_cached
-        _staff_runtime_gallery_mem_cache[cache_key] = (
+        _staff_runtime_gallery_mem_cache[pin] = (
             signature,
             gallery,
             dict(breakdown),
@@ -1982,9 +1492,6 @@ def build_runtime_gallery_embeddings(
         "mask_prototypes": 0,
         "avatar_prototypes": 0,
         "face_sample_prototypes": 0,
-        "augment_prototypes": 0,
-        "condition_variant_prototypes": 0,
-        "glasses_variant_prototypes": 0,
         "centroid_prototypes": 0,
         "gallery_real_npy_prototypes": 0,
     }
@@ -2006,47 +1513,23 @@ def build_runtime_gallery_embeddings(
         if avatar and getattr(avatar, "path", None):
             ap = str(avatar.path)
             if ap and os.path.isfile(ap):
-                (
-                    avatar_rows,
-                    variant_count,
-                    condition_count,
-                ) = _runtime_embedding_rows_from_path(
-                    ap,
-                    use_tta=None if rich_variants else False,
-                    glasses_hint=False,
-                    rich_variants=rich_variants,
-                )
+                avatar_rows = _runtime_embedding_rows_from_path(ap)
                 if avatar_rows:
                     avatar_mat = np.vstack(avatar_rows)
                     rows.append(avatar_mat)
                     source_blocks.append(("avatar", avatar_mat))
                     breakdown["avatar_prototypes"] = int(avatar_mat.shape[0])
-                    breakdown["glasses_variant_prototypes"] += variant_count
-                    breakdown["condition_variant_prototypes"] += condition_count
     except Exception as e:
         logger.warning("Avatar embedding for runtime gallery skipped for %s: %s", staff.pin, e)
 
     if bool(getattr(settings, "FACE_RUNTIME_INCLUDE_FACE_SAMPLES", True)):
         sample_rows: list[np.ndarray] = []
-        sample_variant_count = 0
         for sample in _collect_trusted_staff_face_sample_records_for_staff(staff):
             p = str(sample.get("path") or "")
             if not p or not os.path.isfile(p):
                 continue
-            glasses_hint = bool(sample.get("with_glasses")) or (
-                sample.get("probe_eyeglasses_likely") is True
-            )
             try:
-                (
-                    one_rows,
-                    variant_count,
-                    condition_count,
-                ) = _runtime_embedding_rows_from_path(
-                    p,
-                    use_tta=None if rich_variants else False,
-                    glasses_hint=glasses_hint,
-                    rich_variants=rich_variants,
-                )
+                one_rows = _runtime_embedding_rows_from_path(p)
             except Exception as exc:
                 logger.warning(
                     "Face sample embedding skipped for %s sample=%s: %s",
@@ -2056,28 +1539,11 @@ def build_runtime_gallery_embeddings(
                 )
                 continue
             sample_rows.extend(one_rows)
-            sample_variant_count += variant_count
-            breakdown["condition_variant_prototypes"] += condition_count
         if sample_rows:
             sample_mat = np.vstack(sample_rows)
             rows.append(sample_mat)
             source_blocks.append(("face_sample", sample_mat))
             breakdown["face_sample_prototypes"] = int(sample_mat.shape[0])
-            breakdown["glasses_variant_prototypes"] += sample_variant_count
-
-    augment_paths = _collect_runtime_augment_paths_for_staff(staff)
-    if augment_paths:
-        try:
-            aug_vecs = create_embeddings_from_images(augment_paths, use_tta=False)
-            if aug_vecs:
-                aug_mat = np.asarray(aug_vecs, dtype=np.float64)
-                if aug_mat.ndim == 1:
-                    aug_mat = aug_mat.reshape(1, -1)
-                rows.append(aug_mat)
-                source_blocks.append(("augment", aug_mat))
-                breakdown["augment_prototypes"] = int(aug_mat.shape[0])
-        except Exception as e:
-            logger.warning("Runtime augmented gallery skipped for %s: %s", staff.pin, e)
 
     base_dir: Optional[str] = None
     try:
@@ -2115,7 +1581,7 @@ def build_runtime_gallery_embeddings(
         gal = _dedupe_normalized_rows(gal, min_cos=0.999)
 
     _save_staff_runtime_gallery_cache(cache_path, signature, gal, breakdown)
-    _staff_runtime_gallery_mem_cache[cache_key] = (signature, gal, dict(breakdown))
+    _staff_runtime_gallery_mem_cache[pin] = (signature, gal, dict(breakdown))
     return gal, breakdown
 
 
@@ -2162,13 +1628,12 @@ def build_multi_staff_runtime_gallery_matrix(
     blocks: list[np.ndarray] = []
     _prefetch_trusted_face_samples(staff_list)
     for staff in staff_list:
-        gal, _bd = build_runtime_gallery_embeddings(staff, rich_variants=False)
+        gal, _bd = build_runtime_gallery_embeddings(staff)
         if gal is None or gal.size == 0:
             continue
-        for i in range(int(gal.shape[0])):
-            owners.append(staff)
-            owner_pins.append(_staff_pin(staff))
-            blocks.append(gal[i : i + 1])
+        owners.extend([staff] * int(gal.shape[0]))
+        owner_pins.extend([_staff_pin(staff)] * int(gal.shape[0]))
+        blocks.append(gal)
     if not blocks:
         raise ValueError("No runtime gallery prototypes for any staff member.")
     matrix = np.vstack(blocks)
@@ -2189,40 +1654,23 @@ def build_multi_staff_runtime_gallery_matrix(
 def verify_staff_face_embedding_score(
     staff: "models.Staff", probe_embedding: np.ndarray
 ) -> tuple[bool, float, dict[str, Any]]:
-    """
-    Compare probe ArcFace embedding to multi-prototype **runtime** gallery.
+    """Probe vs the staff member's runtime gallery: score = best cosine over its photos.
 
-    Score: blend of max cosine and mean(top-k). Threshold from
-    ``FACE_VERIFY_THRESHOLD_VERIFIED``.
+    One threshold ``FACE_VERIFY_THRESHOLD`` for any gallery size, plus the nearest-other-
+    staff guard (look-alikes / one person on two accounts).
     """
     gal, gallery_breakdown = build_runtime_gallery_embeddings(staff)
     if gal is None or gal.size == 0:
         raise ValueError("No gallery embeddings available for this staff member.")
 
     p = _l2_normalize_embedding_rows(np.asarray(probe_embedding, dtype=np.float64).reshape(1, -1))
-    sims = (gal @ p.T).ravel()
-    max_sim = float(np.max(sims))
-    n = int(gal.shape[0])
-    if n >= 3:
-        top3 = np.partition(sims, -3)[-3:]
-        score = float(0.72 * max_sim + 0.28 * float(np.mean(top3)))
-    elif n == 2:
-        top2 = np.partition(sims, -2)[-2:]
-        score = float(0.75 * max_sim + 0.25 * float(np.mean(top2)))
-    else:
-        score = max_sim
-
-    thr = float(getattr(settings, "FACE_VERIFY_THRESHOLD_VERIFIED", 0.76))
-    thr_review = float(getattr(settings, "FACE_VERIFY_THRESHOLD_REVIEW", 0.68))
+    score = float(np.max(gal @ p[0]))
+    thr = settings.FACE_VERIFY_THRESHOLD
     meta: dict[str, Any] = {
-        "gallery_templates": n,
+        "gallery_templates": int(gal.shape[0]),
         "gallery_breakdown": dict(gallery_breakdown),
         "threshold_used": thr,
-        "threshold_review": thr_review,
-        "max_cosine": max_sim,
-        "similarity_mean_top3": (
-            float(np.mean(np.partition(sims, -min(3, n))[-min(3, n) :])) if n > 0 else 0.0
-        ),
+        "max_cosine": score,
     }
     _apply_impostor_gap_guard(staff, p, score, meta)
     verified = score >= thr and not bool(meta.get("impostor_ambiguous"))
@@ -2276,8 +1724,8 @@ def _apply_impostor_gap_guard(
     nearest_owner = owners[best_global]
     nearest_score = float(sims[best_local])
     gap = float(claimed_score - nearest_score)
-    gap_min = float(getattr(settings, "FACE_VERIFY_IMPOSTOR_GAP_MIN", 0.035))
-    other_min = float(getattr(settings, "FACE_VERIFY_IMPOSTOR_MIN_OTHER_SCORE", 0.68))
+    gap_min = settings.FACE_VERIFY_IMPOSTOR_GAP_MIN
+    other_min = settings.FACE_VERIFY_THRESHOLD
     ambiguous = nearest_score >= other_min and gap < gap_min
 
     meta.update(
@@ -2302,7 +1750,7 @@ def _classify_runtime_gallery_matches(
     """Run exact cosine search against a prepared runtime gallery matrix.
 
     Args:
-        faces: Detected face objects from ArcFace.
+        faces: Detected face objects from AdaFace.
         embeddings_normalized: Probe embeddings with shape ``(n, dim)``.
         staff_embeddings_normalized: Gallery prototype matrix.
         row_owners: Owner row for each gallery prototype.
@@ -2310,29 +1758,25 @@ def _classify_runtime_gallery_matches(
     Returns:
         Recognized staff rows and unknown face rows.
     """
-    thr_main = float(getattr(settings, "FACE_RECOGNITION_THRESHOLD", 0.76))
-    thr_relax = float(getattr(settings, "FACE_RECOGNITION_THRESHOLD_RELAXED", 0.70))
-    gap_min = float(getattr(settings, "FACE_RECOGNITION_MIN_NEIGHBOR_GAP", 0.085))
+    thr = settings.FACE_RECOGNITION_THRESHOLD
+    gap_min = settings.FACE_RECOGNITION_MIN_NEIGHBOR_GAP
 
     recognized_staff: list[dict[str, Any]] = []
     unknown_faces: list[dict[str, Any]] = []
 
+    owner_pks = np.fromiter((int(o.pk) for o in row_owners), dtype=np.int64, count=len(row_owners))
     for idx, face in enumerate(faces):
         bbox = face.bbox.astype(int).tolist()
-        sims_all = (staff_embeddings_normalized @ embeddings_normalized[idx]).ravel()
-        best_by_staff: dict[int, tuple[float, Any]] = {}
-        for proto_i, sim_raw in enumerate(sims_all):
-            owner = row_owners[int(proto_i)]
-            sim = float(sim_raw)
-            prev = best_by_staff.get(int(owner.pk))
-            if prev is None or sim > prev[0]:
-                best_by_staff[int(owner.pk)] = (sim, owner)
-        ordered = sorted(best_by_staff.values(), key=lambda x: x[0], reverse=True)
-        similarity, staff_best = ordered[0]
-        second_other_sim = ordered[1][0] if len(ordered) >= 2 else -1.0
+        sims_all = np.nan_to_num(
+            (staff_embeddings_normalized @ embeddings_normalized[idx]).ravel(), nan=-1.0
+        )
+        best_i = int(np.argmax(sims_all))
+        similarity, staff_best = float(sims_all[best_i]), row_owners[best_i]
+        others = sims_all[owner_pks != owner_pks[best_i]]
+        second_other_sim = float(others.max()) if others.size else -1.0
         gap = 1.0 if second_other_sim < -0.5 else similarity - second_other_sim
 
-        accept = similarity >= thr_main or (similarity >= thr_relax and gap >= gap_min)
+        accept = similarity >= thr and gap >= gap_min
 
         if accept:
             recognized_staff.append(
@@ -2360,19 +1804,13 @@ def _classify_runtime_gallery_matches(
     return recognized_staff, unknown_faces
 
 
-# -----------------------------------
-# 11. Face Recognition Function
-# -----------------------------------
-
-
 def recognize_faces_in_image(image_file):
     """Recognize staff faces using the same **runtime gallery** rules as verify.
 
-    Builds a joint matrix of all per-staff prototypes from
-    :func:`build_runtime_gallery_embeddings` (mask, avatar, ``gallery_real.npy``,
-    then k-NN per detected
-    face. Thresholds remain ``FACE_RECOGNITION_THRESHOLD*`` (1:N gallery search),
-    not ``FACE_VERIFY_*`` (1:1 verify).
+    Exact cosine search over the full multi-staff matrix
+    (:func:`build_multi_staff_runtime_gallery_matrix`). A face is recognized when its
+    top-1 score >= ``FACE_RECOGNITION_THRESHOLD`` and beats the best other staff
+    member by ``FACE_RECOGNITION_MIN_NEIGHBOR_GAP``.
 
     Args:
         image_file (InMemoryUploadedFile): Uploaded image file.
@@ -2384,9 +1822,12 @@ def recognize_faces_in_image(image_file):
         ValidationError: If recognition fails.
     """
     try:
-        load_arcface_model()
+        load_face_engine()
         img = load_image_from_memory(image_file)
-        faces = _arcface_get_faces(img)
+        faces = detect_faces(img)
+        min_face = float(getattr(settings, "FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN", 0.008))
+        frame_area = float(max(1, int(img.shape[0]) * int(img.shape[1])))
+        faces = [f for f in faces if _bbox_area(f.bbox) / frame_area >= min_face]
 
         if not faces:
             logger.warning("Лица не найдены на изображении")
@@ -2423,30 +1864,6 @@ def recognize_faces_in_image(image_file):
                     f"Размерность эталонов в базе ({dim_staff}) не совпадает с моделью "
                     f"распознавания ({dim_face})."
                 )
-
-        recognized_staff: list[dict[str, Any]] = []
-        unknown_faces: list[dict[str, Any]] = []
-
-        try:
-            cached_matrix, cached_owners = build_cached_staff_runtime_gallery_matrix(staff_qs)
-        except ValueError:
-            cached_matrix = None
-            cached_owners = []
-        if cached_matrix is not None:
-            ensure_dim_matches(cached_matrix)
-            recognized_staff, unknown_faces = _classify_runtime_gallery_matches(
-                faces,
-                embeddings_normalized,
-                cached_matrix,
-                cached_owners,
-            )
-            if recognized_staff:
-                logger.info(
-                    "Recognition completed from cached runtime subset. Recognized: %s, Unknown: %s",
-                    len(recognized_staff),
-                    len(unknown_faces),
-                )
-                return recognized_staff, unknown_faces
 
         try:
             staff_embeddings_normalized, row_owners = build_multi_staff_runtime_gallery_matrix(
