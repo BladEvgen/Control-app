@@ -5,7 +5,7 @@ from django.core.management.base import BaseCommand
 
 from monitoring_app.staff_sync import sync_staff_from_external
 
-logger = logging.getLogger("django")
+logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):

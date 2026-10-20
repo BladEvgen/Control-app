@@ -299,7 +299,7 @@ class Command(BaseCommand):
                 )
 
             if result.returncode != 0:
-                logger.warning(f"mysqldump завершился с ошибкой: {result.stderr}")
+                logger.warning("mysqldump завершился с ошибкой: %s", result.stderr)
                 if result.stderr:
                     self.stdout.write(self.style.ERROR(f"Ошибка mysqldump: {result.stderr[:200]}"))
                 return False
@@ -310,7 +310,7 @@ class Command(BaseCommand):
             logger.warning("mysqldump не найден, используем Django ORM")
             return False
         except Exception as e:
-            logger.warning(f"Ошибка при использовании mysqldump: {e}")
+            logger.warning("Ошибка при использовании mysqldump: %s", e)
             return False
 
     def _print_mysqldump_command(self, db_config: dict, tables: list[str], output_path: Path):
@@ -457,7 +457,7 @@ class Command(BaseCommand):
                 if model:
                     tables.append(model._meta.db_table)
             except Exception as e:
-                logger.warning(f"Не удалось получить таблицу для {model_str}: {e}")
+                logger.warning("Не удалось получить таблицу для %s: %s", model_str, e)
 
         return tables
 
@@ -493,7 +493,6 @@ class Command(BaseCommand):
             "monitoring_app.StaffAttendance",
             "monitoring_app.LessonAttendance",
             "monitoring_app.ClassLocation",
-            "monitoring_app.Salary",
             "monitoring_app.PublicHoliday",
             "monitoring_app.PerformanceBonusRule",
         ]

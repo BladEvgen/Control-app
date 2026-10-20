@@ -41,7 +41,7 @@ class Command(BaseCommand):
         register_preload("parent_department_ids", get_parent_departments)
 
         def get_map_locations_today():
-            today = timezone.localtime(timezone.now()).date()
+            today = timezone.localdate()
             locations = models.ClassLocation.objects.only(
                 "address", "name", "latitude", "longitude"
             )
@@ -116,7 +116,7 @@ class Command(BaseCommand):
         register_preload("popular_departments", get_popular_departments)
 
         def get_today_attendance_stats():
-            today = timezone.localtime(timezone.now()).date()
+            today = timezone.localdate()
             from monitoring_app.views import StaffAttendanceStatsView
 
             view = StaffAttendanceStatsView()

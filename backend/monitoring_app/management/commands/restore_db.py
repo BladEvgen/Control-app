@@ -201,7 +201,7 @@ class Command(BaseCommand):
         try:
             self._restore_json_optimized(data)
         except Exception as e:
-            logger.warning(f"Оптимизированная загрузка не удалась: {e}, пробуем loaddata...")
+            logger.warning("Оптимизированная загрузка не удалась: %s, пробуем loaddata...", e)
             temp_file = (
                 backup_path.parent / f"temp_restore_{backup_path.stem.replace('.json', '')}.json"
             )
@@ -330,7 +330,7 @@ class Command(BaseCommand):
                 if result.stderr:
                     error_msg = result.stderr[:500]
                     self.stdout.write(self.style.ERROR(f"Ошибка mysql: {error_msg}"))
-                logger.warning(f"mysql завершился с ошибкой: {result.stderr}")
+                logger.warning("mysql завершился с ошибкой: %s", result.stderr)
                 return False
 
             self.stdout.write(
@@ -345,7 +345,7 @@ class Command(BaseCommand):
             logger.warning("mysql клиент не найден, используем Django connection")
             return False
         except Exception as e:
-            logger.warning(f"Ошибка при использовании mysql клиента: {e}")
+            logger.warning("Ошибка при использовании mysql клиента: %s", e)
             return False
 
     def _restore_sql_with_django(self, backup_path: Path, is_gzipped: bool):
@@ -394,7 +394,7 @@ class Command(BaseCommand):
                         ]
                     ):
                         continue
-                    logger.warning(f"Ошибка выполнения SQL команды: {cmd[:100]}... - {e}")
+                    logger.warning("Ошибка выполнения SQL команды: %s... - %s", cmd[:100], e)
 
             self.stdout.write(
                 self.style.SUCCESS(
@@ -438,7 +438,7 @@ class Command(BaseCommand):
                 self.style.SUCCESS(f"MySQL настроен для восстановления (таймаут: {timeout}с)")
             )
         except Exception as e:
-            logger.warning(f"Не удалось настроить MySQL: {e}")
+            logger.warning("Не удалось настроить MySQL: %s", e)
 
     def _restore_mysql_settings(self):
         """Восстанавливает стандартные настройки MySQL после восстановления."""
@@ -461,7 +461,7 @@ class Command(BaseCommand):
         except Exception as e:
             error_str = str(e).lower()
             if "access denied" not in error_str and "privilege" not in error_str:
-                logger.warning(f"Не удалось восстановить настройки MySQL: {e}")
+                logger.warning("Не удалось восстановить настройки MySQL: %s", e)
 
     def _safe_unlink(self, file_path: Path, max_attempts: int = 5):
         """Безопасно удаляет файл с повторными попытками.
@@ -482,10 +482,9 @@ class Command(BaseCommand):
                     time.sleep(0.5)
                 else:
                     logger.warning(
-                        f"Не удалось удалить временный файл {file_path} "
-                        f"после {max_attempts} попыток. "
-                        "Файл может быть занят другим процессом. "
-                        "Удалите его вручную."
+                        "Не удалось удалить временный файл %s после %s попыток. Файл может быть занят другим процессом. Удалите его вручную.",
+                        file_path,
+                        max_attempts,
                     )
                     self.stdout.write(
                         self.style.WARNING(
@@ -493,7 +492,7 @@ class Command(BaseCommand):
                         )
                     )
             except Exception as e:
-                logger.warning(f"Ошибка при удалении файла {file_path}: {e}")
+                logger.warning("Ошибка при удалении файла %s: %s", file_path, e)
                 break
 
     def _clear_database(self):
@@ -519,12 +518,12 @@ class Command(BaseCommand):
                         try:
                             cursor.execute(f"TRUNCATE TABLE `{table}`")
                         except Exception as e:
-                            logger.warning(f"Не удалось очистить таблицу {table}: {e}")
+                            logger.warning("Не удалось очистить таблицу %s: %s", table, e)
                             try:
                                 cursor.execute(f"DELETE FROM `{table}`")
                             except Exception as delete_error:
                                 logger.warning(
-                                    f"Не удалось удалить данные из {table}: " f"{delete_error}"
+                                    "Не удалось удалить данные из %s: %s", table, delete_error
                                 )
 
                     self.stdout.write(self.style.SUCCESS(f"Очищено таблиц: {len(tables)}"))
@@ -536,7 +535,7 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.SUCCESS("База данных очищена"))
 
         except Exception as e:
-            logger.error(f"Ошибка при очистке БД: {e}")
+            logger.error("Ошибка при очистке БД: %s", e)
             self.stdout.write(
                 self.style.ERROR(f"Ошибка очистки БД: {e}. Продолжаем восстановление...")
             )
@@ -602,7 +601,7 @@ class Command(BaseCommand):
 
             self.stdout.write("Сигналы Django отключены для восстановления (certs)")
         except Exception as e:
-            logger.warning(f"Не удалось отключить сигналы: {e}")
+            logger.warning("Не удалось отключить сигналы: %s", e)
 
     def _reconnect_signals(self):
         """Включает Django signals обратно после восстановления БД."""
@@ -616,7 +615,7 @@ class Command(BaseCommand):
 
             self.stdout.write("Сигналы Django включены обратно (certs)")
         except Exception as e:
-            logger.warning(f"Не удалось включить сигналы: {e}")
+            logger.warning("Не удалось включить сигналы: %s", e)
 
     def _restore_json_optimized(self, data: list):
         """Оптимизированная загрузка JSON данных через Django ORM с батчами.
@@ -653,7 +652,7 @@ class Command(BaseCommand):
                         obj = serializers.deserialize("json", json.dumps([obj_data]))
                         deserialized_objects.extend(list(obj))
                     except Exception as e:
-                        logger.warning(f"Ошибка десериализации объекта {model_label}: {e}")
+                        logger.warning("Ошибка десериализации объекта %s: %s", model_label, e)
                         continue
 
                 batch_size = 100
@@ -670,7 +669,7 @@ class Command(BaseCommand):
                                 except Exception as e:
                                     error_str = str(e).lower()
                                     if "duplicate" not in error_str and "unique" not in error_str:
-                                        logger.warning(f"Ошибка сохранения {model_label}: {e}")
+                                        logger.warning("Ошибка сохранения %s: %s", model_label, e)
 
                         if saved_count % 1000 == 0:
                             elapsed = time.time() - start_time
@@ -680,7 +679,7 @@ class Command(BaseCommand):
                                 f"({elapsed:.1f}с)"
                             )
                     except Exception as e:
-                        logger.error(f"Ошибка батча {model_label}: {e}")
+                        logger.error("Ошибка батча %s: %s", model_label, e)
                         for deserialized_obj in batch:
                             try:
                                 deserialized_obj.save()
@@ -698,9 +697,9 @@ class Command(BaseCommand):
                 )
 
             except LookupError:
-                logger.warning(f"Модель {model_label} не найдена, пропускаем")
+                logger.warning("Модель %s не найдена, пропускаем", model_label)
             except Exception as e:
-                logger.error(f"Ошибка загрузки {model_label}: {e}")
+                logger.error("Ошибка загрузки %s: %s", model_label, e)
                 self.stdout.write(self.style.ERROR(f"  ✗ Ошибка загрузки {model_label}: {e}"))
 
         total_elapsed = time.time() - start_time

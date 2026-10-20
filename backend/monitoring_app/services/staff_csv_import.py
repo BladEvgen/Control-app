@@ -42,7 +42,7 @@ from django.utils import timezone
 
 from monitoring_app import models
 
-logger = logging.getLogger("django")
+logger = logging.getLogger(__name__)
 
 CSV_ENCODING = "utf-8-sig"
 CSV_ERRORS = "replace"

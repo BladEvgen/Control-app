@@ -6,7 +6,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from monitoring_app.services import staff_csv_import
 
-logger = logging.getLogger("django")
+logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):

@@ -10,7 +10,7 @@ from django.db import transaction
 
 from monitoring_app import models
 
-logger = logging.getLogger("django")
+logger = logging.getLogger(__name__)
 
 EXCLUDED_FIO_PATTERN = re.compile(
     r"^(гость|охрана|в\s*фио)\s*\d*$",

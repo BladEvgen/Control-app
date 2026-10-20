@@ -11,7 +11,7 @@ class Command(BaseCommand):
     help = "Удаляет фотографии старше 31 дня"
 
     def handle(self, *args, **kwargs):
-        cutoff_date = timezone.now().date() - timedelta(days=31)
+        cutoff_date = timezone.localdate() - timedelta(days=31)
         records = LessonAttendance.objects.filter(date_at__lt=cutoff_date).only(
             "id", "date_at", "staff_image_path"
         )

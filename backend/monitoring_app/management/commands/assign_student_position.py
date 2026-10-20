@@ -5,14 +5,9 @@ from django.db import transaction
 
 from monitoring_app.models import Position, Staff
 
-logger = logging.getLogger("django")
+logger = logging.getLogger(__name__)
 
 STUDENT_POSITION_NAME = "Студент"
-
-
-def student_predicate(pin: str, pattern: str) -> bool:
-    """pin содержит pattern (например 'S')."""
-    return (pattern or "") in (pin or "")
 
 
 class Command(BaseCommand):

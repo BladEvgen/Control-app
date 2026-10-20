@@ -44,7 +44,7 @@ class Command(BaseCommand):
             )
             return
 
-        descendant_ids = self.get_all_descendants(parent_department)
+        descendant_ids = parent_department.subtree_ids()
 
         try:
             employee_position = Position.objects.get(id=1)
@@ -69,19 +69,3 @@ class Command(BaseCommand):
                 f"Обновлено позиции у {updated_count} сотрудников в отделе {parent_department.name} и его дочерних отделах."
             )
         )
-
-    def get_all_descendants(self, department):
-        """
-        Рекурсивно находит всех потомков отдела, включая сам отдел.
-
-        Аргументы:
-        department: ChildDepartment - отдел, для которого ищутся потомки.
-
-        Возвращает:
-        list: Список ID всех дочерних отделов и самого указанного отдела.
-        """
-        descendants = [department.id]
-        children = ChildDepartment.objects.filter(parent=department)
-        for child in children:
-            descendants.extend(self.get_all_descendants(child))
-        return descendants

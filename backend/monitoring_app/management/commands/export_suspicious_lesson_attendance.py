@@ -221,7 +221,7 @@ class Command(BaseCommand):
 
     def _default_output_path(self) -> str:
         """Возвращает путь по умолчанию для XLSX (out/suspicious_attendance_<сегодня>.xlsx)."""
-        today = datetime.date.today().isoformat()
+        today = timezone.localdate().isoformat()
         return str(Path.cwd() / "out" / f"suspicious_attendance_{today}.xlsx")
 
     def _resolve_photo_path_raw(self, raw_path: str) -> Optional[Path]:

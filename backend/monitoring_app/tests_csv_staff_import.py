@@ -541,13 +541,41 @@ class PhotoZipTests(TestCase):
         )
         self.addCleanup(os.remove, path)
 
-        result = upload_processing.import_photos_zip(path)
+        with self._face_check(None):
+            result = upload_processing.import_photos_zip(path)
 
         self.assertEqual(result["skipped_bad_member"], 2)
         self.assertEqual(result["updated"], 1)
         self.assertFalse(os.path.exists("/tmp/etc/passwd"))
         self.staff.refresh_from_db()
         self.assertTrue(self.staff.avatar)
+
+    def test_photo_without_frontal_face_keeps_current_avatar(self):
+        from monitoring_app.services import upload_processing
+
+        path = self._zip([("T900100T.jpg", b"\xff\xd8\xff\xe0ceiling")])
+        self.addCleanup(os.remove, path)
+        rejection = {"message": "Лицо не найдено.", "reason_codes": ["face_not_found"]}
+
+        with self._face_check(rejection):
+            result = upload_processing.import_photos_zip(path)
+
+        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["skipped_bad_face"], 1)
+        self.assertIn("Лицо не найдено", result["errors"][0])
+        self.staff.refresh_from_db()
+        self.assertFalse(self.staff.avatar)
+
+    @staticmethod
+    def _face_check(rejection):
+        from contextlib import ExitStack
+        from unittest import mock
+
+        stack = ExitStack()
+        target = "monitoring_app.services.upload_processing"
+        stack.enter_context(mock.patch(f"{target}.ml.decode_upload_image_bytes_to_bgr"))
+        stack.enter_context(mock.patch(f"{target}.avatar_rejection", return_value=rejection))
+        return stack
 
     def test_unknown_pin_is_counted_not_fatal(self):
         from monitoring_app.services import upload_processing
@@ -744,7 +772,7 @@ class AttendanceFetcherAggregationTests(TestCase):
         self.assertEqual(timezone.localtime(record.last_out).strftime("%H:%M:%S"), "18:00:07")
         self.assertEqual(len(record.area_sequence), 3)
 
-        with self.assertNumQueries(1):  # смена режима — один UPDATE
+        with self.assertNumQueries(1):
             self.assertEqual(apply_report_mode(mode="all"), 1)
         record.refresh_from_db()
         self.assertEqual(timezone.localtime(record.first_in).strftime("%H:%M:%S"), "09:00:05")
@@ -781,7 +809,6 @@ class AttendanceFetcherAggregationTests(TestCase):
         )
 
     def test_migration_0021_same_event_day_never_has_last_out_before_first_in(self):
-        # Ли Александр 28.09.2026: единственный турникет 16:22, дальше только лифты.
         from monitoring_app.models import StaffAttendance
 
         first_in = timezone.make_aware(datetime.datetime(2026, 3, 10, 16, 22, 37))
@@ -801,7 +828,6 @@ class AttendanceFetcherAggregationTests(TestCase):
 
         record.refresh_from_db()
         self.assertEqual(record.first_in, first_in)
-        # Единственный турникет — вход: только приход, ухода по турникету нет.
         self.assertIsNone(record.last_out)
 
     def test_migration_0021_backfills_legacy_rows_from_area_sequence(self):
@@ -825,7 +851,7 @@ class AttendanceFetcherAggregationTests(TestCase):
         apply_report_mode(mode="all")
 
         record.refresh_from_db()
-        self.assertEqual(record.first_in, first_in)  # секунды сохранены
+        self.assertEqual(record.first_in, first_in)
         self.assertEqual(timezone.localtime(record.last_out).strftime("%H:%M"), "17:07")
         self.assertEqual(record.effective_work_seconds, 10 * 3600 + 2 * 60)
         self.assertEqual(set(record.report_variants), {"all", "turnstile"})
@@ -838,7 +864,6 @@ class AttendanceFetcherAggregationTests(TestCase):
 
         from monitoring_app.attendance_fetcher import AsyncAttendanceFetcher
 
-        # 7 событий по часам; страница = 3 → окно делится, пока не станет < 3.
         stamps = [datetime.datetime(2026, 3, 10, h, 0, 0) for h in range(8, 15)]
         calls = []
 
@@ -861,6 +886,57 @@ class AttendanceFetcherAggregationTests(TestCase):
 
         self.assertEqual(sorted(e["id"] for e in events), sorted(str(t) for t in stamps))
         self.assertTrue(all(p["pageNo"] == "1" for p in calls))
+
+    def test_rejected_token_does_not_fall_back_to_per_pin(self):
+        import asyncio
+        from unittest.mock import patch
+
+        from monitoring_app.attendance_fetcher import AsyncAttendanceFetcher, AttendanceApiError
+
+        calls = []
+
+        async def fake_get(_self, params):
+            calls.append(params)
+            raise AttendanceApiError({"status": 401, "error": "non-200"})
+
+        with patch.object(AsyncAttendanceFetcher, "_get", fake_get):
+            with self.assertRaises(AttendanceApiError):
+                asyncio.run(
+                    AsyncAttendanceFetcher().fetch_events(
+                        datetime.date(2026, 3, 10), datetime.date(2026, 3, 10), ["S1S", "S2S"]
+                    )
+                )
+        self.assertFalse(any("personPin" in p for p in calls))
+
+    def test_daily_task_fails_loudly_when_every_pin_failed(self):
+        from unittest.mock import AsyncMock, patch
+
+        from monitoring_app import tasks
+
+        summary = {"total_pins": 3, "failed_requests": 3, "errors": [{"status": 401}]}
+        target = "monitoring_app.attendance_fetcher.AsyncAttendanceFetcher.get_all_attendance"
+        with patch(target, AsyncMock(return_value=summary)):
+            with self.assertRaisesRegex(RuntimeError, "401"):
+                tasks.get_all_attendance_task()
+
+    def test_daily_sync_uses_almaty_calendar_day_after_2024_offset_change(self):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from monitoring_app.attendance_fetcher import AsyncAttendanceFetcher
+
+        fetcher = AsyncAttendanceFetcher()
+        instant = datetime.datetime(2024, 2, 29, 19, 5, tzinfo=datetime.timezone.utc)
+        with (
+            patch("django.utils.timezone.now", return_value=instant),
+            patch.object(fetcher, "sync_range", AsyncMock(return_value={})) as sync_range,
+        ):
+            summary = asyncio.run(fetcher.get_all_attendance())
+
+        expected_day = datetime.date(2024, 2, 29)
+        sync_range.assert_awaited_once_with(expected_day, expected_day, chunk_days=1)
+        self.assertEqual(summary["source_date"], "2024-02-29")
+        self.assertEqual(summary["save_date"], "2024-03-01")
 
     def test_unknown_pin_is_skipped_without_error(self):
         from monitoring_app.attendance_fetcher import save_attendance_days
@@ -951,7 +1027,7 @@ class AttendanceSyncRangeTests(TransactionTestCase):
         summary, calls = self._sync(events, chunk_days=7)
 
         self.assertEqual(calls, [(datetime.date(2026, 3, 10), datetime.date(2026, 3, 11))])
-        self.assertEqual(summary["created_records"], 2)  # 10.03 с событиями + пустой 11.03
+        self.assertEqual(summary["created_records"], 2)
         record = StaffAttendance.objects.get(staff=self.staff, date_at=datetime.date(2026, 3, 11))
         self.assertEqual(timezone.localtime(record.last_out).strftime("%H:%M:%S"), "18:00:07")
         empty = StaffAttendance.objects.get(staff=self.staff, date_at=datetime.date(2026, 3, 12))

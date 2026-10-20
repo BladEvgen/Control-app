@@ -86,21 +86,21 @@ class UserDetail(JsonWebsocketConsumer):
                 return
 
             token = self._get_query_token()
-            logger.info(f"[ws_user] connect: user={user.username}, token={bool(token)}")
+            logger.info("[ws_user] connect: user=%s, token=%s", user.username, bool(token))
 
             if token:
                 try:
                     validated_token = JWTAuthentication().get_validated_token(token.encode("utf-8"))
                     if self._is_token_expired(validated_token.get("exp", 0)):
-                        logger.warning(f"[ws_user] connect: токен истек для {user.username}")
+                        logger.warning("[ws_user] connect: токен истек для %s", user.username)
                         self.close(code=WS_CLOSE_TOKEN_EXPIRED)
                         return
                 except TokenError as e:
-                    logger.warning(f"[ws_user] connect: невалидный токен: {e}")
+                    logger.warning("[ws_user] connect: невалидный токен: %s", e)
                     self.close(code=WS_CLOSE_TOKEN_INVALID)
                     return
                 except Exception as e:
-                    logger.error(f"[ws_user] connect: ошибка проверки токена: {e}")
+                    logger.error("[ws_user] connect: ошибка проверки токена: %s", e)
                     self.close(code=WS_CLOSE_TOKEN_INVALID)
                     return
 
@@ -108,14 +108,14 @@ class UserDetail(JsonWebsocketConsumer):
             self.group_name = f"user_{user.id}"
             async_to_sync(self.channel_layer.group_add)(self.group_name, self.channel_name)
             logger.info(
-                f"[ws_user] connect: {user.username} подключен, channel={self.channel_name}"
+                "[ws_user] connect: %s подключен, channel=%s", user.username, self.channel_name
             )
             self._send_heartbeat_with_profile()
         except Exception as e:
             if _is_client_disconnected(e):
                 logger.debug("[ws_user] connect: клиент отключился до ответа: %s", e)
             else:
-                logger.error(f"[ws_user] connect: исключение: {e}", exc_info=True)
+                logger.exception("[ws_user] connect: исключение: %s", e)
                 self.close(code=WS_CLOSE_AUTH_FAILED)
 
     def disconnect(self, _close_code):
@@ -130,10 +130,12 @@ class UserDetail(JsonWebsocketConsumer):
             if user and hasattr(self, "group_name") and self.group_name:
                 async_to_sync(self.channel_layer.group_discard)(self.group_name, self.channel_name)
                 logger.info(
-                    f"Пользователь {user.username} отключился от сокета с каналом {self.channel_name}"
+                    "Пользователь %s отключился от сокета с каналом %s",
+                    user.username,
+                    self.channel_name,
                 )
         except Exception as e:
-            logger.error(f"Ошибка при отключении: {str(e)}")
+            logger.error("Ошибка при отключении: %s", e)
 
     def _check_token_validity(self):
         """
@@ -152,14 +154,14 @@ class UserDetail(JsonWebsocketConsumer):
             try:
                 validated_token = JWTAuthentication().get_validated_token(token.encode("utf-8"))
                 if self._is_token_expired(validated_token.get("exp", 0)):
-                    logger.warning(f"Токен пользователя {user.username} истек")
+                    logger.warning("Токен пользователя %s истек", user.username)
                     return False
                 return True
             except TokenError:
-                logger.warning(f"Невалидный токен для пользователя {user.username}")
+                logger.warning("Невалидный токен для пользователя %s", user.username)
                 return False
         except Exception as e:
-            logger.error(f"Ошибка проверки токена: {str(e)}")
+            logger.error("Ошибка проверки токена: %s", e)
             return False
 
     def receive_json(self, content, **kwargs):
@@ -183,7 +185,7 @@ class UserDetail(JsonWebsocketConsumer):
 
             user = self.scope.get("user")
             logger.info(
-                f"[ws_user] receive: от {user.username if user else '?'}, content={content}"
+                "[ws_user] receive: от %s, content=%s", user.username if user else "?", content
             )
 
             if content.get("type") == "ping":
@@ -206,10 +208,10 @@ class UserDetail(JsonWebsocketConsumer):
                     logger.warning("В сообщении 'update_ip' не передан IP")
                     self.send_json({"error": "IP не передан"})
             else:
-                logger.warning(f"Неизвестное действие: {action}")
+                logger.warning("Неизвестное действие: %s", action)
                 self.send_json({"error": "Неизвестное действие"})
         except Exception as e:
-            logger.error(f"Ошибка в receive_json: {str(e)}")
+            logger.error("Ошибка в receive_json: %s", e)
             self.send_json({"error": f"Ошибка обработки сообщения: {str(e)}"})
 
     def update_ip(self, ip):
@@ -233,21 +235,21 @@ class UserDetail(JsonWebsocketConsumer):
                 self.close(code=WS_CLOSE_TOKEN_EXPIRED)
                 return
 
-            logger.info(f"Пользователь {user.username} инициирует обновление IP на {ip}")
+            logger.info("Пользователь %s инициирует обновление IP на %s", user.username, ip)
             profile = models.UserProfile.objects.get(user=user)
             if profile.last_login_ip != ip:
                 profile.last_login_ip = ip
                 profile.save(update_fields=["last_login_ip"])
-                logger.info(f"Пользователь {user.username} успешно обновил IP на {ip}")
+                logger.info("Пользователь %s успешно обновил IP на %s", user.username, ip)
                 self.send_user_profile()
             else:
-                logger.info(f"Пользователь {user.username} отправил уже актуальный IP: {ip}")
+                logger.info("Пользователь %s отправил уже актуальный IP: %s", user.username, ip)
                 self.send_json({"message": "IP уже актуален", "type": "info"})
         except models.UserProfile.DoesNotExist:
-            logger.error(f"Профиль пользователя не найден для {user.username}")
+            logger.error("Профиль пользователя не найден для %s", user.username)
             self.send_json({"error": "Профиль пользователя не найден", "type": "error"})
         except Exception as e:
-            logger.error(f"Ошибка обновления IP для {user.username}: {str(e)}")
+            logger.error("Ошибка обновления IP для %s: %s", user.username, e)
             self.send_json({"error": f"Ошибка обновления IP: {str(e)}", "type": "error"})
 
     def _get_profile_payload(self):
@@ -265,10 +267,10 @@ class UserDetail(JsonWebsocketConsumer):
                 return data["user"]
             return None
         except models.UserProfile.DoesNotExist:
-            logger.error(f"[ws_user] UserProfile не найден для {user.username}")
+            logger.error("[ws_user] UserProfile не найден для %s", user.username)
             return None
         except Exception as e:
-            logger.error(f"[ws_user] Ошибка получения профиля: {e}")
+            logger.error("[ws_user] Ошибка получения профиля: %s", e)
             return None
 
     def _send_heartbeat_with_profile(self):
@@ -303,16 +305,16 @@ class UserDetail(JsonWebsocketConsumer):
             }
             if profile_payload:
                 msg["user_profile"] = profile_payload
-                logger.info(f"[ws_user] heartbeat: pong+profile для {user.username}")
+                logger.info("[ws_user] heartbeat: pong+profile для %s", user.username)
             else:
-                logger.warning(f"[ws_user] heartbeat: pong без profile для {user.username}")
+                logger.warning("[ws_user] heartbeat: pong без profile для %s", user.username)
 
             self.send_json(msg)
         except Exception as e:
             if _is_client_disconnected(e):
                 logger.debug("[ws_user] heartbeat: клиент отключился до отправки: %s", e)
             else:
-                logger.error(f"[ws_user] heartbeat: исключение: {e}", exc_info=True)
+                logger.exception("[ws_user] heartbeat: исключение: %s", e)
 
     def send_user_profile(self):
         """Отправка только профиля (для обратной совместимости)."""
@@ -336,7 +338,7 @@ class UserDetail(JsonWebsocketConsumer):
                 self.close(code=WS_CLOSE_TOKEN_EXPIRED)
                 return
 
-            logger.info(f"[ws_user] send_user_profile: {user.username}")
+            logger.info("[ws_user] send_user_profile: %s", user.username)
             profile = models.UserProfile.objects.get(user=user)
             serializer = serializers.UserProfileSerializer(profile)
             data = serializer.data
@@ -344,10 +346,10 @@ class UserDetail(JsonWebsocketConsumer):
                 data["type"] = "user_profile"
                 data["timestamp"] = datetime.now(timezone.utc).isoformat()
             self.send_json(data)
-            logger.info(f"[ws_user] send_user_profile: отправлен для {user.username}")
+            logger.info("[ws_user] send_user_profile: отправлен для %s", user.username)
         except models.UserProfile.DoesNotExist:
-            logger.error(f"[ws_user] UserProfile не найден для {user.username}")
+            logger.error("[ws_user] UserProfile не найден для %s", user.username)
             self.send_json({"error": "Профиль пользователя не найден", "type": "error"})
         except Exception as e:
-            logger.error(f"[ws_user] Ошибка send_user_profile: {e}")
+            logger.error("[ws_user] Ошибка send_user_profile: %s", e)
             self.send_json({"error": f"Ошибка получения профиля: {str(e)}", "type": "error"})
