@@ -77,7 +77,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--date_at",
             type=str,
-            default=timezone.now().date().isoformat(),
+            default=timezone.localdate().isoformat(),
             help="Date of the attendance in YYYY-MM-DD format.",
         )
         parser.add_argument(
@@ -143,7 +143,7 @@ class Command(BaseCommand):
                     f"Successfully created LessonAttendance with ID: {attendance.id}"
                 )
             )
-            logger.info(f"LessonAttendance created with ID: {attendance.id}")
+            logger.info("LessonAttendance created with ID: %s", attendance.id)
         except Exception as e:
             self.stderr.write(self.style.ERROR(f"Error creating LessonAttendance: {e}"))
-            logger.error(f"Error creating LessonAttendance: {e}", exc_info=True)
+            logger.exception("Error creating LessonAttendance: %s", e)

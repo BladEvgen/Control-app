@@ -1,4 +1,5 @@
 import datetime
+import json
 import logging
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from monitoring_app import models, utils
 from monitoring_app.photo_ws_broadcast import (
@@ -335,6 +337,10 @@ def get_all_attendance_task(days=None):
         summary.get("created_records"),
         summary.get("updated_records"),
     )
+    if summary.get("total_pins") and summary.get("failed_requests") == summary.get("total_pins"):
+        raise RuntimeError(
+            f"Выгрузка СКУД не удалась целиком: {summary.get('errors') or summary.get('failed_chunks')}"
+        )
     if summary.get("created_records", 0) or summary.get("updated_records", 0):
         try:
             from django.core.management import call_command
@@ -497,23 +503,26 @@ def update_lesson_attendance_last_out():
         lessons_to_update = models.LessonAttendance.objects.filter(
             last_out__isnull=True,
             first_in__lte=oldest_open_cutoff,
-        ).only("id", "first_in", "last_out", "date_at")
-
-        if not lessons_to_update.exists():
-            logger.info("%s no records to update", log_prefix)
-            return
+        ).only("id", "staff_id", "first_in", "last_out", "date_at")
 
         batch_size = 1000
         total_updated = 0
-        total_records = lessons_to_update.count()
+        total_records = 0
         current_tz = timezone.get_current_timezone()
         skipped_not_due = 0
+        last_id = 0
+        touched_staff_ids: set[int] = set()
+        touched_dates: set[datetime.date] = set()
 
-        for offset in range(0, total_records, batch_size):
-            batch = lessons_to_update[offset : offset + batch_size]
+        while True:
+            batch = list(lessons_to_update.filter(id__gt=last_id).order_by("id")[:batch_size])
+            if not batch:
+                break
+            last_id = batch[-1].id
+            total_records += len(batch)
             updates = []
 
-            for lesson in batch.iterator(chunk_size=100):
+            for lesson in batch:
                 last_out, auto_close_minutes = _calculate_lesson_auto_last_out(
                     lesson_date=lesson.date_at,
                     first_in=lesson.first_in,
@@ -537,22 +546,20 @@ def update_lesson_attendance_last_out():
             if updates:
                 models.LessonAttendance.objects.bulk_update(updates, ["last_out"], batch_size=100)
                 total_updated += len(updates)
-                from monitoring_app.cache_conf import (
-                    invalidate_lesson_attendance_derived_caches,
-                )
-
-                invalidate_lesson_attendance_derived_caches(
-                    staff_ids=[lesson.staff_id for lesson in updates],
-                    lesson_dates=[lesson.date_at for lesson in updates],
-                )
+                touched_staff_ids.update(lesson.staff_id for lesson in updates)
+                touched_dates.update(lesson.date_at for lesson in updates)
 
             if total_records > batch_size:
-                logger.info(
-                    "%s progress %s/%s",
-                    log_prefix,
-                    min(offset + batch_size, total_records),
-                    total_records,
-                )
+                logger.info("%s progress processed=%s", log_prefix, total_records)
+
+        if not total_records:
+            logger.info("%s no records to update", log_prefix)
+            return
+
+        if touched_staff_ids:
+            from monitoring_app.cache_conf import invalidate_attendance_scope
+
+            invalidate_attendance_scope(list(touched_staff_ids), list(touched_dates))
 
         logger.info(
             "%s done updated=%s total=%s skipped_not_due=%s",
@@ -607,37 +614,63 @@ def process_lesson_attendance_batch(attendance_data, _image_name, image_content)
         return {"success_records": [], "error_records": []}
 
     staff_by_pin = models.Staff.objects.in_bulk(
-        {record.get("staff_pin") for record in attendance_data}, field_name="pin"
+        {str(record.get("staff_pin") or "").strip().upper() for record in attendance_data},
+        field_name="pin",
     )
     for idx, record in enumerate(attendance_data):
         staff_pin = record.get("staff_pin")
+        normalized_staff_pin = str(staff_pin or "").strip().upper()
         tutor_id = record.get("tutor_id")
+        recovery_record = json.dumps(
+            {
+                key: record.get(key)
+                for key in (
+                    "staff_pin",
+                    "subject_name",
+                    "tutor_id",
+                    "tutor",
+                    "first_in",
+                    "latitude",
+                    "longitude",
+                )
+            },
+            ensure_ascii=False,
+            default=str,
+            separators=(",", ":"),
+        )
         try:
             tutor = record.get("tutor")
             first_in = record.get("first_in")
+            if isinstance(first_in, str):
+                first_in = parse_datetime(first_in)
+            if first_in is None:
+                raise ValueError("first_in must be a valid ISO 8601 datetime")
+            if timezone.is_naive(first_in):
+                first_in = timezone.make_aware(first_in)
             latitude = record.get("latitude")
             longitude = record.get("longitude")
             subject_name = record.get("subject_name") or ""
 
-            staff = staff_by_pin.get(staff_pin)
+            staff = staff_by_pin.get(normalized_staff_pin)
             if staff is None:
                 raise models.Staff.DoesNotExist
 
             file_path = None
             if image_content:
-                base_dir, file_path = utils.get_lesson_attendance_photo_path(staff_pin)
+                base_dir, file_path = utils.get_lesson_attendance_photo_path(staff.pin)
                 os.makedirs(base_dir, exist_ok=True)
                 try:
                     with open(file_path, "wb") as destination:
                         destination.write(image_content)
                 except OSError as e:
                     logger.error(
-                        "%s image_save_failed staff_pin=%s path=%s errno=%s error=%s",
+                        "%s image_save_failed staff_pin=%s path=%s errno=%s error=%s recovery_record=%s",
                         log_prefix,
                         staff_pin,
                         file_path,
                         getattr(e, "errno", None),
                         str(e),
+                        recovery_record,
                     )
                     error_records.append(
                         {"staff_pin": staff_pin, "error": f"Image save failed: {e}"}
@@ -652,7 +685,7 @@ def process_lesson_attendance_batch(attendance_data, _image_name, image_content)
                 first_in=first_in,
                 latitude=latitude,
                 longitude=longitude,
-                date_at=timezone.now().date(),
+                date_at=timezone.localdate(first_in),
                 staff_image_path=file_path,
             )
             success_records.append({"id": lesson_attendance.id})
@@ -660,17 +693,18 @@ def process_lesson_attendance_batch(attendance_data, _image_name, image_content)
                 "%s created lesson_id=%s staff_pin=%s tutor_id=%s",
                 log_prefix,
                 lesson_attendance.id,
-                staff_pin,
+                staff.pin,
                 tutor_id,
             )
 
         except models.Staff.DoesNotExist:
             logger.warning(
-                "%s staff_not_found staff_pin=%s tutor_id=%s record_index=%s (add Staff with this pin in control or fix journal payload)",
+                "%s staff_not_found staff_pin=%s tutor_id=%s record_index=%s recovery_record=%s",
                 log_prefix,
                 staff_pin,
                 tutor_id,
                 idx,
+                recovery_record,
             )
             error_records.append(
                 {
@@ -680,12 +714,13 @@ def process_lesson_attendance_batch(attendance_data, _image_name, image_content)
             )
         except Exception as e:
             logger.exception(
-                "%s record_exception staff_pin=%s tutor_id=%s record_index=%s error=%s",
+                "%s record_exception staff_pin=%s tutor_id=%s record_index=%s error=%s recovery_record=%s",
                 log_prefix,
                 staff_pin,
                 tutor_id,
                 idx,
                 str(e),
+                recovery_record,
             )
             error_records.append({"staff_pin": staff_pin, "error": str(e)})
 
@@ -696,13 +731,6 @@ def process_lesson_attendance_batch(attendance_data, _image_name, image_content)
         len(error_records),
         [r.get("staff_pin") for r in error_records],
     )
-    if error_records:
-        logger.warning(
-            "%s error_details %s",
-            log_prefix,
-            error_records,
-        )
-
     return {"success_records": success_records, "error_records": error_records}
 
 
@@ -1083,20 +1111,6 @@ def rescan_lesson_attendance_photo_ids(
     return stats
 
 
-@shared_task(
-    name="monitoring_app.tasks.augment_user_images",
-    bind=True,
-    queue="control_app_queue",
-)
-def augment_user_images(_self):
-    if not getattr(settings, "ENABLE_AUGMENT", False):
-        logger.info("augment_user_images: disabled by settings")
-        return "disabled"
-    from monitoring_app.augment import run_dali_augmentation_for_all_staff
-
-    return run_dali_augmentation_for_all_staff()
-
-
 @shared_task(name="monitoring_app.tasks.clean_old_attendance_photos")
 def clean_old_attendance_photos(days_old=31):
     """
@@ -1312,7 +1326,9 @@ def warmup_cache_task(force: bool = False, keys=None):
     results = warmup_cache(keys=keys_list, force=force)
 
     logger.info(
-        f"Cache warmup task completed. Success: {sum(1 for r in results.values() if r.get('status') == 'success')}/{len(results)}"
+        "Cache warmup task completed. Success: %s/%s",
+        sum(1 for r in results.values() if r.get("status") == "success"),
+        len(results),
     )
     return results
 
@@ -1443,6 +1459,7 @@ def process_uploaded_file(
                 f"Неизвестных pin: {detail['skipped_unknown_pin']}",
                 f"Отклонено файлов: "
                 f"{detail['skipped_bad_member'] + detail['skipped_too_large']}",
+                f"Нет лица, снятого прямо (аватар не заменён): {detail['skipped_bad_face']}",
             ]
         elif category == "public_holidays":
             detail = upload_processing.import_public_holidays(path, progress=progress)
@@ -1478,3 +1495,11 @@ def process_uploaded_file(
                 os.remove(path)
         except OSError as error:
             logger.warning("process_uploaded_file: не удалось удалить %s — %s", path, error)
+
+
+@shared_task(name="monitoring_app.tasks.flush_expired_jwt_task")
+def flush_expired_jwt_task():
+    """Удаляет из blacklist/outstanding истёкшие refresh-токены (они и так недействительны)."""
+    from django.core.management import call_command
+
+    call_command("flushexpiredtokens")
