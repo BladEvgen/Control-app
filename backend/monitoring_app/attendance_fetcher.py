@@ -45,7 +45,7 @@ from datetime import time, timedelta
 from datetime import timezone as dt_timezone
 from datetime import tzinfo
 from operator import itemgetter
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiohttp
@@ -62,7 +62,7 @@ from monitoring_app import models
 from monitoring_app.cache_conf import invalidate_staff_attendance_caches
 from monitoring_app.services import attendance_day
 
-logger = logging.getLogger("django")
+logger = logging.getLogger(__name__)
 
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
@@ -788,6 +788,8 @@ class AsyncAttendanceFetcher:
             try:
                 chunks = await asyncio.gather(*windows)
             except AttendanceApiError as error:
+                if error.info.get("status") in (401, 403):
+                    raise
                 logger.warning("Bulk attendance fetch refused (%s), falling back to per-PIN", error)
                 self._bulk = False
                 return await self.fetch_events(start_day, end_day, pins)
@@ -857,6 +859,8 @@ class AsyncAttendanceFetcher:
             mode,
         )
 
+        touched_staff_ids: Set[int] = set()
+        touched_days: Set[date] = set()
         async with self:
             chunk_start = start_day
             while chunk_start <= end_day:
@@ -897,6 +901,10 @@ class AsyncAttendanceFetcher:
                         by_day[staff_id] = result
 
                 saved = await database_sync_to_async(save_attendance_days)(days, mode)
+                for work_day, by_staff in days.items():
+                    if by_staff:
+                        touched_days.add(work_day)
+                        touched_staff_ids.update(by_staff)
                 for key in totals:
                     totals[key] += saved[key]
                 logger.info(
@@ -910,7 +918,9 @@ class AsyncAttendanceFetcher:
                 chunk_start = chunk_end + timedelta(days=1)
 
         if totals["created_records"] or totals["updated_records"]:
-            await database_sync_to_async(invalidate_staff_attendance_caches)()
+            await database_sync_to_async(invalidate_staff_attendance_caches)(
+                touched_staff_ids, touched_days
+            )
         summary = {
             "total_pins": len(staff_ids),
             "successful_requests": 0 if failed_chunks else len(staff_ids),
@@ -933,7 +943,7 @@ class AsyncAttendanceFetcher:
     async def get_all_attendance(self, days: Optional[int] = None) -> Dict[str, Any]:
         """Ежедневная выгрузка одного рабочего дня для всех сотрудников.
 
-        Границы дня — в таймзоне проекта: в 04:00 1 марта выгружается 28 февраля
+        Границы дня — в таймзоне проекта: в 00:05 1 марта выгружается 28 февраля
         и сохраняется с date_at = 1 марта.
 
         Args:
@@ -943,7 +953,7 @@ class AsyncAttendanceFetcher:
             Сводка sync_range плюс days, source_date (рабочий день) и save_date (date_at).
         """
         days_to_subtract = days if days is not None else settings.DAYS
-        work_day = timezone.localtime(timezone.now()).date() - timedelta(days=days_to_subtract)
+        work_day = timezone.localdate() - timedelta(days=days_to_subtract)
         summary = await self.sync_range(work_day, work_day, chunk_days=1)
         return {
             "days": days_to_subtract,

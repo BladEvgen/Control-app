@@ -1,9 +1,13 @@
+import bisect
+import datetime
 import logging
-from typing import Any, Callable, Dict, List, Optional, TypeVar, Union, cast
+import re
+from typing import Any, Callable, Dict, Iterable, List, Optional, TypeVar, Union, cast
 
 from django.core.cache import caches
 from django.core.cache.backends.base import BaseCache
 from django.core.cache.backends.locmem import LocMemCache
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +42,34 @@ def get_cache(
     data: Optional[T] = cache.get(key)
     if data is None and query is not None:
         data = query()
-        cache.set(key, data, timeout)
+        set_tracked(key, data, timeout, cache=cache)
     return data
+
+
+_TRACKED_PREFIXES = (
+    "staff_detail_",
+    "department_confirmation_",
+    "staff_attendance_stats_",
+    "map_location_",
+    "attendance_data_",
+    "staffatt_count_",
+)
+_KEY_INDEX = "attendance_cache_index"
+
+
+def _redis_client(cache: BaseCache) -> Any:
+    backend = cast(Any, cache)
+    if hasattr(backend, "_cache") and hasattr(backend._cache, "get_client"):
+        return backend._cache.get_client(write=True)
+    return None
+
+
+def set_tracked(key: str, value: Any, timeout: Optional[int], cache: BaseCache = Cache) -> None:
+    """cache.set + запись ключа в индекс посещаемости (для invalidate_attendance_scope)."""
+    cache.set(key, value, timeout)
+    client = _redis_client(cache)
+    if client is not None and key.startswith(_TRACKED_PREFIXES):
+        client.sadd(cache.make_key(_KEY_INDEX), cache.make_key(key))
 
 
 def preload_cache(
@@ -70,17 +100,17 @@ def preload_cache(
     if not force:
         data = cache.get(key)
         if data is not None:
-            logger.debug(f"Cache hit for key: {key}")
+            logger.debug("Cache hit for key: %s", key)
             return data
 
-    logger.info(f"Preloading cache for key: {key}")
+    logger.info("Preloading cache for key: %s", key)
     try:
         data = query()
         cache.set(key, data, timeout)
-        logger.info(f"Successfully preloaded cache for key: {key}")
+        logger.info("Successfully preloaded cache for key: %s", key)
         return data
     except Exception as e:
-        logger.error(f"Error preloading cache for key {key}: {str(e)}")
+        logger.error("Error preloading cache for key %s: %s", key, e)
         return None
 
 
@@ -96,7 +126,7 @@ def register_preload(key: str, query: Callable[[], Any]) -> None:
         >>> register_preload("parent_departments", lambda: get_parent_departments())
     """
     _preload_registry[key] = query
-    logger.info(f"Registered preload function for key: {key}")
+    logger.info("Registered preload function for key: %s", key)
 
 
 def warmup_cache(keys: Optional[List[str]] = None, force: bool = False) -> Dict[str, Any]:
@@ -117,11 +147,11 @@ def warmup_cache(keys: Optional[List[str]] = None, force: bool = False) -> Dict[
     results: Dict[str, Any] = {}
     keys_to_warm = keys if keys else list(_preload_registry.keys())
 
-    logger.info(f"Starting cache warmup for {len(keys_to_warm)} keys (force={force})")
+    logger.info("Starting cache warmup for %s keys (force=%s)", len(keys_to_warm), force)
 
     for key in keys_to_warm:
         if key not in _preload_registry:
-            logger.warning(f"Preload function not registered for key: {key}")
+            logger.warning("Preload function not registered for key: %s", key)
             results[key] = {"status": "error", "message": "Not registered"}
             continue
 
@@ -133,11 +163,12 @@ def warmup_cache(keys: Optional[List[str]] = None, force: bool = False) -> Dict[
                 "data": data,
             }
         except Exception as e:
-            logger.error(f"Error warming up cache for key {key}: {str(e)}")
+            logger.error("Error warming up cache for key %s: %s", key, e)
             results[key] = {"status": "error", "message": str(e)}
 
     logger.info(
-        f"Cache warmup completed. Success: {sum(1 for r in results.values() if r.get('status') == 'success')}"
+        "Cache warmup completed. Success: %s",
+        sum(1 for r in results.values() if r.get("status") == "success"),
     )
     return results
 
@@ -159,12 +190,12 @@ def invalidate_cache(key: str, cache: BaseCache = Cache) -> bool:
     try:
         deleted = cache.delete(key)
         if deleted:
-            logger.info(f"Cache invalidated for key: {key}")
+            logger.info("Cache invalidated for key: %s", key)
         else:
-            logger.debug(f"Cache key not found for invalidation: {key}")
+            logger.debug("Cache key not found for invalidation: %s", key)
         return bool(deleted)
     except Exception as e:
-        logger.error(f"Error invalidating cache for key {key}: {str(e)}")
+        logger.error("Error invalidating cache for key %s: %s", key, e)
         return False
 
 
@@ -252,71 +283,136 @@ def invalidate_staff_detail_for_department(
     return invalidate_cache_pattern(f"staff_detail_{version}_{department_id}_", cache=cache)
 
 
-def invalidate_lesson_attendance_derived_caches(
-    *,
-    staff_pins: Optional[List[str]] = None,
-    staff_ids: Optional[List[int]] = None,
-    department_ids: Optional[List[Union[int, str]]] = None,
-    lesson_dates: Optional[List[Any]] = None,
-    cache: BaseCache = Cache,
-) -> None:
-    """Инвалидирует кэши, зависящие от LessonAttendance (staff detail, stats, карта)."""
-    from django.core.cache import cache as django_cache
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
+
+def _cache_keys(cache: BaseCache) -> tuple[list[str], Callable[[list[str]], None]]:
+    client = _redis_client(cache)
+    if client is not None:
+        index = cache.make_key(_KEY_INDEX)
+        raw = [k.decode() if isinstance(k, bytes) else k for k in client.smembers(index)]
+        pipe = client.pipeline()
+        for key in raw:
+            pipe.exists(key)
+        expired = {key for key, alive in zip(raw, pipe.execute()) if not alive}
+        if expired:
+            client.srem(index, *expired)
+        live = [key for key in raw if key not in expired]
+
+        def delete(keys: list[str]) -> None:
+            if keys:
+                client.delete(*keys)
+                client.srem(index, *keys)
+
+        return live, delete
+    backend = cast(Any, cache)
+    if isinstance(cache, LocMemCache):
+
+        def delete_local(keys: list[str]) -> None:
+            with backend._lock:
+                for key in keys:
+                    backend._delete(key)
+
+        return list(backend._cache), delete_local
+    return [], lambda keys: None
+
+
+def _touches(rest: str, days: list[datetime.date]) -> bool:
+    """Ключ с датой/диапазоном дат задевает один из days. Ключ без даты — задевает всегда."""
+    found = _DATE_RE.findall(rest)
+    if not found:
+        return True
+    start = datetime.date.fromisoformat(found[0])
+    end = datetime.date.fromisoformat(found[1]) if len(found) > 1 else start
+    i = bisect.bisect_left(days, start)
+    return i < len(days) and days[i] <= end
+
+
+def _department_chain(department_ids: set[str]) -> set[str]:
+    """Отделы и все их предки: статистика отдела кэшируется под каждым предком (поддерево)."""
+    from monitoring_app.models import ChildDepartment
+
+    parent = dict(ChildDepartment.objects.values_list("id", "parent_id"))
+    out: set[str] = set()
+    for dept_id in department_ids:
+        while dept_id and dept_id not in out:
+            out.add(dept_id)
+            dept_id = parent.get(dept_id)
+    return out
+
+
+def _as_day(value: Any) -> datetime.date:
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    return datetime.date.fromisoformat(str(value)[:10])
+
+
+def invalidate_attendance_scope(
+    staff_ids: Iterable[int],
+    days: Iterable[Any],
+    cache: BaseCache = Cache,
+) -> int:
+    """Сбрасывает только кэши, построенные из посещаемости этих сотрудников за эти рабочие дни..
+
+    Returns:
+        Количество удалённых ключей.
+    """
     from monitoring_app.models import Staff
 
-    _invalidate_excel_attendance_cache(cache=cache)
-
+    day_list = sorted({_as_day(d) for d in days if d})
+    ids = [int(sid) for sid in staff_ids if sid]
+    if not day_list:
+        return 0
+    rows = list(Staff.all_objects.filter(id__in=ids).values_list("pin", "department_id"))
+    pins = {pin.strip() for pin, _ in rows if pin and pin.strip()}
+    departments = {str(dept) for _, dept in rows if dept is not None}
     version = staff_detail_cache_version()
-    invalidate_cache_pattern(f"staff_attendance_stats_{version}_*", cache=cache)
-    invalidate_cache_pattern(f"map_location_{version}_*", cache=cache)
-    invalidate_cache_pattern("department_confirmation_pins_*", cache=cache)
 
-    for lesson_date in lesson_dates or []:
-        django_cache.delete(f"photos_for_{lesson_date}")
+    dated_prefixes = [f"staff_detail_{version}_{pin}_" for pin in pins]
+    dated_prefixes += [f"staff_detail_{version}_{d}_" for d in _department_chain(departments)]
+    dated_prefixes += [f"department_confirmation_{d}_" for d in departments]
+    dated_prefixes += [
+        "department_confirmation_pins_",
+        f"staff_attendance_stats_{version}_",
+        f"map_location_{version}_",
+        "attendance_data_",
+    ]
+    made = [(cache.make_key(prefix), prefix) for prefix in dated_prefixes]
+    always = cache.make_key("staffatt_count_")
 
-    resolved_pins: set[str] = set()
-    for pin in staff_pins or []:
-        pin_value = (pin or "").strip()
-        if pin_value:
-            resolved_pins.add(pin_value)
+    keys, delete = _cache_keys(cache)
+    doomed = [
+        key
+        for key in keys
+        if key.startswith(always)
+        or any(key.startswith(m) and _touches(key[len(m) :], day_list) for m, _ in made)
+    ]
+    delete(doomed)
 
-    id_list = [int(sid) for sid in (staff_ids or []) if sid]
-    if id_list:
-        for pin in Staff.all_objects.filter(id__in=id_list).values_list("pin", flat=True):
-            pin_value = (pin or "").strip()
-            if pin_value:
-                resolved_pins.add(pin_value)
-
-    for pin in resolved_pins:
-        invalidate_staff_detail_for_pin(pin, cache=cache)
-
-    resolved_dept_ids: set[str] = set()
-    for dept_id in department_ids or []:
-        if dept_id is not None:
-            resolved_dept_ids.add(str(dept_id))
-
-    if id_list:
-        for dept_id in Staff.all_objects.filter(id__in=id_list).values_list(
-            "department_id", flat=True
-        ):
-            if dept_id is not None:
-                resolved_dept_ids.add(str(dept_id))
-
-    for dept_id in resolved_dept_ids:
-        invalidate_cache_pattern(f"department_confirmation_{dept_id}_*", cache=cache)
-        invalidate_staff_detail_for_department(dept_id, cache=cache)
+    exact = [f"photos_for_{d}" for d in day_list]
+    if timezone.localdate() in day_list:
+        exact += ["today_attendance_stats", "map_locations_today"]
+    cache.delete_many(exact)
+    logger.info(
+        "Attendance cache scope: %s staff, %s days, %s keys", len(ids), len(day_list), len(doomed)
+    )
+    return len(doomed)
 
 
-def _invalidate_excel_attendance_cache(cache: BaseCache = Cache) -> None:
-    invalidate_cache_pattern("attendance_data_*", cache=cache)
+def invalidate_staff_attendance_caches(
+    staff_ids: Optional[Iterable[int]] = None,
+    days: Optional[Iterable[Any]] = None,
+    cache: BaseCache = Cache,
+) -> None:
+    """Сброс кэшей StaffAttendance после bulk-записи (сигналы не шлются).
 
-
-def invalidate_staff_attendance_caches(cache: BaseCache = Cache) -> None:
-    """Чистит всё, что строится из StaffAttendance (для bulk-записей, где сигналы не шлются).
-
-    Ключи содержат версию, поэтому чистим по префиксам.
+    С staff_ids и days (рабочие дни) — точечно; без них — всё (смена режима отчёта и т.п.).
     """
+    if staff_ids is not None and days is not None:
+        invalidate_attendance_scope(staff_ids, days, cache=cache)
+        return
     for prefix in (
         "attendance_data_",
         "staffatt_count_",
