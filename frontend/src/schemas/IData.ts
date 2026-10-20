@@ -1,56 +1,3 @@
-export class BaseState<T> {
-  data: T | null;
-  error: string;
-  loading: boolean;
-  showNotification: boolean;
-
-  constructor(data: T | null = null) {
-    this.data = data;
-    this.error = "";
-    this.loading = true;
-    this.showNotification = false;
-  }
-}
-export interface ITokenResponse {
-  refresh: string;
-  access: string;
-  access_token_expires: string;
-  refresh_token_expires: string;
-  user: {
-    username: string;
-    is_banned: boolean;
-    is_staff: boolean;
-    is_super: boolean;
-  };
-}
-
-export interface IUserDetails {
-  user: {
-    username: string;
-    email: string;
-    first_name: string;
-    last_name: string;
-    date_joined: string;
-    last_login: string | null;
-    phonenumber: string;
-    is_banned: boolean;
-    last_login_ip: string | null;
-  };
-}
-
-export class ExtendedState<T> extends BaseState<T> {
-  startDate: string;
-  endDate: string;
-  oneMonthDataFetched: boolean;
-
-  constructor(data: T | null = null) {
-    super(data);
-    this.startDate = "";
-    this.endDate = "";
-    this.oneMonthDataFetched = false;
-  }
-}
-
 export interface IChildDepartment {
   child_id: string | number;
   name: string;
@@ -101,8 +48,6 @@ export interface StaffData {
   lesson_attendance_audit?: Record<string, LessonAttendanceDayAudit>;
   percent_for_period: number;
   bonus_percentage: number;
-  contract_type: string | null;
-  salary: number | null;
 }
 
 export type LessonDayStatus = "ok" | "pending_manual_review" | "rejected_fraud";
@@ -142,7 +87,6 @@ export interface AreaSequencePoint {
 export interface AttendanceData {
   first_in: string | null;
   last_out: string | null;
-  /** Which turnstile mark is missing on a one-sided day. */
   turnstile_missing?: "in" | "out" | null;
   percent_day: number;
   total_minutes: number;
@@ -150,6 +94,8 @@ export interface AttendanceData {
   area_sequence?: AreaSequencePoint[] | null;
   is_weekend: boolean;
   is_remote_work: boolean;
+  remote_credited_minutes?: number;
+  remote_activity_minutes?: number;
   is_absent_approved: boolean;
   absent_reason: string | null;
   lesson_attendance_day?: LessonAttendanceDayAudit | null;

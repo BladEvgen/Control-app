@@ -33,6 +33,13 @@ export function matchesDepartmentSearch(value: string, query: string): boolean {
   );
 }
 
+const pathWordsCache = new WeakMap<DepartmentNode, string[]>();
+const nodePathWords = (node: DepartmentNode): string[] => {
+  let words = pathWordsCache.get(node);
+  if (!words) pathWordsCache.set(node, (words = searchWords(node.path)));
+  return words;
+};
+
 export function filterNavigation(
   nodes: DepartmentNode[],
   query: string,
@@ -42,7 +49,7 @@ export function filterNavigation(
   return nodes.filter((node) => {
     if (!tokens.length)
       return node.ancestor_ids.every((id) => expanded.has(id));
-    const pathWords = searchWords(node.path);
+    const pathWords = nodePathWords(node);
     return tokens.every((token) =>
       pathWords.some((word) => word.startsWith(token)),
     );

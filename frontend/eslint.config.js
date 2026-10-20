@@ -20,7 +20,7 @@ export default tseslint.config(
       ecmaVersion: 2020,
       globals: { React: 'readonly', JSX: 'readonly' },
       parserOptions: {
-        project: ['./tsconfig.json', './tsconfig.node.json'],
+        project: ['./tsconfig.json', './tsconfig.node.json', './tests/tsconfig.json'],
       },
     },
     plugins: {

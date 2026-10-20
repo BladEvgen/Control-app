@@ -52,37 +52,3 @@ export const isAuthenticated = (): boolean => {
     return false;
   }
 };
-
-export const getUsername = (): string => {
-  try {
-    return getCookie("username") || "";
-  } catch (error) {
-    log.error("Error getting username:", error);
-    return "";
-  }
-};
-
-export const logoutUser = (
-  navigate: (path: string) => void,
-  extraCallback?: () => void,
-): void => {
-  try {
-    clearAuthData();
-
-    if (extraCallback) {
-      extraCallback();
-    }
-
-    window.dispatchEvent(new Event("userLoggedOut"));
-
-    navigate("/login");
-  } catch (error) {
-    log.error("Error during logout:", error);
-
-    try {
-      window.location.href = "/app/login";
-    } catch (redirectError) {
-      log.error("Even redirect failed:", redirectError);
-    }
-  }
-};

@@ -1527,23 +1527,6 @@ body.is-resizing {
     animation: none;
   }
 }
-.map-controls {
-  background: var(--ws-surface);
-  border-color: var(--ws-line);
-  border-radius: 14px;
-}
-.map-controls button {
-  height: auto;
-  min-height: 44px;
-  font-size: 13px;
-  line-height: 1.4;
-  padding: 8px;
-}
-.map-controls button[aria-pressed="true"] {
-  background: var(--ws-hover);
-  color: var(--ws-ink);
-  box-shadow: inset 0 0 0 1px var(--ws-line);
-}
 .photo-lightbox {
   max-width: calc(100vw - 1rem);
   max-height: calc(100dvh - 1rem);
@@ -1560,11 +1543,6 @@ body.is-resizing {
 .photo-lightbox > div > button {
   min-width: 44px;
   min-height: 44px;
-}
-.map-dashboard .leaflet-control-zoom a {
-  min-width: 44px;
-  min-height: 44px;
-  line-height: 44px;
 }
 
 @media (max-width: 900px) {
@@ -2507,5 +2485,480 @@ body.is-resizing {
   }
   .auth-main {
     padding: 24px 22px 26px;
+  }
+}
+
+.facelab {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+}
+.facelab-modes-row {
+  display: grid;
+  gap: 6px;
+}
+.facelab-modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  max-width: 560px;
+  padding: 3px;
+  border: 1px solid var(--ws-line);
+  border-radius: 12px;
+  background: var(--ws-canvas);
+}
+.facelab-modes button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 10px;
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ws-muted);
+  white-space: nowrap;
+  transition:
+    background-color 0.2s,
+    color 0.2s;
+}
+.facelab-modes button:hover {
+  color: var(--ws-ink);
+}
+.facelab-modes button[aria-pressed="true"] {
+  background: var(--ws-accent);
+  color: var(--ws-accent-ink);
+}
+.facelab-mode-hint {
+  font-size: 13px;
+  color: var(--ws-muted);
+}
+
+.facelab-voice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.facelab-voice-label {
+  font-size: 13px;
+  color: var(--ws-muted);
+}
+.facelab-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--ws-line);
+  border-radius: 12px;
+  background: var(--ws-canvas);
+}
+.facelab-seg button {
+  display: grid;
+  place-items: center;
+  min-width: 44px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ws-muted);
+  transition:
+    background-color 0.2s,
+    color 0.2s;
+}
+.facelab-seg button:hover {
+  color: var(--ws-ink);
+}
+.facelab-seg button[aria-pressed="true"] {
+  background: var(--ws-accent);
+  color: var(--ws-accent-ink);
+}
+
+.facelab-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+  gap: 20px;
+  align-items: start;
+}
+.facelab-work {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.facelab-result {
+  position: sticky;
+  top: 16px;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.facelab-result-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 160px;
+  padding: 20px;
+  border: 1.5px dashed var(--ws-line);
+  border-radius: 18px;
+  font-size: 14px;
+  color: var(--ws-muted);
+  text-align: center;
+}
+.facelab-result-empty[data-busy] {
+  border-style: solid;
+  color: var(--ws-ink);
+}
+.facelab-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--ws-line);
+  border-radius: 18px;
+  background: var(--ws-surface-solid);
+  box-shadow: var(--ws-shadow);
+}
+.facelab-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.facelab-card-hint {
+  margin-top: -6px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ws-muted);
+}
+.facelab-step-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.facelab-step-no {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--ws-accent);
+  color: var(--ws-accent-ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+.facelab-count {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ws-muted);
+  font-variant-numeric: tabular-nums;
+}
+.facelab-btn-lg {
+  height: 46px;
+  padding: 0 18px;
+  font-size: 15px;
+}
+
+.facelab-drop {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 28px 16px 22px;
+  border: 1.5px dashed var(--ws-line);
+  border-radius: 16px;
+  background: var(--ws-canvas);
+  text-align: center;
+  transition:
+    border-color 0.2s,
+    background-color 0.2s,
+    transform 0.25s var(--ws-ease);
+}
+.facelab-drop[data-active] {
+  border-color: var(--ws-ink);
+  background: var(--ws-hover);
+  transform: scale(1.01);
+}
+.facelab-drop-art {
+  color: var(--ws-ink);
+}
+.facelab-drop-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.facelab-drop-hint {
+  max-width: 340px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ws-muted);
+}
+.facelab-drop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.facelab-preview {
+  display: grid;
+  gap: 12px;
+  border-radius: 16px;
+}
+.facelab-preview[data-active] {
+  outline: 2px dashed var(--ws-ink);
+  outline-offset: 4px;
+}
+.facelab-preview-frame {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--ws-line);
+  border-radius: 16px;
+  background: var(--ws-hover);
+  animation: facelab-rise 0.3s var(--ws-ease) both;
+}
+.facelab-preview-frame img {
+  display: block;
+  width: 100%;
+  max-height: min(52vh, 440px);
+  object-fit: contain;
+}
+.facelab-preview-frame figcaption {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 12px 9px;
+  background: linear-gradient(to top, rgb(0 0 0 / 65%), transparent);
+  font-size: 12px;
+  color: rgb(255 255 255 / 85%);
+  font-variant-numeric: tabular-nums;
+}
+.facelab-preview-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: #fff;
+}
+.facelab-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.facelab-preview-submit {
+  flex: 1 1 180px;
+  height: 42px;
+}
+
+.facelab-poses {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.facelab-pose-inner {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 12px 8px 10px;
+  border: 1px solid var(--ws-line);
+  border-radius: 14px;
+  background: var(--ws-canvas);
+  color: var(--ws-faint);
+  transition:
+    border-color 0.2s,
+    background-color 0.2s,
+    color 0.2s;
+}
+button.facelab-pose-inner:hover {
+  background: var(--ws-hover);
+}
+.facelab-pose[data-done] .facelab-pose-inner {
+  color: var(--ws-ink);
+}
+.facelab-pose[data-active] .facelab-pose-inner {
+  border-color: var(--ws-ink);
+  box-shadow: inset 0 0 0 1px var(--ws-ink);
+  color: var(--ws-ink);
+}
+.facelab-pose-art {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+.facelab-pose-check {
+  position: absolute;
+  right: -2px;
+  bottom: 2px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--ws-canvas);
+  border-radius: 999px;
+  background: #16a34a;
+  color: #fff;
+  font-size: 10px;
+  animation: facelab-pop 0.3s var(--ws-ease) both;
+}
+.facelab-pose-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ws-ink);
+}
+.facelab-pose-state {
+  font-size: 12px;
+  color: var(--ws-muted);
+}
+.facelab-pose[data-active] .facelab-pose-state {
+  font-weight: 600;
+  color: var(--ws-ink);
+}
+.facelab-instruction {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--ws-hover);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.facelab-actions-col {
+  display: grid;
+  gap: 8px;
+}
+.facelab-actions-col .ws-btn-ghost {
+  justify-content: center;
+}
+
+.facelab-note {
+  padding: 12px 14px;
+  border: 1px solid var(--ws-line);
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ws-ink);
+}
+.facelab-note[data-tone="warning"] {
+  border-color: rgb(217 119 6 / 35%);
+  background: rgb(217 119 6 / 8%);
+}
+.facelab-note[data-tone="success"] {
+  border-color: rgb(22 163 74 / 35%);
+  background: rgb(22 163 74 / 8%);
+}
+.facelab-note[data-tone="danger"] {
+  border-color: rgb(239 68 68 / 35%);
+  background: rgb(239 68 68 / 8%);
+}
+.facelab-empty {
+  padding: 22px 16px;
+  border: 1.5px dashed var(--ws-line);
+  border-radius: 16px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--ws-muted);
+}
+.facelab-empty-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+  color: var(--ws-ink);
+}
+.facelab-details {
+  border: 1px solid var(--ws-line);
+  border-radius: 14px;
+  background: var(--ws-canvas);
+}
+.facelab-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 14px;
+  font-weight: 500;
+  list-style: none;
+  cursor: pointer;
+}
+.facelab-details > summary::-webkit-details-marker {
+  display: none;
+}
+.facelab-details > summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.2s var(--ws-ease);
+}
+.facelab-details[open] > summary::after {
+  transform: rotate(-135deg);
+}
+.facelab-details > :not(summary) {
+  margin: 0 12px 12px;
+}
+
+@keyframes facelab-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@keyframes facelab-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+}
+
+@media (max-width: 1100px) {
+  .facelab-layout {
+    grid-template-columns: 1fr;
+  }
+  .facelab-result {
+    position: static;
+  }
+  .facelab-result-empty:not([data-busy]) {
+    display: none;
+  }
+}
+@media (max-width: 720px) {
+  .facelab-modes {
+    max-width: none;
+  }
+  .facelab-modes button {
+    gap: 6px;
+    padding: 0 6px;
+    font-size: 13px;
+  }
+  .facelab-voice-label {
+    display: none;
+  }
+  .facelab-card {
+    padding: 14px;
+  }
+  .facelab-pose-inner {
+    padding: 10px 4px 8px;
+  }
+  .facelab-preview-actions {
+    position: sticky;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    z-index: 5;
+    padding: 8px;
+    border: 1px solid var(--ws-line);
+    border-radius: 14px;
+    background: var(--ws-surface-solid);
+    box-shadow: var(--ws-shadow-pop);
+  }
+  .facelab-preview-actions .ws-btn-ghost,
+  .facelab-preview-submit {
+    height: 44px;
+  }
+}
+@media (hover: none) {
+  .facelab-drop-dnd {
+    display: none;
   }
 }
