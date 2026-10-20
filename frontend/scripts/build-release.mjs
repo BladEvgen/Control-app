@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { measureBuildFiles } from "./build-size.mjs";
 
 const KEEP_RELEASE_COUNT = 5;
 const MANIFEST_FILENAME = ".release-manifest.json";
@@ -242,6 +243,11 @@ const main = async () => {
     if (builtAppVersion.buildId !== buildMeta.buildId) {
       throw new Error("Build metadata mismatch between runtime and published app-version.json");
     }
+
+    const size = await measureBuildFiles(await listFilesRecursive(tempOutDir));
+    console.log(`\n[build-release] Current build: ${size.files} files, including public assets`);
+    console.log(`Total: ${(size.bytes / 1000).toFixed(2)} kB`);
+    console.log(`Total compressed (gzip): ${(size.compressedBytes / 1000).toFixed(2)} kB\n`);
 
     const assetPaths = await copyDirContents(tempAssetsDir, DIST_ASSETS_DIR);
     await atomicReplaceFile(tempIndexPath, path.join(DIST_DIR, "index.html"));

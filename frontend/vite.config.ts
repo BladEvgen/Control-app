@@ -1,6 +1,8 @@
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, transformWithOxc, type Plugin } from "vite";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 type AppBuildMeta = {
   buildId: string;
@@ -57,7 +59,68 @@ export default defineConfig(() => {
     define: {
       __APP_BUILD_META__: JSON.stringify(buildMeta),
     },
-    plugins: [tailwindcss(), react(), buildMetadataPlugin(buildMeta)],
+    plugins: [
+      {
+        name: "maplibre-source",
+        enforce: "pre",
+        generateBundle() {
+          this.emitFile({
+            type: "asset",
+            fileName: "assets/maplibre-LICENSE.txt",
+            source: readFileSync(
+              new URL(
+                "./node_modules/maplibre-gl/LICENSE.txt",
+                import.meta.url,
+              ),
+              "utf8",
+            ),
+          });
+        },
+        transform(code, id) {
+          if (!/[\\/]maplibre-gl[\\/]src[\\/].*\.ts$/.test(id)) return;
+          return transformWithOxc(code, id, {
+            lang: "ts",
+            target: "es2020",
+            assumptions: { setPublicClassFields: true },
+            typescript: { removeClassFieldsWithoutInitializer: true },
+          });
+        },
+      },
+      {
+        name: "fontsource-woff2",
+        enforce: "pre",
+        transform(code, id) {
+          if (!/[\\/]@fontsource[\\/].*\.css$/.test(id)) return;
+          return code.replace(
+            /,\s*url\([^)]*\.woff\)\s*format\(['"]woff['"]\)/g,
+            "",
+          );
+        },
+      },
+      tailwindcss(),
+      react(),
+      buildMetadataPlugin(buildMeta),
+    ],
+    optimizeDeps: { exclude: ["maplibre-gl"] },
+    resolve: {
+      alias: [
+        {
+          find: /^exceljs$/,
+          replacement: fileURLToPath(
+            new URL(
+              "./node_modules/exceljs/dist/exceljs.bare.min.js",
+              import.meta.url,
+            ),
+          ),
+        },
+        {
+          find: /^maplibre-gl$/,
+          replacement: fileURLToPath(
+            new URL("./node_modules/maplibre-gl/src/index.ts", import.meta.url),
+          ),
+        },
+      ],
+    },
     server: {
       host: "0.0.0.0",
       port: 5173,
@@ -71,6 +134,27 @@ export default defineConfig(() => {
           codeSplitting: {
             groups: [
               {
+                name: "map-shaders",
+                test: /node_modules[\\/]maplibre-gl[\\/]src[\\/]shaders[\\/]glsl[\\/]/,
+                priority: 40,
+                includeDependenciesRecursively: false,
+              },
+              {
+                name: "map-codecs",
+                test: /node_modules[\\/](@maplibre[\\/]mlt|@mapbox[\\/]vector-tile|@maplibre[\\/]vt-pbf)[\\/]/,
+                priority: 36,
+              },
+              {
+                name: "map-style",
+                test: /node_modules[\\/]@maplibre[\\/]maplibre-gl-style-spec[\\/]/,
+                priority: 35,
+              },
+              {
+                name: "map-engine",
+                test: /node_modules[\\/]maplibre-gl[\\/]/,
+                priority: 30,
+              },
+              {
                 name: "react-vendor",
                 test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
                 priority: 20,
@@ -83,6 +167,10 @@ export default defineConfig(() => {
               {
                 name: "react-router-vendor",
                 test: /node_modules[\\/](react-router|react-router-dom)[\\/]/,
+              },
+              {
+                name: "camera-audio",
+                test: /node_modules[\\/](howler|localforage)[\\/]/,
               },
               { name: "exceljs-vendor", test: /node_modules[\\/]exceljs[\\/]/ },
             ],
