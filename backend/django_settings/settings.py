@@ -2,20 +2,21 @@ import json
 import os
 import socket
 import sys
-from datetime import datetime, timedelta
+import tempfile
+from datetime import timedelta
 from pathlib import Path
 
-os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
-
 from celery.schedules import crontab
+from django.templatetags.static import static
 from dotenv import load_dotenv
 from kombu import Queue
 
-# Host names and DEBUG setting
+# Окружение
 HOST_NAMES = ["RogStrix", "MacBook-Pro.local", "MacbookPro", "Rumishka"]
 DEBUG = socket.gethostname() in HOST_NAMES
+TESTING = len(sys.argv) > 1 and sys.argv[1] == "test"
 
-# Base directories
+# Пути проекта
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 
@@ -69,7 +70,7 @@ def _jwt_lifetime_minutes(env_name: str, debug_minutes: int, prod_minutes: int) 
         return debug_minutes if DEBUG else prod_minutes
 
 
-# Custom settings
+# Посещаемость
 DAYS = 1
 # Серийные номера устройств выхода из здания (devSn из API СКУД)
 ATTENDANCE_EXIT_DEVICE_SNS = _csv_env_frozenset(
@@ -100,58 +101,12 @@ ATTENDANCE_AMBIGUOUS_EXIT_GRACE_MINUTES = int(
 ATTENDANCE_WRITE_HMAC_SECRET = os.getenv("ATTENDANCE_WRITE_HMAC_SECRET", "").strip()
 ATTENDANCE_WRITE_HMAC_TTL_SECONDS = _int_env("ATTENDANCE_WRITE_HMAC_TTL_SECONDS", 300)
 ATTENDANCE_API_TERMINAL_POOLS = _json_env_dict("ATTENDANCE_API_TERMINAL_POOLS")
-# ArcFace/InsightFace cosine thresholds are calibrated on local staff masks/samples.
-# Current calibration (1000 staff masks, 50k impostor pairs): impostor max ~=0.413,
-# p99 ~=0.220. Keep the accept threshold far above impostors, but low enough for
-# glasses/no-glasses and webcam drift when the nearest-other gap is large.
-FACE_RECOGNITION_THRESHOLD = float(os.getenv("FACE_RECOGNITION_THRESHOLD", "0.72"))
-FACE_RECOGNITION_THRESHOLD_RELAXED = float(os.getenv("FACE_RECOGNITION_THRESHOLD_RELAXED", "0.62"))
-FACE_RECOGNITION_MIN_NEIGHBOR_GAP = float(os.getenv("FACE_RECOGNITION_MIN_NEIGHBOR_GAP", "0.10"))
-FACE_ENCODING_TTA_ENABLE = os.getenv("FACE_ENCODING_TTA_ENABLE", "1").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-FACE_ENCODING_TTA_FOR_BULK_BUILD = os.getenv(
-    "FACE_ENCODING_TTA_FOR_BULK_BUILD", "0"
-).strip().lower() in ("1", "true", "yes", "on")
-FACE_ENCODING_TTA_MAX_EXTRA_VARIANTS = int(os.getenv("FACE_ENCODING_TTA_MAX_EXTRA_VARIANTS", "5"))
-FACE_ENCODING_TTA_MIN_CONSENSUS_COS = float(
-    os.getenv("FACE_ENCODING_TTA_MIN_CONSENSUS_COS", "0.76")
-)
-FACE_ENCODING_TTA_MIN_FACE_IOU = float(os.getenv("FACE_ENCODING_TTA_MIN_FACE_IOU", "0.20"))
-FACE_RUNTIME_INCLUDE_AUGMENTED_GALLERY = os.getenv(
-    "FACE_RUNTIME_INCLUDE_AUGMENTED_GALLERY", "1"
-).strip().lower() in ("1", "true", "yes", "on")
-FACE_RUNTIME_AUGMENTED_GALLERY_MAX = int(os.getenv("FACE_RUNTIME_AUGMENTED_GALLERY_MAX", "24"))
+FACE_VERIFY_THRESHOLD = float(os.getenv("FACE_VERIFY_THRESHOLD", "0.50"))
+FACE_RECOGNITION_THRESHOLD = float(os.getenv("FACE_RECOGNITION_THRESHOLD", "0.50"))
+FACE_RECOGNITION_MIN_NEIGHBOR_GAP = float(os.getenv("FACE_RECOGNITION_MIN_NEIGHBOR_GAP", "0.05"))
 FACE_RUNTIME_INCLUDE_FACE_SAMPLES = os.getenv(
     "FACE_RUNTIME_INCLUDE_FACE_SAMPLES", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
-# Runtime variants are not synthetic training data. They are consensus-checked
-# templates from the same image used only for matching camera/light/glasses drift.
-# 0.84 keeps light/JPEG/sharpness variants close to the original ArcFace vector.
-FACE_RUNTIME_CONDITION_VARIANTS_ENABLE = os.getenv(
-    "FACE_RUNTIME_CONDITION_VARIANTS_ENABLE", "1"
-).strip().lower() in ("1", "true", "yes", "on")
-FACE_RUNTIME_CONDITION_VARIANTS_MAX = int(os.getenv("FACE_RUNTIME_CONDITION_VARIANTS_MAX", "3"))
-FACE_RUNTIME_CONDITION_VARIANT_MIN_COS = float(
-    os.getenv("FACE_RUNTIME_CONDITION_VARIANT_MIN_COS", "0.84")
-)
-FACE_RUNTIME_GLASSES_VARIANTS_ENABLE = os.getenv(
-    "FACE_RUNTIME_GLASSES_VARIANTS_ENABLE", "1"
-).strip().lower() in ("1", "true", "yes", "on")
-# Glasses change the periocular region more than lighting TTA, so the consensus
-# floor is lower, but still blocks identity-drifting inpaint/overlay variants.
-FACE_RUNTIME_GLASSES_VARIANT_MIN_COS = float(
-    os.getenv("FACE_RUNTIME_GLASSES_VARIANT_MIN_COS", "0.68")
-)
-FACE_RUNTIME_GLASSES_VARIANT_INPAINT_DILATE = int(
-    os.getenv("FACE_RUNTIME_GLASSES_VARIANT_INPAINT_DILATE", "7")
-)
-FACE_RUNTIME_GLASSES_VARIANT_INPAINT_RADIUS = int(
-    os.getenv("FACE_RUNTIME_GLASSES_VARIANT_INPAINT_RADIUS", "3")
-)
 FACE_RUNTIME_ADD_CENTROID_PROTOTYPES = os.getenv(
     "FACE_RUNTIME_ADD_CENTROID_PROTOTYPES", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
@@ -208,32 +163,6 @@ FACE_GALLERY_REAL_META_REJECTED_DETAIL_LIMIT = int(
     os.getenv("FACE_GALLERY_REAL_META_REJECTED_DETAIL_LIMIT", "24")
 )
 
-# 0.62 -> 0.07% genuine rejected, no impostor accepted (0.72 rejected 1.5%).
-FACE_VERIFY_THRESHOLD_VERIFIED = float(os.getenv("FACE_VERIFY_THRESHOLD_VERIFIED", "0.62"))
-# Weak gallery: fewer distinct enrollment sources or templates than FACE_VERIFY_MIN_*.
-# Compare is still binary YES/NO: weak path requires score >= this stricter cosine floor
-# (strong gallery uses FACE_VERIFY_THRESHOLD_VERIFIED only).
-FACE_VERIFY_THRESHOLD_VERIFIED_WEAK_GALLERY = float(
-    os.getenv("FACE_VERIFY_THRESHOLD_VERIFIED_WEAK_GALLERY", "0.72")
-)
-FACE_VERIFY_THRESHOLD_REVIEW = float(os.getenv("FACE_VERIFY_THRESHOLD_REVIEW", "0.68"))
-FACE_VERIFY_STRONG_GALLERY_RELAXED_ENABLE = os.getenv(
-    "FACE_VERIFY_STRONG_GALLERY_RELAXED_ENABLE", "1"
-).strip().lower() in ("1", "true", "yes")
-FACE_VERIFY_STRONG_GALLERY_RELAXED_THRESHOLD = float(
-    os.getenv("FACE_VERIFY_STRONG_GALLERY_RELAXED_THRESHOLD", "0.70")
-)
-FACE_VERIFY_STRONG_GALLERY_RELAXED_GAP_MIN = float(
-    os.getenv("FACE_VERIFY_STRONG_GALLERY_RELAXED_GAP_MIN", "0.18")
-)
-FACE_VERIFY_MIN_ENROLLMENT_SOURCES = int(os.getenv("FACE_VERIFY_MIN_ENROLLMENT_SOURCES", "2"))
-FACE_VERIFY_MIN_TEMPLATES_STRONG = int(os.getenv("FACE_VERIFY_MIN_TEMPLATES_STRONG", "2"))
-# Single-source (avatar-only) galleries count as strong once they have this
-# many TTA-rendered templates — most staff only ever upload one avatar.
-FACE_VERIFY_SINGLE_SOURCE_STRONG_MIN_TEMPLATES = int(
-    os.getenv("FACE_VERIFY_SINGLE_SOURCE_STRONG_MIN_TEMPLATES", "5")
-)
-FACE_VERIFY_MAX_COSINE_FACTOR = float(os.getenv("FACE_VERIFY_MAX_COSINE_FACTOR", "0.97"))
 FACE_VERIFY_PROBE_DET_SCORE_MIN = float(os.getenv("FACE_VERIFY_PROBE_DET_SCORE_MIN", "0.35"))
 FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN = float(
     os.getenv("FACE_VERIFY_PROBE_FACE_AREA_RATIO_MIN", "0.008")
@@ -243,58 +172,18 @@ FACE_VERIFY_PROBE_MAX_ABS_PITCH = float(os.getenv("FACE_VERIFY_PROBE_MAX_ABS_PIT
 FACE_VERIFY_IMPOSTOR_GAP_ENABLE = os.getenv(
     "FACE_VERIFY_IMPOSTOR_GAP_ENABLE", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
-FACE_VERIFY_IMPOSTOR_GAP_MIN = float(os.getenv("FACE_VERIFY_IMPOSTOR_GAP_MIN", "0.06"))
-FACE_VERIFY_IMPOSTOR_MIN_OTHER_SCORE = float(
-    os.getenv("FACE_VERIFY_IMPOSTOR_MIN_OTHER_SCORE", "0.60")
-)
-# Cold-start verify: only when runtime gallery has no gallery_real.npy rows (avatar/mask only).
-# Softer cosine floor than weak-gallery strict, but stricter probe quality (det + face area).
-FACE_VERIFY_THRESHOLD_COLD_START = float(os.getenv("FACE_VERIFY_THRESHOLD_COLD_START", "0.835"))
-FACE_VERIFY_COLD_START_DET_MIN = float(os.getenv("FACE_VERIFY_COLD_START_DET_MIN", "0.42"))
-FACE_VERIFY_COLD_START_FACE_AREA_MIN = float(
-    os.getenv("FACE_VERIFY_COLD_START_FACE_AREA_MIN", "0.012")
-)
-FACE_VERIFY_COLD_START_STRONG_SCORE_MARGIN = float(
-    os.getenv("FACE_VERIFY_COLD_START_STRONG_SCORE_MARGIN", "0.025")
-)
-FACE_VERIFY_COLD_START_STRONG_DET_MIN = float(
-    os.getenv("FACE_VERIFY_COLD_START_STRONG_DET_MIN", "0.72")
-)
-FACE_VERIFY_COLD_START_STRONG_FACE_AREA_MIN = float(
-    os.getenv("FACE_VERIFY_COLD_START_STRONG_FACE_AREA_MIN", "0.04")
-)
-FACE_VERIFY_SINGLE_PHOTO_RELAXED_ENABLE = os.getenv(
-    "FACE_VERIFY_SINGLE_PHOTO_RELAXED_ENABLE", "1"
-).strip().lower() in ("1", "true", "yes", "on")
-# Single-photo fallback keeps the normal verified threshold, but also requires
-# good probe quality, several same-image runtime variants, and a large impostor
-# gap. This is for “only one photo exists”, not for lowering security globally.
-FACE_VERIFY_SINGLE_PHOTO_THRESHOLD = float(os.getenv("FACE_VERIFY_SINGLE_PHOTO_THRESHOLD", "0.72"))
-FACE_VERIFY_SINGLE_PHOTO_GAP_MIN = float(os.getenv("FACE_VERIFY_SINGLE_PHOTO_GAP_MIN", "0.18"))
-FACE_VERIFY_SINGLE_PHOTO_MIN_TEMPLATES = int(
-    os.getenv("FACE_VERIFY_SINGLE_PHOTO_MIN_TEMPLATES", "3")
-)
-# Trusted face bootstrap samples (StaffFaceSample): cap and near-duplicate rejection.
+FACE_VERIFY_IMPOSTOR_GAP_MIN = float(os.getenv("FACE_VERIFY_IMPOSTOR_GAP_MIN", "0.05"))
+# Эталонные фото: ограничение количества и отбраковка дубликатов.
 FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES = int(os.getenv("FACE_BOOTSTRAP_MAX_ACTIVE_SAMPLES", "5"))
 FACE_SAMPLE_DEDUPE_MAX_COS = float(os.getenv("FACE_SAMPLE_DEDUPE_MAX_COS", "0.992"))
 
-# Staff / Face Lab: server normalizes uploads to JPEG (drops non-image payloads, EXIF, etc.).
+# Загружаемые фото нормализуются в JPEG без EXIF.
 STAFF_UPLOAD_JPEG_QUALITY = int(os.getenv("STAFF_UPLOAD_JPEG_QUALITY", "92"))
 STAFF_UPLOAD_MAX_MEGAPIXELS = int(os.getenv("STAFF_UPLOAD_MAX_MEGAPIXELS", "36"))
 STAFF_AVATAR_UPLOAD_MAX_BYTES = int(
     os.getenv("STAFF_AVATAR_UPLOAD_MAX_BYTES", str(12 * 1024 * 1024))
 )
 
-AUGMENT_SYNTH_GLASSES_RANDOM_P = float(os.getenv("AUGMENT_SYNTH_GLASSES_RANDOM_P", "0.22"))
-AUGMENT_GLASSES_HEURISTIC_HORIZ_DOM = float(
-    os.getenv("AUGMENT_GLASSES_HEURISTIC_HORIZ_DOM", "1.12")
-)
-AUGMENT_GLASSES_HEURISTIC_BRIDGE_DARK = float(
-    os.getenv("AUGMENT_GLASSES_HEURISTIC_BRIDGE_DARK", "0.055")
-)
-AUGMENT_GLASSES_INPAINT_ENABLE = os.getenv(
-    "AUGMENT_GLASSES_INPAINT_ENABLE", "1"
-).strip().lower() in ("1", "true", "yes")
 FACE_PARSING_ENABLE = os.getenv("FACE_PARSING_ENABLE", "1").strip().lower() in (
     "1",
     "true",
@@ -314,11 +203,6 @@ FACE_PARSING_DOWNLOAD_URL = os.getenv(
     "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.onnx",
 )
 FACE_PARSING_GLASSES_FRAC_MIN = _float_env("FACE_PARSING_GLASSES_FRAC_MIN", 0.00035)
-FACE_PARSING_USE_FOR_AUGMENT = os.getenv("FACE_PARSING_USE_FOR_AUGMENT", "1").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
 FACE_PARSING_USE_FOR_API = os.getenv("FACE_PARSING_USE_FOR_API", "1").strip().lower() in (
     "1",
     "true",
@@ -348,12 +232,12 @@ LESSON_ATTENDANCE_AUTO_CLOSE_LATE_MINUTES = _int_env(
     60,
 )
 
-# Secret keys and API configurations
+# Ключи и внешние API
 SECRET_KEY = os.getenv("SECRET_KEY")
 SECRET_API = os.getenv("SECRET_API")
 API_URL = os.getenv("API_URL")
 API_KEY = os.getenv("API_KEY")
-# Face Lab: Edge neural TTS (Microsoft, via edge-tts; no API key). Optional voice overrides.
+# Озвучка Face Lab через Edge TTS
 FACE_LAB_EDGE_TTS_VOICE_RU = os.getenv("FACE_LAB_EDGE_TTS_VOICE_RU", "ru-RU-SvetlanaNeural").strip()
 FACE_LAB_EDGE_TTS_VOICE_KK = os.getenv("FACE_LAB_EDGE_TTS_VOICE_KK", "kk-KZ-AigulNeural").strip()
 FACE_LAB_EDGE_TTS_VOICE_EN = os.getenv("FACE_LAB_EDGE_TTS_VOICE_EN", "en-US-JennyNeural").strip()
@@ -361,7 +245,7 @@ MAIN_IP = os.getenv("MAIN_IP")
 DB_TYPE = os.getenv("DB_TYPE", "sqlite3").lower()
 
 
-# Email configurations
+# Почта
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND")
 EMAIL_HOST = os.getenv("EMAIL_HOST")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "0"))
@@ -371,12 +255,11 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL")
 
-# Authentication URLs
+# Авторизация
 LOGIN_URL = "/admin/login/"
 LOGOUT_URL = "/admin/logout/"
 
 
-# Function to get the local IP address
 def get_local_ip():
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -391,7 +274,6 @@ def get_local_ip():
 LOCAL_IP = get_local_ip()
 
 
-# Function to get the external IP address
 def get_external_ip():
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -405,7 +287,7 @@ def get_external_ip():
 
 EXTERNAL_IP = get_external_ip()
 
-# Allowed hosts and CSRF trusted origins
+# Хосты и CSRF
 ALLOWED_HOSTS = ["*"] + (
     [LOCAL_IP, EXTERNAL_IP]
     if DEBUG
@@ -436,24 +318,198 @@ CSRF_TRUSTED_ORIGINS = (
 
 ALLOWED_IPS = [LOCAL_IP, EXTERNAL_IP]
 
-# Data upload settings
-DATA_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  # 50 MB
-FILE_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  # 50 MB
+# Загрузка файлов
+DATA_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024
+FILE_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 100000
 
-# Grappelli Admin Settings
-GRAPPELLI_ADMIN_TITLE = "Панель управления мониторинга"
-GRAPPELLI_AUTOCOMPLETE_LIMIT = 15
-GRAPPELLI_SWITCH_USER = True
-GRAPPELLI_CLEAN_INPUT_TYPES = True
-GRAPPELLI_INDEX_DASHBOARD = "django_settings.dashboard.CustomIndexDashboard"
 
-# Application definition
+# Оформление админки
+ADMIN_PALETTES = {
+    "teal": (
+        "98.4% .014 180.72",
+        "95.3% .051 180.801",
+        "91% .096 180.426",
+        "85.5% .138 181.071",
+        "77.7% .152 181.912",
+        "70.4% .14 182.503",
+        "60% .118 184.704",
+        "51.1% .096 186.391",
+        "43.7% .078 188.216",
+        "38.6% .063 188.416",
+        "27.7% .046 192.524",
+    ),
+    "sky": (
+        "97.7% .013 236.62",
+        "95.1% .026 236.824",
+        "90.1% .058 230.902",
+        "82.8% .111 230.318",
+        "74.6% .16 232.661",
+        "68.5% .169 237.323",
+        "58.8% .158 241.966",
+        "50% .134 242.749",
+        "44.3% .11 240.79",
+        "39.1% .09 240.876",
+        "29.3% .066 243.157",
+    ),
+    "emerald": (
+        "97.9% .021 166.113",
+        "95% .052 163.051",
+        "90.5% .093 164.15",
+        "84.5% .143 164.978",
+        "76.5% .177 163.223",
+        "69.6% .17 162.48",
+        "59.6% .145 163.225",
+        "50.8% .118 165.612",
+        "43.2% .095 166.913",
+        "37.8% .077 168.94",
+        "26.2% .051 172.552",
+    ),
+    "cyan": (
+        "98.4% 0.019 200.873",
+        "95.6% 0.045 203.388",
+        "91.7% 0.08 205.041",
+        "86.5% 0.127 207.078",
+        "78.9% 0.154 211.53",
+        "71.5% 0.143 215.221",
+        "60.9% 0.126 221.723",
+        "52% 0.105 223.128",
+        "45% 0.085 224.283",
+        "39.8% 0.07 227.392",
+        "30.2% 0.056 229.695",
+    ),
+    "blue": (
+        "97% 0.014 254.604",
+        "93.2% 0.032 255.585",
+        "88.2% 0.059 254.128",
+        "80.9% 0.105 251.813",
+        "70.7% 0.165 254.624",
+        "62.3% 0.214 259.815",
+        "54.6% 0.245 262.881",
+        "48.8% 0.243 264.376",
+        "42.4% 0.199 265.638",
+        "37.9% 0.146 265.522",
+        "28.2% 0.091 267.935",
+    ),
+    "indigo": (
+        "96.2% 0.018 272.314",
+        "93% 0.034 272.788",
+        "87% 0.065 274.039",
+        "78.5% 0.115 274.713",
+        "67.3% 0.182 276.935",
+        "58.5% 0.233 277.117",
+        "51.1% 0.262 276.966",
+        "45.7% 0.24 277.023",
+        "39.8% 0.195 277.366",
+        "35.9% 0.144 278.697",
+        "25.7% 0.09 281.288",
+    ),
+    "violet": (
+        "96.9% 0.016 293.756",
+        "94.3% 0.029 294.588",
+        "89.4% 0.057 293.283",
+        "81.1% 0.111 293.571",
+        "70.2% 0.183 293.541",
+        "60.6% 0.25 292.717",
+        "54.1% 0.281 293.009",
+        "49.1% 0.27 292.581",
+        "43.2% 0.232 292.759",
+        "38% 0.189 293.745",
+        "28.3% 0.141 291.089",
+    ),
+    "fuchsia": (
+        "97.7% 0.017 320.058",
+        "95.2% 0.037 318.852",
+        "90.3% 0.076 319.62",
+        "83.3% 0.145 321.434",
+        "74% 0.238 322.16",
+        "66.7% 0.295 322.15",
+        "59.1% 0.293 322.896",
+        "51.8% 0.253 323.949",
+        "45.2% 0.211 324.591",
+        "40.1% 0.17 325.612",
+        "29.3% 0.136 325.661",
+    ),
+    "rose": (
+        "96.9% 0.015 12.422",
+        "94.1% 0.03 12.58",
+        "89.2% 0.058 10.001",
+        "81% 0.117 11.638",
+        "71.2% 0.194 13.428",
+        "64.5% 0.246 16.439",
+        "58.6% 0.253 17.585",
+        "51.4% 0.222 16.935",
+        "45.5% 0.188 13.697",
+        "41% 0.159 10.272",
+        "27.1% 0.105 12.094",
+    ),
+    "orange": (
+        "98% 0.016 73.684",
+        "95.4% 0.038 75.164",
+        "90.1% 0.076 70.697",
+        "83.7% 0.128 66.29",
+        "75% 0.183 55.934",
+        "70.5% 0.213 47.604",
+        "64.6% 0.222 41.116",
+        "55.3% 0.195 38.402",
+        "47% 0.157 37.304",
+        "40.8% 0.123 38.172",
+        "26.6% 0.079 36.259",
+    ),
+    "amber": (
+        "98.7% 0.022 95.277",
+        "96.2% 0.059 95.617",
+        "92.4% 0.12 95.746",
+        "87.9% 0.169 91.605",
+        "82.8% 0.189 84.429",
+        "76.9% 0.188 70.08",
+        "66.6% 0.179 58.318",
+        "55.5% 0.163 48.998",
+        "47.3% 0.137 46.201",
+        "41.4% 0.112 45.904",
+        "27.9% 0.077 45.635",
+    ),
+    "lime": (
+        "98.6% 0.031 120.757",
+        "96.7% 0.067 122.328",
+        "93.8% 0.127 124.321",
+        "89.7% 0.196 126.665",
+        "84.1% 0.238 128.85",
+        "76.8% 0.233 130.85",
+        "64.8% 0.2 131.684",
+        "53.2% 0.157 131.589",
+        "45.3% 0.124 130.933",
+        "40.5% 0.101 131.063",
+        "27.4% 0.072 132.109",
+    ),
+}
+ADMIN_COLOR_SHADES = ("50", "100", "200", "300", "400", "500", "600", "700", "800", "900", "950")
+ADMIN_PRIMARY_COLOR = os.getenv("ADMIN_PRIMARY_COLOR", "teal").strip().lower()
+if ADMIN_PRIMARY_COLOR not in ADMIN_PALETTES:
+    ADMIN_PRIMARY_COLOR = "teal"
+
+UNFOLD = {
+    "SITE_TITLE": "Мониторинг КРМУ",
+    "SITE_HEADER": "Мониторинг КРМУ",
+    "SITE_SUBHEADER": "Панель управления",
+    "SITE_SYMBOL": "monitoring",
+    "SITE_URL": "/app/",
+    "DASHBOARD_CALLBACK": "django_settings.dashboard.dashboard_callback",
+    "STYLES": [lambda request: static("admin/css/custom_admin.css")],
+    "COLORS": {"primary": "django_settings.admin_theme.primary_colors"},
+    "SIDEBAR": {
+        "show_search": True,
+        "show_all_applications": True,
+        "navigation": "django_settings.dashboard.sidebar_navigation",
+    },
+}
+
+
+# Приложения
 INSTALLED_APPS = [
     "daphne",
     "channels",
-    "grappelli.dashboard",
-    "grappelli",
+    "unfold",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -465,6 +521,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
     "django_extensions",
     "django_admin_geomap",
     "rest_framework.authtoken",
@@ -472,17 +529,17 @@ INSTALLED_APPS = [
     "django_celery_results",
 ]
 
-# Channel layers configuration
+# WebSocket и Channels
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": (
             "channels.layers.InMemoryChannelLayer"
-            if DEBUG
+            if DEBUG or TESTING
             else "channels_redis.core.RedisChannelLayer"
         ),
         "CONFIG": (
             {}
-            if DEBUG
+            if DEBUG or TESTING
             else {
                 "hosts": [
                     (
@@ -495,7 +552,7 @@ CHANNEL_LAYERS = {
     },
 }
 
-# CORS configurations
+# CORS
 CORS_ALLOW_ALL_ORIGINS = DEBUG
 
 CORS_ALLOWED_ORIGINS = (
@@ -550,7 +607,7 @@ CORS_ALLOW_METHODS = [
     "POST",
     "PUT",
 ]
-# Settings for Custom Middleware
+# Исключения для middleware
 SECURITY_MIDDLEWARE_EXEMPT_PATHS = [
     "/app/",
     "/app/login",
@@ -566,7 +623,7 @@ if DEBUG:
         "/api/schema/",
     ]
 
-# Middleware configurations
+# Middleware
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
@@ -574,6 +631,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "monitoring_app.middleware.StaffActivityMiddleware",
     "monitoring_app.face_lab_log_middleware.FaceLabRequestLogMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -581,7 +639,7 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "django_settings.urls"
 
-# Template configurations
+# Шаблоны
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
@@ -599,12 +657,10 @@ TEMPLATES = [
     },
 ]
 
-# WSGI_APPLICATION = "django_settings.wsgi.application"
+
 ASGI_APPLICATION = "django_settings.asgi.application"
 
-# Cache configurations
-# Tests must never touch the shared Redis: Cache.clear() there is FLUSHDB.
-TESTING = len(sys.argv) > 1 and sys.argv[1] == "test"
+# Кеш
 if DEBUG or TESTING:
     CACHES = {
         "default": {
@@ -618,19 +674,18 @@ else:
             "LOCATION": f"redis://{os.getenv('REDIS_HOST', '127.0.0.1')}:{os.getenv('REDIS_PORT', '6379')}",
         }
     }
-# Database configurations
+# База данных
 
 DATABASES = {"default": {}}
 
 
-if DEBUG:
-    # If debug using SQLite3
+if DEBUG or TESTING:
+    # Debug и тесты SQLite
     DATABASES["default"] = {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
     }
 else:
-    # If production using MySQL, PostgreSQL or SQLite
     if DB_TYPE == "mysql":
         DATABASES["default"] = {
             "ENGINE": "django.db.backends.mysql",
@@ -657,7 +712,7 @@ else:
     else:
         raise ValueError(f"Unsupported database type: {DB_TYPE}")
 
-# Password validators
+# Валидация паролей
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
@@ -673,13 +728,15 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-# Internationalization
+# Язык и часовой пояс
 LANGUAGE_CODE = "ru"
 TIME_ZONE = "Asia/Almaty"
 USE_I18N = True
 USE_TZ = True
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_ENABLE_UTC = True
 
-# Static files (CSS, JavaScript, Images)
+# Статика
 STATIC_URL = "assets/" if DEBUG else "/static/"
 STATIC_ROOT = BASE_DIR / "staticroot"
 
@@ -690,13 +747,13 @@ STATICFILES_DIRS = [
     ("mediapipe-models", FRONTEND_DIR / "dist/mediapipe-models"),
 ]
 
-# Media files
+# Медиафайлы
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 BACKUP_DB_DIR = BASE_DIR.parent / "DB"
 
-# Attendance and augment paths
+# Файлы посещаемости
 ATTENDANCE_URL = "/attendance_media/"
 _attendance_root_env = os.getenv("ATTENDANCE_ROOT")
 ATTENDANCE_ROOT = (
@@ -704,11 +761,6 @@ ATTENDANCE_ROOT = (
     if _attendance_root_env
     else (MEDIA_ROOT / "control_image")
 )
-
-AUGMENT_URL = "/augment_media/"
-_augment_root_env = os.getenv("AUGMENT_ROOT")
-_default_augment_template = MEDIA_ROOT / "user_images" / "{staff_pin}" / "augmented_images"
-AUGMENT_ROOT = _augment_root_env if _augment_root_env else str(_default_augment_template)
 
 _general_models_env = os.getenv("GENERAL_MODELS_ROOT")
 GENERAL_MODELS_ROOT = (
@@ -719,12 +771,9 @@ GENERAL_MODELS_ROOT = (
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# REST framework configurations
+# Django REST Framework
 REST_FRAMEWORK = {
-    "DEFAULT_PERMISSION_CLASSES": (
-        "rest_framework.permissions.IsAuthenticated",
-        "rest_framework.permissions.AllowAny",
-    ),
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "monitoring_app.authentication.SessionAuthenticationAllowTokenOrApiKey",
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -732,16 +781,22 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
+    "DEFAULT_THROTTLE_RATES": {"staff_login": "10/min", "staff_login_pin": "5/min"},
 }
 
-# JWT configurations
+STAFF_JWT_ACCESS_MINUTES = int(os.getenv("STAFF_JWT_ACCESS_MINUTES", "15"))
+STAFF_JWT_REFRESH_MINUTES = int(os.getenv("STAFF_JWT_REFRESH_MINUTES", "120"))
+STAFF_JWT_SESSION_MAX_HOURS = int(os.getenv("STAFF_JWT_SESSION_MAX_HOURS", "10"))
+STAFF_LOGIN_REPLAY_COSINE = float(os.getenv("STAFF_LOGIN_REPLAY_COSINE", "0.97"))
+
+# JWT
 SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": True,
     "ALGORITHM": "HS256",
     "SIGNING_KEY": SECRET_KEY,
-    "AUTH_HEADER_TYPES": ("Bearer",),  # {headers: {Authorization: `Bearer ${access}`}}
+    "AUTH_HEADER_TYPES": ("Bearer",),
     "AUTH_HEADER_NAME": "HTTP_AUTHORIZATION",
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "user_id",
@@ -756,6 +811,8 @@ SIMPLE_JWT = {
 _JWT_ACCESS_MINUTES = _jwt_lifetime_minutes("JWT_ACCESS_LIFETIME_MINUTES", 10, 30)
 _JWT_REFRESH_MINUTES = _jwt_lifetime_minutes("JWT_REFRESH_LIFETIME_MINUTES", 30, 120)
 
+JWT_SESSION_MAX_HOURS = _jwt_lifetime_minutes("JWT_SESSION_MAX_HOURS", 24, 12)
+
 SIMPLE_JWT.update(
     {
         "ACCESS_TOKEN_LIFETIME": timedelta(minutes=_JWT_ACCESS_MINUTES),
@@ -765,7 +822,7 @@ SIMPLE_JWT.update(
     }
 )
 
-# Swagger settings
+# Swagger
 SWAGGER_SETTINGS = {
     "LOGIN_URL": "admin:login",
     "LOGOUT_URL": "admin:logout",
@@ -788,28 +845,31 @@ SWAGGER_SETTINGS = {
     "DEFAULT_AUTO_SCHEMA_CLASS": "monitoring_app.views.FormOnlySwaggerAutoSchema",
 }
 
-# ReDoc settings
+# ReDoc
 REDOC_SETTINGS = {
     "LAZY_RENDERING": True,
 }
 
-# Celery configurations
+# Celery
 CELERY_BROKER_URL = (
-    f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}/0"
+    "memory://"
+    if TESTING
+    else f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}/0"
 )
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 
-# Photo PAD (anti-spoof) config
-# ----------------------------
+# Проверка подлинности фото
 PHOTO_PAD_DEVICE = os.getenv("PHOTO_PAD_DEVICE", "auto")
+# Потоки torch на процесс; 0 сохраняет настройки библиотеки.
+PHOTO_PAD_TORCH_THREADS = _int_env("PHOTO_PAD_TORCH_THREADS", 4)
 
-# Hourly batch PAD scan (Celery beat)
+# Пакетная проверка фото по расписанию
 PHOTO_PAD_HOURLY_BATCH_SIZE = max(1, _int_env("PHOTO_PAD_HOURLY_BATCH_SIZE", 100))
 PHOTO_PAD_HOURLY_MAX_RECORDS = max(1, _int_env("PHOTO_PAD_HOURLY_MAX_RECORDS", 200))
 PHOTO_PAD_HOURLY_MINUTE = min(max(0, _int_env("PHOTO_PAD_HOURLY_MINUTE", 20)), 59)
 
-# WebSocket-triggered PAD flush
+# Проверка фото из WebSocket
 PHOTO_PAD_WS_SCAN_ENABLED = os.getenv("PHOTO_PAD_WS_SCAN_ENABLED", "true").lower() in {
     "1",
     "true",
@@ -837,8 +897,8 @@ CELERY_TASK_ROUTES = {
     },
 }
 
-BACKUP_DB_WEEKLY_DAY_OF_WEEK = os.getenv("BACKUP_DB_WEEKLY_DAY_OF_WEEK", "1").strip() or "1"
-BACKUP_DB_WEEKLY_HOUR = min(max(0, _int_env("BACKUP_DB_WEEKLY_HOUR", 3)), 23)
+BACKUP_DB_WEEKLY_DAY_OF_WEEK = os.getenv("BACKUP_DB_WEEKLY_DAY_OF_WEEK", "0").strip() or "0"
+BACKUP_DB_WEEKLY_HOUR = min(max(0, _int_env("BACKUP_DB_WEEKLY_HOUR", 23)), 23)
 BACKUP_DB_WEEKLY_MINUTE = min(max(0, _int_env("BACKUP_DB_WEEKLY_MINUTE", 30)), 59)
 BACKUP_DB_WEEKLY_KEEP_DAYS = max(1, _int_env("BACKUP_DB_WEEKLY_KEEP_DAYS", 30))
 BACKUP_DB_WEEKLY_OUTPUT_DIR = os.getenv("BACKUP_DB_WEEKLY_OUTPUT_DIR", "DB").strip() or "DB"
@@ -857,7 +917,6 @@ def build_celery_beat_schedule(debug: bool) -> dict[str, dict[str, object]]:
     if debug:
         return {}
     return {
-        # Weekly snapshot before the first Monday API_URL attendance pull at 04:00.
         "backup-db-weekly-before-api-attendance-sync": {
             "task": "monitoring_app.tasks.backup_db_task",
             "schedule": crontab(
@@ -872,9 +931,13 @@ def build_celery_beat_schedule(debug: bool) -> dict[str, dict[str, object]]:
                 "keep_days": BACKUP_DB_WEEKLY_KEEP_DAYS,
             },
         },
-        "get-attendance-every-day-4am": {
+        "flush-expired-jwt-daily": {
+            "task": "monitoring_app.tasks.flush_expired_jwt_task",
+            "schedule": crontab(hour="3", minute="30"),
+        },
+        "get-attendance-every-day-0005": {
             "task": "monitoring_app.tasks.get_all_attendance_task",
-            "schedule": crontab(hour="4", minute="0"),
+            "schedule": crontab(hour="0", minute="5"),
         },
         "sync-staff-from-api-twice-weekly": {
             "task": "monitoring_app.tasks.sync_staff_from_api_task",
@@ -934,17 +997,13 @@ def build_celery_beat_schedule(debug: bool) -> dict[str, dict[str, object]]:
             "schedule": crontab(hour="4", minute="30"),
             "kwargs": {"days_old": 62},
         },
-        # "augment-images-every-day": {
-        #     "task": "monitoring_app.tasks.augment_user_images",
-        #     "schedule": crontab(day_of_month="*/3", hour=1, minute=0), #! Disabled no CUDA driver
-        # },
     }
 
 
 CELERY_BEAT_SCHEDULE = build_celery_beat_schedule(DEBUG)
 
-# Logging configurations
-LOG_DIR = BASE_DIR / "logs"
+# Логирование
+LOG_DIR = Path(tempfile.mkdtemp(prefix="control_test_logs_")) if TESTING else BASE_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -971,24 +1030,25 @@ MONITORING_ADMIN_LEVEL = get_log_level(
 )
 
 
-# Custom function to generate log filenames
-def get_log_filename(log_name):
-    return LOG_DIR / f'{log_name}_{datetime.now().strftime("%Y-%m-%d_%H")}.log'
+APP_LOG_LEVEL = get_log_level("APP", default="INFO" if DEBUG else "WARNING")
+_DEFAULT_HANDLERS = ["file", "console"] if DEBUG else ["file"]
 
 
-# Function to remove old logs
-def clean_old_logs(log_directory, days_to_keep=7):
-    now = datetime.now()
-    for filename in os.listdir(log_directory):
-        if filename.endswith(".log"):
-            file_path = log_directory / filename
-            file_modified_time = datetime.fromtimestamp(file_path.stat().st_mtime)
-            if (now - file_modified_time).days > days_to_keep:
-                file_path.unlink()
+def _log_file(name: str, *, formatter: str = "standard", level: str = "INFO") -> dict:
+    return {
+        "class": "logging.handlers.WatchedFileHandler",
+        "filename": str(LOG_DIR / f"{name}.log"),
+        "encoding": "utf-8",
+        "delay": True,
+        "formatter": formatter,
+        "level": level,
+        "filters": ["ignore_shutdown"],
+    }
 
 
-# Clean old logs
-clean_old_logs(LOG_DIR, days_to_keep=7)
+def _own_file(handler: str, level: str = APP_LOG_LEVEL) -> dict:
+    return {"handlers": [handler], "level": level, "propagate": False}
+
 
 LOGGING = {
     "version": 1,
@@ -1009,210 +1069,36 @@ LOGGING = {
         "ignore_shutdown": {
             "()": "django_settings.logging_filters.IgnoreShutdownErrorsFilter",
         },
-        "ignore_pylint": {
-            "()": "django_settings.logging_filters.IgnorePylintFilter",
-        },
-        "admin_request_only": {
-            "()": "django_settings.logging_filters.AdminRequestFilter",
-        },
     },
     "handlers": {
-        "admin_errors_file": {
-            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
-            "filename": str(LOG_DIR / "admin_errors.log"),
-            "when": "H",
-            "interval": 1,
-            "backupCount": 24 * 14,
-            "utc": True,
-            "encoding": "utf-8",
-            "delay": True,
-            "formatter": "standard",
-            "level": ADMIN_ERRORS_LEVEL,
-            "filters": ["ignore_shutdown", "ignore_pylint", "admin_request_only"],
-        },
-        "admin_errors_file_no_filter": {
-            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
-            "filename": str(LOG_DIR / "admin_errors.log"),
-            "when": "H",
-            "interval": 1,
-            "backupCount": 24 * 14,
-            "utc": True,
-            "encoding": "utf-8",
-            "delay": True,
-            "formatter": "standard",
-            "level": ADMIN_ERRORS_LEVEL,
-            "filters": ["ignore_shutdown", "ignore_pylint"],
-        },
-        "file": {
-            "level": "DEBUG" if DEBUG else "INFO",
-            "class": "logging.handlers.RotatingFileHandler",
-            "filename": get_log_filename("log"),
-            "maxBytes": 10 * 1024 * 1024,  # 10 MB
-            "backupCount": 24,  # Keep logs for 24 hours
-            "encoding": "utf-8",
-            "formatter": "verbose",
-            "delay": False,
-            "filters": ["ignore_shutdown", "ignore_pylint"],
-        },
+        "file": _log_file("app", formatter="verbose", level="DEBUG" if DEBUG else "INFO"),
         "console": {
             "level": "INFO" if DEBUG else "WARNING",
             "class": "logging.StreamHandler",
             "formatter": "verbose",
-            "filters": ["ignore_shutdown", "ignore_pylint"],
+            "filters": ["ignore_shutdown"],
         },
-        "lesson_locations_file": {
-            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
-            "filename": str(LOG_DIR / "lesson_locations.log"),
-            "when": "H",
-            "interval": 1,
-            "backupCount": 24 * 7,
-            "utc": True,
-            "encoding": "utf-8",
-            "delay": True,
-            "formatter": "standard",
-            "level": "INFO",
-            "filters": ["ignore_shutdown", "ignore_pylint"],
-        },
-        "ws_user_file": {
-            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
-            "filename": str(LOG_DIR / "ws_user.log"),
-            "when": "H",
-            "interval": 1,
-            "backupCount": 24 * 7,
-            "utc": True,
-            "encoding": "utf-8",
-            "delay": True,
-            "formatter": "standard",
-            "level": "INFO",
-            "filters": ["ignore_shutdown", "ignore_pylint"],
-        },
-        "lesson_locations_not_found_file": {
-            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
-            "filename": str(LOG_DIR / "lesson_locations_not_found.log"),
-            "when": "H",
-            "interval": 1,
-            "backupCount": 24 * 14,
-            "utc": True,
-            "encoding": "utf-8",
-            "delay": True,
-            "formatter": "standard",
-            "level": "INFO",
-            "filters": ["ignore_shutdown", "ignore_pylint"],
-        },
-        "photo_verdict_file": {
-            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
-            "filename": str(LOG_DIR / "photo_verdict.log"),
-            "when": "H",
-            "interval": 1,
-            "backupCount": 24 * 14,
-            "utc": True,
-            "encoding": "utf-8",
-            "delay": True,
-            "formatter": "standard",
-            "level": "INFO",
-            "filters": ["ignore_shutdown", "ignore_pylint"],
-        },
-        "face_lab_file": {
-            "class": "django_settings.logging_handlers.SafeTimedRotatingFileHandler",
-            "filename": str(LOG_DIR / "face_lab.log"),
-            "when": "H",
-            "interval": 1,
-            "backupCount": 24 * 14,
-            "utc": True,
-            "encoding": "utf-8",
-            "delay": True,
-            "formatter": "standard",
-            "level": "INFO",
-            "filters": ["ignore_shutdown", "ignore_pylint"],
-        },
+        "admin_errors_file": _log_file("admin_errors", level=ADMIN_ERRORS_LEVEL),
+        "lesson_locations_file": _log_file("lesson_locations"),
+        "lesson_locations_not_found_file": _log_file("lesson_locations_not_found"),
+        "ws_user_file": _log_file("ws_user"),
+        "photo_verdict_file": _log_file("photo_verdict"),
+        "face_lab_file": _log_file("face_lab"),
     },
+    "root": {"handlers": _DEFAULT_HANDLERS, "level": APP_LOG_LEVEL},
     "loggers": {
-        "": {
-            "handlers": ["file", "console"] if DEBUG else ["file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": True,
-        },
-        "django": {
-            "handlers": ["file", "console"] if DEBUG else ["file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": False,
-        },
-        "django.request": {
-            "handlers": ["file", "console"] if DEBUG else ["file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": False,
-        },
+        # Свои хендлеры + propagate=False: иначе запись уходит ещё и в родительский файл.
+        "django": {"handlers": _DEFAULT_HANDLERS, "level": APP_LOG_LEVEL, "propagate": False},
         "monitoring_app": {
-            "handlers": ["file", "console"] if DEBUG else ["file"],
-            "level": "INFO" if DEBUG else "WARNING",
+            "handlers": _DEFAULT_HANDLERS,
+            "level": APP_LOG_LEVEL,
             "propagate": False,
         },
-        "monitoring_app.views": {
-            "handlers": ["file", "console"] if DEBUG else ["file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": True,
-        },
-        "monitoring_app.lesson_attendance": {
-            "handlers": ["file", "console"] if DEBUG else ["file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": False,
-        },
-        "monitoring_app.lesson_locations": {
-            "handlers": ["lesson_locations_file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": False,
-        },
-        "monitoring_app.lesson_locations.not_found": {
-            "handlers": ["lesson_locations_not_found_file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": False,
-        },
-        "monitoring_app.photo_verdict": {
-            "handlers": ["photo_verdict_file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": False,
-        },
-        "monitoring_app.serializers": {
-            "handlers": ["file", "console"] if DEBUG else ["file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": True,
-        },
-        "monitoring_app.permissions": {
-            "handlers": ["file", "console"] if DEBUG else ["file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": True,
-        },
-        "monitoring_app.middleware": {
-            "handlers": ["file", "console"] if DEBUG else ["file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": False,
-        },
-        "monitoring_app.admin": {
-            "handlers": ["admin_errors_file_no_filter", "console"],
-            "level": MONITORING_ADMIN_LEVEL,
-            "propagate": False,
-        },
-        "monitoring_app.ws_user": {
-            "handlers": ["file", "console", "ws_user_file"],
-            "level": "INFO" if DEBUG else "WARNING",
-            "propagate": False,
-        },
-        "monitoring_app.face_lab": {
-            "handlers": ["face_lab_file", "file"] + (["console"] if DEBUG else []),
-            "level": "INFO",
-            "propagate": False,
-        },
+        "monitoring_app.lesson_locations": _own_file("lesson_locations_file"),
+        "monitoring_app.lesson_locations.not_found": _own_file("lesson_locations_not_found_file"),
+        "monitoring_app.photo_verdict": _own_file("photo_verdict_file"),
+        "monitoring_app.ws_user": _own_file("ws_user_file"),
+        "monitoring_app.admin": _own_file("admin_errors_file", MONITORING_ADMIN_LEVEL),
+        "monitoring_app.face_lab": _own_file("face_lab_file", "INFO"),
     },
-}
-
-_django_request_handlers = ["file", "console"] if DEBUG else ["file"]
-LOGGING["loggers"]["django.request"] = {
-    "handlers": _django_request_handlers,
-    "level": "INFO" if DEBUG else "WARNING",
-    "propagate": False,
-}
-LOGGING["loggers"]["django.security.csrf"] = {
-    "handlers": _django_request_handlers,
-    "level": "WARNING",
-    "propagate": False,
 }
