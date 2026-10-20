@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import { motion } from "framer-motion";
+import { FaCheck } from "react-icons/fa";
 import axiosInstance from "../api";
 import { humanizeApiError } from "./faceLabHumanMessages";
-import { faceLabSpring } from "./faceLabDesignTokens";
-
-const smoothEase = [0.22, 1, 0.36, 1] as const;
+import { PoseGuide, type PoseGuidePose } from "./liveness";
 
 const SAVE_FACE_SAMPLE_TIMEOUT_MS = 180_000;
 
@@ -13,21 +11,21 @@ const BOOTSTRAP_ANGLES = ["front", "left", "right"] as const;
 export type BootstrapAngle = (typeof BOOTSTRAP_ANGLES)[number];
 
 const ANGLE_HINTS: Record<BootstrapAngle, string> = {
-  front: "Смотрите прямо в камеру, без поворота головы.",
-  left: "Повернитесь левым ухом к камере. Голову не наклоняйте.",
-  right: "Повернитесь правым ухом к камере. Голову не наклоняйте.",
-};
-
-const ANGLE_STEP_TITLES: Record<BootstrapAngle, string> = {
-  front: "Шаг 1",
-  left: "Шаг 2",
-  right: "Шаг 3",
+  front: "Смотрите прямо в камеру, голову держите ровно.",
+  left: "Немного поверните голову влево, как на рисунке. Не наклоняйте её.",
+  right: "Немного поверните голову вправо, как на рисунке. Не наклоняйте её.",
 };
 
 const ANGLE_SHORT: Record<BootstrapAngle, string> = {
   front: "Прямо",
   left: "Влево",
   right: "Вправо",
+};
+
+const ANGLE_POSE: Record<BootstrapAngle, PoseGuidePose> = {
+  front: "front",
+  left: "turn_left",
+  right: "turn_right",
 };
 
 export type FaceLabBootstrapStatus = {
@@ -41,7 +39,6 @@ export type FaceLabBootstrapStatus = {
   max_active_samples: number;
   face_profile_state: string;
   has_avatar?: boolean;
-  cold_start_note?: string;
 };
 
 type Props = {
@@ -54,32 +51,6 @@ type Props = {
 
 function doneCount(present: Set<string>): number {
   return BOOTSTRAP_ANGLES.filter((a) => present.has(a)).length;
-}
-
-function StepDot({
-  n,
-  active,
-  done,
-}: {
-  n: number;
-  active: boolean;
-  done: boolean;
-}) {
-  return (
-    <motion.div
-      layout
-      transition={faceLabSpring}
-      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
-        done
-          ? "bg-emerald-500 text-white shadow-md shadow-emerald-500/30"
-          : active
-            ? "bg-primary-600 text-white shadow-md shadow-primary-600/25 ring-4 ring-primary-200/50 dark:bg-primary-500 dark:ring-primary-500/25"
-            : "border-2 border-slate-200 bg-white text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-500"
-      }`}
-    >
-      {done ? "✓" : n}
-    </motion.div>
-  );
 }
 
 export function FaceLabBootstrapPanel({
@@ -155,12 +126,6 @@ export function FaceLabBootstrapPanel({
   }, [pin, allDone, workAngle, inRetake, onCameraGuidanceAngleChange]);
 
   const completedSteps = doneCount(present);
-  const progressFraction = completedSteps / BOOTSTRAP_ANGLES.length;
-  const currentStepIndex = workAngle
-    ? BOOTSTRAP_ANGLES.indexOf(workAngle)
-    : completedSteps >= 3
-      ? 3
-      : completedSteps;
 
   const saveSample = async () => {
     setBanner(null);
@@ -191,10 +156,10 @@ export function FaceLabBootstrapPanel({
       setBanner({
         ok: true,
         text: wasRetake
-          ? `Ракурс «${ANGLE_SHORT[savedAngle]}» обновлён.`
+          ? `Снимок «${ANGLE_SHORT[savedAngle]}» обновлён.`
           : afterThis >= BOOTSTRAP_ANGLES.length
-            ? "Готово — все три ракурса сохранены."
-            : "Сохранено. Снимите следующий кадр.",
+            ? "Готово, все три снимка сохранены."
+            : "Сохранено. Сделайте следующий снимок.",
       });
       onSaved();
       await refreshStatus();
@@ -228,7 +193,7 @@ export function FaceLabBootstrapPanel({
       await axiosInstance.put(`staff/${encodeURIComponent(pin)}/avatar/`, fd);
       setBanner({
         ok: true,
-        text: "Фото в профиле обновлено. Ракурсы для входа не менялись.",
+        text: "Фото в профиле обновлено. Снимки для входа не менялись.",
       });
       await refreshStatus();
       onAvatarUpdated?.();
@@ -288,225 +253,168 @@ export function FaceLabBootstrapPanel({
 
   if (!pin) {
     return (
-      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/80 px-4 py-6 text-center dark:border-slate-600 dark:bg-slate-900/40">
-        <p className="text-sm font-medium text-slate-800 dark:text-slate-100">
-          Сначала выберите сотрудника
-        </p>
-        <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-          Дальше откроются три шага съёмки.
-        </p>
+      <div className="facelab-empty">
+        <p className="facelab-empty-title">Сначала выберите сотрудника</p>
+        <p>Потом снимем три положения головы: прямо, влево и вправо.</p>
       </div>
     );
   }
 
+  const canRetake = Boolean(status && allDone && !inRetake);
+
   return (
-    <div className="rounded-xl border border-slate-200/80 bg-white/90 px-3 py-4 dark:border-slate-600/60 dark:bg-slate-900/50 sm:px-4 sm:py-5">
-      <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-            Три кадра для входа
-          </h3>
-          <p className="mt-0.5 max-w-md text-xs text-slate-600 dark:text-slate-400">
-            Сохраните прямо, влево и вправо.
-          </p>
-        </div>
-        {status && (!allDone || inRetake) ? (
-          <p className="text-xs font-medium text-primary-700 dark:text-primary-300">
+    <section className="facelab-card" aria-labelledby="facelab-poses-title">
+      <div className="facelab-card-head">
+        <h2 id="facelab-poses-title" className="facelab-step-title">
+          Три снимка для входа
+        </h2>
+        {status ? (
+          <span className="facelab-count">
             {inRetake && retakeAngle
               ? `Пересъёмка: ${ANGLE_SHORT[retakeAngle]}`
-              : `Шаг ${Math.min(currentStepIndex + 1, 3)} из 3`}
-          </p>
+              : `${completedSteps} из 3 готово`}
+          </span>
         ) : null}
       </div>
 
       {statusError ? (
-        <p className="mb-4 text-sm text-amber-800 dark:text-amber-200">
+        <p className="facelab-note" data-tone="warning">
           {statusError}
         </p>
       ) : null}
 
-      {status && (!allDone || inRetake) ? (
-        <div className="mb-6">
-          <div className="mb-3 flex w-full items-center">
-            {BOOTSTRAP_ANGLES.map((a, i) => (
-              <div key={a} className="flex min-w-0 flex-1 items-center">
-                <StepDot
-                  n={i + 1}
-                  done={present.has(a)}
-                  active={workAngle === a}
-                />
-                {i < BOOTSTRAP_ANGLES.length - 1 ? (
-                  <div
-                    className={`mx-1.5 h-1 min-w-[12px] flex-1 rounded-full sm:mx-2 ${
-                      present.has(a)
-                        ? "bg-emerald-400"
-                        : "bg-slate-200 dark:bg-slate-600"
-                    }`}
-                  />
+      <ol className="facelab-poses">
+        {BOOTSTRAP_ANGLES.map((a, i) => {
+          const done = present.has(a);
+          const active = showCaptureUi && workAngle === a;
+          const body = (
+            <>
+              <span className="facelab-pose-art">
+                <PoseGuide pose={ANGLE_POSE[a]} size={76} animate={active} />
+                {done ? (
+                  <span className="facelab-pose-check" aria-hidden>
+                    <FaCheck />
+                  </span>
                 ) : null}
-              </div>
-            ))}
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-            <motion.div
-              className="h-full rounded-full bg-primary-600 dark:bg-primary-500"
-              initial={false}
-              animate={{ width: `${progressFraction * 100}%` }}
-              transition={{ duration: 0.4, ease: smoothEase }}
-            />
-          </div>
-          <p className="mt-2 text-center text-xs text-slate-500 dark:text-slate-400">
-            {completedSteps} из 3 готово
-          </p>
-        </div>
-      ) : null}
+              </span>
+              <span className="facelab-pose-name">
+                {i + 1}. {ANGLE_SHORT[a]}
+              </span>
+              <span className="facelab-pose-state">
+                {active
+                  ? "Сейчас"
+                  : done
+                    ? canRetake
+                      ? "Переснять"
+                      : "Готово"
+                    : "Ждёт"}
+              </span>
+            </>
+          );
+          return (
+            <li
+              key={a}
+              className="facelab-pose"
+              data-active={active || undefined}
+              data-done={done || undefined}
+            >
+              {canRetake ? (
+                <button
+                  type="button"
+                  className="facelab-pose-inner"
+                  onClick={() => setRetakeAngle(a)}
+                  aria-label={`Переснять снимок «${ANGLE_SHORT[a]}»`}
+                >
+                  {body}
+                </button>
+              ) : (
+                <div
+                  className="facelab-pose-inner"
+                  aria-current={active ? "step" : undefined}
+                >
+                  {body}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
 
-      {status && allDone && !inRetake ? (
-        <div className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50/95 px-4 py-4 dark:border-emerald-800/50 dark:bg-emerald-950/40">
-          <p className="font-semibold text-emerald-950 dark:text-emerald-100">
-            Все шаги пройдены
-          </p>
-          <p className="mt-1 text-sm leading-relaxed text-emerald-900/90 dark:text-emerald-200/90">
-            Три ракурса уже сохранены. При необходимости можно переснять любой.
-          </p>
-        </div>
-      ) : null}
-
-      {status && allDone && !inRetake ? (
-        <div className="mb-6 flex flex-col gap-2 rounded-xl border border-slate-200/90 bg-slate-50/90 px-4 py-3 dark:border-slate-600/60 dark:bg-slate-800/40">
-          <p className="text-sm font-medium text-slate-800 dark:text-slate-100">
-            Заменить эталонный ракурс
-          </p>
-          <p className="text-xs text-slate-600 dark:text-slate-400">
-            Можно переснять любой из трёх кадров: новый снимок заменит текущий
-            активный образец для этого ракурса.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {BOOTSTRAP_ANGLES.map((a) => (
-              <button
-                key={a}
-                type="button"
-                onClick={() => setRetakeAngle(a)}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
-              >
-                Переснять — {ANGLE_SHORT[a]}
-              </button>
-            ))}
-          </div>
-        </div>
+      {canRetake ? (
+        <p className="facelab-note" data-tone="success">
+          Все три снимка сохранены. Чтобы заменить один, нажмите на него.
+        </p>
       ) : null}
 
       {showCaptureUi && workAngle ? (
-        <div className="mb-5 rounded-lg border border-slate-200/90 bg-slate-50/90 px-3 py-3 dark:border-slate-600/70 dark:bg-slate-800/40 sm:px-4 sm:py-4">
-          <p className="text-base font-semibold text-slate-900 dark:text-slate-50">
-            {ANGLE_STEP_TITLES[workAngle]}: {ANGLE_SHORT[workAngle]}
-          </p>
-          <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
-            {ANGLE_HINTS[workAngle]}
-          </p>
-        </div>
+        <p className="facelab-instruction">{ANGLE_HINTS[workAngle]}</p>
       ) : null}
 
       {banner ? (
-        <div
-          className={`mb-5 rounded-xl border px-4 py-3 text-sm ${
-            banner.ok
-              ? "border-emerald-200 bg-emerald-50 text-emerald-950 dark:border-emerald-800/50 dark:bg-emerald-950/35 dark:text-emerald-100"
-              : "border-rose-200 bg-rose-50 text-rose-950 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-100"
-          }`}
+        <p
+          className="facelab-note"
+          data-tone={banner.ok ? "success" : "danger"}
           role="status"
         >
           {banner.text}
-        </div>
+        </p>
       ) : null}
 
       {showCaptureUi && workAngle ? (
-        <div className="space-y-4">
+        <div className="facelab-actions-col">
           <button
             type="button"
+            className="ws-btn-primary facelab-btn-lg"
             disabled={busy || !file}
             onClick={() => void saveSample()}
-            className="w-full rounded-xl bg-primary-600 py-3.5 text-base font-semibold text-white shadow-lg shadow-primary-600/25 transition hover:bg-primary-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:cursor-not-allowed disabled:opacity-45 dark:bg-primary-500 dark:hover:bg-primary-600 dark:focus-visible:ring-primary-300/80 dark:focus-visible:ring-offset-slate-950"
           >
             {busy
               ? "Сохраняем…"
               : file
                 ? inRetake
-                  ? `Сохранить новый «${ANGLE_SHORT[workAngle]}»`
+                  ? `Сохранить новый снимок «${ANGLE_SHORT[workAngle]}»`
                   : `Сохранить «${ANGLE_SHORT[workAngle]}» и продолжить`
                 : "Сначала сделайте снимок"}
           </button>
-
           {inRetake ? (
             <button
               type="button"
+              className="ws-btn-ghost facelab-btn-lg"
               disabled={busy}
               onClick={() => {
                 setRetakeAngle(null);
                 setBanner(null);
               }}
-              className="w-full rounded-xl border border-slate-300 bg-white py-3 text-sm font-medium text-slate-800 transition hover:bg-slate-50 disabled:opacity-45 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
             >
               Отменить пересъёмку
             </button>
           ) : null}
-
-          <details className="group rounded-xl border border-slate-200/90 bg-slate-50/80 dark:border-slate-600/60 dark:bg-slate-900/40">
-            <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-slate-700 outline-none marker:content-none dark:text-slate-200 [&::-webkit-details-marker]:hidden">
-              <span className="flex items-center justify-between gap-2">
-                Дополнительно
-                <span className="text-slate-400 transition group-open:rotate-180">
-                  ▼
-                </span>
-              </span>
-            </summary>
-            <div className="space-y-2 border-t border-slate-200/80 px-4 pb-4 pt-3 dark:border-slate-600/50">
-              <button
-                type="button"
-                disabled={busy || !file}
-                onClick={() => void uploadAvatarOnly()}
-                className="w-full rounded-lg border border-slate-200 bg-white py-2.5 text-sm font-medium text-slate-800 transition hover:bg-slate-50 disabled:opacity-45 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
-              >
-                Только обновить фото в профиле
-              </button>
-              <button
-                type="button"
-                disabled={busy || !lastSampleId}
-                onClick={() => void applyAvatar()}
-                className="w-full rounded-lg py-2.5 text-sm font-medium text-primary-700 transition hover:bg-primary-50 hover:text-primary-800 disabled:opacity-45 dark:text-primary-300 dark:hover:bg-primary-500/10 dark:hover:text-primary-200"
-              >
-                Поставить последний кадр в профиль
-              </button>
-            </div>
-          </details>
         </div>
-      ) : allDone && !inRetake ? (
-        <details className="rounded-xl border border-slate-200/90 bg-slate-50/80 dark:border-slate-600/60 dark:bg-slate-900/40">
-          <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-slate-700 dark:text-slate-200 [&::-webkit-details-marker]:hidden">
-            Обновить фото профиля отдельно
-          </summary>
-          <div className="space-y-2 border-t border-slate-200/80 px-4 pb-4 pt-3 dark:border-slate-600/50">
+      ) : null}
+
+      <details className="facelab-details">
+        <summary>Фото в профиле сотрудника</summary>
+        <div className="facelab-actions-col">
+          <button
+            type="button"
+            className="ws-btn-ghost"
+            disabled={busy || !file}
+            onClick={() => void uploadAvatarOnly()}
+          >
+            Поставить текущий снимок в профиль
+          </button>
+          {lastSampleId ? (
             <button
               type="button"
-              disabled={busy || !file}
-              onClick={() => void uploadAvatarOnly()}
-              className="w-full rounded-lg border border-slate-200 bg-white py-2.5 text-sm font-medium text-slate-800 transition hover:bg-slate-50 disabled:opacity-45 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+              className="ws-btn-ghost"
+              disabled={busy}
+              onClick={() => void applyAvatar()}
             >
-              Загрузить новый снимок в профиль
+              Поставить последний сохранённый снимок в профиль
             </button>
-            {lastSampleId ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void applyAvatar()}
-                className="w-full rounded-lg py-2.5 text-sm font-medium text-primary-700 transition hover:bg-primary-50 hover:text-primary-800 dark:text-primary-300 dark:hover:bg-primary-500/10 dark:hover:text-primary-200"
-              >
-                Взять последний сохранённый кадр для профиля
-              </button>
-            ) : null}
-          </div>
-        </details>
-      ) : null}
-    </div>
+          ) : null}
+        </div>
+      </details>
+    </section>
   );
 }

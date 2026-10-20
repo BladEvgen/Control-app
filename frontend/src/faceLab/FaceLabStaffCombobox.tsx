@@ -23,12 +23,12 @@ function normalizeSearch(s: string): string {
 }
 
 function formatLabel(o: StaffPickOption): string {
-  const base = `${o.fio} — ${o.deptName}`;
+  const base = `${o.fio}, ${o.deptName}`;
   if (o.faceProfileState === "bootstrap_required") {
-    return `${base}, нужен сбор лиц`;
+    return `${base}, нет снимков для входа`;
   }
   if (o.faceProfileState === "weak_gallery") {
-    return `${base}, слабая галерея`;
+    return `${base}, мало снимков для входа`;
   }
   return base;
 }
@@ -187,12 +187,12 @@ export function FaceLabStaffCombobox({
     !loading && total > 0
       ? !nq
         ? total > LIST_PREVIEW
-          ? `Первые ${shown} из ${total} — введите фильтр`
+          ? `Первые ${shown} из ${total}. Уточните поиск`
           : `${total} в списке`
         : shown === 0
           ? null
           : shown >= LIST_SEARCH
-            ? `${shown}+ совпадений — уточните запрос`
+            ? `${shown}+ совпадений. Уточните запрос`
             : `Совпадений: ${shown}`
       : null;
 

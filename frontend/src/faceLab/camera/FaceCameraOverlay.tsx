@@ -7,7 +7,7 @@ import {
   useEffect,
 } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import type {
   Aspect,
   CameraGuidanceContext,
@@ -37,12 +37,12 @@ import {
   isFaceLabSpeechCancelled,
 } from "../faceLabCameraVoice";
 import { faceLabLog } from "../faceLabLog";
-import { capturePhoto, waitForVideoPipelineFrames } from "./camera-capture";
+import { capturePhoto } from "./camera-capture";
 import { useCameraFrame } from "./useCameraFrame";
 import {
   VideoFrame,
   AspectMask,
-  ViewfinderBootstrapHint,
+  FaceOval,
   GridOverlay,
   ThumbnailPreview,
   ErrorDisplay,
@@ -51,9 +51,11 @@ import {
 import { TopControls, BottomControls } from "./CameraControls";
 import { camLog } from "./cameraLog";
 import {
+  LivenessGuide,
   useFaceLiveness,
   type LivenessPhase,
-} from "../liveness/useFaceLiveness";
+  type PoseGuidePose,
+} from "../liveness";
 import { cameraGuidanceMessage } from "./cameraGuidanceMessage";
 
 type Props = {
@@ -63,128 +65,21 @@ type Props = {
   guidanceContext?: CameraGuidanceContext;
 };
 
-function overlayPhaseBadge(
-  phase: LivenessPhase,
-  requireLiveness: boolean,
-  skipped: boolean,
-): string {
-  if (!requireLiveness) return "Подсказка";
-  if (skipped) return "Ручной снимок";
-  if (phase === "loading") return "Подготовка";
-  if (phase === "face") return "Шаг 1";
-  if (phase === "blink") return "Шаг 2";
-  if (phase === "yaw") return "Шаг 3";
-  if (phase === "smile") return "Финал";
-  if (phase === "passed") return "Готово";
-  if (phase === "unavailable") return "Ручной снимок";
-  return "Подсказка";
-}
+const SETUP_TITLE: Record<CameraGuidanceContext, string> = {
+  default: "Сделайте снимок",
+  profile_photo: "Снимок для профиля",
+  bootstrap_front: "Посмотрите прямо",
+  bootstrap_left: "Голову чуть влево",
+  bootstrap_right: "Голову чуть вправо",
+};
 
-function overlayPhaseTitle(
-  phase: LivenessPhase,
-  requireLiveness: boolean,
-  skipped: boolean,
-  guidanceContext: CameraGuidanceContext,
-): string {
-  if (!requireLiveness) {
-    if (guidanceContext === "bootstrap_front") return "Смотрите прямо в камеру";
-    if (guidanceContext === "bootstrap_left")
-      return "Повернитесь левым ухом к камере";
-    if (guidanceContext === "bootstrap_right")
-      return "Повернитесь правым ухом к камере";
-    if (guidanceContext === "profile_photo") return "Снимите кадр профиля";
-    return "Снимите кадр";
-  }
-  if (skipped) return "Снимите кадр вручную";
-  if (phase === "loading") return "Готовим проверку";
-  if (phase === "face") return "Поставьте лицо в рамку";
-  if (phase === "blink") return "Моргните один раз";
-  if (phase === "yaw") return "Поверните голову";
-  if (phase === "smile") return "Посмотрите прямо и слегка улыбнитесь";
-  if (phase === "passed") return "Кадр готов";
-  if (phase === "unavailable") return "Снимок можно сделать вручную";
-  return "Держите лицо в рамке";
-}
-
-const LIVENESS_STEPS = ["Лицо", "Моргнуть", "Поворот", "Улыбка"];
-
-function overlayStepIndex(
-  phase: LivenessPhase,
-  requireLiveness: boolean,
-  skipped: boolean,
-): number | null {
-  if (!requireLiveness || skipped || phase === "unavailable") return null;
-  if (phase === "loading" || phase === "face") return 0;
-  if (phase === "blink") return 1;
-  if (phase === "yaw") return 2;
-  if (phase === "smile") return 3;
-  if (phase === "passed") return 4;
-  return null;
-}
-
-function OverlayStepRail({
-  phase,
-  requireLiveness,
-  skipped,
-}: {
-  phase: LivenessPhase;
-  requireLiveness: boolean;
-  skipped: boolean;
-}) {
-  const current = overlayStepIndex(phase, requireLiveness, skipped);
-  if (current === null) return null;
-
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -4 }}
-      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] as const }}
-      className="mt-3 grid w-full grid-cols-4 gap-1.5"
-      aria-label="Прогресс проверки живости"
-    >
-      {LIVENESS_STEPS.map((label, index) => {
-        const done = current > index;
-        const active = current === index;
-        return (
-          <motion.div
-            key={label}
-            className="min-w-0"
-            initial={false}
-            animate={{ opacity: done || active ? 1 : 0.62 }}
-            transition={{ duration: 0.18 }}
-          >
-            <motion.div
-              layout
-              className={`h-1.5 rounded-full ${
-                done ? "bg-emerald-300" : active ? "bg-white" : "bg-white/22"
-              }`}
-              animate={{
-                scaleX: active ? [1, 0.96, 1] : 1,
-                boxShadow: active
-                  ? "0 0 18px rgba(255,255,255,0.42)"
-                  : "0 0 0 rgba(255,255,255,0)",
-              }}
-              transition={{
-                duration: active ? 1.2 : 0.2,
-                repeat: active ? Infinity : 0,
-                ease: [0.22, 1, 0.36, 1] as const,
-              }}
-            />
-            <span
-              className={`mt-1 block truncate text-[10px] font-medium ${
-                done || active ? "text-white" : "text-white/52"
-              }`}
-            >
-              {label}
-            </span>
-          </motion.div>
-        );
-      })}
-    </motion.div>
-  );
-}
+const SETUP_POSE: Record<CameraGuidanceContext, PoseGuidePose> = {
+  default: "front",
+  profile_photo: "front",
+  bootstrap_front: "front",
+  bootstrap_left: "turn_left",
+  bootstrap_right: "turn_right",
+};
 
 function FaceCameraOverlayInner(
   {
@@ -248,7 +143,10 @@ function FaceCameraOverlayInner(
     videoRef,
     active: open && requireLiveness,
     skipped: livenessSkipped || !requireLiveness,
+    onLoadError: (reason, error) =>
+      faceLabLog.warn("Browser liveness unavailable", { reason, error }),
   });
+  const livenessRunning = requireLiveness && !livenessSkipped;
 
   const phaseForVoiceRef = useRef<LivenessPhase | string>("");
   const lastAnnouncedVoicePhaseRef = useRef<string>("");
@@ -303,10 +201,8 @@ function FaceCameraOverlayInner(
     if (voiceLang === "off" || !requireLiveness || livenessSkipped) return;
     const phaseAtSchedule = liveness.phase;
     if (phaseAtSchedule === "idle") return;
-    if (phaseAtSchedule === "passed" && requireLiveness && !livenessSkipped)
-      return;
-
     cancelFaceLabSpeech();
+    if (phaseAtSchedule === "passed") return;
     const delay = phaseAtSchedule === "loading" ? 400 : 60;
     const id = window.setTimeout(() => {
       if (!openRef.current) return;
@@ -371,14 +267,6 @@ function FaceCameraOverlayInner(
       window.clearTimeout(timer);
     };
   }, [open, requireLiveness, livenessSkipped, liveness.phase]);
-
-  const overlayGuidanceText =
-    !requireLiveness && guidanceContext !== "default"
-      ? ""
-      : requireLiveness && !livenessSkipped
-        ? displayLivenessHint ||
-          cameraGuidanceMessage(guidanceContext, requireLiveness)
-        : cameraGuidanceMessage(guidanceContext, requireLiveness);
 
   const stopStream = useCallback(() => {
     attachStreamCleanupRef.current?.();
@@ -610,8 +498,6 @@ function FaceCameraOverlayInner(
 
       let last: "denied" | "notfound" | "failed" = "failed";
 
-      // Сначала getUserMedia с facingMode — без await enumerateDevices до запроса,
-      // иначе Chrome часто теряет user activation и не показывает системный диалог.
       const mirrorHint = side === "user";
       const immediateCandidates = createHighQualityConstraints(undefined, side);
       for (const constraints of immediateCandidates) {
@@ -756,66 +642,54 @@ function FaceCameraOverlayInner(
       setIsCapturing(true);
       capturingRef.current = true;
 
-      window.setTimeout(() => {
-        void (async () => {
-          let gotBlob: Blob | null = null;
-          try {
-            const v = videoRef.current;
-            const c = containerRef.current;
-            if (!v || !c) {
-              setError("Не удалось сделать снимок");
-              setIsCapturing(false);
-              capturingRef.current = false;
-              if (fromAuto) {
-                autoCaptureDoneRef.current = false;
-              }
-              return;
-            }
-            void applyCameraPointOfInterest(trackRef.current, {
-              x: 0.5,
-              y: 0.48,
-            });
-            await waitForVideoPipelineFrames(v, 1);
-            playShutterSound();
-
-            gotBlob = await capturePhoto({
-              video: v,
-              track: trackRef.current,
-              frame,
-              container: c,
-              shouldMirror,
-              maxWidth: 4096,
-              maxHeight: 4096,
-              quality: 0.97,
-            });
-
-            if (gotBlob) {
-              if (!fromAuto) {
-                const previewUrl = URL.createObjectURL(gotBlob);
-                setLastShotUrl((prev) => {
-                  if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
-                  return previewUrl;
-                });
-              }
-              onShot(gotBlob);
-              if (fromAuto) {
-                window.setTimeout(() => handleCloseRef.current(), 320);
-              }
-            } else {
-              setError("Не удалось сделать снимок");
-            }
-          } catch (err) {
-            camLog.info("Capture error:", err);
+      void (async () => {
+        let gotBlob: Blob | null = null;
+        try {
+          const v = videoRef.current;
+          const c = containerRef.current;
+          if (!v || !c) {
             setError("Не удалось сделать снимок");
-          } finally {
             setIsCapturing(false);
             capturingRef.current = false;
-            if (fromAuto && !gotBlob) {
+            if (fromAuto) {
               autoCaptureDoneRef.current = false;
             }
+            return;
           }
-        })();
-      }, 0);
+          gotBlob = await capturePhoto({
+            video: v,
+            frame,
+            container: c,
+            shouldMirror,
+          });
+
+          if (gotBlob) {
+            playShutterSound();
+            if (!fromAuto) {
+              const previewUrl = URL.createObjectURL(gotBlob);
+              setLastShotUrl((prev) => {
+                if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+                return previewUrl;
+              });
+            }
+            onShot(gotBlob);
+            if (fromAuto) {
+              window.setTimeout(() => handleCloseRef.current(), 320);
+            }
+          } else {
+            setError("Не удалось сделать снимок");
+          }
+        } catch (err) {
+          camLog.info("Capture error:", err);
+          setError("Не удалось сделать снимок");
+        } finally {
+          setIsCapturing(false);
+          capturingRef.current = false;
+          if (fromAuto && !gotBlob) {
+            autoCaptureDoneRef.current = false;
+          }
+        }
+      })();
     },
     [
       frame,
@@ -842,19 +716,7 @@ function FaceCameraOverlayInner(
       return;
     }
 
-    let cancelled = false;
-
-    const run = async () => {
-      await new Promise<void>((r) => window.setTimeout(r, 100));
-      if (cancelled || !openRef.current) return;
-      void handleCaptureRef.current(true);
-    };
-
-    void run();
-
-    return () => {
-      cancelled = true;
-    };
+    void handleCaptureRef.current(true);
   }, [open, requireLiveness, livenessSkipped, liveness.phase, isCameraReady]);
 
   const handleClose = useCallback(() => {
@@ -926,7 +788,6 @@ function FaceCameraOverlayInner(
       cameraSessionIdRef.current += 1;
       setLivenessSkipped(false);
       autoCaptureDoneRef.current = false;
-      // Иначе startCamera вызывается до commit: videoRef ещё null — поток не цепляется и запрос камеры ведёт себя странно.
       flushSync(() => {
         setOpen(true);
       });
@@ -947,171 +808,158 @@ function FaceCameraOverlayInner(
   return (
     <>
       {createPortal(
-        <AnimatePresence>
-          <motion.div
-            className="fixed inset-0 z-[9999] bg-black/80 p-0 backdrop-blur-sm md:p-5"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            role="dialog"
-            aria-modal="true"
-          >
+        <MotionConfig reducedMotion="user">
+          <AnimatePresence>
             <motion.div
-              ref={containerRef}
-              onClick={(e) => e.stopPropagation()}
-              className="relative mx-auto h-[100dvh] w-screen overflow-hidden rounded-none bg-black md:h-[min(86dvh,780px)] md:min-h-[min(86dvh,780px)] md:w-[min(96vw,1280px)] md:rounded-2xl md:ring-1 md:ring-white/10"
-              initial={{ y: 16, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: 8, opacity: 0 }}
-              transition={{ type: "spring", stiffness: 240, damping: 22 }}
+              className="fixed inset-0 z-[9999] bg-black/80 p-0 backdrop-blur-sm md:p-5"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              role="dialog"
+              aria-modal="true"
             >
-              <VideoFrame
-                videoRef={videoRef}
-                shouldMirror={shouldMirror}
-                onTapToFocus={handleTapToFocusPointer}
-              />
+              <motion.div
+                ref={containerRef}
+                onClick={(e) => e.stopPropagation()}
+                className="relative mx-auto h-[100dvh] w-screen overflow-hidden rounded-none bg-black md:h-[min(86dvh,780px)] md:min-h-[min(86dvh,780px)] md:w-[min(96vw,1280px)] md:rounded-2xl md:ring-1 md:ring-white/10"
+                initial={{ y: 16, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: 8, opacity: 0 }}
+                transition={{ type: "spring", stiffness: 240, damping: 22 }}
+              >
+                <VideoFrame
+                  videoRef={videoRef}
+                  shouldMirror={shouldMirror}
+                  onTapToFocus={handleTapToFocusPointer}
+                />
 
-              <AspectMask frame={frame} aspect={aspect} />
-              <ViewfinderBootstrapHint
-                frame={frame}
-                context={guidanceContext}
-              />
-              <GridOverlay visible={gridOn} frame={frame} aspect={aspect} />
+                <AspectMask frame={frame} aspect={aspect} />
+                <FaceOval
+                  frame={frame}
+                  state={
+                    livenessRunning && liveness.phase === "passed"
+                      ? "ok"
+                      : "active"
+                  }
+                  progress={
+                    livenessRunning && liveness.plan.length > 0
+                      ? (liveness.stepIndex +
+                          (liveness.phase === "passed"
+                            ? 0
+                            : liveness.progress)) /
+                        liveness.plan.length
+                      : null
+                  }
+                />
+                <GridOverlay visible={gridOn} frame={frame} aspect={aspect} />
 
-              <AnimatePresence>
-                {focusPoint && (
-                  <motion.div
-                    key={`${focusPoint.x}-${focusPoint.y}`}
-                    className="pointer-events-none fixed z-[10010] h-16 w-16 rounded-full border-2 border-white/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.02)]"
-                    style={{
-                      left: focusPoint.x - 32,
-                      top: focusPoint.y - 32,
-                    }}
-                    initial={{ opacity: 0, scale: 1.35 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.78 }}
-                    transition={{ duration: 0.18, ease: "easeOut" }}
-                  />
-                )}
-              </AnimatePresence>
-
-              <AnimatePresence>
-                {lastShotUrl && !previewOpen && (
-                  <ThumbnailPreview
-                    imageUrl={lastShotUrl}
-                    onOpen={() => setPreviewOpen(true)}
-                  />
-                )}
-              </AnimatePresence>
-
-              <ErrorDisplay error={error} onClose={() => setError(null)} />
-
-              <div className="pointer-events-none absolute left-0 right-0 top-[max(52px,calc(env(safe-area-inset-top,0px)+40px))] z-40 flex flex-col items-center gap-3 px-4 md:top-[60px]">
-                <div className="pointer-events-none flex max-w-xl flex-col items-center gap-2">
-                  <motion.div
-                    layout
-                    className="inline-flex rounded-full border border-white/20 bg-black/40 px-3 py-1 text-[11px] font-semibold uppercase text-white/85 shadow-lg backdrop-blur-md"
-                  >
-                    {overlayPhaseBadge(
-                      liveness.phase,
-                      requireLiveness,
-                      livenessSkipped,
-                    )}
-                  </motion.div>
-                  <motion.div
-                    layout
-                    className="pointer-events-none max-w-xl rounded-[1.35rem] border border-white/15 bg-black/45 px-4 py-3 text-center text-white shadow-xl backdrop-blur-md"
-                    initial={{ opacity: 0, y: 8, filter: "blur(4px)" }}
-                    animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                    transition={{
-                      duration: 0.22,
-                      ease: [0.22, 1, 0.36, 1] as const,
-                    }}
-                  >
-                    <AnimatePresence mode="wait" initial={false}>
-                      <motion.div
-                        key={`${liveness.phase}-${livenessSkipped}-${overlayGuidanceText}`}
-                        initial={{ opacity: 0, y: 5 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -5 }}
-                        transition={{
-                          duration: 0.16,
-                          ease: [0.22, 1, 0.36, 1] as const,
-                        }}
-                      >
-                        <p className="text-sm font-semibold leading-snug sm:text-[0.98rem]">
-                          {overlayPhaseTitle(
-                            liveness.phase,
-                            requireLiveness,
-                            livenessSkipped,
-                            guidanceContext,
-                          )}
-                        </p>
-                        {overlayGuidanceText ? (
-                          <p className="mt-1 text-xs leading-relaxed text-white/82 sm:text-sm">
-                            {overlayGuidanceText}
-                          </p>
-                        ) : null}
-                      </motion.div>
-                    </AnimatePresence>
-                    <OverlayStepRail
-                      phase={liveness.phase}
-                      requireLiveness={requireLiveness}
-                      skipped={livenessSkipped}
+                <AnimatePresence>
+                  {focusPoint && (
+                    <motion.div
+                      key={`${focusPoint.x}-${focusPoint.y}`}
+                      className="pointer-events-none fixed z-[10010] h-16 w-16 rounded-full border-2 border-white/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.02)]"
+                      style={{
+                        left: focusPoint.x - 32,
+                        top: focusPoint.y - 32,
+                      }}
+                      initial={{ opacity: 0, scale: 1.35 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.78 }}
+                      transition={{ duration: 0.18, ease: "easeOut" }}
                     />
-                  </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <AnimatePresence>
+                  {lastShotUrl && !previewOpen && (
+                    <ThumbnailPreview
+                      imageUrl={lastShotUrl}
+                      onOpen={() => setPreviewOpen(true)}
+                    />
+                  )}
+                </AnimatePresence>
+
+                <ErrorDisplay error={error} onClose={() => setError(null)} />
+
+                <div className="pointer-events-none absolute inset-x-0 top-[max(68px,calc(env(safe-area-inset-top,0px)+60px))] z-40 flex flex-col items-center gap-3 px-3 md:top-[76px]">
+                  {livenessRunning ? (
+                    <LivenessGuide
+                      phase={liveness.phase}
+                      hint={displayLivenessHint || liveness.hint}
+                      plan={liveness.plan}
+                      stepIndex={liveness.stepIndex}
+                      progress={liveness.progress}
+                    />
+                  ) : (
+                    <LivenessGuide
+                      phase="face"
+                      plan={[]}
+                      stepIndex={0}
+                      progress={0}
+                      title={
+                        requireLiveness
+                          ? "Сделайте снимок кнопкой внизу"
+                          : SETUP_TITLE[guidanceContext]
+                      }
+                      pose={
+                        requireLiveness ? "front" : SETUP_POSE[guidanceContext]
+                      }
+                      hint={cameraGuidanceMessage(
+                        guidanceContext,
+                        requireLiveness,
+                      )}
+                    />
+                  )}
+
+                  {livenessRunning &&
+                    showManualCaptureAction &&
+                    liveness.phase !== "passed" &&
+                    liveness.phase !== "idle" && (
+                      <button
+                        type="button"
+                        className="pointer-events-auto min-h-11 rounded-full bg-white/15 px-5 text-sm font-medium text-white ring-1 ring-white/25 backdrop-blur-md transition-colors hover:bg-white/25 focus:outline-none focus-visible:ring-4 focus-visible:ring-white/70"
+                        onClick={() => setLivenessSkipped(true)}
+                      >
+                        Не получается? Снять вручную
+                      </button>
+                    )}
                 </div>
 
-                {requireLiveness &&
-                  open &&
-                  !livenessSkipped &&
-                  showManualCaptureAction &&
-                  liveness.phase !== "passed" &&
-                  liveness.phase !== "idle" && (
-                    <button
-                      type="button"
-                      className="pointer-events-auto rounded-full bg-white/15 px-4 py-2 text-sm font-medium text-white ring-1 ring-white/20 backdrop-blur-md hover:bg-white/25 focus:outline-none focus-visible:ring-4 focus-visible:ring-white/70"
-                      onClick={() => setLivenessSkipped(true)}
-                    >
-                      Снять вручную
-                    </button>
-                  )}
-              </div>
+                <TopControls
+                  onClose={handleClose}
+                  gridOn={gridOn}
+                  onToggleGrid={() => setGridOn((prev) => !prev)}
+                  aspect={aspect}
+                  onAspectChange={handleAspectChange}
+                />
 
-              <TopControls
-                onClose={handleClose}
-                gridOn={gridOn}
-                onToggleGrid={() => setGridOn((prev) => !prev)}
-                aspect={aspect}
-                onAspectChange={handleAspectChange}
-              />
-
-              <BottomControls
-                lastShotUrl={lastShotUrl}
-                onDone={handleClose}
-                isCapturing={isCapturing}
-                isCameraReady={isCameraReady}
-                onCapture={() => void handleCapture(false)}
-                onToggleFacing={toggleFacing}
-                shouldMirror={shouldMirror}
-                captureDisabled={manualShutterLocked}
-                captureHint={
-                  manualShutterLocked
-                    ? liveness.phase === "passed"
-                      ? "Сохраняем кадр…"
-                      : null
-                    : isCapturing
-                      ? "Снимаем…"
-                      : liveness.phase === "unavailable"
-                        ? "Сделать снимок вручную"
-                        : isCameraReady && !isCapturing
-                          ? "Сделать снимок"
-                          : null
-                }
-              />
+                <BottomControls
+                  lastShotUrl={lastShotUrl}
+                  onDone={handleClose}
+                  isCapturing={isCapturing}
+                  isCameraReady={isCameraReady}
+                  onCapture={() => void handleCapture(false)}
+                  onToggleFacing={toggleFacing}
+                  shouldMirror={shouldMirror}
+                  captureDisabled={manualShutterLocked}
+                  captureHint={
+                    manualShutterLocked
+                      ? liveness.phase === "passed"
+                        ? "Сохраняем кадр…"
+                        : null
+                      : isCapturing
+                        ? "Снимаем…"
+                        : liveness.phase === "unavailable"
+                          ? "Сделать снимок вручную"
+                          : isCameraReady && !isCapturing
+                            ? "Сделать снимок"
+                            : null
+                  }
+                />
+              </motion.div>
             </motion.div>
-          </motion.div>
-        </AnimatePresence>,
+          </AnimatePresence>
+        </MotionConfig>,
         document.body,
       )}
 

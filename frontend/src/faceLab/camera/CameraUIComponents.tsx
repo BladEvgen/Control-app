@@ -1,8 +1,7 @@
 import { useEffect } from "react";
-import type { CSSProperties } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { FaTimesCircle, FaExclamationTriangle } from "react-icons/fa";
-import type { Aspect, CameraGuidanceContext, Frame } from "./types";
+import type { Aspect, Frame } from "./types";
 import { vibrate } from "./camera-utils";
 
 type CircleBtnProps = {
@@ -101,210 +100,74 @@ type AspectMaskProps = {
   aspect: Aspect;
 };
 
-function FacePoseSilhouette({ className }: { className?: string }) {
+type FaceOvalProps = {
+  frame: Frame;
+  state: "active" | "ok";
+  progress: number | null;
+};
+
+export function FaceOval({ frame, state, progress }: FaceOvalProps) {
+  if (frame.w < 20 || frame.h < 20) return null;
+  const { w, h } = frame;
+  const rx = Math.min(w * 0.3, h * 0.27);
+  const ry = rx * 1.3;
+  const cx = w / 2;
+  const cy = h * 0.47;
+  const ellipse = `M${cx - rx} ${cy} a${rx} ${ry} 0 1 0 ${rx * 2} 0 a${rx} ${ry} 0 1 0 ${-rx * 2} 0`;
+  const color = state === "ok" ? "#34d399" : "#ffffff";
   return (
-    <svg viewBox="0 0 120 150" className={className} aria-hidden>
+    <svg
+      className="pointer-events-none absolute z-[25]"
+      style={{ left: frame.left, top: frame.top, width: w, height: h }}
+      viewBox={`0 0 ${w} ${h}`}
+      aria-hidden
+    >
       <path
-        d="M60 18c-18.8 0-32 14.7-32 35.7 0 23.8 13 43.5 32 43.5s32-19.7 32-43.5C92 32.7 78.8 18 60 18Z"
-        fill="rgba(230,242,255,0.86)"
-        stroke="rgba(255,255,255,0.96)"
+        d={`M0 0H${w}V${h}H0Z ${ellipse}`}
+        fill="rgba(0,0,0,0.38)"
+        fillRule="evenodd"
+      />
+      <path
+        d={ellipse}
+        fill="none"
+        stroke="rgba(255,255,255,0.28)"
         strokeWidth="3"
       />
-      <path
-        d="M19 137c4.2-24.7 21.5-38 41-38s36.8 13.3 41 38"
-        fill="rgba(255,255,255,0.16)"
-        stroke="rgba(255,255,255,0.78)"
-        strokeWidth="3"
-        strokeLinecap="round"
-      />
-      <path
-        d="M34 55h52"
-        stroke="rgba(16,24,40,0.24)"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-      />
-      <path
-        d="M60 23v107"
-        stroke="rgba(16,24,40,0.2)"
-        strokeDasharray="6 7"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
+      {progress !== null ? (
+        <motion.path
+          d={ellipse}
+          fill="none"
+          stroke={color}
+          strokeWidth="4"
+          strokeLinecap="round"
+          initial={false}
+          animate={{
+            pathLength: Math.min(1, Math.max(0, progress)),
+            stroke: color,
+          }}
+          transition={{ duration: 0.3, ease: "easeOut" }}
+        />
+      ) : (
+        <path
+          d={ellipse}
+          fill="none"
+          stroke={color}
+          strokeOpacity="0.85"
+          strokeWidth="3"
+          strokeDasharray="10 9"
+        />
+      )}
     </svg>
   );
-}
-
-function ProfileYawSwing({ direction }: { direction: "left" | "right" }) {
-  const shift = direction === "left" ? [0, -10, 0] : [0, 10, 0];
-  return (
-    <motion.span
-      className="block h-1.5 w-8 rounded-full bg-white/85"
-      animate={{ x: shift }}
-      transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
-      aria-hidden
-    />
-  );
-}
-
-function ViewfinderYawTurnFace3D({
-  direction,
-}: {
-  direction: "left" | "right";
-}) {
-  const yDeg = direction === "left" ? -22 : 22;
-  const directionLabel = "Поворачивайтесь медленно, без наклона головы";
-  return (
-    <div className="flex max-w-[min(92%,240px)] flex-col items-center gap-3">
-      <div
-        className="relative flex h-[min(31vw,7.25rem)] w-[min(31vw,7.25rem)] min-h-[108px] min-w-[108px] items-center justify-center rounded-[2rem] border border-white/20 bg-black/28 px-2 py-2 shadow-[0_18px_45px_rgba(0,0,0,0.35)] backdrop-blur-sm sm:h-32 sm:w-32"
-        style={{
-          perspective: "280px",
-          perspectiveOrigin: "50% 42%",
-        }}
-      >
-        <motion.div
-          className="absolute inset-3 rounded-[1.45rem] border border-white/30"
-          animate={{ opacity: [0.32, 0.75, 0.32], scale: [0.97, 1.04, 0.97] }}
-          transition={{ duration: 1.9, repeat: Infinity, ease: "easeInOut" }}
-        />
-        <motion.div
-          className={`absolute ${direction === "left" ? "left-[-0.75rem]" : "right-[-0.75rem]"} top-1/2 h-11 w-11 -translate-y-1/2`}
-          animate={{
-            x: direction === "left" ? [0, -8, 0] : [0, 8, 0],
-            opacity: [0.72, 1, 0.72],
-          }}
-          transition={{ duration: 1.7, repeat: Infinity, ease: "easeInOut" }}
-          aria-hidden
-        >
-          <svg viewBox="0 0 44 44" className="h-full w-full drop-shadow-lg">
-            <path
-              d={
-                direction === "left"
-                  ? "M27 10 15 22l12 12M17 22h20"
-                  : "M17 10l12 12-12 12M7 22h20"
-              }
-              fill="none"
-              stroke="rgba(255,255,255,0.96)"
-              strokeWidth="4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </motion.div>
-        <div
-          className="pointer-events-none absolute inset-0 flex items-center justify-center"
-          aria-hidden
-        >
-          <FacePoseSilhouette className="h-full w-full opacity-[0.16] saturate-0" />
-        </div>
-        <motion.div
-          className="relative flex h-full w-full items-center justify-center will-change-transform"
-          animate={{ rotateY: [0, yDeg, 0] }}
-          transition={{
-            duration: 2.35,
-            repeat: Infinity,
-            ease: "easeInOut",
-          }}
-          style={{
-            transformStyle: "preserve-3d",
-            backfaceVisibility: "hidden",
-          }}
-        >
-          <FacePoseSilhouette className="h-full w-full drop-shadow-[0_8px_22px_rgba(0,0,0,0.5)]" />
-        </motion.div>
-      </div>
-
-      <ProfileYawSwing direction={direction} />
-
-      <div className="text-center leading-tight">
-        <p
-          className="text-[10px] font-semibold text-white [text-shadow:0_1px_4px_rgba(0,0,0,0.9)] sm:text-[11px]"
-          style={{ fontFamily: "system-ui, sans-serif" }}
-        >
-          {directionLabel}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function ViewfinderFrontFaceGuide() {
-  return (
-    <div className="flex max-w-[min(92%,240px)] flex-col items-center gap-3">
-      <div className="relative flex h-[min(31vw,7.25rem)] w-[min(31vw,7.25rem)] min-h-[108px] min-w-[108px] items-center justify-center rounded-[2rem] border border-white/22 bg-black/28 px-2 py-2 shadow-[0_18px_45px_rgba(0,0,0,0.35)] backdrop-blur-sm sm:h-32 sm:w-32">
-        <motion.div
-          className="absolute inset-2 rounded-[1.65rem] border border-white/45"
-          animate={{ scale: [0.96, 1.04, 0.96], opacity: [0.45, 0.92, 0.45] }}
-          transition={{ duration: 1.7, repeat: Infinity, ease: "easeInOut" }}
-        />
-        <div className="absolute left-1/2 top-2 h-[calc(100%-1rem)] w-px -translate-x-1/2 bg-white/20" />
-        <div className="absolute left-2 top-1/2 h-px w-[calc(100%-1rem)] -translate-y-1/2 bg-white/16" />
-        <motion.div
-          className="relative flex h-full w-full items-center justify-center"
-          animate={{ y: [0, -3, 0] }}
-          transition={{ duration: 2.1, repeat: Infinity, ease: "easeInOut" }}
-        >
-          <FacePoseSilhouette className="h-full w-full drop-shadow-[0_8px_22px_rgba(0,0,0,0.5)]" />
-        </motion.div>
-      </div>
-      <div className="rounded-full bg-black/35 px-3 py-1.5 text-[11px] font-semibold text-white/90 ring-1 ring-white/20 backdrop-blur-sm">
-        Лицо по центру
-      </div>
-    </div>
-  );
-}
-
-export function ViewfinderBootstrapHint({
-  frame,
-  context,
-}: {
-  frame: Frame;
-  context: CameraGuidanceContext;
-}) {
-  if (frame.w < 20 || frame.h < 20) return null;
-
-  const boxStyle: CSSProperties = {
-    position: "absolute",
-    width: `${frame.w}px`,
-    height: `${frame.h}px`,
-    left: `${frame.left}px`,
-    top: `${frame.top}px`,
-  };
-
-  if (context === "bootstrap_front") {
-    return (
-      <div className="pointer-events-none absolute z-[26]" style={boxStyle}>
-        <div className="flex h-full w-full flex-col items-center justify-center gap-2 px-2">
-          <ViewfinderFrontFaceGuide />
-        </div>
-      </div>
-    );
-  }
-
-  if (context === "profile_photo") return null;
-
-  if (context === "bootstrap_left" || context === "bootstrap_right") {
-    const toLeft = context === "bootstrap_left";
-    return (
-      <div className="pointer-events-none absolute z-[26]" style={boxStyle}>
-        <div className="flex h-full w-full flex-col items-center justify-center gap-2 px-2">
-          <ViewfinderYawTurnFace3D direction={toLeft ? "left" : "right"} />
-        </div>
-      </div>
-    );
-  }
-
-  return null;
 }
 
 export function AspectMask({ frame, aspect }: AspectMaskProps) {
   return (
     <div className="pointer-events-none absolute inset-0">
-      <div className="absolute inset-0 bg-black/28" />
       {frame.w > 10 && frame.h > 10 && (
         <motion.div
           key={aspect}
-          className="absolute ring-2 ring-white/70 rounded-xl shadow-2xl"
+          className="absolute rounded-xl shadow-[0_0_0_9999px_rgba(0,0,0,0.5)] ring-1 ring-white/40"
           style={{
             width: `${frame.w}px`,
             height: `${frame.h}px`,

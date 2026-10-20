@@ -2,20 +2,13 @@ import {
   parseFaceVerifyApiResponse,
   type FaceVerifyApiResponse,
 } from "./faceVerificationSchema";
-import {
-  coercePadDiagnostics,
-  type PadDiagnosticsPayload,
-} from "./faceLabPadTypes";
+import { padDecisionOf, type PadUiDecision } from "./faceLabPadTypes";
 
 export type { FaceVerifyApiResponse } from "./faceVerificationSchema";
-export type { PadDiagnosticsPayload } from "./faceLabPadTypes";
 
 export type PadTestResponse = {
-  decision?: "YES" | "NO" | "REVIEW";
-  operator_action?: string;
+  decision: PadUiDecision;
   status: string;
-  trust_confirmed: boolean | null;
-  diagnostics?: PadDiagnosticsPayload | null;
 };
 
 export type RecognizedStaffRow = {
@@ -53,37 +46,11 @@ export function normalizeScore01(x: number): number {
 }
 
 export function parsePadResult(data: unknown): PadTestResponse | null {
-  if (!isRecord(data)) return null;
-  if (typeof data.status !== "string") return null;
-  if (
-    data.trust_confirmed !== null &&
-    typeof data.trust_confirmed !== "boolean"
-  ) {
-    return null;
-  }
-  const diagRaw = data.diagnostics;
-  const diagnostics =
-    diagRaw !== undefined && diagRaw !== null
-      ? coercePadDiagnostics(diagRaw)
-      : null;
-  const base: PadTestResponse = {
-    decision:
-      data.decision === "YES" ||
-      data.decision === "NO" ||
-      data.decision === "REVIEW"
-        ? data.decision
-        : undefined,
-    operator_action:
-      typeof data.operator_action === "string"
-        ? data.operator_action
-        : undefined,
-    status: data.status as string,
-    trust_confirmed: data.trust_confirmed as boolean | null,
+  if (!isRecord(data) || typeof data.status !== "string") return null;
+  return {
+    decision: padDecisionOf(data.decision, data.status),
+    status: data.status,
   };
-  if (diagnostics) {
-    base.diagnostics = diagnostics;
-  }
-  return base;
 }
 
 export function parseRecognizeResponse(

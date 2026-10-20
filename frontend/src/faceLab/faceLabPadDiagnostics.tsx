@@ -1,9 +1,5 @@
 import { motion } from "framer-motion";
-import {
-  FaCheckCircle,
-  FaExclamationTriangle,
-  FaTimesCircle,
-} from "react-icons/fa";
+import { FaCheckCircle, FaTimesCircle } from "react-icons/fa";
 import type { PadUiDecision } from "./faceLabPadTypes";
 import { FaceLabBadge, FaceLabSurface } from "./faceLabDesign";
 import type { FaceLabTone } from "./faceLabDesignTokens";
@@ -12,36 +8,29 @@ const smoothEase = [0.22, 1, 0.36, 1] as const;
 
 function decisionTone(decision: PadUiDecision): FaceLabTone {
   if (decision === "YES") return "success";
-  if (decision === "NO") return "danger";
-  return "warning";
+  return "danger";
 }
 
 function decisionLabel(decision: PadUiDecision): string {
   if (decision === "YES") return "Да";
-  if (decision === "NO") return "Нет";
-  return "Сомневаюсь";
+  return "Нет";
 }
 
 function decisionTitle(decision: PadUiDecision): string {
   if (decision === "YES") return "Фото принято";
-  if (decision === "NO") return "Фото не принято";
-  return "Нужен новый кадр или оператор";
+  return "Фото не принято";
 }
 
 function decisionText(decision: PadUiDecision): string {
   if (decision === "YES") {
     return "Можно продолжать проверку лица.";
   }
-  if (decision === "NO") {
-    return "Не пропускаем: система видит признаки подмены.";
-  }
-  return "Автоответа недостаточно: переснимите кадр или отдайте оператору.";
+  return "Похоже на подмену: экран, распечатка или маска. Снимите живое лицо.";
 }
 
 function DecisionIcon({ decision }: { decision: PadUiDecision }) {
   if (decision === "YES") return <FaCheckCircle className="h-5 w-5" />;
-  if (decision === "NO") return <FaTimesCircle className="h-5 w-5" />;
-  return <FaExclamationTriangle className="h-5 w-5" />;
+  return <FaTimesCircle className="h-5 w-5" />;
 }
 
 export function PadDecisionCard({

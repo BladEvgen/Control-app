@@ -29,7 +29,6 @@ type ExtendedConstraintSet = MediaTrackConstraintSet & {
   whiteBalanceMode?: string;
   torch?: boolean;
   zoom?: number;
-  sharpness?: number;
   exposureCompensation?: number;
   pointsOfInterest?: Array<{ x: number; y: number }>;
 };
@@ -126,38 +125,26 @@ export function createHighQualityConstraints(
   facing?: Facing,
 ): MediaTrackConstraints[] {
   const candidates: MediaTrackConstraints[] = [];
-  const conservative = isWebKitCameraConservativeMode();
-  const mainFace = {
-    width: { ideal: conservative ? 1920 : 4096 },
-    height: { ideal: conservative ? 1440 : 3072 },
-    aspectRatio: { ideal: 4 / 3 },
+
+  const ladder = [
+    [1920, 1080],
+    [1280, 720],
+    [640, 480],
+  ].map(([w, h]) => ({
+    width: { ideal: w },
+    height: { ideal: h },
     frameRate: { ideal: 30, max: 30 },
-  } satisfies MediaTrackConstraints;
-  const fallbackFace = {
-    width: { ideal: 1920 },
-    height: { ideal: 1440 },
-    aspectRatio: { ideal: 4 / 3 },
-    frameRate: { ideal: 30, max: 30 },
-  } satisfies MediaTrackConstraints;
-  const standardLandscape = {
-    width: { ideal: 1920 },
-    height: { ideal: 1080 },
-    frameRate: { ideal: 30, max: 30 },
-  } satisfies MediaTrackConstraints;
+  }));
 
   if (deviceId) {
     candidates.push(
-      { deviceId: { exact: deviceId }, ...mainFace },
-      { deviceId: { exact: deviceId }, ...fallbackFace },
-      { deviceId: { exact: deviceId }, ...standardLandscape },
+      ...ladder.map((c) => ({ deviceId: { exact: deviceId }, ...c })),
     );
   }
 
   if (facing) {
     candidates.push(
-      { facingMode: { ideal: facing }, ...mainFace },
-      { facingMode: { ideal: facing }, ...fallbackFace },
-      { facingMode: { ideal: facing }, ...standardLandscape },
+      ...ladder.map((c) => ({ facingMode: { ideal: facing }, ...c })),
     );
   }
 
@@ -199,29 +186,6 @@ export async function optimizeCameraTrackForFace(
     torch: caps.torch,
   });
 
-  const maxW = caps.width?.max;
-  const maxH = caps.height?.max;
-  const current = track.getSettings();
-  if (
-    typeof maxW === "number" &&
-    typeof maxH === "number" &&
-    maxW > 0 &&
-    maxH > 0 &&
-    (maxW > (current.width ?? 0) || maxH > (current.height ?? 0))
-  ) {
-    const targetWidth = maxW;
-    const targetHeight = Math.min(maxH, Math.round((targetWidth * 3) / 4));
-    try {
-      await track.applyConstraints({
-        width: { ideal: targetWidth },
-        height: { ideal: targetHeight },
-        aspectRatio: { ideal: 4 / 3 },
-      });
-    } catch {
-      /* Device may reject a resolution bump mid-stream; keep current settings. */
-    }
-  }
-
   const advanced: ExtendedConstraintSet = {};
   if (caps.focusMode?.includes("continuous")) {
     advanced.focusMode = "continuous";
@@ -240,13 +204,6 @@ export async function optimizeCameraTrackForFace(
     const max = Number(caps.zoom.max);
     if (Number.isFinite(min) && Number.isFinite(max)) {
       advanced.zoom = Math.min(Math.max(1, min), max);
-    }
-  }
-
-  if (caps.sharpness?.max != null) {
-    const max = Number(caps.sharpness.max);
-    if (Number.isFinite(max)) {
-      advanced.sharpness = max;
     }
   }
 

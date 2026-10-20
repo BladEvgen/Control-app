@@ -1,6 +1,6 @@
 export function formatServerElapsed(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) {
-    return "—";
+    return "нет данных";
   }
   if (ms < 500) {
     return `менее полсекунды (${Math.round(ms)} мс)`;
@@ -11,7 +11,8 @@ export function formatServerElapsed(ms: number): string {
   const sec = ms / 1000;
   if (sec < 10) {
     const s = Math.round(sec * 10) / 10;
-    const tail = s === Math.floor(s) ? `${Math.floor(s)}` : `${s}`.replace(".", ",");
+    const tail =
+      s === Math.floor(s) ? `${Math.floor(s)}` : `${s}`.replace(".", ",");
     return `около ${tail} с`;
   }
   if (sec < 60) {

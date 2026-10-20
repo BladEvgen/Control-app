@@ -1,6 +1,12 @@
 import type { ReactNode } from "react";
 import { motion } from "framer-motion";
-import { FaFolderOpen, FaHashtag, FaListUl, FaTable } from "react-icons/fa";
+import {
+  FaCheck,
+  FaFolderOpen,
+  FaHashtag,
+  FaListUl,
+  FaTable,
+} from "react-icons/fa";
 import {
   isRecord,
   parseRecognizeResponse,
@@ -13,15 +19,11 @@ import { formatServerElapsed } from "./faceLabFormat";
 import {
   humanizeApiError,
   humanizeApiTokenString,
+  humanizeGallerySearchError,
   humanizeResponseFieldKey,
-  humanizeUnknownFaceStatus,
 } from "./faceLabHumanMessages";
 import { PadDecisionCard } from "./faceLabPadDiagnostics";
-import {
-  padUiDecisionFromDiagnostics,
-  padUiDecisionFromRaw,
-} from "./faceLabPadDecision";
-import { AnimatedPercent, FaceLabMetric } from "./faceLabDesign";
+import { AnimatedPercent } from "./faceLabDesign";
 import {
   clamp01,
   faceLabBadgeClass,
@@ -39,41 +41,21 @@ export type {
 export { VerifyContractPanel } from "./faceLabVerifyComparePanels";
 
 export function PadResultPanel({ pad }: { pad: PadTestResponse }) {
-  const diag = pad.diagnostics ?? null;
-  const decision = diag
-    ? padUiDecisionFromDiagnostics(diag)
-    : (pad.decision ?? padUiDecisionFromRaw(pad.status, pad.trust_confirmed));
-  return (
-    <motion.div
-      className="rounded-xl border border-slate-200 bg-white/95 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900/60 sm:p-5"
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, ease: "easeOut" }}
-    >
-      <motion.div
-        className="mb-3 flex flex-wrap items-center gap-2"
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ type: "spring" as const, stiffness: 380, damping: 28 }}
-      >
-        <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-          Проверка фото
-        </h3>
-      </motion.div>
-      <PadDecisionCard decision={decision} />
-    </motion.div>
-  );
+  return <PadDecisionCard decision={pad.decision} />;
 }
 
 export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
-  const bestMatch =
-    r.recognized_staff.length > 0
-      ? r.recognized_staff.reduce((best, row) =>
-          row.similarity > best.similarity ? row : best,
-        )
-      : null;
-  const hasMatches = r.recognized_staff.length > 0;
-  const bestScore = bestMatch ? bestMatch.similarity : 0;
+  const matches = [...r.recognized_staff].sort(
+    (a, b) => b.similarity - a.similarity,
+  );
+  const bestUnknown = r.unknown_faces.reduce<number | null>(
+    (best, uf) =>
+      typeof uf.best_similarity === "number" &&
+      (best === null || uf.best_similarity > best)
+        ? uf.best_similarity
+        : best,
+    null,
+  );
 
   return (
     <motion.div
@@ -82,212 +64,104 @@ export function RecognizeResultPanel({ r }: { r: RecognizeResponse }) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35, ease: "easeOut" }}
     >
-      <motion.div
-        className="mb-4 flex flex-wrap items-start justify-between gap-3"
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ type: "spring" as const, stiffness: 380, damping: 28 }}
-      >
-        <div className="space-y-1">
-          <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-            Поиск по галерее
-          </h3>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Короткий итог по найденным совпадениям.
-          </p>
-        </div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+          {matches.length === 0
+            ? "Никого не нашли"
+            : matches.length === 1
+              ? "Найден в базе"
+              : `Найдено в базе: ${matches.length}`}
+        </h3>
+        {/* Recognition runs only after the photo check said YES. */}
         <span
-          className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase ${
-            hasMatches
-              ? faceLabBadgeClass("success")
-              : faceLabBadgeClass("warning")
-          }`}
+          className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${faceLabBadgeClass("success")}`}
         >
-          {hasMatches ? "Есть совпадения" : "Совпадений нет"}
+          <FaCheck aria-hidden className="h-3 w-3" />
+          Фото живое
         </span>
-      </motion.div>
-
-      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <FaceLabMetric
-          label="Лучший результат"
-          value={hasMatches ? `${pctExact(bestScore)}%` : "—"}
-          hint={
-            bestMatch
-              ? `${[bestMatch.surname, bestMatch.name].filter(Boolean).join(" ") || "Имя не указано"}${
-                  typeof bestMatch.neighbor_gap === "number"
-                    ? `, запас ${pctExact(bestMatch.neighbor_gap)}%`
-                    : ""
-                }`
-              : "Совпадение не дошло до порога."
-          }
-          tone={hasMatches ? "success" : "warning"}
-        />
-        <FaceLabMetric
-          label="Совпадений"
-          value={String(r.recognized_staff.length)}
-          hint="Кандидаты выше текущего порога."
-          tone={hasMatches ? "success" : "neutral"}
-        />
-        <FaceLabMetric
-          label="Без совпадения"
-          value={String(r.unknown_faces.length)}
-          hint="Лица, которым галерея не дала уверенный ответ."
-          tone={r.unknown_faces.length > 0 ? "warning" : "neutral"}
-        />
-        <FaceLabMetric
-          label="Галерея"
-          value={hasMatches ? "сработала" : "не подтвердила"}
-          hint={
-            hasMatches
-              ? "Есть автоматически найденные совпадения."
-              : "Лицо могло не дойти до порога или не иметь эталона."
-          }
-          tone={hasMatches ? "success" : "warning"}
-        />
       </div>
 
-      {!hasMatches ? (
-        <motion.div
-          className="rounded-2xl border border-amber-200/80 bg-amber-50/80 p-4 shadow-sm dark:border-amber-800/40 dark:bg-amber-500/10"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-        >
-          <p className="text-[11px] font-semibold uppercase text-amber-900 dark:text-amber-100">
-            Причина
-          </p>
-          <p className="mt-1 text-sm font-semibold leading-snug text-amber-950 dark:text-amber-50">
-            По базе совпадений сейчас не нашлось.
-          </p>
-          <p className="mt-2 text-sm leading-relaxed text-amber-900 dark:text-amber-100">
-            Лицо могло не дойти до порога схожести или для него нет эталона в
-            галерее.
-          </p>
-        </motion.div>
+      {matches.length === 0 ? (
+        <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300">
+          В базе нет достаточно похожего человека.
+          {bestUnknown !== null
+            ? ` Самое близкое сходство ${pctExact(bestUnknown)}%, этого мало для совпадения.`
+            : null}{" "}
+          Снимите лицо ближе и прямо или проверьте, есть ли у сотрудника фото в
+          профиле.
+        </p>
       ) : (
         <motion.ul
-          className="grid gap-3 sm:grid-cols-2"
+          className="grid gap-3"
           variants={faceLabFadeContainer}
           initial="hidden"
           animate="show"
         >
-          {r.recognized_staff.map((row, i) => (
-            <motion.li
-              key={`${row.pin}-${i}`}
-              variants={faceLabFadeItem}
-              className={`rounded-2xl border p-3 shadow-sm transition-transform duration-200 hover:-translate-y-0.5 ${
-                bestMatch?.pin === row.pin &&
-                bestMatch?.similarity === row.similarity
-                  ? "border-emerald-200/80 bg-emerald-50/80 dark:border-emerald-800/40 dark:bg-emerald-500/10"
-                  : "border-slate-200 bg-slate-50 dark:border-slate-700/80 dark:bg-slate-950/50"
-              }`}
-            >
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="flex min-w-0 flex-1 items-start gap-3">
-                  {row.avatar_url ? (
-                    <img
-                      src={row.avatar_url}
-                      alt=""
-                      className="h-11 w-11 shrink-0 rounded-full border border-slate-200 object-cover dark:border-slate-700"
-                    />
-                  ) : (
-                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-100 text-xs font-semibold uppercase text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
-                      {(row.surname || row.name || "?").slice(0, 1)}
-                    </span>
-                  )}
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      {[row.surname, row.name].filter(Boolean).join(" ") ||
-                        "Имя не указано"}
-                    </p>
-                    {row.department ? (
-                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
-                        {row.department}
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-                <motion.div
-                  className={`rounded-full border px-3 py-1 text-right ${
-                    bestMatch?.pin === row.pin &&
-                    bestMatch?.similarity === row.similarity
-                      ? faceLabBadgeClass("success")
-                      : faceLabBadgeClass("neutral")
-                  }`}
-                >
-                  <span className="text-[10px] font-medium uppercase">
-                    Схожесть
+          {matches.map((row, i) => {
+            const name =
+              [row.surname, row.name].filter(Boolean).join(" ") ||
+              "Имя не указано";
+            const nextBest =
+              typeof row.neighbor_gap === "number" && row.neighbor_gap < 1
+                ? row.similarity - row.neighbor_gap
+                : null;
+            return (
+              <motion.li
+                key={`${row.pin}-${i}`}
+                variants={faceLabFadeItem}
+                className="flex flex-wrap items-center gap-3 rounded-2xl border border-emerald-200/80 bg-emerald-50/80 p-3 dark:border-emerald-800/40 dark:bg-emerald-500/10"
+              >
+                {row.avatar_url ? (
+                  <img
+                    src={row.avatar_url}
+                    alt=""
+                    className="h-12 w-12 shrink-0 rounded-full border border-slate-200 object-cover dark:border-slate-700"
+                  />
+                ) : (
+                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-100 text-sm font-semibold uppercase text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
+                    {name.slice(0, 1)}
                   </span>
-                  <span className="block tabular-nums text-xl font-bold leading-none">
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    {name}
+                    <span className="ml-2 font-mono text-[11px] font-normal text-slate-400">
+                      {row.pin}
+                    </span>
+                  </p>
+                  {row.department ? (
+                    <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
+                      {row.department}
+                    </p>
+                  ) : null}
+                  {nextBest !== null ? (
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                      Следующий похожий сотрудник: {pctExact(nextBest)}%
+                    </p>
+                  ) : null}
+                </div>
+                <div className="text-right">
+                  <span className="block text-[10px] font-medium uppercase text-slate-500 dark:text-slate-400">
+                    Сходство
+                  </span>
+                  <span className="block tabular-nums text-xl font-bold leading-none text-emerald-700 dark:text-emerald-300">
                     <AnimatedPercent
                       value={clamp01(row.similarity) * 100}
                       decimals={2}
                     />
-                    <span className="text-base font-bold opacity-70">%</span>
+                    <span className="text-base opacity-70">%</span>
                   </span>
-                </motion.div>
-              </div>
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                {bestMatch?.pin === row.pin &&
-                bestMatch?.similarity === row.similarity ? (
-                  <span className="rounded-full border border-emerald-200/80 bg-emerald-50 px-2.5 py-1 font-semibold text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-500/10 dark:text-emerald-200">
-                    Лучший кандидат
-                  </span>
-                ) : null}
-                {typeof row.neighbor_gap === "number" ? (
-                  <span
-                    className={`rounded-full border px-2.5 py-1 ${
-                      row.neighbor_gap >= 0.06
-                        ? "border-emerald-200/80 bg-emerald-50 text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-500/10 dark:text-emerald-200"
-                        : "border-amber-200/80 bg-amber-50 text-amber-800 dark:border-amber-800/40 dark:bg-amber-500/10 dark:text-amber-100"
-                    }`}
-                  >
-                    Запас от похожих: {pctExact(row.neighbor_gap)}%
-                  </span>
-                ) : null}
-                <span className="ml-auto rounded-full border border-slate-200/60 bg-transparent px-2 py-1 font-mono text-[11px] text-slate-400 dark:border-slate-700/50 dark:text-slate-500">
-                  {row.pin}
-                </span>
-              </div>
-            </motion.li>
-          ))}
+                </div>
+              </motion.li>
+            );
+          })}
         </motion.ul>
       )}
-      {r.unknown_faces.length > 0 ? (
-        <motion.div
-          className="mt-4 rounded-2xl border border-amber-200 bg-amber-50/90 p-4 shadow-sm dark:border-amber-900/40 dark:bg-amber-950/20"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.12 }}
-        >
-          <p className="text-[11px] font-semibold uppercase text-amber-900 dark:text-amber-100">
-            Неопределённость
-          </p>
-          <p className="mt-1 text-sm font-semibold text-amber-950 dark:text-amber-50">
-            Лица без уверенного совпадения: {r.unknown_faces.length}
-          </p>
-          <motion.ul
-            className="mt-2 space-y-1 text-xs text-amber-900/85 dark:text-amber-100/85"
-            variants={faceLabFadeContainer}
-            initial="hidden"
-            animate="show"
-          >
-            {r.unknown_faces.map((uf, i) => (
-              <motion.li key={i} variants={faceLabFadeItem}>
-                Лицо {i + 1}: {humanizeUnknownFaceStatus(uf.status)}
-                {typeof uf.best_similarity === "number" ? (
-                  <span className="ml-1 tabular-nums">
-                    , лучший шанс {pctExact(uf.best_similarity)}%
-                  </span>
-                ) : null}
-                {typeof uf.neighbor_gap === "number" ? (
-                  <span className="ml-1 tabular-nums">
-                    , запас {pctExact(uf.neighbor_gap)}%
-                  </span>
-                ) : null}
-              </motion.li>
-            ))}
-          </motion.ul>
-        </motion.div>
+
+      {matches.length > 0 && r.unknown_faces.length > 0 ? (
+        <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+          Ещё лиц на фото без совпадения в базе: {r.unknown_faces.length}.
+        </p>
       ) : null}
     </motion.div>
   );
@@ -299,7 +173,7 @@ function formatUnknownValue(
   fieldKey?: string,
 ): ReactNode {
   if (depth > 4) return "…";
-  if (v === null || v === undefined) return "—";
+  if (v === null || v === undefined) return "нет данных";
   if (typeof v === "boolean") return v ? "да" : "нет";
   if (typeof v === "number") {
     if (fieldKey === "elapsed_ms") {
@@ -351,7 +225,7 @@ function formatUnknownValue(
   }
   if (isRecord(v)) {
     const entries = Object.entries(v);
-    if (entries.length === 0) return "—";
+    if (entries.length === 0) return "пусто";
     return (
       <div className="mt-1 rounded-lg border border-slate-200/90 bg-gradient-to-b from-slate-50/90 to-white/50 p-2.5 text-xs dark:border-slate-600/55 dark:from-slate-900/45 dark:to-slate-950/30">
         <div className="mb-2 flex items-center gap-1.5 font-semibold uppercase text-slate-400 dark:text-slate-500">
@@ -442,9 +316,15 @@ export function UnexpectedPayloadPanel({ data }: { data: unknown }) {
   );
 }
 
-export function ApiErrorPanel({ data }: { data: unknown }) {
+export function ApiErrorPanel({
+  data,
+  humanize = humanizeApiError,
+}: {
+  data: unknown;
+  humanize?: (raw: string) => { title: string; detail?: string | null };
+}) {
   if (!isRecord(data) || typeof data.error !== "string") return null;
-  const { title, detail } = humanizeApiError(data.error);
+  const { title, detail } = humanize(data.error);
   const serverDetail =
     typeof data.detail === "string" && data.detail.trim()
       ? data.detail.trim()
@@ -477,7 +357,7 @@ export function RecognizeOrRaw({ data }: { data: unknown }) {
     return <RecognizeResultPanel r={rec} />;
   }
   if (isRecord(data) && typeof data.error === "string") {
-    return <ApiErrorPanel data={data} />;
+    return <ApiErrorPanel data={data} humanize={humanizeGallerySearchError} />;
   }
   return <UnexpectedPayloadPanel data={data} />;
 }

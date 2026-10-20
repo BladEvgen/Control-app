@@ -1,15 +1,16 @@
 import type { Frame } from "./types";
 import { camLog } from "./cameraLog";
+import { laplacianVariance } from "./sharpness";
 
 export type CaptureOptions = {
   video: HTMLVideoElement;
-  track?: MediaStreamTrack | null;
   frame: Frame;
   container: HTMLDivElement;
   shouldMirror: boolean;
   maxWidth?: number;
   maxHeight?: number;
   quality?: number;
+  shots?: number;
 };
 
 export function waitForVideoPipelineFrames(
@@ -41,12 +42,21 @@ type DrawCroppedOptions = {
   container: HTMLDivElement;
   shouldMirror: boolean;
   maxLong: number;
-  quality: number;
 };
 
-async function drawCroppedJpeg(
-  options: DrawCroppedOptions,
-): Promise<Blob | null> {
+function canvasSharpness(canvas: HTMLCanvasElement): number {
+  const w = 192;
+  const h = Math.max(1, Math.round((canvas.height / canvas.width) * w));
+  const small = document.createElement("canvas");
+  small.width = w;
+  small.height = h;
+  const ctx = small.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return 0;
+  ctx.drawImage(canvas, 0, 0, w, h);
+  return laplacianVariance(ctx.getImageData(0, 0, w, h).data, w, h);
+}
+
+function drawCropped(options: DrawCroppedOptions): HTMLCanvasElement | null {
   const {
     source,
     sourceWidth,
@@ -56,7 +66,6 @@ async function drawCroppedJpeg(
     container,
     shouldMirror,
     maxLong,
-    quality,
   } = options;
 
   if (!frame.w || !frame.h) {
@@ -146,12 +155,19 @@ async function drawCroppedJpeg(
     canvas.height,
   );
 
+  return canvas;
+}
+
+function toJpeg(
+  canvas: HTMLCanvasElement,
+  quality: number,
+): Promise<Blob | null> {
   return new Promise<Blob | null>((resolve) => {
     canvas.toBlob(
       (blob) => {
         if (blob) {
           camLog.info("Photo captured", {
-            finalSize: `${finalWidth}x${finalHeight}`,
+            finalSize: `${canvas.width}x${canvas.height}`,
             kb: (blob.size / 1024).toFixed(0),
           });
         }
@@ -173,7 +189,8 @@ export async function capturePhoto(
     shouldMirror,
     maxWidth = 4096,
     maxHeight = 4096,
-    quality = 0.97,
+    quality = 0.95,
+    shots = 3,
   } = options;
 
   const videoWidth = video.videoWidth;
@@ -186,15 +203,26 @@ export async function capturePhoto(
 
   const maxLong = Math.max(maxWidth, maxHeight);
 
-  return drawCroppedJpeg({
-    source: video,
-    sourceWidth: videoWidth,
-    sourceHeight: videoHeight,
-    video,
-    frame,
-    container,
-    shouldMirror,
-    maxLong,
-    quality,
-  });
+  let best: HTMLCanvasElement | null = null;
+  let bestScore = -1;
+  for (let i = 0; i < shots; i += 1) {
+    if (i > 0) await waitForVideoPipelineFrames(video, 1);
+    const canvas = drawCropped({
+      source: video,
+      sourceWidth: videoWidth,
+      sourceHeight: videoHeight,
+      video,
+      frame,
+      container,
+      shouldMirror,
+      maxLong,
+    });
+    if (!canvas) continue;
+    const score = shots > 1 ? canvasSharpness(canvas) : 0;
+    if (score > bestScore) {
+      best = canvas;
+      bestScore = score;
+    }
+  }
+  return best ? toJpeg(best, quality) : null;
 }

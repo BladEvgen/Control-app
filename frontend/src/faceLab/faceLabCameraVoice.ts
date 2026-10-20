@@ -9,9 +9,13 @@ export type FaceLabVoiceLang = "off" | "ru" | "kk" | "en";
 
 const LIVENESS_PHASE_KEYS = [
   "loading",
+  "face",
   "blink",
-  "yaw",
+  "turn_left",
+  "turn_right",
   "smile",
+  "mouth_open",
+  "hold",
   "unavailable",
 ] as const;
 
@@ -37,7 +41,7 @@ export const FACE_LAB_TTS_PHASE_KEYS: readonly string[] = Object.freeze([
   ...SETUP_TTS_PHASE_KEYS,
 ]);
 
-const TTS_IDB_VERSION = "v_6";
+const TTS_IDB_VERSION = "v_8";
 
 const ttsStore = localforage.createInstance({
   name: "control_front",

@@ -13,7 +13,7 @@ import { vibrate } from "./camera-utils";
 
 const ASPECT_OPTIONS: { value: Aspect; label: string; title?: string }[] = [
   { value: "3:4", label: "3:4", title: "Классическая вертикаль" },
-  { value: "1:1", label: "1:1", title: "Квадрат — удобно для лица по центру" },
+  { value: "1:1", label: "1:1", title: "Квадрат, удобно для лица по центру" },
   {
     value: "4:3",
     label: "4:3",

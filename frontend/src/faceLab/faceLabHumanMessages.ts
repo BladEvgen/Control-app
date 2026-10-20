@@ -311,14 +311,6 @@ function humanizeSnakeOrEnglishFragment(s: string): string {
     .join(" ");
 }
 
-export function humanizeUnknownFaceStatus(status: string): string {
-  const m: Record<string, string> = {
-    unknown: "совпадение в галерее не найдено",
-    below_threshold: "сходство ниже текущего порога",
-  };
-  return m[status] ?? humanizeSnakeOrEnglishFragment(status);
-}
-
 export function humanizeApiTokenString(value: string): string {
   const t = value.trim();
   if (!t) return t;
@@ -340,10 +332,7 @@ export function humanizeResponseFieldKey(key: string): string {
     matched: "Совпадение",
     final_decision: "Итог",
     summary: "Пояснение",
-    gallery_strength: "Надёжность галереи",
     threshold_applied: "Применённый порог",
-    threshold_verified_strong: "Порог (сильная галерея)",
-    threshold_verified_weak: "Порог (слабая галерея)",
     diagnostics: "Диагностика",
     identity_margin: "Отделение от похожих сотрудников",
     impostor_guard_checked: "Проверка похожих сотрудников",
@@ -357,7 +346,6 @@ export function humanizeResponseFieldKey(key: string): string {
     mask_prototypes: "Сохранённая маска",
     avatar_prototypes: "Аватар",
     face_sample_prototypes: "Кадры Face Lab",
-    augment_prototypes: "Варианты света/очков",
     condition_variant_prototypes: "Варианты качества",
     glasses_variant_prototypes: "Варианты очков",
     centroid_prototypes: "Сводные эталоны",

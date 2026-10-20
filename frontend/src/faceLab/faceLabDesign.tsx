@@ -70,33 +70,3 @@ export function AnimatedPercent({
 
   return <motion.span className={className}>{rounded}</motion.span>;
 }
-
-export function FaceLabMetric({
-  label,
-  value,
-  hint,
-  tone = "neutral",
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-  tone?: FaceLabTone;
-}) {
-  return (
-    <div
-      className={`rounded-lg border px-3 py-3 ${faceLabToneShellClass(tone)}`}
-    >
-      <p className="text-[11px] font-semibold uppercase text-slate-500 dark:text-slate-400">
-        {label}
-      </p>
-      <p className="mt-1 text-base font-semibold leading-snug text-slate-950 dark:text-slate-50">
-        {value}
-      </p>
-      {hint ? (
-        <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
-          {hint}
-        </p>
-      ) : null}
-    </div>
-  );
-}
