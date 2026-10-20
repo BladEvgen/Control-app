@@ -1,6 +1,7 @@
 import { FaGithub } from "react-icons/fa";
 import logoSrc from "../assets/logo.png";
 import { CURRENT_APP_BUILD_META } from "../utils/appBuild";
+import { localDate, REPORT_TIME_ZONE } from "../utils/reportDates";
 
 const builtAt = new Date(
   CURRENT_APP_BUILD_META.buildEpochMs,
@@ -8,13 +9,14 @@ const builtAt = new Date(
   day: "numeric",
   month: "long",
   year: "numeric",
+  timeZone: REPORT_TIME_ZONE,
 });
 
 export default function ShellFooter() {
   return (
     <footer className="shell-footer">
       <span className="shell-footer-brand">
-        <img src={logoSrc} alt="" />© {new Date().getFullYear()} КРМУ · Учёт
+        <img src={logoSrc} alt="" />© {localDate().slice(0, 4)} КРМУ · Учёт
         посещаемости
       </span>
       <span className="shell-footer-meta">

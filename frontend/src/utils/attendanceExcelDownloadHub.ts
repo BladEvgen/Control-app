@@ -57,10 +57,6 @@ export function subscribeAttendanceExcelDownloads(
   };
 }
 
-export function getAttendanceExcelDownloadActive(): number {
-  return active;
-}
-
 export function dismissAttendanceExcelError(): void {
   failedDownload = null;
   emit();

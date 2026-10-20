@@ -51,10 +51,32 @@ const AttendanceTable: React.FC<AttendanceTableProps> = ({ attendance }) => {
   };
 
   const renderTotalTime = (data: AttendanceData) => {
-    if (data.total_minutes !== undefined && data.total_minutes > 0) {
-      return formatMinutes(data.total_minutes);
-    }
-    return "";
+    const verified =
+      data.total_minutes !== undefined && data.total_minutes > 0
+        ? formatMinutes(data.total_minutes)
+        : "";
+    const credited = data.remote_credited_minutes ?? 0;
+    const inSystem = data.remote_activity_minutes ?? 0;
+    if (credited <= 0 && inSystem <= 0) return verified;
+    const hint = [
+      inSystem > 0 &&
+        `в т.ч. ${formatMinutes(inSystem)} работы в системе вне здания`,
+      credited > 0 &&
+        `${formatMinutes(credited)} засчитано по соглашению о дистанционной работе (терминалы этого не видят)`,
+    ]
+      .filter(Boolean)
+      .join("; ");
+    return (
+      <span title={hint}>
+        {verified}
+        {credited > 0 && (
+          <span className="text-sky-700 dark:text-sky-300">
+            {verified && " + "}
+            {formatMinutes(credited)} удал.
+          </span>
+        )}
+      </span>
+    );
   };
 
   const renderProgressBar = (data: AttendanceData) => {

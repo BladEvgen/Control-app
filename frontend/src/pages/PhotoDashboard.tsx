@@ -30,6 +30,11 @@ import { Toggle } from "../components/Toggle";
 import useWindowSize from "../hooks/useWindowSize";
 import EditableDateField from "../components/EditableDateField";
 import PhotoPadVerdictPanel from "../components/PhotoPadVerdictPanel";
+import {
+  formatCalendarDate,
+  localDate,
+  REPORT_TIME_ZONE,
+} from "../utils/reportDates";
 
 const PING_INTERVAL = 15000;
 const PONG_TIMEOUT = 8000;
@@ -268,7 +273,6 @@ const resolvePhotoUiStatus = (photo: Partial<PhotoData>): PhotoUiStatus => {
   if (effectiveStatus === "suspicious") return "suspicious_auto";
   if (effectiveStatus === "error") return "check_error";
   if (effectiveStatus === "review") return "check";
-  // Not scanned yet: nothing for the operator to do, so it must not look like "review".
   if (effectiveStatus === "pending") return "pending";
   return "clean";
 };
@@ -303,10 +307,6 @@ const isManualVerdictActionDisabled = (
 
 const isRiskPhotoCandidate = (photo: Partial<PhotoData>): boolean => {
   const manualVerdict = photo.photoManualVerdict ?? "none";
-  // В режиме риска показываем:
-  // 1) все manual suspicious,
-  // 2) auto suspicious,
-  // 3) фото, требующие ручной проверки (pending/review/error без manual verdict).
   if (manualVerdict === "suspicious") return true;
   if (manualVerdict === "clean") return false;
   const status = resolvePhotoEffectiveStatus(photo);
@@ -387,11 +387,10 @@ const formatTime = (iso: string): string => {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    timeZone: REPORT_TIME_ZONE,
   });
 };
 
-// Newest first, then id, then identity. Timestamps are parsed once per photo
-// (decorate-sort) instead of twice per comparison.
 const sortPhotosDeterministically = (items: PhotoData[]): PhotoData[] =>
   items
     .map((photo) => {
@@ -763,13 +762,11 @@ const MarqueeTrack: React.FC<{
     updateDimensionsFnRef.current();
   }, [rowIndex]);
 
-  // Keep the card at the left edge in place when the row changes (a new photo
-  // is inserted before it): without this the whole row jumps back one card.
   const prevItemsRef = useRef<(PhotoData | null)[]>(items);
   useLayoutEffect(() => {
     const prev = prevItemsRef.current;
     prevItemsRef.current = items;
-    const pitch = cardWidthPxRef.current + CARD_ITEM_GAP_PX; // pitch the offset was measured in
+    const pitch = cardWidthPxRef.current + CARD_ITEM_GAP_PX;
     if (prev !== items && prev.length > 0 && pitch > 0) {
       const slot = Math.floor(offsetRef.current / pitch);
       const anchorId = prev[slot % prev.length]?.id;
@@ -1258,7 +1255,6 @@ const PhotoDashboard: React.FC = () => {
     document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
     document.addEventListener("mozfullscreenchange", handleFullscreenChange);
     document.addEventListener("MSFullscreenChange", handleFullscreenChange);
-    // Read initial state without treating a direct kiosk link as a fullscreen exit.
     setIsFullscreen(!!getFullscreenElement());
     return () => {
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
@@ -1466,21 +1462,9 @@ const PhotoDashboard: React.FC = () => {
   const lastVersionByIdRef = useRef<Map<number, string>>(new Map());
   const enqueueWsEventsRef = useRef<(events: PhotoData[]) => void>(() => {});
 
-  const getCurrentLocalDate = useCallback((): string => {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = `0${today.getMonth() + 1}`.slice(-2);
-    const day = `0${today.getDate()}`.slice(-2);
-    return `${year}-${month}-${day}`;
-  }, []);
+  const getCurrentLocalDate = useCallback((): string => localDate(), []);
 
-  const [selectedDate, setSelectedDate] = useState<string>(() => {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = `0${today.getMonth() + 1}`.slice(-2);
-    const day = `0${today.getDate()}`.slice(-2);
-    return `${year}-${month}-${day}`;
-  });
+  const [selectedDate, setSelectedDate] = useState<string>(() => localDate());
 
   const date = selectedDate;
   const dateRef = useRef(date);
@@ -1489,9 +1473,7 @@ const PhotoDashboard: React.FC = () => {
   const isSelectedDateToday = selectedDate === getCurrentLocalDate();
 
   const todayLabel = useMemo(() => {
-    const parts = selectedDate.split("-").map(Number);
-    const d = new Date(parts[0], parts[1] - 1, parts[2]);
-    return d.toLocaleDateString("ru-RU", {
+    return formatCalendarDate(selectedDate, {
       weekday: "long",
       day: "numeric",
       month: "long",
@@ -1789,8 +1771,6 @@ const PhotoDashboard: React.FC = () => {
         photoTapeRowByIdRef.current.clear();
       }
 
-      // Identity -> slot index: O(1) lookups instead of a findIndex per event
-      // (the initial snapshot alone was O(n^2)). Deleted slots become null.
       const next: (PhotoData | null)[] = isReplace
         ? []
         : [...photosRef.current];
@@ -1898,8 +1878,6 @@ const PhotoDashboard: React.FC = () => {
       });
       wsBatchBucketsRef.current.clear();
       initialLoadDoneRef.current = true;
-      // A day can hold 1500+ photos: render the swap as a transition so the
-      // date picker and the rest of the page stay responsive meanwhile.
       startTransition(() => {
         mergeCanonicalPhotoEvents(events, {
           replace: true,
@@ -2003,8 +1981,7 @@ const PhotoDashboard: React.FC = () => {
         if (!isPhotoWsMessage(payload)) return;
         const data = payload;
         if (data.type === "ping" || data.type === "heartbeat") return;
-        // Late frames from the previous day (the server switches groups on
-        // our {"date"} message) must not reach this day's feed.
+
         if (data.date != null && data.date !== dateRef.current) return;
         const events = extractEventsFromMessage(data);
 
@@ -2045,8 +2022,6 @@ const PhotoDashboard: React.FC = () => {
     ],
   );
 
-  // One socket for the page's lifetime: the day is chosen by a {"date"} message
-  // (on open, after every reconnect, and on each date change), not by the URL.
   const wsUrl = useMemo(() => {
     const urlObj = new URL(apiUrl);
     const protocol = urlObj.protocol === "https:" ? "wss" : "ws";
@@ -2092,8 +2067,6 @@ const PhotoDashboard: React.FC = () => {
       sendMessage(JSON.stringify({ date: dateRef.current }));
   }, [sendMessage]);
 
-  // A date switch reuses the socket: drop everything that belonged to the
-  // previous day, then ask the server for the new day's snapshot.
   useEffect(() => {
     sendDateRef.current();
     clearWsRuntimeBuffers();
@@ -2227,8 +2200,7 @@ const PhotoDashboard: React.FC = () => {
         cardW = Math.max(CARD_WIDTH_MIN_PX, Math.min(cardW, maxCardH));
         heightCapped = true;
       }
-      // Resizes arrive every frame while fullscreen/kiosk toggles: let React
-      // batch and interrupt these re-layouts instead of blocking each frame.
+
       startTransition(() => {
         setTapeNumRows(rows);
         setCardWidthPx(cardW);
@@ -2361,7 +2333,6 @@ const PhotoDashboard: React.FC = () => {
     }
   }, [displayPhotos, hoveredPhotoKey]);
 
-  // Only the states actually on screen go into the legend.
   const presentStatuses = useMemo(
     () => new Set(displayPhotos.map(resolvePhotoUiStatus)),
     [displayPhotos],
@@ -2397,8 +2368,6 @@ const PhotoDashboard: React.FC = () => {
         return;
       }
       const isSelectedPhoto = selectedPhotoRef.current?.id === targetPhoto.id;
-      // The operator may close the card while the request is in flight:
-      // only touch the card if it is still the one on screen.
       const replaceIfOpen =
         (next: PhotoData) =>
         (prev: PhotoData | null): PhotoData | null =>
@@ -2969,8 +2938,6 @@ const PhotoDashboard: React.FC = () => {
         isActionableCard && enableArrowNavigation && !isClone;
       const uiStatus = resolvePhotoUiStatus(photo);
       const statusMeta = PHOTO_STATUS_STYLE[uiStatus];
-      // Grid cards enter and lift with CSS only: framer layout/presence on
-      // hundreds of cards made fullscreen (re)layout visibly stall.
       const isGridCard = animationSurface === "grid" && !isClone;
       const cardStyle: React.CSSProperties = {
         ...(kioskCardWidth != null ? { width: kioskCardWidth } : null),
@@ -3425,8 +3392,6 @@ const PhotoDashboard: React.FC = () => {
                           rowIndex,
                           cardIndex,
                           true,
-                          // Always explicit: the track's loop length is computed
-                          // from cardWidthPx, so CSS must not size cards differently.
                           cardWidthPx,
                           copyIndex > 0,
                           true,

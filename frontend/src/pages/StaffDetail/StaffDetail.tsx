@@ -6,6 +6,7 @@ import React, {
   useRef,
   Suspense,
 } from "react";
+import axios from "axios";
 import { motion } from "framer-motion";
 import { useParams } from "react-router-dom";
 import axiosInstance from "../../api";
@@ -99,7 +100,7 @@ const StaffDetail: React.FC = () => {
   }, [pin]);
 
   const fetchAttendanceData = useCallback(async () => {
-    if (startDate && endDate && new Date(startDate) <= new Date(endDate)) {
+    if (startDate && endDate && startDate <= endDate) {
       const request = ++requestSequence.current;
       if (loadedPin.current !== pin) setLoading(true);
       try {
@@ -154,7 +155,7 @@ const StaffDetail: React.FC = () => {
   const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newStartDate = e.target.value;
     setStartDate(newStartDate);
-    if (new Date(newStartDate) > new Date(endDate)) {
+    if (newStartDate > endDate) {
       setEndDate(newStartDate);
     }
   };
@@ -162,7 +163,7 @@ const StaffDetail: React.FC = () => {
   const handleEndDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newEndDate = e.target.value;
     setEndDate(newEndDate);
-    if (new Date(newEndDate) < new Date(startDate)) {
+    if (newEndDate < startDate) {
       setStartDate(newEndDate);
     }
   };
@@ -177,7 +178,7 @@ const StaffDetail: React.FC = () => {
     try {
       const { generateAndDownloadExcel } =
         await import("../../utils/excelUtils");
-      generateAndDownloadExcel(staffData, startDate, endDate);
+      await generateAndDownloadExcel(staffData, startDate, endDate);
     } catch (error) {
       console.error("Ошибка при генерации Excel:", error);
       setNotificationMessage("Не удалось создать Excel-файл.");
@@ -259,9 +260,13 @@ const StaffDetail: React.FC = () => {
         setAvatarUploadMessage("Фото профиля обновлено.");
         await fetchAttendanceData();
         await refreshFaceSetupAngles();
-      } catch {
+      } catch (e: unknown) {
+        const serverError = axios.isAxiosError<{ error?: string }>(e)
+          ? e.response?.data?.error
+          : undefined;
         setAvatarUploadMessage(
-          "Не удалось обновить фото. Попробуйте снова или другой файл (PNG или JPEG).",
+          serverError ||
+            "Не удалось обновить фото. Попробуйте снова или другой файл (PNG или JPEG).",
         );
       } finally {
         setAvatarUploadBusy(false);

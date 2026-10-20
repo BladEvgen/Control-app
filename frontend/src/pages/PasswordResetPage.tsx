@@ -16,6 +16,7 @@ import {
 } from "react-icons/fa";
 import axiosInstance from "../api";
 import logoSrc from "../assets/logo.png";
+import { localDate } from "../utils/reportDates";
 
 const RULES: [string, RegExp][] = [
   ["8+ символов", /^.{8,}$/],
@@ -417,7 +418,7 @@ const PasswordResetPage = () => {
         </div>
       </motion.div>
       <p className="login-credit">
-        © {new Date().getFullYear()} КРМУ · Учёт посещаемости
+        © {localDate().slice(0, 4)} КРМУ · Учёт посещаемости
       </p>
     </div>
   );

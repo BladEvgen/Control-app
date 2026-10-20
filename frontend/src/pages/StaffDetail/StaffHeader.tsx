@@ -21,12 +21,6 @@ interface StaffHeaderProps {
   faceSetupAnglesLoading?: boolean;
 }
 
-const contractLabels: Record<string, string> = {
-  full_time: "Полная занятость",
-  part_time: "Частичная занятость",
-  gph: "ГПХ",
-};
-
 const StaffHeader: React.FC<StaffHeaderProps> = ({
   staffData,
   handleDownloadExcel,
@@ -108,12 +102,6 @@ const StaffHeader: React.FC<StaffHeaderProps> = ({
         <div>
           <dt>Должность</dt>
           <dd>{staffData.positions.join(", ") || "Не указана"}</dd>
-        </div>
-        <div>
-          <dt>Занятость</dt>
-          <dd>
-            {contractLabels[staffData.contract_type || ""] || "Не указана"}
-          </dd>
         </div>
         <div>
           <dt>Посещаемость за период</dt>

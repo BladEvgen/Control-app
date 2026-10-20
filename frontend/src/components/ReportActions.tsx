@@ -3,6 +3,7 @@ import { FaChevronDown, FaDownload, FaRegCalendarAlt } from "react-icons/fa";
 import DateInput from "./DateInput";
 import Dropdown from "./Dropdown";
 import { subscribeAttendanceExcelDownloads } from "../utils/attendanceExcelDownloadHub";
+import { formatCalendarDate } from "../utils/reportDates";
 
 type ReportActionsProps = {
   startDate: string;
@@ -15,7 +16,7 @@ type ReportActionsProps = {
 };
 
 const shortDate = (date: string): string =>
-  new Date(`${date}T12:00:00`).toLocaleDateString("ru-RU", {
+  formatCalendarDate(date, {
     day: "numeric",
     month: "short",
   });

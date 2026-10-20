@@ -18,6 +18,7 @@ import logoSrc from "../assets/logo.png";
 import { isDebug } from "../../apiConfig";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../store/hooks";
+import { localDate } from "../utils/reportDates";
 
 const LoginPage = () => {
   const [username, setUsername] = useState("");
@@ -349,7 +350,7 @@ const LoginPage = () => {
         </Link>
       </motion.form>
       <p className="login-credit">
-        © {new Date().getFullYear()} КРМУ · Учёт посещаемости
+        © {localDate().slice(0, 4)} КРМУ · Учёт посещаемости
       </p>
     </div>
   );

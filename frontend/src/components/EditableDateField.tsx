@@ -8,7 +8,12 @@ import React, {
 } from "react";
 import { createPortal } from "react-dom";
 import { FaTimes, FaChevronLeft, FaChevronRight } from "react-icons/fa";
-import { validRange } from "../utils/reportDates";
+import {
+  inclusiveDays,
+  localDate,
+  shiftDate as shiftCalendarDate,
+  validRange,
+} from "../utils/reportDates";
 
 const MONTHS_RU = [
   "Январь",
@@ -112,18 +117,22 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
   isLoading = false,
   ariaLabel,
 }) => {
+  const initialToday = strToDate(localDate())!;
   const titleId = useId();
   const inputId = useId();
   const [isOpen, setIsOpen] = useState(false);
-  const [viewYear, setViewYear] = useState(() => new Date().getFullYear());
-  const [viewMonth, setViewMonth] = useState(() => new Date().getMonth());
+  const [viewYear, setViewYear] = useState(() => initialToday.getFullYear());
+  const [viewMonth, setViewMonth] = useState(() => initialToday.getMonth());
   const [popStyle, setPopStyle] = useState<React.CSSProperties>({});
 
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  const todayStr = useMemo(() => dateToStr(new Date()), []);
-  const yesterdayStr = useMemo(() => dateToStr(shiftDays(new Date(), -1)), []);
+  const todayStr = useMemo(() => localDate(), []);
+  const yesterdayStr = useMemo(
+    () => shiftCalendarDate(todayStr, -1),
+    [todayStr],
+  );
   const maxDateStr = todayStr;
 
   const reposition = useCallback(() => {
@@ -148,12 +157,12 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
   }, []);
 
   const open = useCallback(() => {
-    const d = strToDate(value) ?? new Date();
+    const d = strToDate(value) ?? strToDate(todayStr)!;
     setViewYear(d.getFullYear());
     setViewMonth(d.getMonth());
     reposition();
     setIsOpen(true);
-  }, [value, reposition]);
+  }, [value, reposition, todayStr]);
 
   const close = useCallback(() => {
     setIsOpen(false);
@@ -223,10 +232,7 @@ const EditableDateField: React.FC<EditableDateFieldProps> = ({
     if (!value) return null;
     if (value === todayStr) return "сегодня";
     if (value === yesterdayStr) return "вчера";
-    const today = strToDate(todayStr);
-    const picked = strToDate(value);
-    if (!today || !picked) return null;
-    const diff = Math.round((today.getTime() - picked.getTime()) / 86_400_000);
+    const diff = inclusiveDays(value, todayStr) - 1;
     return diff > 0 ? `${diff} дн. назад` : null;
   }, [value, todayStr, yesterdayStr]);
 

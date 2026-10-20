@@ -13,8 +13,7 @@ function readRange(): ReportRange {
     const stored: unknown = JSON.parse(
       sessionStorage.getItem(RANGE_KEY) ?? "null",
     );
-    if (validRange(stored) && stored.endDate <= localDate(new Date()))
-      return stored;
+    if (validRange(stored) && stored.endDate <= localDate()) return stored;
   } catch {
     /* Storage can be unavailable; the form still works. */
   }
@@ -45,6 +44,6 @@ export function useReportDates() {
     setStartDate,
     setEndDate,
     setRange,
-    today: localDate(new Date()),
+    today: localDate(),
   };
 }

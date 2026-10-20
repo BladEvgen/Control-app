@@ -7,15 +7,8 @@ const bonusVariants = {
   visible: { opacity: 1, scale: 1, transition: { duration: 0.5 } },
 };
 
-const shouldShowBonus = (staffData: StaffData | null): boolean => {
-  if (!staffData) return false;
-  if (staffData.bonus_percentage <= 0) return false;
-  const excludedContractTypes = ["gph", "part_time"];
-  return (
-    !!staffData.contract_type &&
-    !excludedContractTypes.includes(staffData.contract_type)
-  );
-};
+const shouldShowBonus = (staffData: StaffData | null): boolean =>
+  !!staffData && staffData.bonus_percentage > 0;
 
 interface EmployeeInfoProps {
   staffData: StaffData;

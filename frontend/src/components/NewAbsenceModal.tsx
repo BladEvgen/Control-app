@@ -16,7 +16,7 @@ import {
 import { log } from "../api";
 import { useDropzone, FileRejection } from "react-dropzone";
 import { Toggle } from "./Toggle";
-import { localDate } from "../utils/reportDates";
+import { inclusiveDays, localDate, shiftDate } from "../utils/reportDates";
 
 interface NewAbsenceModalProps {
   staffPin: string;
@@ -85,14 +85,11 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
   const [reason, setReason] = useState<string>("sick_leave");
 
   const getInitialDates = () => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
+    const today = localDate();
     return {
-      start: localDate(yesterday),
-      end: localDate(today),
-      max: localDate(today),
+      start: shiftDate(today, -1),
+      end: today,
+      max: today,
     };
   };
 
@@ -104,36 +101,24 @@ const NewAbsenceModal: React.FC<NewAbsenceModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
-  const maxDate = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return localDate(today);
-  }, []);
+  const maxDate = useMemo(() => localDate(), []);
 
   const daysDifference = useMemo(() => {
     if (!startDate || !endDate) return 0;
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    const diffTime = Math.abs(end.getTime() - start.getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-    return diffDays;
+    return inclusiveDays(startDate, endDate);
   }, [startDate, endDate]);
 
   const dateError = useMemo(() => {
     if (!startDate || !endDate) return null;
 
-    const start = new Date(startDate + "T00:00:00");
-    const end = new Date(endDate + "T00:00:00");
-    const today = new Date(maxDate + "T00:00:00");
-
-    if (start > today) {
+    if (startDate > maxDate) {
       return "Начальная дата не может быть в будущем";
     }
-    if (end > today) {
+    if (endDate > maxDate) {
       return "Конечная дата не может быть в будущем";
     }
 
-    if (end < start) {
+    if (endDate < startDate) {
       return "Конечная дата не может быть раньше начальной";
     }
 

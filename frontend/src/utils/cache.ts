@@ -1,3 +1,5 @@
+import { localDate } from "./reportDates";
+
 export interface CacheEntry<T> {
   readonly data: T;
   readonly timestamp: number;
@@ -10,14 +12,8 @@ export type CacheResult<T> = T | null;
 
 const CACHE_PREFIX = "dept_cache_v2_";
 
-const getEndOfDayTimestamp = (date: Date = new Date()): number => {
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
-  return endOfDay.getTime();
-};
-
 const getDateString = (date: Date = new Date()): string => {
-  return date.toISOString().split("T")[0] as string;
+  return localDate(date);
 };
 
 const isCacheValidForToday = (cacheDate: string): boolean => {
@@ -30,7 +26,7 @@ export const cacheManager = {
     try {
       const now = Date.now();
       const today = getDateString();
-      const expiresAt = getEndOfDayTimestamp();
+      const expiresAt = now + 86_400_000;
 
       const entry: CacheEntry<T> = {
         data,

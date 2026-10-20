@@ -27,7 +27,7 @@ import useWindowSize from "../hooks/useWindowSize";
 import EditableDateField from "../components/EditableDateField";
 import { FaCompress, FaExpand } from "react-icons/fa";
 import { useAppSelector } from "../store/hooks";
-import { localDate } from "../utils/reportDates";
+import { formatCalendarDate, localDate, shiftDate } from "../utils/reportDates";
 import { useMuiDarkSync } from "../faceLab/useMuiDarkSync";
 
 ChartJS.register(...registerables);
@@ -162,11 +162,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const isKiosk = new URLSearchParams(location.search).get("kiosk") === "1";
-  const initialDate = (() => {
-    const date = new Date();
-    date.setDate(date.getDate() - 1);
-    return localDate(date);
-  })();
+  const initialDate = shiftDate(localDate(), -1);
 
   const [selectedDate, setSelectedDate] = useState<string>(initialDate);
   const [stats, setStats] = useState<AttendanceStats | null>(null);
@@ -367,7 +363,6 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
         chart.setActiveElements(active);
         chart.update("none");
 
-        // Force native chart hover processing so tooltip is rendered on-canvas.
         const canvas = chart.canvas;
         if (canvas) {
           const rect = canvas.getBoundingClientRect();
@@ -437,7 +432,7 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
   }, [activeLegendIndex, getActiveChart, syncChartActiveState, stats]);
 
   const fetchData = useCallback(async () => {
-    const todayStr = new Date().toISOString().split("T")[0];
+    const todayStr = localDate();
     if (selectedDate > todayStr) {
       setError("Выбранная дата не может быть в будущем");
       setLoading(false);
@@ -516,14 +511,12 @@ const Dashboard: React.FC<{ pin?: string }> = ({ pin }) => {
     }
   }, [loading, stats, error]);
 
-  const formatDate = (dateString: string) => {
-    const options: Intl.DateTimeFormatOptions = {
+  const formatDate = (dateString: string) =>
+    formatCalendarDate(dateString, {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
-    };
-    return new Date(dateString).toLocaleDateString("ru-RU", options);
-  };
+    });
 
   const chartData = useMemo(() => {
     if (!stats) return null;

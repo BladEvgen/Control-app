@@ -187,9 +187,7 @@ export const generateAndDownloadExcel = async (
   const dates = Object.keys(staffData.attendance).sort((a, b) => {
     const [dayA, monthA, yearA] = a.split("-").map(Number);
     const [dayB, monthB, yearB] = b.split("-").map(Number);
-    const dateA = new Date(yearA, monthA - 1, dayA).getTime();
-    const dateB = new Date(yearB, monthB - 1, dayB).getTime();
-    return dateA - dateB;
+    return yearA - yearB || monthA - monthB || dayA - dayB;
   });
 
   dates.forEach((dateKey) => {
@@ -207,16 +205,25 @@ export const generateAndDownloadExcel = async (
       } else {
         attendanceInfo = "Удаленная работа";
       }
+      if (record.remote_activity_minutes) {
+        attendanceInfo += `, в системе ${formatMinutes(record.remote_activity_minutes)}`;
+      }
+      if (record.remote_credited_minutes) {
+        attendanceInfo += `, зачтено удалённо ${formatMinutes(record.remote_credited_minutes)} (без СКУД)`;
+      }
     } else if (reason !== "") {
       attendanceInfo = record.is_absent_approved
         ? reason || "Одобрено (Без причины)"
         : `Не одобрено: ${reason || "Без причины"}`;
-    } else if (record.lesson_attendance_day?.lesson_day_status === "rejected_fraud") {
+    } else if (
+      record.lesson_attendance_day?.lesson_day_status === "rejected_fraud"
+    ) {
       attendanceInfo =
         record.lesson_attendance_day.summary_ru?.trim() ||
         "Подозрительное фото — день не в сводке.";
     } else if (
-      record.lesson_attendance_day?.lesson_day_status === "pending_manual_review"
+      record.lesson_attendance_day?.lesson_day_status ===
+      "pending_manual_review"
     ) {
       attendanceInfo =
         record.lesson_attendance_day.summary_ru?.trim() || "Фото на проверке.";
