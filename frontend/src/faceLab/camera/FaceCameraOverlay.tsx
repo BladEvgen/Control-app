@@ -2,6 +2,7 @@ import {
   forwardRef,
   useCallback,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
   useEffect,
@@ -57,6 +58,7 @@ import {
   type PoseGuidePose,
 } from "../liveness";
 import { cameraGuidanceMessage } from "./cameraGuidanceMessage";
+import { ovalInFrame, screenBoxToVideo } from "./ovalGeometry";
 
 type Props = {
   onShot: (blob: Blob) => void;
@@ -139,10 +141,32 @@ function FaceCameraOverlayInner(
     videoRef,
   );
 
+  const faceView = useMemo(() => {
+    const video = videoRef.current;
+    const container = containerRef.current;
+    if (!isCameraReady || !video?.videoWidth || !container || frame.w < 20)
+      return null;
+    const vr = video.getBoundingClientRect();
+    const cr = container.getBoundingClientRect();
+    const o = ovalInFrame(frame);
+    return screenBoxToVideo(
+      {
+        left: frame.left + o.cx - o.rx - (vr.left - cr.left),
+        top: frame.top + o.cy - o.ry - (vr.top - cr.top),
+        w: o.rx * 2,
+        h: o.ry * 2,
+      },
+      { w: vr.width, h: vr.height },
+      { w: video.videoWidth, h: video.videoHeight },
+      shouldMirror,
+    );
+  }, [frame, shouldMirror, isCameraReady]);
+
   const liveness = useFaceLiveness({
     videoRef,
     active: open && requireLiveness,
     skipped: livenessSkipped || !requireLiveness,
+    view: faceView,
     onLoadError: (reason, error) =>
       faceLabLog.warn("Browser liveness unavailable", { reason, error }),
   });

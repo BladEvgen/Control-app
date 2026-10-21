@@ -40,20 +40,27 @@ const TURN_MIN = 0.3;
 const TURN_FRAMES = 2;
 const STRAIGHT_MAX = 0.12;
 const SMILE_FRAMES = 2;
-const FACE_W_MIN = 0.2;
-const FACE_W_MAX = 0.8;
+
+export type FaceView = { x: number; y: number; w: number; h: number };
+
+export const DEFAULT_VIEW: FaceView = { x: 0.32, y: 0.3, w: 0.36, h: 0.4 };
+
+const FIT_ENTER = { dist: 0.45, minSize: 0.5, maxSize: 1.3 };
+const FIT_STAY = { dist: 0.7, minSize: 0.4, maxSize: 1.5 };
 
 export type FaceMeasure = {
   yaw: number;
-  centered: boolean;
-  tooSmall: boolean;
-  tooBig: boolean;
+  dist: number;
+  size: number;
   blink: number;
   smile: number;
   jaw: number;
 };
 
-export function measureFace(face: FaceSignals): FaceMeasure | null {
+export function measureFace(
+  face: FaceSignals,
+  view: FaceView = DEFAULT_VIEW,
+): FaceMeasure | null {
   const lm = face.landmarks;
   if (lm.length <= EYE_OUTER_RIGHT) return null;
   let minX = 1;
@@ -76,9 +83,11 @@ export function measureFace(face: FaceSignals): FaceMeasure | null {
   const avg = (a: string, c: string) => ((b[a] ?? 0) + (b[c] ?? 0)) / 2;
   return {
     yaw: (lm[NOSE].x - (l.x + r.x) / 2) / eyeDist,
-    centered: cx > 0.3 && cx < 0.7 && cy > 0.28 && cy < 0.72,
-    tooSmall: w < FACE_W_MIN,
-    tooBig: w > FACE_W_MAX,
+    dist: Math.hypot(
+      (cx - view.x - view.w / 2) / (view.w / 2),
+      (cy - view.y - view.h / 2) / (view.h / 2),
+    ),
+    size: w / view.w,
     blink: avg("eyeBlinkLeft", "eyeBlinkRight"),
     smile: avg("mouthSmileLeft", "mouthSmileRight"),
     jaw: b.jawOpen ?? 0,
@@ -122,6 +131,7 @@ export function createLivenessEngine(random: () => number = Math.random) {
   let turnFrames = 0;
   let turned = false;
   let smileFrames = 0;
+  let inOval = false;
 
   const resetStepState = () => {
     okSince = -1;
@@ -141,6 +151,7 @@ export function createLivenessEngine(random: () => number = Math.random) {
     baseSmile = 0;
     baseJaw = 0;
     baseFrames = 0;
+    inOval = false;
     resetStepState();
   };
 
@@ -159,41 +170,41 @@ export function createLivenessEngine(random: () => number = Math.random) {
   };
 
   const positionHint = (m: FaceMeasure): string | null => {
-    if (m.tooSmall) return "Подойдите ближе к камере.";
-    if (m.tooBig) return "Отодвиньтесь немного от камеры.";
-    if (!m.centered) return "Поставьте лицо в центр овала.";
+    const fit = inOval ? FIT_STAY : FIT_ENTER;
+    if (m.size < fit.minSize) return "Подойдите ближе к камере.";
+    if (m.size > fit.maxSize) return "Отодвиньтесь немного от камеры.";
+    if (m.dist > fit.dist) return "Поставьте лицо в центр овала.";
     return null;
   };
 
-  function update(face: FaceSignals | null, now: number): LivenessFrame {
+  function update(
+    face: FaceSignals | null,
+    now: number,
+    view: FaceView = DEFAULT_VIEW,
+  ): LivenessFrame {
     if (index >= plan.length) return frame("Готово, делаем снимок.", 1);
     if (stepStartedAt < 0) stepStartedAt = now;
     const step = plan[index];
-    const m = face ? measureFace(face) : null;
+    const m = face ? measureFace(face, view) : null;
+    const off = m ? positionHint(m) : null;
+    inOval = Boolean(m) && off === null;
 
-    if (!m || !m.centered) {
+    if (!m || off) {
       if (lostSince < 0) lostSince = now;
       if (index > 0 && now - lostSince >= LOST_RESET_MS) {
         restart(false);
         return frame("Лицо пропало из кадра. Начнём сначала.");
       }
       okSince = -1;
-      return frame(
-        m
-          ? "Поставьте лицо в центр овала."
-          : "Не видно лица. Посмотрите в камеру.",
-      );
+      return frame(off ?? "Не видно лица. Посмотрите в камеру.");
     }
     lostSince = -1;
 
     if (step === "face") {
-      const off =
-        positionHint(m) ??
-        (Math.abs(m.yaw) > STRAIGHT_MAX ? "Посмотрите прямо в камеру." : null);
-      if (off) {
+      if (Math.abs(m.yaw) > STRAIGHT_MAX) {
         okSince = -1;
         baseFrames = 0;
-        return frame(off);
+        return frame("Посмотрите прямо в камеру.");
       }
       if (okSince < 0) okSince = now;
       baseBlink = (baseBlink * baseFrames + m.blink) / (baseFrames + 1);
@@ -274,18 +285,17 @@ export function createLivenessEngine(random: () => number = Math.random) {
       m.smile < Math.max(0.3, baseSmile + 0.15) &&
       m.jaw < Math.max(0.25, baseJaw + 0.15);
     const eyesOpen = m.blink < Math.max(0.4, baseBlink + 0.2);
-    const off =
-      positionHint(m) ??
-      (Math.abs(m.yaw) > STRAIGHT_MAX
+    const notStill =
+      Math.abs(m.yaw) > STRAIGHT_MAX
         ? "Посмотрите прямо в камеру."
         : !relaxed
           ? "Расслабьте лицо."
           : !eyesOpen
             ? "Откройте глаза."
-            : null);
-    if (off) {
+            : null;
+    if (notStill) {
       okSince = -1;
-      return frame(off);
+      return frame(notStill);
     }
     if (okSince < 0) okSince = now;
     const p = (now - okSince) / FINAL_HOLD_MS;

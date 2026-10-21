@@ -3,6 +3,7 @@ import type { FaceLandmarker } from "@mediapipe/tasks-vision";
 import {
   createLivenessEngine,
   type FaceSignals,
+  type FaceView,
   type LivenessPhase,
   type LivenessStep,
 } from "./livenessEngine";
@@ -133,6 +134,7 @@ export type UseFaceLivenessOptions = {
   active: boolean;
   skipped: boolean;
   onLoadError?: (reason: string, error: unknown) => void;
+  view?: FaceView | null;
 };
 
 export type FaceLivenessState = {
@@ -160,6 +162,7 @@ export function useFaceLiveness({
   active,
   skipped,
   onLoadError,
+  view,
 }: UseFaceLivenessOptions): UseFaceLivenessResult {
   const [state, setState] = useState<FaceLivenessState>(IDLE);
   const [modelReady, setModelReady] = useState(false);
@@ -167,6 +170,8 @@ export function useFaceLiveness({
   const engineRef = useRef(createLivenessEngine());
   const onLoadErrorRef = useRef(onLoadError);
   onLoadErrorRef.current = onLoadError;
+  const viewRef = useRef(view);
+  viewRef.current = view;
 
   const startEngine = useCallback(() => {
     engineRef.current.reset();
@@ -279,7 +284,11 @@ export function useFaceLiveness({
         raf = requestAnimationFrame(tick);
         return;
       }
-      const f = engineRef.current.update(face, now);
+      const f = engineRef.current.update(
+        face,
+        now,
+        viewRef.current ?? undefined,
+      );
       if (
         !last ||
         last.phase !== f.phase ||

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FaTimesCircle, FaExclamationTriangle } from "react-icons/fa";
 import type { Aspect, Frame } from "./types";
 import { vibrate } from "./camera-utils";
+import { ovalInFrame } from "./ovalGeometry";
 
 type CircleBtnProps = {
   title?: string;
@@ -109,10 +110,7 @@ type FaceOvalProps = {
 export function FaceOval({ frame, state, progress }: FaceOvalProps) {
   if (frame.w < 20 || frame.h < 20) return null;
   const { w, h } = frame;
-  const rx = Math.min(w * 0.3, h * 0.27);
-  const ry = rx * 1.3;
-  const cx = w / 2;
-  const cy = h * 0.47;
+  const { cx, cy, rx, ry } = ovalInFrame(frame);
   const ellipse = `M${cx - rx} ${cy} a${rx} ${ry} 0 1 0 ${rx * 2} 0 a${rx} ${ry} 0 1 0 ${-rx * 2} 0`;
   const color = state === "ok" ? "#34d399" : "#ffffff";
   return (
