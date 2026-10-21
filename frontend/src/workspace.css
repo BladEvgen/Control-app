@@ -2493,6 +2493,18 @@ body.is-resizing {
   grid-template-columns: minmax(0, 1fr);
   gap: 20px;
 }
+
+.facelab
+  :is(
+    .facelab-modes-row,
+    .facelab-work,
+    .facelab-result,
+    .facelab-card,
+    .facelab-preview,
+    .facelab-actions-col
+  ) {
+  grid-template-columns: minmax(0, 1fr);
+}
 .facelab-modes-row {
   display: grid;
   gap: 6px;

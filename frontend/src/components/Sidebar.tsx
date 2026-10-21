@@ -11,6 +11,7 @@ import {
   FaSitemap,
   FaSun,
   FaUpload,
+  FaUserCheck,
 } from "react-icons/fa";
 import Dropdown from "./Dropdown";
 import logoSrc from "../assets/logo.png";
@@ -127,6 +128,10 @@ export default function Sidebar({ theme, toggleTheme }: ShellNavProps) {
                 <FaUpload aria-hidden />
                 Импорт данных
               </Link>
+              <Link className="ws-menu-item" to="/face-lab" onClick={close}>
+                <FaUserCheck aria-hidden />
+                Face Lab
+              </Link>
               <div className="ws-menu-sep" />
               <button
                 type="button"
@@ -214,6 +219,10 @@ export function MobileDock({ theme, toggleTheme }: ShellNavProps) {
             <Link className="ws-menu-item" to="/import" onClick={close}>
               <FaUpload aria-hidden />
               Импорт данных
+            </Link>
+            <Link className="ws-menu-item" to="/face-lab" onClick={close}>
+              <FaUserCheck aria-hidden />
+              Face Lab
             </Link>
             <div className="ws-menu-sep" />
             <button

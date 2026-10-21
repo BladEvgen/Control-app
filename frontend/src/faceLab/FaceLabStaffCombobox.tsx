@@ -95,8 +95,10 @@ export function FaceLabStaffCombobox({
     }
   }, [selected, value]);
 
+  const query = selected && text === formatLabel(selected) ? "" : text;
+
   const filtered = useMemo(() => {
-    const nq = normalizeSearch(text);
+    const nq = normalizeSearch(query);
     if (!nq) {
       return optionsIndexed.slice(0, LIST_PREVIEW).map((x) => x.o);
     }
@@ -110,10 +112,13 @@ export function FaceLabStaffCombobox({
       if (tokensMatch(hay, nq)) out.push(o);
     }
     return out;
-  }, [optionsIndexed, text]);
+  }, [optionsIndexed, query]);
 
+  const valueRef = useRef(value);
+  valueRef.current = value;
   useEffect(() => {
-    if (!focusRequestId) return;
+    if (!focusRequestId || valueRef.current) return;
+    if (window.matchMedia("(pointer: coarse)").matches) return;
     inputRef.current?.focus();
     setOpen(true);
   }, [focusRequestId]);
@@ -182,7 +187,7 @@ export function FaceLabStaffCombobox({
 
   const total = options.length;
   const shown = filtered.length;
-  const nq = normalizeSearch(text);
+  const nq = normalizeSearch(query);
   const listHint =
     !loading && total > 0
       ? !nq
@@ -242,10 +247,10 @@ export function FaceLabStaffCombobox({
             <p className="text-[11px] font-semibold uppercase text-emerald-800 dark:text-emerald-300/90">
               Выбрано
             </p>
-            <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+            <p className="text-sm font-semibold text-slate-900 [overflow-wrap:anywhere] dark:text-slate-100">
               {selected.fio}
             </p>
-            <p className="truncate text-xs text-slate-600 dark:text-slate-400">
+            <p className="text-xs text-slate-600 [overflow-wrap:anywhere] dark:text-slate-400">
               {selected.deptName}, PIN {selected.pin}
             </p>
             {faceProfileStateLabel(selected.faceProfileState) ? (
@@ -282,7 +287,7 @@ export function FaceLabStaffCombobox({
                 onMouseEnter={() => setHighlight(idx)}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  <div className="min-w-0 [overflow-wrap:anywhere]">
                     <span
                       className={`font-medium ${
                         idx === highlight
@@ -314,7 +319,7 @@ export function FaceLabStaffCombobox({
         ) : null}
       </AnimatePresence>
       <AnimatePresence>
-        {open && !loading && filtered.length === 0 && normalizeSearch(text) ? (
+        {open && !loading && filtered.length === 0 && nq ? (
           <motion.div
             className="absolute z-50 mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-500 shadow-md dark:border-slate-600 dark:bg-slate-900"
             initial={{ opacity: 0, y: -4 }}
