@@ -1,8 +1,8 @@
 {
-  "python.defaultInterpreterPath": "${workspaceFolder}/venv/bin/python",
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/venv/bin/python",
 
   "ruff.importStrategy": "fromEnvironment",
-  "ruff.interpreter": ["${workspaceFolder}/venv/bin/python"],
+  "ruff.interpreter": ["${workspaceFolder}/backend/venv/bin/python"],
   "ruff.configuration": "${workspaceFolder}/pyproject.toml",
   "ruff.nativeServer": "on",
 
@@ -27,9 +27,9 @@
     }
   },
   "black-formatter.importStrategy": "fromEnvironment",
-  "black-formatter.interpreter": ["${workspaceFolder}/venv/bin/python"],
+  "black-formatter.interpreter": ["${workspaceFolder}/backend/venv/bin/python"],
   "isort.importStrategy": "fromEnvironment",
-  "isort.interpreter": ["${workspaceFolder}/venv/bin/python"],
+  "isort.interpreter": ["${workspaceFolder}/backend/venv/bin/python"],
   "isort.args": ["--profile", "black"],
 
   "files.exclude": {

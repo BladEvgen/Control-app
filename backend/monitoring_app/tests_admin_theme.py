@@ -1,7 +1,7 @@
 from copy import deepcopy
 
 from django.conf import settings
-from django.contrib.auth import get_user_model
+from django.contrib.auth.models import User
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
@@ -11,7 +11,7 @@ from django_settings.admin_theme import PALETTE_COOKIE_NAME
 class AdminPaletteTests(TestCase):
     @classmethod
     def setUpTestData(cls):
-        cls.user = get_user_model().objects.create_superuser(
+        cls.user = User.objects.create_superuser(
             "palette-admin", "palette@example.com", "test-password"
         )
 

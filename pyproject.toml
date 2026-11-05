@@ -47,7 +47,7 @@ extend-exclude = '''
 '''
 
 [tool.pyright]
-venvPath = "."
+venvPath = "backend"
 venv = "venv"
 pythonVersion = "3.11"
 pythonPlatform = "Linux"
@@ -56,7 +56,9 @@ extraPaths = ["backend"]
 exclude = [
     "**/node_modules",
     "**/__pycache__",
-    "venv",
+    "**/venv",
+    "**/env",
+    "**/.venv",
     "backend/monitoring_app/migrations",
     "backend/staticroot",
     "backend/static",
