@@ -375,12 +375,13 @@ def invalidate_attendance_scope(
     dated_prefixes += [f"department_confirmation_{d}_" for d in departments]
     dated_prefixes += [
         "department_confirmation_pins_",
-        f"staff_attendance_stats_{version}_",
         f"map_location_{version}_",
         "attendance_data_",
     ]
     made = [(cache.make_key(prefix), prefix) for prefix in dated_prefixes]
     always = cache.make_key("staffatt_count_")
+    stats = cache.make_key(f"staff_attendance_stats_{version}_")
+    stats_owners = tuple(f"_{pin}" for pin in pins | {"None"})
 
     keys, delete = _cache_keys(cache)
     doomed = [
@@ -388,10 +389,16 @@ def invalidate_attendance_scope(
         for key in keys
         if key.startswith(always)
         or any(key.startswith(m) and _touches(key[len(m) :], day_list) for m, _ in made)
+        or (
+            key.startswith(stats)
+            and key.endswith(stats_owners)
+            and _touches(key[len(stats) :], day_list)
+        )
     ]
     delete(doomed)
 
     exact = [f"photos_for_{d}" for d in day_list]
+    exact += [f"attendance_today_{pin}_{d}" for pin in pins for d in day_list]
     if timezone.localdate() in day_list:
         exact += ["today_attendance_stats", "map_locations_today"]
     cache.delete_many(exact)

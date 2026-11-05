@@ -1161,9 +1161,7 @@ class StaffAttendanceStatsView(APIView):
             )
 
             logger.info("Successfully retrieved staff attendance data.")
-            response = Response(cached_data)
-            response["Cache-Control"] = "public, max-age=21600"
-            return response
+            return Response(cached_data)
 
         except Exception as e:
             logger.error("Error while processing request: %s", e)

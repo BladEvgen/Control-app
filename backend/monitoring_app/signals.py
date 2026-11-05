@@ -137,8 +137,13 @@ def _enqueue_immediate_photo_pad_scan(instance: LessonAttendance) -> None:
 
 
 def _invalidate_lesson_attendance_cache(instance):
-    invalidate_attendance_scope([instance.staff_id], [instance.date_at])
-    bump_suspicious_location_patterns_epoch()
+    staff_id, day = instance.staff_id, instance.date_at
+
+    def _invalidate() -> None:
+        invalidate_attendance_scope([staff_id], [day])
+        bump_suspicious_location_patterns_epoch()
+
+    transaction.on_commit(_invalidate)
 
 
 @receiver(post_save, sender=LessonAttendance)
@@ -183,9 +188,8 @@ def invalidate_attendance_cache(sender, instance, **kwargs):
     _ = sender
     _ = kwargs
     if instance.date_at:
-        invalidate_attendance_scope(
-            [instance.staff_id], [attendance_day.event_day(instance.date_at)]
-        )
+        staff_id, day = instance.staff_id, attendance_day.event_day(instance.date_at)
+        transaction.on_commit(lambda: invalidate_attendance_scope([staff_id], [day]))
 
 
 @receiver(post_save, sender=Staff)

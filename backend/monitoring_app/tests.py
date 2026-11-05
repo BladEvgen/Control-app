@@ -947,6 +947,12 @@ class AttendanceCacheScopeTest(TestCase):
             f"staff_detail_{v}_ROOT-C_2026-03-01_2026-03-31": False,
             f"map_location_{v}_2026-03-10_True": False,
             f"map_location_{v}_2026-03-11_True": True,
+            f"staff_attendance_stats_{v}_2026-03-10_S9001S": False,
+            f"staff_attendance_stats_{v}_2026-03-10_None": False,
+            f"staff_attendance_stats_{v}_2026-03-10_S9002S": True,
+            f"staff_attendance_stats_{v}_2026-03-11_S9001S": True,
+            "attendance_today_S9001S_2026-03-10": False,
+            "attendance_today_S9002S_2026-03-10": True,
         }
         for key in keys:
             Cache.set(key, 1)
@@ -2131,13 +2137,14 @@ class SuspiciousLocationPatternsApiTest(APITestCase):
         self.assertEqual(initial_response.status_code, status.HTTP_200_OK)
         self.assertEqual(initial_response.data["usersByPin"], {})
 
-        self._create_lesson(
-            staff,
-            datetime(2026, 3, 26).date(),
-            latitude=43.2800060,
-            longitude=76.9600060,
-            hour=10,
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            self._create_lesson(
+                staff,
+                datetime(2026, 3, 26).date(),
+                latitude=43.2800060,
+                longitude=76.9600060,
+                hour=10,
+            )
 
         refreshed_response = self.client.get(self.url, params)
         self.assertEqual(refreshed_response.status_code, status.HTTP_200_OK)

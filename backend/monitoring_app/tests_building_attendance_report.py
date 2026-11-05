@@ -968,7 +968,8 @@ class DepartmentAttendanceExcelTests(APITestCase):
         )
 
         lesson.photo_manual_verdict = LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS
-        lesson.save(update_fields=["photo_manual_verdict"])
+        with self.captureOnCommitCallbacks(execute=True):
+            lesson.save(update_fields=["photo_manual_verdict"])
 
         refreshed_excel = self._download_excel()
         self.assertTrue(
