@@ -25,9 +25,9 @@ export type MapGroup = {
 const locationSchema = z.object({
   name: z.string(),
   address: z.string(),
-  lat: z.number().finite().min(-85).max(85),
-  lng: z.number().finite().min(-180).max(180),
-  employees: z.number().finite().positive(),
+  lat: z.number().min(-85).max(85),
+  lng: z.number().min(-180).max(180),
+  employees: z.number().positive(),
 });
 
 export function parseMapLocations(data: unknown): LocationData[] {

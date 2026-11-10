@@ -33,7 +33,7 @@ const livenessSchema = z.object({
 const diagnosticsSchema = z
   .object({
     mode_used: z.string().optional(),
-    gallery_breakdown: z.record(z.number()).optional(),
+    gallery_breakdown: z.record(z.string(), z.number()).optional(),
     identity_margin: z
       .object({
         impostor_guard_checked: z.boolean().optional(),
@@ -47,10 +47,10 @@ const diagnosticsSchema = z
         impostor_guard_note: z.string().optional(),
         impostor_guard_error: z.string().optional(),
       })
-      .passthrough()
+      .loose()
       .optional(),
   })
-  .passthrough()
+  .loose()
   .optional();
 
 export const faceVerifyContractSchema = z.object({
