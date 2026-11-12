@@ -1616,6 +1616,18 @@ def _remote_credit_note(att_data: dict | None, credit_percent: int, digital: lis
     return note
 
 
+def get_public_holidays() -> dict:
+    """{date: is_working_day} по всем праздникам; единый формат ключа "public_holidays"."""
+    return (
+        get_cache(
+            "public_holidays",
+            query=lambda: dict(models.PublicHoliday.objects.values_list("date", "is_working_day")),
+            timeout=10 * 60,
+        )
+        or {}
+    )
+
+
 def _collect_attendance_data_impl(
     staff_list: Sequence[models.Staff],
     start_date: datetime.date,
@@ -1658,19 +1670,7 @@ def _collect_attendance_data_impl(
         len(staff_list),
     )
 
-    holidays = (
-        get_cache(
-            "public_holidays",
-            query=lambda: {
-                holiday.date: holiday.is_working_day
-                for holiday in models.PublicHoliday.objects.filter(
-                    date__range=[start_date, end_date]
-                )
-            },
-            timeout=10 * 60,
-        )
-        or {}
-    )
+    holidays = get_public_holidays()
 
     location_data = list(
         models.ClassLocation.objects.filter(

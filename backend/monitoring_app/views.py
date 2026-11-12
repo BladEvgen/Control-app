@@ -1179,15 +1179,7 @@ class StaffAttendanceStatsView(APIView):
         """
         logger.debug("Calculating last working day for date: %s", date)
 
-        holidays = (
-            get_cache(
-                "public_holidays",
-                query=lambda: list(models.PublicHoliday.objects.all()),
-                timeout=10 * 6,
-            )
-            or []
-        )
-        holiday_dates = {holiday.date: holiday.is_working_day for holiday in holidays if holiday}
+        holiday_dates = utils.get_public_holidays()
 
         while date.weekday() >= 5 or (date in holiday_dates and not holiday_dates[date]):
             logger.debug("%s is not a working day, moving to previous day.", date)
