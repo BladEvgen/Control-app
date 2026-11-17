@@ -2,7 +2,8 @@ import datetime
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -1044,43 +1045,107 @@ class SuspiciousLessonAttendanceExportCommandTests(TestCase):
         self,
         *,
         hour: int,
+        day: datetime.date | None = None,
+        staff: Staff | None = None,
         auto_status: str = LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
-    ) -> None:
-        LessonAttendance.objects.create(
-            staff=self.staff,
+        manual_verdict: str = LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+    ) -> LessonAttendance:
+        day = day or self.target_day
+        return LessonAttendance.objects.create(
+            staff=staff or self.staff,
             subject_name="Math",
             tutor_id=1,
             tutor="Tutor",
-            first_in=_aware_dt(self.target_day, hour, 0),
-            last_out=_aware_dt(self.target_day, hour + 1, 0),
+            first_in=_aware_dt(day, hour, 0),
+            last_out=_aware_dt(day, hour + 1, 0),
             latitude=43.2389,
             longitude=76.8897,
-            date_at=self.target_day,
+            date_at=day,
             photo_spoof_status=auto_status,
-            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+            photo_manual_verdict=manual_verdict,
         )
 
     def test_suspicious_export_command_keeps_only_truly_suspicious_rows(self):
         self._create_lesson(hour=9, auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN)
-        self._create_lesson(
+        auto_suspicious = self._create_lesson(
             hour=11,
             auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
         )
+        manual_suspicious = self._create_lesson(
+            hour=13,
+            manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS,
+        )
+        self._create_lesson(
+            hour=15,
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+            manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN,
+        )
+        self._create_lesson(
+            hour=10,
+            day=self.target_day - datetime.timedelta(days=2),
+            auto_status=LessonAttendance.PHOTO_SPOOF_STATUS_SUSPICIOUS,
+        )
+        other_department = ChildDepartment.objects.create(id="A-SUSP", name="А кафедра")
+        other_staff = Staff.objects.create(
+            pin="S401S",
+            name="Beta",
+            surname="Student",
+            department=other_department,
+        )
+        other_suspicious = self._create_lesson(
+            hour=12,
+            staff=other_staff,
+            manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_SUSPICIOUS,
+        )
+
+        date_from = self.target_day - datetime.timedelta(days=1)
+        date_to = self.target_day + datetime.timedelta(days=1)
 
         with TemporaryDirectory() as tmp_dir:
             output_path = f"{tmp_dir}/suspicious_report.xlsx"
-            call_command(
-                "export_suspicious_lesson_attendance",
-                "--date-from",
-                self.target_day.isoformat(),
-                "--date-to",
-                self.target_day.isoformat(),
-                "--output",
-                output_path,
-            )
+            with self.assertNumQueries(2):
+                with patch(
+                    "monitoring_app.geo.LocationSearcher.find_nearest_locations_bulk",
+                    return_value=[{"name": "Абылай"}] * 3,
+                ) as bulk_search:
+                    call_command(
+                        "export_suspicious_lesson_attendance",
+                        "--date-from",
+                        date_from.isoformat(),
+                        "--date-to",
+                        date_to.isoformat(),
+                        "--output",
+                        output_path,
+                    )
             workbook = load_workbook(output_path, data_only=True)
 
+        bulk_search.assert_called_once()
+        self.assertEqual(len(bulk_search.call_args.args[0]), 3)
+
         rows = list(workbook["Suspicious"].iter_rows(values_only=True))
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[1][1], "Student Api")
-        self.assertEqual(rows[1][3], self.target_day.strftime("%d.%m.%Y"))
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(
+            {cast(int, row[0]) for row in rows[1:]},
+            {auto_suspicious.pk, manual_suspicious.pk, other_suspicious.pk},
+        )
+        self.assertEqual([row[2] for row in rows[1:]], ["А кафедра"] + [self.department.name] * 2)
+        self.assertEqual(
+            {cast(str, row[5]) for row in rows[1:]},
+            {self.target_day.strftime("%d.%m.%Y")},
+        )
+        self.assertEqual({cast(str, row[8]) for row in rows[1:]}, {"Аннулирована"})
+
+        summary_rows = list(workbook["Сводка"].iter_rows(values_only=True))
+        self.assertEqual(
+            summary_rows[0][5:],
+            tuple(
+                (date_from + datetime.timedelta(days=offset)).strftime("%d.%m.%Y")
+                for offset in range(3)
+            ),
+        )
+        self.assertEqual(
+            [row[1] for row in summary_rows[1:]],
+            ["А кафедра", self.department.name],
+        )
+        self.assertEqual([row[4] for row in summary_rows[1:]], [1, 2])
+        self.assertEqual(summary_rows[2][6], "Аннулирована (2)")

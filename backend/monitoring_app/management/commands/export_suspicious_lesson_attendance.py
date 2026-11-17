@@ -18,7 +18,9 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from monitoring_app import models, utils
 
@@ -28,8 +30,8 @@ CIS_DATE_FORMAT = "%d.%m.%Y"
 class _StubLocationSearcher:
     """Заглушка: всегда возвращает «Unknown Area» (нет локаций для Haversine)."""
 
-    def find_nearest(self, lat, lon, radius=200):
-        return "Unknown Area"
+    def find_nearest_locations_bulk(self, coordinates, *, radius=200):
+        return [None] * len(coordinates)
 
 
 class Command(BaseCommand):
@@ -83,7 +85,30 @@ class Command(BaseCommand):
                 models.LessonAttendance.PHOTO_SUSPICIOUS_FOR_REPORTS_Q
             )
             .select_related("staff", "staff__department")
-            .order_by("date_at", "first_in")
+            .only(
+                "id",
+                "staff_id",
+                "staff__pin",
+                "staff__name",
+                "staff__surname",
+                "staff__department_id",
+                "staff__department__id",
+                "staff__department__name",
+                "date_at",
+                "first_in",
+                "latitude",
+                "longitude",
+                "staff_image_path",
+            )
+            .order_by(
+                "staff__department__name",
+                "staff__department_id",
+                "staff__surname",
+                "staff__name",
+                "date_at",
+                "first_in",
+                "pk",
+            )
         )
         if date_from is not None:
             qs = qs.filter(date_at__gte=date_from)
@@ -92,19 +117,28 @@ class Command(BaseCommand):
 
         location_searcher = self._build_location_searcher()
         radius = int(options.get("radius") or 200)
+        records = list(qs)
+        coordinates = [
+            (rec.latitude, rec.longitude)
+            for rec in records
+            if rec.latitude is not None and rec.longitude is not None
+        ]
+        nearest_locations = iter(
+            location_searcher.find_nearest_locations_bulk(coordinates, radius=radius)
+        )
 
         rows = []
         archive_records = []
-        for rec in qs:
+        for rec in records:
             staff = rec.staff
             fio = self._fio(staff)
             staff_pin = utils.pin_to_external_format(staff.pin) if staff.pin else ""
-            department = staff.department.name if staff.department else ""
+            department_id = staff.department_id or ""
+            department = staff.department.name if staff.department else "Без отдела"
             date_str = rec.date_at.strftime(CIS_DATE_FORMAT) if rec.date_at else ""
             if rec.latitude is not None and rec.longitude is not None:
-                location = location_searcher.find_nearest(
-                    rec.latitude, rec.longitude, radius=radius
-                )
+                nearest = next(nearest_locations)
+                location = str(nearest.get("name") or "Unknown Area") if nearest else "Unknown Area"
             else:
                 location = ""
             if rec.first_in:
@@ -114,12 +148,15 @@ class Command(BaseCommand):
                 time_str = ""
             rows.append(
                 {
+                    "lesson_attendance_id": rec.pk,
+                    "department_id": department_id,
                     "department": department,
                     "fio": fio,
                     "student_id_tutor_id": staff_pin,
                     "date": date_str,
                     "time": time_str,
                     "location": location,
+                    "status": "Аннулирована",
                 }
             )
             if rec.staff_image_path and str(rec.staff_image_path).strip():
@@ -132,7 +169,7 @@ class Command(BaseCommand):
         if path.suffix.lower() != ".xlsx":
             path = path.with_suffix(".xlsx")
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_xlsx(rows, path)
+        self._write_xlsx(rows, path, date_from=date_from, date_to=date_to)
         zip_path = path.with_suffix(".zip")
         added = self._write_archive(archive_records, zip_path)
         self.stdout.write(
@@ -323,7 +360,7 @@ class Command(BaseCommand):
         resolved = self._resolve_photo_paths_batch(unique_paths)
 
         added = 0
-        used_arcnames = set()
+        used_arcnames: set[str] = set()
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for rec, staff_pin_short in archive_records:
                 src = resolved.get(rec.staff_image_path) if rec.staff_image_path else None
@@ -337,21 +374,124 @@ class Command(BaseCommand):
                     self.stderr.write(self.style.WARNING(f"Skip photo {src}: {e}\n"))
         return added
 
-    def _write_xlsx(self, rows, path: Path):
-        """Пишет XLSX-отчёт с жирными заголовками (отдел, ФИО, ID, дата, время, локация)."""
+    def _write_xlsx(self, rows, path: Path, *, date_from=None, date_to=None):
+        """Пишет матрицу по людям/датам и лист с деталями подозрительных занятий."""
         path.parent.mkdir(parents=True, exist_ok=True)
         wb = Workbook()
         ws = wb.active
         assert ws is not None
-        ws.title = "Suspicious"
-        headers = ["Отдел", "ФИО", "student_id / tutor_id", "Дата", "Время", "Локация"]
-        header_font = Font(bold=True)
-        for col, h in enumerate(headers, start=1):
-            cell = ws.cell(row=1, column=col, value=h)
-            cell.font = header_font
-        keys = ["department", "fio", "student_id_tutor_id", "date", "time", "location"]
+        ws.title = "Сводка"
+
+        if date_from is not None and date_to is not None:
+            dates = [
+                (date_from + datetime.timedelta(days=offset)).strftime(CIS_DATE_FORMAT)
+                for offset in range((date_to - date_from).days + 1)
+            ]
+        else:
+            dates = sorted(
+                {row["date"] for row in rows},
+                key=lambda value: datetime.datetime.strptime(value, CIS_DATE_FORMAT),
+            )
+        grouped: dict[tuple[str, str, str, str], dict[str, int]] = {}
+        for row in rows:
+            person = (
+                row["department"],
+                row["department_id"],
+                row["fio"],
+                row["student_id_tutor_id"],
+            )
+            grouped.setdefault(person, {}).setdefault(row["date"], 0)
+            grouped[person][row["date"]] += 1
+
+        summary_headers = ["Код отдела", "Отдел", "ФИО", "ID", "Всего"] + dates
+        self._write_header(ws, summary_headers)
+        for row_idx, (person, day_counts) in enumerate(sorted(grouped.items()), start=2):
+            department, department_id, fio, staff_id = person
+            values = [department_id, department, fio, staff_id, sum(day_counts.values())]
+            values.extend(self._summary_status(day_counts.get(day, 0)) for day in dates)
+            for col_idx, value in enumerate(values, start=1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+                if col_idx >= 6 and value:
+                    cell.fill = PatternFill("solid", fgColor="FDE9D9")
+                    cell.font = Font(color="9C0006", bold=True)
+
+        self._finish_sheet(ws, summary_headers, freeze="F2")
+        ws.column_dimensions["A"].width = 14
+        ws.column_dimensions["B"].width = 34
+        ws.column_dimensions["C"].width = 30
+        ws.column_dimensions["D"].width = 16
+        ws.column_dimensions["E"].width = 10
+        for col_idx in range(6, len(summary_headers) + 1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = 18
+
+        details = wb.create_sheet("Suspicious")
+        headers = [
+            "ID записи",
+            "Код отдела",
+            "Отдел",
+            "ФИО",
+            "student_id / tutor_id",
+            "Дата",
+            "Время",
+            "Локация",
+            "Статус",
+        ]
+        self._write_header(details, headers)
+        keys = [
+            "lesson_attendance_id",
+            "department_id",
+            "department",
+            "fio",
+            "student_id_tutor_id",
+            "date",
+            "time",
+            "location",
+            "status",
+        ]
         for row_idx, row in enumerate(rows, start=2):
             for col_idx, key in enumerate(keys, start=1):
                 val = row.get(key, "")
-                ws.cell(row=row_idx, column=col_idx, value=val)
+                details.cell(row=row_idx, column=col_idx, value=val).alignment = Alignment(
+                    vertical="center", wrap_text=True
+                )
+        self._finish_sheet(details, headers, freeze="A2")
+        for column, width in zip("ABCDEFGHI", (12, 14, 34, 30, 20, 14, 12, 32, 18)):
+            details.column_dimensions[column].width = width
         wb.save(path)
+
+    @staticmethod
+    def _summary_status(count):
+        if not count:
+            return ""
+        return "Аннулирована" if count == 1 else f"Аннулирована ({count})"
+
+    @staticmethod
+    def _write_header(ws, headers):
+        for col, header in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.fill = PatternFill("solid", fgColor="1F4E78")
+            cell.font = Font(color="FFFFFF", bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    @staticmethod
+    def _finish_sheet(ws, headers, *, freeze):
+        ws.freeze_panes = freeze
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(ws.max_row, 1)}"
+        ws.row_dimensions[1].height = 32
+        border = Border(bottom=Side(style="thin", color="B4C6E7"))
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.border = border
+        if ws.max_row > 1:
+            table = Table(
+                displayName="SummaryTable" if ws.title == "Сводка" else "SuspiciousTable",
+                ref=f"A1:{get_column_letter(len(headers))}{ws.max_row}",
+            )
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium2",
+                showRowStripes=True,
+                showFirstColumn=False,
+                showLastColumn=False,
+            )
+            ws.add_table(table)
