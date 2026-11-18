@@ -2605,6 +2605,70 @@ class TestablePhotoConsumer(PhotoConsumer):
 
 
 class PhotoConsumerProtocolTest(SimpleTestCase):
+    @patch("monitoring_app.consumers.cache")
+    @patch("monitoring_app.tasks.release_lesson_attendance_pad_lock")
+    @patch("monitoring_app.tasks.acquire_lesson_attendance_pad_lock", return_value=True)
+    @patch("monitoring_app.photo_pad.check_photo")
+    def test_ws_pad_scan_broadcasts_from_worker_thread(
+        self, mock_check_photo, _acquire, _release, mock_cache
+    ):
+        """Scan result is broadcast inside the sync scan, so a cancelled task can't drop it."""
+        lesson_date = timezone.localdate()
+        record = Mock(
+            id=77,
+            date_at=lesson_date,
+            staff_image_path="/tmp/ws77.jpg",
+            photo_manual_verdict=LessonAttendance.PHOTO_MANUAL_VERDICT_NONE,
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_PENDING,
+            photo_spoof_checked_at=None,
+        )
+        mock_check_photo.return_value.to_update_kwargs.return_value = {
+            "photo_spoof_status": "clean"
+        }
+        consumer = TestablePhotoConsumer()
+        consumer.channel_layer = Mock(group_send=AsyncMock())
+        with patch.object(LessonAttendance, "objects") as mock_objects:
+            mock_objects.filter.return_value.only.return_value = [record]
+            mock_objects.filter.return_value.update.return_value = 1
+            changed = consumer._scan_and_update_attendance_ids([77])
+
+        self.assertEqual(changed, [77])
+        mock_cache.delete_many.assert_called_once_with([f"photos_for_{lesson_date}"])
+        group, payload = consumer.channel_layer.group_send.await_args.args
+        self.assertEqual(group, f"photos_{lesson_date.isoformat()}")
+        self.assertEqual(payload["attendance_ids"], [77])
+        self.assertEqual(payload["stateCode"], STATE_UPDATED_META)
+
+    def test_broadcast_group_name_matches_consumer_group(self):
+        """Server broadcasts must reach the group the consumer joined (f"photos_{date}")."""
+        from monitoring_app.photo_ws_broadcast import sanitize_photo_group_name
+
+        day = timezone.localdate()
+        self.assertEqual(sanitize_photo_group_name(f"photos_{day.isoformat()}"), f"photos_{day}")
+
+    def test_flush_upsert_uses_fetch_time_as_version(self):
+        """A row re-read from DB must outrank an older-stamped snapshot on the client."""
+        consumer = TestablePhotoConsumer()
+        consumer.send_json = AsyncMock()
+        consumer.date = timezone.localdate()
+        consumer.get_photo_data_bulk = AsyncMock(
+            return_value=[{"id": 5, "hasPhoto": True, "photoSpoofStatus": "clean"}]
+        )
+        consumer._queue_pad_scan_ids = Mock()
+        consumer.set_update_buffer_for_test(
+            {
+                5: {
+                    "id": 5,
+                    "op": "updated",
+                    "stateCode": STATE_UPDATED_META,
+                    "versionTs": "2000-01-01T00:00:00+00:00",
+                }
+            }
+        )
+        asyncio.run(consumer.flush_photo_updates_for_test())
+        sent = consumer.send_json.await_args_list[-1].args[0]
+        self.assertNotEqual(sent["events"][0]["versionTs"], "2000-01-01T00:00:00+00:00")
+
     def test_batched_events_are_chunked_and_versioned(self):
         consumer = TestablePhotoConsumer()
         consumer.send_json = AsyncMock()
@@ -3040,7 +3104,7 @@ class LessonAttendancePhotoPadHourlyTaskTest(TestCase):
         channel_layer.group_send.assert_awaited_once()
 
         group_name, payload = channel_layer.group_send.await_args.args
-        self.assertEqual(group_name, f"photos_{lesson.date_at.isoformat()}".replace("-", "_"))
+        self.assertEqual(group_name, f"photos_{lesson.date_at.isoformat()}")
         self.assertEqual(payload["type"], "new_photo")
         self.assertEqual(payload["op"], "updated")
         self.assertEqual(payload["stateCode"], "UPDATED_META")

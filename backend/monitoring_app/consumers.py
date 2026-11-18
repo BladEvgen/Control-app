@@ -1,16 +1,20 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
-from asgiref.sync import sync_to_async
+from asgiref.sync import async_to_sync, sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 
 from monitoring_app import models
+from monitoring_app.photo_ws_broadcast import (
+    iter_photo_live_update_id_chunks,
+    sanitize_photo_group_name,
+)
 
 logger = logging.getLogger(__name__)
 photo_ws_logger = logging.getLogger("monitoring_app.photo_verdict")
@@ -569,12 +573,15 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         candidate_scan_ids: list[int] = []
         try:
             fetched_photos = await self.get_photo_data_bulk(upsert_ids)
+            fetched_at = timezone.now().isoformat()
             fetched_by_id = {photo["id"]: photo for photo in fetched_photos if photo.get("id")}
 
             for attendance_id in ordered_ids:
                 meta = meta_by_id.get(attendance_id, {})
                 op = str(meta.get("op") or "updated")
-                version_ts = str(meta.get("versionTs") or timezone.now().isoformat())
+                version_ts = (
+                    str(meta.get("versionTs") or fetched_at) if op == "deleted" else fetched_at
+                )
                 state_code = (
                     str(meta.get("stateCode")) if meta.get("stateCode") is not None else None
                 )
@@ -720,9 +727,8 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         for attendance_id in batch_ids:
             self._pad_scan_queue.pop(attendance_id, None)
 
-        changed_ids: list[int] = []
         try:
-            changed_ids = await sync_to_async(
+            await sync_to_async(
                 self._scan_and_update_attendance_ids,
                 thread_sensitive=False,
             )(batch_ids)
@@ -731,9 +737,6 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             photo_ws_logger.exception(
                 "PAD websocket batch scan failed ids=%s error=%s", batch_ids, exc
             )
-
-        if changed_ids:
-            await self._broadcast_scanned_updates(changed_ids)
 
         if self._pad_scan_queue:
             self._pad_scan_task = asyncio.create_task(self._flush_pad_scan_after_delay())
@@ -754,6 +757,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         records = list(
             models.LessonAttendance.objects.filter(id__in=attendance_ids).only(
                 "id",
+                "date_at",
                 "staff_image_path",
                 "photo_manual_verdict",
                 "photo_spoof_status",
@@ -764,6 +768,7 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
         records.sort(key=lambda record: id_order.get(record.id, 10**9))
 
         changed_ids: list[int] = []
+        changed_by_date: dict[date, list[int]] = {}
         for record in records:
             image_path = record.staff_image_path
             if not image_path:
@@ -807,25 +812,41 @@ class PhotoConsumer(AsyncJsonWebsocketConsumer):
             ).update(**update_kwargs)
             if updated_rows:
                 changed_ids.append(record.id)
+                changed_by_date.setdefault(record.date_at, []).append(record.id)
+        self._broadcast_scan_results(changed_by_date)
         return changed_ids
 
-    async def _broadcast_scanned_updates(self, attendance_ids: list[int]) -> None:
-        if not attendance_ids:
+    def _broadcast_scan_results(self, changed_by_date: dict[date, list[int]]) -> None:
+        """Runs in the scan worker thread so task cancellation can't drop it.
+
+        Only drops photos_for_{date} (stale "pending" on reconnect); the full
+        invalidate_attendance_scope scans every cache key and is too heavy per WS batch.
+        """
+        if not changed_by_date:
             return
+        cache.delete_many([f"photos_for_{d}" for d in changed_by_date])
         version_ts = timezone.now().isoformat()
-        unique_ids = list(dict.fromkeys(attendance_ids))
-        for start in range(0, len(unique_ids), PHOTO_UPDATE_MAX_ITEMS_PER_MESSAGE):
-            chunk = unique_ids[start : start + PHOTO_UPDATE_MAX_ITEMS_PER_MESSAGE]
-            event_payload: dict[str, Any] = {
-                "type": "new_photo",
-                "attendance_ids": chunk,
-                "op": "updated",
-                "stateCode": STATE_UPDATED_META,
-                "versionTs": version_ts,
-            }
-            if len(chunk) == 1:
-                event_payload["attendance_id"] = chunk[0]
-            await self.channel_layer.group_send(self.group_name, event_payload)
+        for lesson_date, ids in changed_by_date.items():
+            group_name = sanitize_photo_group_name(f"photos_{lesson_date.isoformat()}")
+            for chunk in iter_photo_live_update_id_chunks(ids):
+                payload: dict[str, Any] = {
+                    "type": "new_photo",
+                    "attendance_ids": chunk,
+                    "op": "updated",
+                    "stateCode": STATE_UPDATED_META,
+                    "versionTs": version_ts,
+                }
+                if len(chunk) == 1:
+                    payload["attendance_id"] = chunk[0]
+                try:
+                    async_to_sync(self.channel_layer.group_send)(group_name, payload)
+                except Exception as exc:
+                    photo_ws_logger.warning(
+                        "photo_ws_pad_scan ws_broadcast_failed date=%s ids=%s error=%s",
+                        lesson_date.isoformat(),
+                        chunk[:10],
+                        exc,
+                    )
 
     @sync_to_async
     def get_photo_data_bulk(self, attendance_ids):

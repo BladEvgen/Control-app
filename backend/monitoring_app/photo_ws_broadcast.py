@@ -108,7 +108,7 @@ def sanitize_photo_group_name(name: str) -> str:
     Returns:
         Sanitized name suitable for ``group_add`` / ``group_send``.
     """
-    return re.sub(r"[^a-zA-Z0-9_\\-\\.]", "_", name)[:100]
+    return re.sub(r"[^a-zA-Z0-9_\-\.]", "_", name)[:100]
 
 
 def broadcast_lesson_attendance_photo_meta_updates(
