@@ -231,6 +231,17 @@ LESSON_ATTENDANCE_AUTO_CLOSE_LATE_MINUTES = _int_env(
     "LESSON_ATTENDANCE_AUTO_CLOSE_LATE_MINUTES",
     5,
 )
+# Time between two clean lesson marks (attendance_day.lesson_bridges): credited fully
+# up to FULL, at DECAY share up to LIMIT, nothing beyond; a move to another building
+# (farther than RADIUS) first loses the estimated travel time. Travel assumes a city bus
+# with waiting and traffic (~15 km/h), capped, so people without a car are not cut.
+LESSON_BRIDGE_FULL_MINUTES = _int_env("LESSON_BRIDGE_FULL_MINUTES", 150)
+LESSON_BRIDGE_LIMIT_MINUTES = _int_env("LESSON_BRIDGE_LIMIT_MINUTES", 360)
+LESSON_BRIDGE_DECAY = _float_env("LESSON_BRIDGE_DECAY", 0.5)
+LESSON_BRIDGE_RADIUS_M = _int_env("LESSON_BRIDGE_RADIUS_M", 300)
+LESSON_TRAVEL_BASE_MINUTES = _int_env("LESSON_TRAVEL_BASE_MINUTES", 15)
+LESSON_TRAVEL_MIN_PER_KM = _float_env("LESSON_TRAVEL_MIN_PER_KM", 4.0)
+LESSON_TRAVEL_MAX_MINUTES = _int_env("LESSON_TRAVEL_MAX_MINUTES", 60)
 
 # Ключи и внешние API
 SECRET_KEY = os.getenv("SECRET_KEY")

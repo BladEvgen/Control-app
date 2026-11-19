@@ -1774,7 +1774,7 @@ def _collect_attendance_data_impl(
                 "last_out_source": "staff_attendance",
                 "effective_work_seconds": att.get("effective_work_seconds"),
                 "effective_work_intervals": att.get("effective_work_intervals"),
-                "la_intervals": [],
+                "la_rows": [],
             }
             if elevator_first_in is not None or elevator_last_out is not None:
                 rec["elevator_first_in"] = elevator_first_in
@@ -1812,8 +1812,7 @@ def _collect_attendance_data_impl(
                 current_rec["elevator_last_out"] = elevator_last_out
             if att.get("effective_work_seconds") is not None:
                 current_rec["effective_work_seconds"] = att["effective_work_seconds"]
-            if "la_intervals" not in current_rec:
-                current_rec["la_intervals"] = []
+            current_rec.setdefault("la_rows", [])
 
     for lesson_att in normalized_lesson_rows:
         if (lesson_att["staff_id"], lesson_att["date_at"]) in invalid_lesson_days:
@@ -1833,9 +1832,6 @@ def _collect_attendance_data_impl(
         location_name = lesson_att["location_name"]
 
         if staff_id not in attendance_map[date_key]:
-            la_intervals = []
-            if first_in_local and last_out_local and last_out_local > first_in_local:
-                la_intervals = [(first_in_local, last_out_local)]
             attendance_map[date_key][staff_id] = {
                 "first_in": first_in_local,
                 "last_out": last_out_local,
@@ -1845,14 +1841,11 @@ def _collect_attendance_data_impl(
                 "last_out_source": "lesson_attendance",
                 "effective_work_seconds": None,
                 "effective_work_intervals": None,
-                "la_intervals": la_intervals,
+                "la_rows": [lesson_att],
             }
         else:
             current_rec = attendance_map[date_key][staff_id]
-            if "la_intervals" not in current_rec:
-                current_rec["la_intervals"] = []
-            if first_in_local and last_out_local and last_out_local > first_in_local:
-                current_rec["la_intervals"].append((first_in_local, last_out_local))
+            current_rec.setdefault("la_rows", []).append(lesson_att)
 
             if first_in_local and (
                 not current_rec["first_in"] or first_in_local < current_rec["first_in"]
@@ -1884,12 +1877,10 @@ def _collect_attendance_data_impl(
         for staff_id in attendance_map[date_key]:
             rec = attendance_map[date_key][staff_id]
             intervals = attendance_day.parse_intervals(rec.get("effective_work_intervals"))
-            for start, end in rec.get("la_intervals") or []:
-                if start and end and end > start:
-                    intervals.append((start, end))
+            intervals += attendance_day.lesson_presence_intervals(rec.get("la_rows") or [])
             total_sec = merge_work_intervals_to_total_seconds(intervals)
             rec["effective_work_seconds"] = total_sec if total_sec > 0 else None
-            rec.pop("la_intervals", None)
+            rec.pop("la_rows", None)
             rec.pop("effective_work_intervals", None)
 
     remote_by_staff = defaultdict(list)

@@ -5117,8 +5117,12 @@ def build_lesson_attendance_audit_for_staff(
             "photo_spoof_status",
             "photo_manual_verdict",
             "date_at",
+            "latitude",
+            "longitude",
         )
     )
+    searcher = get_class_location_cache()["searcher"] if rows else None
+    raw_by_dd_mm: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_dd_mm: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         date_key = row["date_at"].strftime("%d-%m-%Y")
@@ -5129,10 +5133,15 @@ def build_lesson_attendance_audit_for_staff(
         awaits_manual_review = (
             mv == la.PHOTO_MANUAL_VERDICT_NONE and ss == la.PHOTO_SPOOF_STATUS_REVIEW
         )
+        raw_by_dd_mm[date_key].append(row)
         by_dd_mm[date_key].append(
             {
                 "lesson_attendance_id": row["id"],
                 "subject_name": row["subject_name"] or "",
+                "location_name": attendance_day.resolve_la_location(
+                    row["latitude"], row["longitude"], searcher
+                ),
+                "bridge_to_next": None,
                 "first_in": _staff_api_format_datetime(row["first_in"]),
                 "last_out": _staff_api_format_datetime(row["last_out"]),
                 "photo_spoof_status": ss,
@@ -5148,6 +5157,18 @@ def build_lesson_attendance_audit_for_staff(
     for date_key, lessons in by_dd_mm.items():
         fraud_attempted = any(lesson["rejected_in_merged_attendance_report"] for lesson in lessons)
         awaiting_manual_review = any(lesson["awaits_manual_review"] for lesson in lessons)
+        raw = [r for r in raw_by_dd_mm[date_key] if r["first_in"]]
+        for lesson, bridge in zip(
+            (x for x in lessons if x["first_in"]), attendance_day.lesson_bridges(raw)
+        ):
+            lesson["bridge_to_next"] = bridge
+        credited_seconds = (
+            0
+            if fraud_attempted
+            else utils.merge_work_intervals_to_total_seconds(
+                attendance_day.lesson_presence_intervals(raw)
+            )
+        )
         if fraud_attempted:
             lesson_day_status = "rejected_fraud"
         elif awaiting_manual_review:
@@ -5161,6 +5182,7 @@ def build_lesson_attendance_audit_for_staff(
             "fraud_attempted": fraud_attempted,
             "awaiting_manual_review": awaiting_manual_review,
             "lessons": lessons,
+            "credited_seconds": credited_seconds,
             "summary_ru": _lesson_day_summary_ru(
                 fraud_attempted=fraud_attempted,
                 awaiting_manual_review=awaiting_manual_review,

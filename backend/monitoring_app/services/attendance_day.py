@@ -20,7 +20,7 @@
 import datetime
 import logging
 from collections import defaultdict
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple, TypedDict
 
 from django.db import transaction
 from django.db.models import Q
@@ -52,7 +52,104 @@ LA_FIELDS = (
     "latitude",
     "longitude",
     "duration_seconds",
+    "photo_spoof_status",
+    "photo_manual_verdict",
 )
+
+BRIDGE_PHOTO = "photo"
+BRIDGE_PLACE = "place"
+
+
+class LessonBridge(TypedDict):
+    gap_seconds: int
+    travel_seconds: int
+    credited_seconds: int
+    reason: Optional[str]
+
+
+def photo_confirmed_clean(row) -> bool:
+    """Фото подтверждено: ручной вердикт «нормальное» или автопроверка «нормальное» без ручного."""
+    manual = row.get("photo_manual_verdict") or models.LessonAttendance.PHOTO_MANUAL_VERDICT_NONE
+    if manual != models.LessonAttendance.PHOTO_MANUAL_VERDICT_NONE:
+        return manual == models.LessonAttendance.PHOTO_MANUAL_VERDICT_CLEAN
+    return row.get("photo_spoof_status") == models.LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN
+
+
+def bridge_credit_seconds(seconds: float) -> int:
+    """Убывающее доверие к промежутку без отметок: полностью до FULL, наполовину до LIMIT, дальше 0."""
+    from django.conf import settings
+
+    full = settings.LESSON_BRIDGE_FULL_MINUTES * 60
+    limit = settings.LESSON_BRIDGE_LIMIT_MINUTES * 60
+    s = max(0.0, min(seconds, limit))
+    return int(min(s, full) + max(0.0, s - full) * settings.LESSON_BRIDGE_DECAY)
+
+
+def lesson_bridges(la_records) -> List[LessonBridge]:
+    """Сколько засчитать между соседними отметками занятий за день.
+
+    Отметка закрывается сама через несколько минут, поэтому «пришёл» и «ушёл» — две
+    строки, а что было между ними, неизвестно. Каждая подтверждённая отметка доказывает
+    присутствие в свой момент; доверие к промежутку убывает (bridge_credit_seconds).
+    Переезд в другой корпус не штрафуется целиком: вычитается оценка дороги
+    как на городском автобусе с ожиданием (LESSON_TRAVEL_BASE_MINUTES +
+    LESSON_TRAVEL_MIN_PER_KM на км, не больше LESSON_TRAVEL_MAX_MINUTES), дальше та же кривая.
+    Чем чаще отметки, тем ближе засчитанное к реальному; две отметки утром и вечером
+    дают не больше FULL + (LIMIT - FULL) * DECAY.
+
+    Args:
+        la_records: Строки LessonAttendance одного сотрудника за день, по возрастанию first_in.
+
+    Returns:
+        Для каждой пары (i, i+1): gap_seconds (между концом i и началом i+1),
+        travel_seconds, credited_seconds и reason (None / BRIDGE_PHOTO / BRIDGE_PLACE —
+        почему не засчитано ничего). O(r).
+    """
+    from django.conf import settings
+
+    from monitoring_app.geo import calculate_distance_haversine
+
+    out: List[LessonBridge] = []
+    for a, b in zip(la_records, la_records[1:]):
+        gap = max(0.0, (b["first_in"] - (a.get("last_out") or a["first_in"])).total_seconds())
+        info = LessonBridge(gap_seconds=int(gap), travel_seconds=0, credited_seconds=0, reason=None)
+        out.append(info)
+        if not (photo_confirmed_clean(a) and photo_confirmed_clean(b)):
+            info["reason"] = BRIDGE_PHOTO
+            continue
+        coords = (a.get("latitude"), a.get("longitude"), b.get("latitude"), b.get("longitude"))
+        if None in coords:
+            info["reason"] = BRIDGE_PLACE
+            continue
+        meters = calculate_distance_haversine(*coords)
+        if meters > settings.LESSON_BRIDGE_RADIUS_M:
+            minutes = (
+                settings.LESSON_TRAVEL_BASE_MINUTES
+                + settings.LESSON_TRAVEL_MIN_PER_KM * meters / 1000
+            )
+            info["travel_seconds"] = int(60 * min(minutes, settings.LESSON_TRAVEL_MAX_MINUTES))
+        info["credited_seconds"] = bridge_credit_seconds(gap - info["travel_seconds"])
+    return out
+
+
+def lesson_presence_intervals(la_records) -> List[Tuple[datetime.datetime, datetime.datetime]]:
+    """Интервалы присутствия по занятиям: сами отметки + засчитанная часть промежутков.
+
+    Засчитанное делится поровну: половина сразу после первой отметки, половина перед
+    второй — человек точно был в обеих точках, а когда уехал, неизвестно.
+    """
+    rows = sorted((r for r in la_records if r.get("first_in")), key=lambda r: r["first_in"])
+    intervals = [
+        (r["first_in"], r["last_out"])
+        for r in rows
+        if r.get("last_out") and r["last_out"] > r["first_in"]
+    ]
+    for (a, b), bridge in zip(zip(rows, rows[1:]), lesson_bridges(rows)):
+        half = datetime.timedelta(seconds=bridge["credited_seconds"] / 2)
+        if half:
+            a_end = a.get("last_out") or a["first_in"]
+            intervals += [(a_end, a_end + half), (b["first_in"] - half, b["first_in"])]
+    return intervals
 
 
 DAY_NORM_MINUTES = 8 * 60
@@ -371,7 +468,7 @@ def merge_day(sa_records, la_records, location_searcher=None) -> dict:
 
     first_in — самый ранний из SA и LA, last_out — самый поздний; при равенстве
     побеждает SA. Эффективное время — объединение интервалов SA (effective_work_intervals)
-    и LA (first_in–last_out) без двойного учёта. area_sequence (история СКУД) убирается,
+    и LA (lesson_presence_intervals: отметки + засчитанные промежутки) без двойного учёта. area_sequence (история СКУД) убирается,
     только если границу дня перебило занятие.
 
     Args:
@@ -445,11 +542,7 @@ def merge_day(sa_records, la_records, location_searcher=None) -> dict:
     sa_intervals = (
         parse_intervals(sa_records[0].get("effective_work_intervals")) if sa_records else []
     )
-    intervals = list(sa_intervals)
-    for la in la_records:
-        fi, lo = la.get("first_in"), la.get("last_out")
-        if fi is not None and lo is not None and lo > fi:
-            intervals.append((fi, lo))
+    intervals = list(sa_intervals) + lesson_presence_intervals(la_records)
     total = utils.merge_work_intervals_to_total_seconds(intervals)
     if not sa_intervals and sa_records and sa_records[0].get("effective_work_seconds"):
         total = max(total, sa_records[0]["effective_work_seconds"])
@@ -461,7 +554,9 @@ def merge_day(sa_records, la_records, location_searcher=None) -> dict:
     combined["turnstile_missing"] = (
         "out"
         if combined["first_in"] and not combined["last_out"]
-        else "in" if combined["last_out"] and not combined["first_in"] else None
+        else "in"
+        if combined["last_out"] and not combined["first_in"]
+        else None
     )
     if "lesson_attendance" in (combined["first_in_source"], combined["last_out_source"]):
         combined["area_sequence"] = None

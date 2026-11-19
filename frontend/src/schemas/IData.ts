@@ -63,6 +63,19 @@ export interface LessonAttendanceAuditLesson {
   treated_as_confirmed_for_display: boolean;
   awaits_manual_review: boolean;
   fraud_attempt: boolean;
+  location_name?: string | null;
+  /** Credit for the time until the next mark of the day (last mark: null). */
+  bridge_to_next?: LessonBridge | null;
+}
+
+export type LessonBridgeReason = "photo" | "place";
+
+/** Mirrors backend attendance_day.LessonBridge. */
+export interface LessonBridge {
+  gap_seconds: number;
+  travel_seconds: number;
+  credited_seconds: number;
+  reason: LessonBridgeReason | null;
 }
 
 export interface LessonAttendanceDayAudit {
@@ -72,6 +85,8 @@ export interface LessonAttendanceDayAudit {
   fraud_attempted: boolean;
   awaiting_manual_review: boolean;
   lessons: LessonAttendanceAuditLesson[];
+  /** Lesson marks plus credited gaps between them, without turnstile time. */
+  credited_seconds?: number;
   summary_ru: string;
 }
 
