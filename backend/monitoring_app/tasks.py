@@ -367,14 +367,17 @@ def rebuild_staff_attendance_report(mode=None):
 
 
 @shared_task(name="monitoring_app.tasks.retrain_photo_pad", queue="control_app_queue")
-def retrain_photo_pad() -> str:
-    """Refit the PAD head on operator verdicts and re-score open photos (``train_photo_pad``)."""
+def retrain_photo_pad(labels_only: bool = False) -> str:
+    """Refit the PAD head on operator verdicts and re-score open photos (``train_photo_pad``).
+
+    ``labels_only``: nightly fast refit, embeds only newly labelled photos.
+    """
     import io
 
     from django.core.management import call_command
 
     out = io.StringIO()
-    call_command("train_photo_pad", stdout=out)
+    call_command("train_photo_pad", stdout=out, labels_only=labels_only)
     logger.info("[retrain_photo_pad] %s", out.getvalue())
     return out.getvalue()
 

@@ -357,3 +357,32 @@ class PadRescoreCachedTests(TestCase):
         manual.refresh_from_db()
         self.assertEqual(auto.photo_spoof_status, STATUS_SUSPICIOUS)
         self.assertEqual(manual.photo_spoof_status, LessonAttendance.PHOTO_SPOOF_STATUS_PENDING)
+
+
+class PadNightlyRefitTests(TestCase):
+    """Nightly ``--labels-only`` refit must not embed thousands of fresh auto-clean photos."""
+
+    def test_cached_only_weak_negatives_skip_uncached_rows(self):
+        from monitoring_app.management.commands import train_photo_pad
+
+        staff = cast(Any, Staff).objects.create(pin="S700701S", name="Pad", surname="Night")
+        common = dict(
+            staff=staff,
+            subject_name="PAD",
+            tutor_id=1,
+            tutor="Tutor",
+            first_in=timezone.now(),
+            latitude=43.24,
+            longitude=76.95,
+            date_at=datetime.date.today(),
+            photo_spoof_status=LessonAttendance.PHOTO_SPOOF_STATUS_CLEAN,
+        )
+        cached = cast(Any, LessonAttendance).objects.create(**common)
+        fresh = cast(Any, LessonAttendance).objects.create(**common)
+        cache = {cached.id: np.zeros(2, np.float32)}
+
+        self.assertEqual(train_photo_pad.weak_negative_ids(set(), cache, 10, True), [cached.id])
+        self.assertEqual(
+            set(train_photo_pad.weak_negative_ids(set(), cache, 10, False)), {cached.id, fresh.id}
+        )
+        self.assertEqual(train_photo_pad.weak_negative_ids({cached.id}, cache, 10, True), [])

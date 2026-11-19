@@ -992,6 +992,11 @@ def build_celery_beat_schedule(debug: bool) -> dict[str, dict[str, object]]:
             "task": "monitoring_app.tasks.retrain_photo_pad",
             "schedule": crontab(day_of_week="sun", hour="3", minute="0"),
         },
+        "refit-photo-pad-nightly": {
+            "task": "monitoring_app.tasks.retrain_photo_pad",
+            "schedule": crontab(day_of_week="mon-sat", hour="3", minute="0"),
+            "kwargs": {"labels_only": True},
+        },
         "clean-old-attendance-photos-daily": {
             "task": "monitoring_app.tasks.clean_old_attendance_photos",
             "schedule": crontab(hour="4", minute="30"),

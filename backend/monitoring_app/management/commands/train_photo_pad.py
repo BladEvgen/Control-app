@@ -7,6 +7,10 @@ Labels, strongest first:
 
 Photos are deleted after ~31 days, so every embedding is cached in
 ``models/pad_clip_embeddings.npz`` and old labels keep training the model.
+
+``--labels-only`` (nightly) embeds only new operator/hand labels and takes weak
+negatives from the cache, so a fresh verdict is saved and learned within a day
+instead of waiting for the weekly full run that embeds thousands of new photos.
 """
 
 from __future__ import annotations
@@ -34,8 +38,8 @@ from monitoring_app.photo_pad import (
 
 WEAK_NEGATIVE_WEIGHT = 0.2
 C_REG = 0.03
-TARGET_PRECISION = 0.97
-REVIEW_BUDGET = 0.005
+TARGET_PRECISION = 0.95
+REVIEW_BUDGET = 0.003
 
 
 def models_dir() -> Path:
@@ -84,12 +88,36 @@ def pick_thresholds(p: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     return t_clean, t_susp
 
 
+def weak_negative_ids(
+    exclude: set[int], cache: dict[int, np.ndarray], limit: int, cached_only: bool
+) -> list[int]:
+    """Newest unreviewed auto-``clean`` rows; ``cached_only`` skips ones that would need embedding."""
+    la = models.LessonAttendance
+    qs = (
+        la.objects.filter(
+            photo_manual_verdict=la.PHOTO_MANUAL_VERDICT_NONE,
+            photo_spoof_status=la.PHOTO_SPOOF_STATUS_CLEAN,
+        )
+        .exclude(id__in=list(exclude))
+        .order_by("-date_at", "-id")
+        .values_list("id", flat=True)
+    )
+    if cached_only:
+        return [pk for pk in qs.iterator() if pk in cache][:limit]
+    return list(qs[:limit])
+
+
 class Command(BaseCommand):
     help = "Train the CLIP-based photo PAD head from operator verdicts and write models/pad_clip_head.json."
 
     def add_arguments(self, parser):
         parser.add_argument("--weak-negatives", type=int, default=20000)
         parser.add_argument("--batch", type=int, default=32)
+        parser.add_argument(
+            "--labels-only",
+            action="store_true",
+            help="Embed only new labelled photos; weak negatives come from the cache (fast nightly refit).",
+        )
         parser.add_argument(
             "--dry-run", action="store_true", help="Print metrics, do not write the head."
         )
@@ -113,15 +141,7 @@ class Command(BaseCommand):
         labels.update({pk: (y, 1.0) for pk, y in hand.items()})
 
         cache = load_cache(cache_path)
-        weak = (
-            la.objects.filter(
-                photo_manual_verdict=la.PHOTO_MANUAL_VERDICT_NONE,
-                photo_spoof_status=la.PHOTO_SPOOF_STATUS_CLEAN,
-            )
-            .exclude(id__in=list(hand))
-            .order_by("-date_at", "-id")
-            .values_list("id", flat=True)[: opts["weak_negatives"]]
-        )
+        weak = weak_negative_ids(set(hand), cache, opts["weak_negatives"], opts["labels_only"])
         for pk in weak:
             labels[pk] = (0, WEAK_NEGATIVE_WEIGHT)
 
