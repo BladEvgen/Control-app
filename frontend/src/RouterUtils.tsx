@@ -25,7 +25,7 @@ export const useNavigate = () => {
   const navigate = useRouterNavigate();
   return (
     to: string | number,
-    options?: { replace?: boolean; state?: unknown }
+    options?: { replace?: boolean; state?: unknown },
   ) => {
     const prefixedTo = typeof to === "string" ? addPrefix(to) : `/app/${to}`;
     navigate(prefixedTo, options);

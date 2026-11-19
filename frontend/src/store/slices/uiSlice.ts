@@ -25,7 +25,10 @@ const uiSlice = createSlice({
   name: "ui",
   initialState,
   reducers: {
-    addNotification: (state, action: PayloadAction<Omit<Notification, "id">>) => {
+    addNotification: (
+      state,
+      action: PayloadAction<Omit<Notification, "id">>,
+    ) => {
       const id = `notification-${Date.now()}-${Math.random()}`;
       state.notifications.push({
         ...action.payload,
@@ -35,7 +38,7 @@ const uiSlice = createSlice({
     },
     removeNotification: (state, action: PayloadAction<string>) => {
       state.notifications = state.notifications.filter(
-        (notification) => notification.id !== action.payload
+        (notification) => notification.id !== action.payload,
       );
     },
     clearNotifications: (state) => {
@@ -67,4 +70,3 @@ export const {
 } = uiSlice.actions;
 
 export default uiSlice.reducer;
-

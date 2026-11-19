@@ -20,14 +20,7 @@ export function turnstileMissingLabel(data: AttendanceData): string | null {
 }
 
 export type StaffAttendanceLegendTone =
-  | "sky"
-  | "violet"
-  | "rose"
-  | "amber"
-  | "emerald"
-  | "green"
-  | "gray"
-  | "red";
+  "sky" | "violet" | "rose" | "amber" | "emerald" | "green" | "gray" | "red";
 
 export interface StaffAttendanceLegendChip {
   id: string;
@@ -89,9 +82,7 @@ export function resolveStaffAttendanceDayVisual(
         text: "text-sky-800 dark:text-sky-300",
         borderLeft: "border-l-[3px] border-sky-400/70 dark:border-sky-500/55",
       },
-      hasInOut
-        ? "Дистанционная работа, явка в здании"
-        : "Дистанционная работа",
+      hasInOut ? "Дистанционная работа, явка в здании" : "Дистанционная работа",
       { id: "remote", label: "Удаленная работа", tone: "sky" },
     );
   }

@@ -52,7 +52,7 @@ const getInitialToken = (): string | null => {
   if (accessToken && !isTokenValid(accessToken)) {
     if (refreshToken) {
       log.info(
-        "Access token expired on init but refresh token present, keeping session"
+        "Access token expired on init but refresh token present, keeping session",
       );
       return accessToken;
     }
@@ -129,7 +129,7 @@ const authSlice = createSlice({
         refresh?: string;
         accessTokenExpires?: string;
         refreshTokenExpires?: string;
-      }>
+      }>,
     ) => {
       state.token = action.payload.access;
       state.isAuthenticated = Boolean(action.payload.access && state.user);
@@ -139,7 +139,7 @@ const authSlice = createSlice({
         try {
           localStorage.setItem(
             "access_token_expires",
-            action.payload.accessTokenExpires
+            action.payload.accessTokenExpires,
           );
         } catch (error) {
           log.error("Failed to save access token expiration:", error);
@@ -151,7 +151,7 @@ const authSlice = createSlice({
         try {
           localStorage.setItem(
             "refresh_token_expires",
-            action.payload.refreshTokenExpires
+            action.payload.refreshTokenExpires,
           );
         } catch (error) {
           log.error("Failed to save refresh token expiration:", error);
@@ -200,4 +200,3 @@ export const {
 } = authSlice.actions;
 
 export default authSlice.reducer;
-
