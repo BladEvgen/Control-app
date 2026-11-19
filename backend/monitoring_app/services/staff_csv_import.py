@@ -205,6 +205,7 @@ def iter_rows(path: str, expected_columns: int) -> Iterator[List[str]]:
 
 
 FILE_KINDS = {"отдел": "--departments", "сотрудник": "--humans"}
+FILE_TEMPLATES = {"отдел": "Отделы", "сотрудник": "Сотрудники"}
 
 
 def _file_kind(path: str) -> str:
@@ -228,8 +229,8 @@ def check_file_kind(path: str, expected: str) -> None:
     kind = _file_kind(path)
     if kind in FILE_KINDS and kind != expected:
         raise ImportAborted(
-            f"{path}: это выгрузка «{kind.capitalize()}», её нужно передавать "
-            f"через {FILE_KINDS[kind]}, а не {FILE_KINDS[expected]}."
+            f"Файл — выгрузка «{kind.capitalize()}», а загружен как «{expected.capitalize()}». "
+            f"Выберите шаблон «{FILE_TEMPLATES[kind]}» (в команде: {FILE_KINDS[kind]}, а не {FILE_KINDS[expected]})."
         )
 
 

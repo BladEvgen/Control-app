@@ -687,6 +687,30 @@ class DataImportApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["taskId"], "task-123")
 
+    def test_status_endpoint_returns_detail_and_stage_label(self):
+        from unittest.mock import MagicMock, patch
+
+        self.client.force_login(self.user)
+        done = MagicMock(
+            state="SUCCESS",
+            result={"category": "photo", "summary": ["x"], "detail": {"updated": 3}},
+        )
+        done.ready.return_value = True
+        with patch("monitoring_app.import_api.AsyncResult", return_value=done):
+            data = self.client.get("/api/import/status/t/").json()
+        self.assertEqual(data["category"], "photo")
+        self.assertEqual(data["detail"], {"updated": 3})
+
+        running = MagicMock(
+            state="PROGRESS",
+            info={"stage": "photos", "processed": 2, "total": 5, "category": "photo"},
+        )
+        running.ready.return_value = False
+        with patch("monitoring_app.import_api.AsyncResult", return_value=running):
+            data = self.client.get("/api/import/status/t/").json()
+        self.assertEqual(data["message"], "Фото: 2 из 5")
+        self.assertEqual(data["category"], "photo")
+
     def test_old_upload_url_redirects_to_react_page(self):
         response = self.client.get("/upload/")
         self.assertEqual(response.status_code, 301)

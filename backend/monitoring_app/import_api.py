@@ -38,6 +38,16 @@ ALLOWED_EXTENSIONS: dict[str, set[str]] = {
 }
 
 
+STAGE_LABELS = {
+    "departments": "Отделы",
+    "staff": "Сотрудники",
+    "photos": "Фото",
+    "holidays": "Праздники",
+    "locations": "Точки занятий",
+    "delete_staff": "Чтение списка PIN",
+}
+
+
 def upload_max_bytes() -> int:
     """Upload size limit, configurable through ``UPLOAD_MAX_BYTES``."""
     return int(getattr(settings, "UPLOAD_MAX_BYTES", 2 * 1024 * 1024 * 1024))
@@ -262,10 +272,14 @@ def import_status(request: Request, task_id: str) -> Response:
         "total": 0,
         "message": "",
         "summary": [],
+        "category": None,
+        "detail": None,
         "ready": result.ready(),
     }
     if result.state == "PROGRESS" and isinstance(result.info, dict):
-        stage = result.info.get("stage")
+        payload["category"] = result.info.get("category")
+        raw_stage = str(result.info.get("stage") or "")
+        stage = STAGE_LABELS.get(raw_stage, raw_stage)
         processed = result.info.get("processed", 0)
         total = result.info.get("total", 0)
         payload.update(stage=stage, processed=processed, total=total)
@@ -275,6 +289,8 @@ def import_status(request: Request, task_id: str) -> Response:
     elif result.state == "SUCCESS":
         data = result.result if isinstance(result.result, dict) else {}
         payload["summary"] = data.get("summary", [])
+        payload["category"] = data.get("category")
+        payload["detail"] = data.get("detail") or {}
         payload["message"] = "Обработка завершена."
     elif result.state == "FAILURE":
         payload["message"] = str(result.info)
