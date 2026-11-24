@@ -1,710 +1,199 @@
+"""Восстановление базы Django-проекта из бэкапа ``backup_db``."""
+
 import gzip
 import json
-import logging
+import os
+import shutil
 import subprocess
-import time
-from collections import defaultdict
-from contextlib import AbstractContextManager
-from importlib import import_module
+from argparse import ArgumentParser
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
+from typing import IO, Any, cast
 
-from django.apps import apps
-from django.conf import settings
-from django.core import serializers
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
-from django.db import connection, transaction
-from django.db.models.signals import post_delete, post_save, pre_save
+from django.db import connections, transaction
+from django.db.models.signals import (
+    m2m_changed,
+    post_delete,
+    post_save,
+    pre_delete,
+    pre_save,
+)
 
-logger = logging.getLogger(__name__)
+from .backup_db import backup_dir
+
+MODEL_SIGNALS = (pre_save, post_save, pre_delete, post_delete, m2m_changed)
+RESTORE_FLAGS: dict[str, list[str]] = {"postgresql": ["-v", "ON_ERROR_STOP=1"]}
 
 
-def _db_atomic() -> AbstractContextManager[None]:
-    """Типизированная обёртка над transaction.atomic() для статического анализа."""
-    return cast(AbstractContextManager[None], transaction.atomic())
+@contextmanager
+def muted_model_signals() -> Iterator[None]:
+    """Снимает всех получателей сигналов моделей и возвращает их на выходе.
+
+    Пока контекст открыт, обработчики (уведомления, WebSocket, задачи
+    Celery) не вызываются ни для одной модели.
+
+    Yields:
+        None
+    """
+    saved = [(signal, signal.receivers) for signal in MODEL_SIGNALS]
+    for signal, _ in saved:
+        signal.receivers = []
+        signal.sender_receivers_cache.clear()
+    try:
+        yield
+    finally:
+        for signal, receivers in saved:
+            signal.receivers = receivers
+            signal.sender_receivers_cache.clear()
+
+
+def open_backup(path: Path, mode: str = "rb") -> IO[Any] | gzip.GzipFile:
+    """Открывает бэкап на чтение, распаковывая ``.gz``.
+
+    Args:
+        path (Path): Путь к файлу.
+        mode (str): ``"rb"`` или ``"rt"``.
+
+    Returns:
+        IO[Any] | gzip.GzipFile: Открытый файл.
+    """
+    encoding = None if "b" in mode else "utf-8"
+    if path.name.endswith(".gz"):
+        return gzip.open(path, mode, encoding=encoding)
+    return path.open(mode, encoding=encoding)
 
 
 class Command(BaseCommand):
-    """Команда для восстановления базы данных из бэкапа.
+    """Загружает ``.json[.gz]`` через ``loaddata`` или ``.sql[.gz]`` клиентом СУБД.
 
-    Поддерживает восстановление из JSON и SQL форматов. Автоматически определяет
-    формат по расширению файла. Работает в транзакции для обеспечения целостности
-    данных.
+    JSON грузится в одной транзакции с заглушенными сигналами моделей;
+    ``--clear`` перед этим выполняет ``flush`` в той же транзакции без
+    ``post_migrate``, чтобы сиды проекта не конфликтовали с данными бэкапа.
+    SQL передаётся в stdin ``mysql``/``psql``/``sqlite3`` с аргументами
+    от ``connection.client``, пароль идёт через окружение.
     """
 
     help = "Восстановить БД из бэкапа"
 
-    def __init__(self, *args, **kwargs):
-        """Инициализирует команду.
-
-        Args:
-            *args: Позиционные аргументы.
-            **kwargs: Именованные аргументы.
-        """
-        super().__init__(*args, **kwargs)
-        self.options = {}
-
-    def add_arguments(self, parser):
-        """Добавляет аргументы командной строки для команды.
-
-        Args:
-            parser: Парсер аргументов argparse.
-        """
+    def add_arguments(self, parser: ArgumentParser) -> None:
+        """Регистрирует флаги команды."""
+        parser.add_argument("backup_file", help=".json[.gz] или .sql[.gz]")
+        parser.add_argument("--input-dir", default=None)
+        parser.add_argument("--database", default="default")
+        parser.add_argument("--dry-run", action="store_true")
+        parser.add_argument("--format", choices=["auto", "json", "sql"], default="auto")
         parser.add_argument(
-            "backup_file",
-            type=str,
-            help="Путь к файлу бэкапа (.json/.json.gz или .sql/.sql.gz)",
-        )
-        parser.add_argument(
-            "--input-dir",
-            type=str,
-            default=None,
-            help="Директория с бэкапами (если backup_file относительный)",
-        )
-        parser.add_argument(
-            "--dry-run",
-            action="store_true",
-            help="Проверить файл без восстановления",
-        )
-        parser.add_argument(
-            "--format",
-            type=str,
-            choices=["auto", "json", "sql"],
-            default="auto",
-            help=("Формат файла " "(auto - определяется автоматически по расширению)"),
-        )
-        parser.add_argument(
-            "--yes",
-            action="store_true",
-            help="Автоматически подтвердить восстановление без запроса",
+            "--yes", action="store_true", help="Не спрашивать подтверждение"
         )
         parser.add_argument(
             "--clear",
             action="store_true",
-            help="Очистить БД перед восстановлением (удалить все данные)",
-        )
-        parser.add_argument(
-            "--timeout",
-            type=int,
-            default=300,
-            help="Таймаут блокировок MySQL в секундах (по умолчанию 300)",
+            help="Очистить таблицы (flush) перед загрузкой",
         )
 
-    def handle(self, *args, **options):
-        """Основной метод выполнения команды восстановления.
-
-        Определяет формат файла, запрашивает подтверждение и вызывает
-        соответствующий метод восстановления.
-
-        Args:
-            *args: Позиционные аргументы.
-            **options: Опции командной строки.
+    def handle(self, *_args: Any, **options: Any) -> None:
+        """Находит файл, определяет формат, спрашивает подтверждение и грузит.
 
         Raises:
-            CommandError: Если файл не найден или формат не определен.
+            CommandError: Файла нет или формат не определён.
         """
-        self.options = options
+        path = Path(options["backup_file"])
+        if not path.is_absolute():
+            path = backup_dir(options["input_dir"]) / path
+        if not path.exists():
+            msg = f"Файл бэкапа не найден: {path}"
+            raise CommandError(msg)
 
-        backup_file_arg = options["backup_file"]
-        input_dir = options.get("input_dir")
-        dry_run = options["dry_run"]
+        fmt = options["format"]
+        if fmt == "auto":
+            fmt = Path(path.name.lower().removesuffix(".gz")).suffix.lstrip(".")
+        if fmt not in ("json", "sql"):
+            msg = "Не удалось определить формат: укажите --format json|sql"
+            raise CommandError(msg)
 
-        backup_path = Path(backup_file_arg)
-        if not backup_path.is_absolute():
-            if input_dir:
-                backup_path = Path(input_dir) / backup_path
-            elif hasattr(settings, "BACKUP_DB_DIR"):
-                backup_path = Path(settings.BACKUP_DB_DIR) / backup_path
-            else:
-                backup_path = Path(settings.BASE_DIR).parent / "DB" / backup_path
-
-        if not backup_path.exists():
-            raise CommandError(f"Файл бэкапа не найден: {backup_path}")
-
-        file_format = options["format"]
-        if file_format == "auto":
-            name_lower = backup_path.name.lower()
-            if name_lower.endswith((".sql.gz", ".sql")):
-                file_format = "sql"
-            elif name_lower.endswith((".json.gz", ".json")):
-                file_format = "json"
-            else:
-                raise CommandError(
-                    "Не удалось определить формат файла. "
-                    "Используйте --format json или --format sql."
-                )
-
-        self.stdout.write(f"Восстановление из {backup_path} (формат: {file_format.upper()})...")
-
-        self.stdout.write(self.style.WARNING("ВНИМАНИЕ: Это перезапишет существующие данные в БД!"))
-        if not dry_run:
-            if not options.get("yes", False):
-                confirm = input("Продолжить? (yes/no): ")
-                if confirm.lower() != "yes":
-                    self.stdout.write("Отменено")
-                    return
-            else:
-                self.stdout.write(
-                    self.style.WARNING(
-                        "Автоматическое подтверждение: " "восстановление будет выполнено"
-                    )
-                )
-
-        if not dry_run and options.get("clear", False):
-            self._clear_database()
-
-        try:
-            if file_format == "json":
-                self._restore_json(backup_path, dry_run)
-            elif file_format == "sql":
-                self._restore_sql(backup_path, dry_run)
-        except Exception as exc:
-            logger.exception("Ошибка при восстановлении бэкапа")
-            raise CommandError(f"Ошибка восстановления: {exc}") from exc
-
-    def _restore_json(self, backup_path: Path, dry_run: bool):
-        """Восстанавливает данные из JSON бэкапа.
-
-        JSON файл читается полностью в память, валидируется и затем загружается
-        через оптимизированную загрузку или стандартную команду loaddata.
-
-        Args:
-            backup_path: Путь к файлу JSON или JSON.GZ.
-            dry_run: Если True, файл только проверяется без записи в БД.
-        """
-        is_gzipped = backup_path.suffix == ".gz" or backup_path.name.endswith(".json.gz")
-
-        if is_gzipped:
-            with gzip.open(backup_path, "rt", encoding="utf-8") as f:
-                data = json.load(f)
-        else:
-            with open(backup_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-        if not isinstance(data, list):
-            raise CommandError("Неверный формат JSON бэкапа: ожидается список объектов")
-
-        self.stdout.write(f"Найдено объектов: {len(data)}")
-        if dry_run:
-            self.stdout.write(
-                self.style.SUCCESS("Dry-run: JSON файл валиден, восстановление не выполнено")
-            )
+        if options["dry_run"]:
+            self._check(path, fmt)
             return
 
-        self._prepare_mysql_for_restore()
-        self._disconnect_signals()
-
-        self.stdout.write("Загрузка данных из JSON бэкапа...")
-        self.stdout.write(f"Всего объектов для загрузки: {len(data)}")
-
-        try:
-            self._restore_json_optimized(data)
-        except Exception as e:
-            logger.warning("Оптимизированная загрузка не удалась: %s, пробуем loaddata...", e)
-            temp_file = (
-                backup_path.parent / f"temp_restore_{backup_path.stem.replace('.json', '')}.json"
-            )
-            try:
-                with open(temp_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-
-                self.stdout.write("Используется стандартный loaddata...")
-                call_command("loaddata", str(temp_file), verbosity=1)
-                self.stdout.write(
-                    self.style.SUCCESS(f"JSON бэкап успешно восстановлен из {backup_path}")
-                )
-            except Exception as load_error:
-                error_str = str(load_error).lower()
-                if "lock wait timeout" in error_str:
-                    self.stdout.write(
-                        self.style.WARNING(
-                            "Обнаружена блокировка БД. "
-                            "Попробуйте остановить сервер Django и повторить."
-                        )
-                    )
-                raise CommandError(f"Ошибка загрузки данных: {load_error}") from load_error
-            finally:
-                self._safe_unlink(temp_file)
-        finally:
-            self._reconnect_signals()
-            self._restore_mysql_settings()
-
-    def _restore_sql(self, backup_path: Path, dry_run: bool):
-        """Восстанавливает данные из SQL бэкапа.
-
-        Пытается использовать mysql клиент для восстановления (надежнее).
-        Если mysql недоступен, использует Django connection как fallback.
-
-        Args:
-            backup_path: Путь к файлу SQL или SQL.GZ.
-            dry_run: Если True, выполняется только базовая валидация файла.
-
-        Raises:
-            CommandError: Если файл пустой или произошла ошибка восстановления.
-        """
-        is_gzipped = backup_path.suffix == ".gz" or backup_path.name.endswith(".sql.gz")
-
-        if is_gzipped:
-            with gzip.open(backup_path, "rt", encoding="utf-8") as f:
-                sql_content = f.read(1024)
-        else:
-            with open(backup_path, "r", encoding="utf-8") as f:
-                sql_content = f.read(1024)
-
-        if not sql_content.strip():
-            raise CommandError("SQL файл пустой")
-
-        if dry_run:
-            self.stdout.write(
-                self.style.SUCCESS("Dry-run: SQL файл валиден, восстановление не выполнено")
-            )
-            return
-
-        self._prepare_mysql_for_restore()
-
-        db_config = settings.DATABASES["default"]
-        if db_config["ENGINE"] == "django.db.backends.mysql":
-            if self._restore_sql_with_mysql(db_config, backup_path, is_gzipped):
-                return
-
+        database = options["database"]
         self.stdout.write(
             self.style.WARNING(
-                "ВНИМАНИЕ: mysql клиент недоступен, "
-                "используется Django connection. "
-                "Многострочные команды могут работать некорректно."
+                f"Восстановление {path} в базу '{database}' перезапишет данные!"
             )
         )
-        try:
-            self._restore_sql_with_django(backup_path, is_gzipped)
-        finally:
-            self._restore_mysql_settings()
-
-    def _restore_sql_with_mysql(self, db_config: dict, backup_path: Path, is_gzipped: bool) -> bool:
-        """Восстанавливает SQL бэкап используя mysql клиент.
-
-        Args:
-            db_config: Конфигурация БД из Django settings.
-            backup_path: Путь к файлу SQL или SQL.GZ.
-            is_gzipped: Если True, файл сжат в gzip.
-
-        Returns:
-            True если восстановление успешно, False иначе.
-        """
-        try:
-            cmd = [
-                "mysql",
-                f"--host={db_config['HOST']}",
-                f"--port={db_config['PORT']}",
-                f"--user={db_config['USER']}",
-                f"--password={db_config['PASSWORD']}",
-                db_config["NAME"],
-            ]
-
-            self.stdout.write("Восстановление через mysql клиент...")
-
-            if is_gzipped:
-                gunzip_cmd = ["gunzip", "-c", str(backup_path)]
-                gunzip_process = subprocess.Popen(
-                    gunzip_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                )
-                result = subprocess.run(
-                    cmd,
-                    stdin=gunzip_process.stdout,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False,
-                )
-                gunzip_process.wait()
-            else:
-                with open(backup_path, "rb") as f:
-                    result = subprocess.run(
-                        cmd,
-                        stdin=f,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        check=False,
-                    )
-
-            if result.returncode != 0:
-                if result.stderr:
-                    error_msg = result.stderr[:500]
-                    self.stdout.write(self.style.ERROR(f"Ошибка mysql: {error_msg}"))
-                logger.warning("mysql завершился с ошибкой: %s", result.stderr)
-                return False
-
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f"SQL бэкап успешно восстановлен из {backup_path} " "через mysql клиент"
-                )
-            )
-            self._restore_mysql_settings()
-            return True
-
-        except FileNotFoundError:
-            logger.warning("mysql клиент не найден, используем Django connection")
-            return False
-        except Exception as e:
-            logger.warning("Ошибка при использовании mysql клиента: %s", e)
-            return False
-
-    def _restore_sql_with_django(self, backup_path: Path, is_gzipped: bool):
-        """Восстанавливает SQL бэкап через Django connection (fallback).
-
-        Args:
-            backup_path: Путь к файлу SQL или SQL.GZ.
-            is_gzipped: Если True, файл сжат в gzip.
-        """
-        if is_gzipped:
-            with gzip.open(backup_path, "rt", encoding="utf-8") as f:
-                sql_content = f.read()
-        else:
-            with open(backup_path, "r", encoding="utf-8") as f:
-                sql_content = f.read()
-
-        self.stdout.write("Выполнение SQL команд через Django connection...")
-
-        with _db_atomic():
-            cursor = connection.cursor()
-
-            commands = [
-                cmd.strip()
-                for cmd in sql_content.split(";")
-                if cmd.strip()
-                and not cmd.strip().startswith("--")
-                and not cmd.strip().startswith("/*")
-            ]
-
-            executed = 0
-            for cmd in commands:
-                if not cmd or len(cmd) < 3:
-                    continue
-                try:
-                    cursor.execute(cmd)
-                    executed += 1
-                except Exception as e:
-                    error_str = str(e).lower()
-                    if any(
-                        keyword in error_str
-                        for keyword in [
-                            "foreign_key_checks",
-                            "unique_checks",
-                            "already exists",
-                            "unknown",
-                        ]
-                    ):
-                        continue
-                    logger.warning("Ошибка выполнения SQL команды: %s... - %s", cmd[:100], e)
-
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f"SQL бэкап восстановлен через Django connection "
-                    f"(выполнено команд: {executed})"
-                )
-            )
-
-    def _prepare_mysql_for_restore(self):
-        """Подготавливает MySQL для восстановления.
-
-        Увеличивает таймауты блокировок и отключает проверки для ускорения
-        восстановления.
-        """
-        db_config = settings.DATABASES.get("default", {})
-        if db_config.get("ENGINE") != "django.db.backends.mysql":
+        if not options["yes"] and input("Продолжить? (yes/no): ").lower() != "yes":
+            self.stdout.write("Отменено")
             return
 
-        try:
-            cursor = connection.cursor()
-            timeout = self.options.get("timeout", 300)
-
-            try:
-                cursor.execute(f"SET SESSION innodb_lock_wait_timeout = {timeout}")
-                cursor.execute(f"SET SESSION lock_wait_timeout = {timeout}")
-            except Exception:
-                pass
-
-            try:
-                cursor.execute("SET SESSION foreign_key_checks = 0")
-                cursor.execute("SET SESSION unique_checks = 0")
-            except Exception:
-                pass
-
-            try:
-                cursor.execute("SET SESSION sql_log_bin = 0")
-            except Exception:
-                pass
-
-            self.stdout.write(
-                self.style.SUCCESS(f"MySQL настроен для восстановления (таймаут: {timeout}с)")
-            )
-        except Exception as e:
-            logger.warning("Не удалось настроить MySQL: %s", e)
-
-    def _restore_mysql_settings(self):
-        """Восстанавливает стандартные настройки MySQL после восстановления."""
-        db_config = settings.DATABASES.get("default", {})
-        if db_config.get("ENGINE") != "django.db.backends.mysql":
-            return
-
-        try:
-            cursor = connection.cursor()
-            try:
-                cursor.execute("SET SESSION foreign_key_checks = 1")
-                cursor.execute("SET SESSION unique_checks = 1")
-            except Exception:
-                pass
-
-            try:
-                cursor.execute("SET SESSION sql_log_bin = 1")
-            except Exception:
-                pass
-        except Exception as e:
-            error_str = str(e).lower()
-            if "access denied" not in error_str and "privilege" not in error_str:
-                logger.warning("Не удалось восстановить настройки MySQL: %s", e)
-
-    def _safe_unlink(self, file_path: Path, max_attempts: int = 5):
-        """Безопасно удаляет файл с повторными попытками.
-
-        Args:
-            file_path: Путь к файлу для удаления.
-            max_attempts: Максимальное количество попыток.
-        """
-        if not file_path.exists():
-            return
-
-        for attempt in range(max_attempts):
-            try:
-                file_path.unlink()
-                return
-            except PermissionError:
-                if attempt < max_attempts - 1:
-                    time.sleep(0.5)
-                else:
-                    logger.warning(
-                        "Не удалось удалить временный файл %s после %s попыток. Файл может быть занят другим процессом. Удалите его вручную.",
-                        file_path,
-                        max_attempts,
-                    )
-                    self.stdout.write(
-                        self.style.WARNING(
-                            f"Временный файл не удален: {file_path}. " "Удалите его вручную."
-                        )
-                    )
-            except Exception as e:
-                logger.warning("Ошибка при удалении файла %s: %s", file_path, e)
-                break
-
-    def _clear_database(self):
-        """Очищает базу данных перед восстановлением.
-
-        Удаляет все данные из всех таблиц для обеспечения чистого состояния
-        перед восстановлением.
-        """
-        self.stdout.write(self.style.WARNING("Очистка базы данных перед восстановлением..."))
-        try:
-            cursor = connection.cursor()
-            db_config = settings.DATABASES.get("default", {})
-
-            if db_config.get("ENGINE") == "django.db.backends.mysql":
-                cursor.execute("SET SESSION foreign_key_checks = 0")
-                cursor.execute("SET SESSION unique_checks = 0")
-
-                cursor.execute("SHOW TABLES")
-                tables = [row[0] for row in cursor.fetchall()]
-
-                if tables:
-                    for table in tables:
-                        try:
-                            cursor.execute(f"TRUNCATE TABLE `{table}`")
-                        except Exception as e:
-                            logger.warning("Не удалось очистить таблицу %s: %s", table, e)
-                            try:
-                                cursor.execute(f"DELETE FROM `{table}`")
-                            except Exception as delete_error:
-                                logger.warning(
-                                    "Не удалось удалить данные из %s: %s", table, delete_error
-                                )
-
-                    self.stdout.write(self.style.SUCCESS(f"Очищено таблиц: {len(tables)}"))
-
-                cursor.execute("SET SESSION foreign_key_checks = 1")
-                cursor.execute("SET SESSION unique_checks = 1")
-            else:
-                call_command("flush", "--noinput", verbosity=0)
-                self.stdout.write(self.style.SUCCESS("База данных очищена"))
-
-        except Exception as e:
-            logger.error("Ошибка при очистке БД: %s", e)
-            self.stdout.write(
-                self.style.ERROR(f"Ошибка очистки БД: {e}. Продолжаем восстановление...")
-            )
-
-    def _get_certs_signal_bindings(self):
-        """Возвращает список привязок сигналов certs, если app доступен.
-
-        Формат элемента: (signal, receiver, sender).
-        Если приложение certs не установлено или не импортируется, возвращает пустой список.
-        """
-        if not apps.is_installed("certs"):
-            logger.info("Приложение certs не установлено; операции с его сигналами пропущены.")
-            return []
-
-        try:
-            signals_module = import_module("certs.signals")
-            models_module = import_module("certs.models")
-        except ImportError as exc:
-            logger.info("Не удалось импортировать certs.signals/certs.models: %s", exc)
-            return []
-
-        definitions = [
-            (post_save, "request_saved", "Request"),
-            (post_save, "request_status_changed", "Request"),
-            (post_delete, "request_deleted", "Request"),
-            (pre_save, "request_pre_save", "Request"),
-            (post_save, "request_step_saved", "RequestStep"),
-            (post_delete, "request_step_deleted", "RequestStep"),
-            (post_save, "assignment_saved", "Assignment"),
-            (post_delete, "assignment_deleted", "Assignment"),
-            (post_save, "request_file_saved", "RequestFile"),
-            (post_delete, "request_file_deleted", "RequestFile"),
-        ]
-
-        bindings = []
-        for signal, receiver_name, sender_name in definitions:
-            receiver = getattr(signals_module, receiver_name, None)
-            sender = getattr(models_module, sender_name, None)
-            if receiver is None or sender is None:
-                logger.warning(
-                    "Пропуск привязки certs signal: receiver=%s, sender=%s",
-                    receiver_name,
-                    sender_name,
+        with muted_model_signals(), transaction.atomic(using=database):
+            if options["clear"]:
+                call_command(
+                    "flush",
+                    database=database,
+                    interactive=False,
+                    inhibit_post_migrate=True,
+                    verbosity=0,
                 )
-                continue
-            bindings.append((signal, receiver, sender))
+            if fmt == "json":
+                call_command("loaddata", str(path), database=database)
+        if fmt == "sql":
+            self._restore_sql(path, database)
+        self.stdout.write(self.style.SUCCESS(f"Восстановлено из {path}"))
 
-        return bindings
-
-    def _disconnect_signals(self):
-        """Отключает Django signals во время восстановления БД.
-
-        Предотвращает отправку WebSocket уведомлений во время восстановления,
-        что позволяет избежать ошибок подключения к Redis.
-        """
-        try:
-            bindings = self._get_certs_signal_bindings()
-            if not bindings:
-                return
-
-            for signal, receiver, sender in bindings:
-                signal.disconnect(receiver, sender=sender)
-
-            self.stdout.write("Сигналы Django отключены для восстановления (certs)")
-        except Exception as e:
-            logger.warning("Не удалось отключить сигналы: %s", e)
-
-    def _reconnect_signals(self):
-        """Включает Django signals обратно после восстановления БД."""
-        try:
-            bindings = self._get_certs_signal_bindings()
-            if not bindings:
-                return
-
-            for signal, receiver, sender in bindings:
-                signal.connect(receiver, sender=sender)
-
-            self.stdout.write("Сигналы Django включены обратно (certs)")
-        except Exception as e:
-            logger.warning("Не удалось включить сигналы: %s", e)
-
-    def _restore_json_optimized(self, data: list):
-        """Оптимизированная загрузка JSON данных через Django ORM с батчами.
-
-        Группирует объекты по моделям и загружает их батчами для повышения
-        производительности. Показывает прогресс загрузки.
+    def _check(self, path: Path, fmt: str) -> None:
+        """Проверяет файл без записи в базу.
 
         Args:
-            data: Список объектов для загрузки в формате Django fixtures.
+            path (Path): Файл бэкапа.
+            fmt (str): ``"json"`` или ``"sql"``.
+
+        Raises:
+            CommandError: JSON не список объектов или SQL пустой.
         """
-        objects_by_model = defaultdict(list)
-        for obj in data:
-            model_label = f"{obj['model']}"
-            objects_by_model[model_label].append(obj)
-
-        total_models = len(objects_by_model)
-        self.stdout.write(f"Найдено моделей: {total_models}")
-
-        total_loaded = 0
-        start_time = time.time()
-
-        for idx, (model_label, objects) in enumerate(objects_by_model.items(), 1):
-            try:
-                app_label, model_name = model_label.split(".")
-                apps.get_model(app_label, model_name)
-
+        with open_backup(path, "rt") as f:
+            if fmt == "json":
+                data = json.load(f)
+                if not isinstance(data, list):
+                    msg = "JSON бэкапа должен быть списком объектов"
+                    raise CommandError(msg)
                 self.stdout.write(
-                    f"[{idx}/{total_models}] Загрузка {model_label}: " f"{len(objects)} объектов..."
+                    self.style.SUCCESS(f"JSON валиден, объектов: {len(data)}")
                 )
+            elif not f.read(1024).strip():
+                msg = "SQL файл пустой"
+                raise CommandError(msg)
+            else:
+                self.stdout.write(self.style.SUCCESS("SQL файл не пустой"))
 
-                deserialized_objects = []
-                for obj_data in objects:
-                    try:
-                        obj = serializers.deserialize("json", json.dumps([obj_data]))
-                        deserialized_objects.extend(list(obj))
-                    except Exception as e:
-                        logger.warning("Ошибка десериализации объекта %s: %s", model_label, e)
-                        continue
+    def _restore_sql(self, path: Path, database: str) -> None:
+        """Передаёт SQL-дамп в stdin клиента СУБД потоком.
 
-                batch_size = 100
-                saved_count = 0
+        Args:
+            path (Path): Файл ``.sql[.gz]``.
+            database (str): Alias базы.
 
-                for i in range(0, len(deserialized_objects), batch_size):
-                    batch = deserialized_objects[i : i + batch_size]
-                    try:
-                        with _db_atomic():
-                            for deserialized_obj in batch:
-                                try:
-                                    deserialized_obj.save()
-                                    saved_count += 1
-                                except Exception as e:
-                                    error_str = str(e).lower()
-                                    if "duplicate" not in error_str and "unique" not in error_str:
-                                        logger.warning("Ошибка сохранения %s: %s", model_label, e)
-
-                        if saved_count % 1000 == 0:
-                            elapsed = time.time() - start_time
-                            self.stdout.write(
-                                f"  Загружено: "
-                                f"{saved_count}/{len(deserialized_objects)} "
-                                f"({elapsed:.1f}с)"
-                            )
-                    except Exception as e:
-                        logger.error("Ошибка батча %s: %s", model_label, e)
-                        for deserialized_obj in batch:
-                            try:
-                                deserialized_obj.save()
-                                saved_count += 1
-                            except Exception:
-                                pass
-
-                total_loaded += saved_count
-                elapsed = time.time() - start_time
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"  ✓ {model_label}: {saved_count}/{len(objects)} "
-                        f"объектов ({elapsed:.1f}с)"
-                    )
-                )
-
-            except LookupError:
-                logger.warning("Модель %s не найдена, пропускаем", model_label)
-            except Exception as e:
-                logger.error("Ошибка загрузки %s: %s", model_label, e)
-                self.stdout.write(self.style.ERROR(f"  ✗ Ошибка загрузки {model_label}: {e}"))
-
-        total_elapsed = time.time() - start_time
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"\n✓ Восстановление завершено: {total_loaded} объектов " f"за {total_elapsed:.1f}с"
-            )
+        Raises:
+            CommandError: Клиента нет в PATH или он завершился с ошибкой.
+        """
+        connection = connections[database]
+        cmd, env = connection.client.settings_to_cmd_args_env(
+            connection.settings_dict, RESTORE_FLAGS.get(connection.vendor, [])
         )
+        if not shutil.which(cmd[0]):
+            msg = f"{cmd[0]} не найден в PATH"
+            raise CommandError(msg)
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, env={**os.environ, **(env or {})}
+        )
+        stdin = cast(IO[bytes], proc.stdin)
+        with open_backup(path) as src:
+            try:
+                shutil.copyfileobj(src, stdin)
+            finally:
+                stdin.close()
+        if proc.wait():
+            msg = f"{cmd[0]} завершился с кодом {proc.returncode}"
+            raise CommandError(msg)

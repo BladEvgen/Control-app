@@ -1,531 +1,299 @@
+"""Бэкап базы Django-проекта в JSON (сериализаторы Django) и SQL (родной дампер)."""
+
 import gzip
-import json
-import logging
+import os
+import shutil
 import subprocess
-from datetime import datetime
+import tempfile
+from argparse import ArgumentParser
+from collections.abc import Callable, Iterator
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import IO, Any, cast
 
+from django.apps import apps
 from django.conf import settings
-from django.contrib.auth import get_user_model
-from django.core.management import call_command
-from django.core.management.base import BaseCommand
+from django.core import serializers
+from django.core.management.base import BaseCommand, CommandError
+from django.db import connections, models, router
+from django.db.models import Prefetch
 
-logger = logging.getLogger(__name__)
+DUMP_TOOLS: dict[str, str] = {"mysql": "mysqldump", "psql": "pg_dump"}
+DUMP_FLAGS: dict[str, list[str]] = {
+    "mysql": [
+        "--single-transaction",
+        "--routines",
+        "--triggers",
+        "--no-tablespaces",
+        "--set-gtid-purged=OFF",
+    ],
+    "postgresql": ["--no-owner", "--clean", "--if-exists"],
+    "sqlite": [".dump"],
+}
+JSON_EXCLUDE: frozenset[str] = frozenset({"sessions"})
+GZIP_LEVEL = 6
+CHUNK_SIZE = 2000
+
+
+def backup_dir(explicit: str | None) -> Path:
+    """Возвращает каталог бэкапов.
+
+    Args:
+        explicit (str | None): Путь из флага; относительный считается
+            от ``<BASE_DIR>/..``.
+
+    Returns:
+        Path: ``explicit``, иначе ``settings.BACKUP_DB_DIR``,
+        иначе ``<BASE_DIR>/../DB``.
+    """
+    root = Path(settings.BASE_DIR).parent
+    if explicit:
+        return root / explicit
+    configured = getattr(settings, "BACKUP_DB_DIR", None)
+    return Path(configured) if configured else root / "DB"
+
+
+def open_out(path: Path, mode: str) -> IO[Any] | gzip.GzipFile:
+    """Открывает файл на запись, сжимая gzip, если имя кончается на ``.gz``.
+
+    Args:
+        path (Path): Путь к файлу.
+        mode (str): ``"wb"`` или ``"wt"``.
+
+    Returns:
+        IO[Any] | gzip.GzipFile: Открытый файл.
+    """
+    encoding = None if "b" in mode else "utf-8"
+    if path.name.endswith(".gz"):
+        return gzip.open(path, mode, compresslevel=GZIP_LEVEL, encoding=encoding)
+    return path.open(mode, encoding=encoding)
+
+
+def natural_fks(model: type[models.Model] | None) -> list[str]:
+    """Имена FK/O2O-полей, чьи модели сериализуются natural key.
+
+    Args:
+        model (type[models.Model] | None): Модель; ``None`` даёт пустой список.
+
+    Returns:
+        list[str]: Имена полей для ``select_related``.
+    """
+    if model is None:
+        return []
+    return [
+        f.name
+        for f in model._meta.concrete_fields
+        if f.is_relation and hasattr(f.related_model, "natural_key")
+    ]
+
+
+def dump_objects(database: str, exclude: frozenset[str]) -> Iterator[models.Model]:
+    """Отдаёт все объекты базы в порядке зависимостей, как ``dumpdata --all``.
+
+    Связи с natural key подгружаются ``select_related``/``prefetch_related``,
+    поэтому сериализатор не делает запрос на каждый объект.
+
+    Args:
+        database (str): Alias базы.
+        exclude (frozenset[str]): Метки ``app`` или ``app.model`` для пропуска.
+
+    Yields:
+        models.Model: Объекты чанками по ``CHUNK_SIZE``.
+    """
+    configs = [
+        (config, None)
+        for config in apps.get_app_configs()
+        if config.models_module and config.label not in exclude
+    ]
+    for model in serializers.sort_dependencies(configs, allow_cycles=True):
+        meta = model._meta
+        if (
+            meta.proxy
+            or meta.label_lower in exclude
+            or not router.allow_migrate_model(database, model)
+        ):
+            continue
+        related = [
+            path
+            for name in natural_fks(model)
+            for path in (
+                name,
+                *(
+                    f"{name}__{deep}"
+                    for deep in natural_fks(meta.get_field(name).related_model)
+                ),
+            )
+        ]
+        m2m = [
+            Prefetch(
+                f.name,
+                queryset=f.related_model._base_manager.select_related(
+                    *natural_fks(f.related_model)
+                ),
+            )
+            for f in meta.many_to_many
+            if f.remote_field.through._meta.auto_created
+            and hasattr(f.related_model, "natural_key")
+        ]
+        yield from (
+            model._base_manager.using(database)
+            .order_by(meta.pk.name)
+            .select_related(*related)
+            .prefetch_related(*m2m)
+            .iterator(chunk_size=CHUNK_SIZE)
+        )
+
+
+def sql_dump_command(database: str) -> tuple[list[str], dict[str, str]]:
+    """Собирает команду дампера СУБД и окружение с паролем.
+
+    Args:
+        database (str): Alias базы.
+
+    Returns:
+        tuple[list[str], dict[str, str]]: Аргументы процесса и окружение.
+
+    Raises:
+        CommandError: СУБД не поддерживается, база sqlite в памяти
+            или дампера нет в PATH.
+    """
+    connection = connections[database]
+    in_memory = getattr(connection, "is_in_memory_db", lambda: False)()
+    if connection.vendor not in DUMP_FLAGS or in_memory:
+        msg = f"SQL-дамп для {connection.vendor} не поддерживается"
+        raise CommandError(msg)
+    args, env = connection.client.settings_to_cmd_args_env(
+        connection.settings_dict, DUMP_FLAGS[connection.vendor]
+    )
+    cmd = [DUMP_TOOLS.get(args[0], args[0]), *args[1:]]
+    if not shutil.which(cmd[0]):
+        msg = f"{cmd[0]} не найден в PATH"
+        raise CommandError(msg)
+    return cmd, {**os.environ, **(env or {})}
 
 
 class Command(BaseCommand):
-    """Management команда для создания резервных копий базы данных.
+    """Создаёт ``backup_<дата>_<время>.sql[.gz]`` или ``.json[.gz]``.
 
-    Создает бэкапы в форматах JSON и SQL для моделей из приложения
-    monitoring_app и Django auth-системы. Поддерживает сжатие
-    и автоматическую очистку старых бэкапов.
+    ``--format auto`` (по умолчанию) снимает один SQL, если для СУБД есть
+    дампер, иначе один JSON; ``json``/``sql``/``both`` задают формат явно.
+    JSON содержит все модели, которые роутер пускает в базу, кроме сессий,
+    с natural keys.
+    SQL снимается целиком дампером СУБД (mysqldump, pg_dump, sqlite3);
+    аргументы и пароль собирает ``connection.client``, как ``dbshell``,
+    пароль передаётся через окружение. Файл появляется только после
+    успешного дампа; бэкапы старше ``--keep-days`` удаляются.
     """
 
-    help = "Создать бэкап БД (только нужные модели)"
+    help = "Создать бэкап БД (JSON и/или SQL)"
 
-    def add_arguments(self, parser):
-        """Добавляет аргументы командной строки для команды.
-
-        Args:
-            parser: Парсер аргументов argparse.
-        """
+    def add_arguments(self, parser: ArgumentParser) -> None:
+        """Регистрирует флаги команды."""
         parser.add_argument(
             "--format",
-            type=str,
-            choices=["json", "sql", "both"],
-            default="both",
-            help="Формат бэкапа: json (Django формат), sql (SQL дамп), both (оба формата, по умолчанию)",
+            choices=["auto", "json", "sql", "both"],
+            default="auto",
+            help="auto: SQL, если есть дампер СУБД, иначе JSON",
         )
-        parser.add_argument(
-            "--compress",
-            action="store_true",
-            help="Сжать бэкап в .gz",
-        )
+        parser.add_argument("--compress", action="store_true", help="Сжать в .gz")
         parser.add_argument(
             "--output-dir",
-            type=str,
-            default="DB",
-            help="Директория для сохранения (относительно BASE_DIR)",
+            default=None,
+            help="Каталог бэкапов, относительный — от <BASE_DIR>/.. "
+            "(по умолчанию BACKUP_DB_DIR или <BASE_DIR>/../DB)",
         )
-        parser.add_argument(
-            "--keep-days",
-            type=int,
-            default=30,
-            help="Сколько дней хранить старые бэкапы (по умолчанию 30)",
-        )
+        parser.add_argument("--database", default="default")
+        parser.add_argument("--keep-days", type=int, default=30)
 
-    def handle(self, *args, **options):
-        """Основной метод выполнения команды бэкапа.
+    def handle(self, *_args: Any, **options: Any) -> None:
+        """Снимает бэкапы выбранных форматов и чистит старые."""
+        target = backup_dir(options["output_dir"])
+        target.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        suffix = ".gz" if options["compress"] else ""
+        database = options["database"]
+        fmt = options["format"]
+        if fmt == "auto":
+            try:
+                sql_dump_command(database)
+                fmt = "sql"
+            except CommandError as exc:
+                self.stdout.write(self.style.WARNING(f"{exc}; бэкап в JSON"))
+                fmt = "json"
 
-        Создает бэкапы в указанных форматах и выполняет очистку
-        старых файлов.
+        if fmt in ("json", "both"):
+            self._write(
+                target / f"backup_{stamp}.json{suffix}", self._dump_json, database
+            )
+        if fmt in ("sql", "both"):
+            self._write(
+                target / f"backup_{stamp}.sql{suffix}", self._dump_sql, database
+            )
+
+        self._cleanup(target, options["keep_days"])
+
+    def _write(
+        self, path: Path, dump: Callable[[Path, str], None], database: str
+    ) -> None:
+        """Пишет дамп в ``.part_<имя>`` и переименовывает в ``path`` после успеха.
 
         Args:
-            *args: Позиционные аргументы.
-            **options: Опции командной строки (format, compress, output_dir, keep_days).
+            path (Path): Итоговый файл.
+            dump (Callable[[Path, str], None]): Функция дампа ``(файл, alias)``.
+            database (str): Alias базы.
         """
-        backup_format = options["format"]
-        compress = options["compress"]
-        output_dir_name = options["output_dir"]
-        keep_days = options["keep_days"]
+        part = path.with_name(f".part_{path.name}")
+        self.stdout.write(f"Создание {path}...")
+        try:
+            dump(part, database)
+            part.rename(path)
+        finally:
+            part.unlink(missing_ok=True)
+        size = path.stat().st_size / 1024 / 1024
+        self.stdout.write(self.style.SUCCESS(f"Готово: {path} ({size:.2f} MB)"))
 
-        if hasattr(settings, "BACKUP_DB_DIR"):
-            backup_dir = Path(settings.BACKUP_DB_DIR)
-        else:
-            backup_dir = Path(settings.BASE_DIR).parent / output_dir_name
-        backup_dir.mkdir(parents=True, exist_ok=True)
+    def _dump_json(self, part: Path, database: str) -> None:
+        """Сериализует базу в JSON потоком, не держа объекты в памяти."""
+        with open_out(part, "wt") as out:
+            serializers.serialize(
+                "json",
+                dump_objects(database, JSON_EXCLUDE),
+                stream=out,
+                use_natural_foreign_keys=True,
+                use_natural_primary_keys=True,
+            )
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        create_json = backup_format in ("json", "both")
-        create_sql = backup_format in ("sql", "both")
-
-        if create_json:
-            self._create_json_backup(backup_dir, timestamp, compress)
-        if create_sql:
-            self._create_sql_backup(backup_dir, timestamp, compress)
-
-        self._cleanup_old_backups(backup_dir, keep_days)
-
-    def _create_json_backup(self, backup_dir: Path, timestamp: str, compress: bool):
-        """Создает JSON бэкап базы данных.
-
-        Экспортирует данные через Django dumpdata в JSON формат.
-        Поддерживает сжатие в gzip.
-
-        Args:
-            backup_dir: Директория для сохранения бэкапа.
-            timestamp: Временная метка для имени файла.
-            compress: Если True, сжимает файл в .gz.
+    def _dump_sql(self, part: Path, database: str) -> None:
+        """Пишет вывод дампера СУБД в файл потоком.
 
         Raises:
-            ValueError: Если формат JSON неверный.
-            Exception: При ошибках создания или записи файла.
+            CommandError: Дампер недоступен (см. ``sql_dump_command``)
+                или завершился с ошибкой (текст stderr в сообщении).
         """
-        filename = f"backup_{timestamp}.json"
-        if compress:
-            filename += ".gz"
-        backup_path = backup_dir / filename
+        cmd, env = sql_dump_command(database)
+        with tempfile.TemporaryFile() as errors, open_out(part, "wb") as out:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errors, env=env)
+            shutil.copyfileobj(cast(IO[bytes], proc.stdout), out)
+            if proc.wait():
+                errors.seek(0)
+                stderr = errors.read().decode(errors="replace").strip()
+                msg = f"{cmd[0]} завершился с кодом {proc.returncode}: {stderr}"
+                raise CommandError(msg)
 
-        self.stdout.write(f"Создание JSON бэкапа в {backup_path}...")
-
-        models_to_backup = self._get_models_to_backup()
-
-        try:
-            temp_file = backup_dir / f"temp_backup_{timestamp}.json"
-
-            with open(temp_file, "w", encoding="utf-8") as f:
-                call_command(
-                    "dumpdata",
-                    *models_to_backup,
-                    "--all",
-                    "--natural-foreign",
-                    "--natural-primary",
-                    "--indent",
-                    "2",
-                    stdout=f,
-                )
-
-            if temp_file.stat().st_size == 0:
-                self.stdout.write(
-                    self.style.WARNING("Бэкап пустой, возможно нет данных для экспорта")
-                )
-                temp_file.unlink()
-                return
-
-            with open(temp_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if not isinstance(data, list):
-                    raise ValueError("Неверный формат JSON бэкапа")
-
-            if compress:
-                with open(temp_file, "rb") as f_in:
-                    with gzip.open(backup_path, "wb") as f_out:
-                        f_out.writelines(f_in)
-                temp_file.unlink()
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"JSON бэкап создан и сжат: {backup_path} ({backup_path.stat().st_size / 1024 / 1024:.2f} MB)"
-                    )
-                )
-            else:
-                temp_file.rename(backup_path)
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"JSON бэкап создан: {backup_path} ({backup_path.stat().st_size / 1024 / 1024:.2f} MB)"
-                    )
-                )
-
-        except Exception as e:
-            logger.exception("Ошибка при создании JSON бэкапа")
-            self.stdout.write(self.style.ERROR(f"Ошибка: {e}"))
-            if temp_file.exists():
-                temp_file.unlink()
-            raise
-
-    def _create_sql_backup(self, backup_dir: Path, timestamp: str, compress: bool):
-        """Создает SQL бэкап базы данных через mysqldump.
-
-        Использует mysqldump для создания SQL дампа указанных таблиц.
-        Поддерживает сжатие в gzip. Если mysqldump недоступен,
-        создает SQL через Django ORM и выводит инструкции.
+    def _cleanup(self, target: Path, keep_days: int) -> None:
+        """Удаляет ``backup_YYYYMMDD_*`` с датой в имени старше ``keep_days``.
 
         Args:
-            backup_dir: Директория для сохранения бэкапа.
-            timestamp: Временная метка для имени файла.
-            compress: Если True, сжимает файл в .gz.
-
-        Raises:
-            Exception: При ошибках создания или записи файла.
+            target (Path): Каталог бэкапов.
+            keep_days (int): Сколько дней хранить.
         """
-        filename = f"backup_{timestamp}.sql"
-        if compress:
-            filename += ".gz"
-        backup_path = backup_dir / filename
-
-        self.stdout.write(f"Создание SQL бэкапа в {backup_path}...")
-
-        mysqldump_success = False
-        db_config = None
-        tables = []
-        temp_file = None
-
-        try:
-            temp_file = backup_dir / f"temp_backup_{timestamp}.sql"
-
-            db_config = settings.DATABASES["default"]
-            if db_config["ENGINE"] == "django.db.backends.mysql":
-                tables = self._get_table_names()
-                if tables:
-                    mysqldump_success = self._create_sql_with_mysqldump(
-                        db_config, temp_file, tables
-                    )
-                    if not mysqldump_success:
-                        self.stdout.write(
-                            self.style.WARNING(
-                                "ВНИМАНИЕ: mysqldump недоступен или завершился с ошибкой. "
-                                "Используется упрощенный SQL формат."
-                            )
-                        )
-                        self._create_sql_with_django(temp_file)
-                else:
-                    self.stdout.write(
-                        self.style.WARNING("ВНИМАНИЕ: Не удалось определить таблицы для бэкапа.")
-                    )
-                    self._create_sql_with_django(temp_file)
-            else:
-                self.stdout.write(
-                    self.style.WARNING(
-                        f"ВНИМАНИЕ: БД {db_config['ENGINE']} не поддерживает mysqldump. "
-                        "Используется упрощенный SQL формат."
-                    )
-                )
-                self._create_sql_with_django(temp_file)
-
-            if temp_file.stat().st_size == 0:
-                self.stdout.write(
-                    self.style.WARNING("SQL бэкап пустой, возможно нет данных для экспорта")
-                )
-                temp_file.unlink()
-                if db_config and tables:
-                    self._print_mysqldump_command(db_config, tables, backup_path)
-                return
-
-            if compress:
-                with open(temp_file, "rb") as f_in:
-                    with gzip.open(backup_path, "wb") as f_out:
-                        f_out.writelines(f_in)
-                temp_file.unlink()
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"SQL бэкап создан и сжат: {backup_path} "
-                        f"({backup_path.stat().st_size / 1024 / 1024:.2f} MB)"
-                    )
-                )
-            else:
-                temp_file.rename(backup_path)
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"SQL бэкап создан: {backup_path} "
-                        f"({backup_path.stat().st_size / 1024 / 1024:.2f} MB)"
-                    )
-                )
-
-            if not mysqldump_success and db_config and tables:
-                self._print_mysqldump_command(db_config, tables, backup_path)
-
-        except Exception as e:
-            logger.exception("Ошибка при создании SQL бэкапа")
-            self.stdout.write(self.style.ERROR(f"ОШИБКА: {e}"))
-            if temp_file and temp_file.exists():
-                temp_file.unlink()
-            if db_config and tables:
-                self._print_mysqldump_command(db_config, tables, backup_path)
-            raise
-
-    def _create_sql_with_mysqldump(
-        self, db_config: dict, output_file: Path, tables: list[str]
-    ) -> bool:
-        """Создает SQL бэкап используя mysqldump.
-
-        Args:
-            db_config: Конфигурация БД из Django settings.
-            output_file: Путь к выходному файлу.
-            tables: Список таблиц для бэкапа.
-
-        Returns:
-            True если mysqldump успешно выполнен, False иначе.
-        """
-        try:
-            cmd = [
-                "mysqldump",
-                f"--host={db_config['HOST']}",
-                f"--port={db_config['PORT']}",
-                f"--user={db_config['USER']}",
-                f"--password={db_config['PASSWORD']}",
-                "--routines",
-                "--triggers",
-                "--lock-tables=false",
-                db_config["NAME"],
-            ] + tables
-
-            with open(output_file, "w", encoding="utf-8") as f:
-                result = subprocess.run(
-                    cmd,
-                    stdout=f,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False,
-                )
-
-            if result.returncode != 0:
-                logger.warning("mysqldump завершился с ошибкой: %s", result.stderr)
-                if result.stderr:
-                    self.stdout.write(self.style.ERROR(f"Ошибка mysqldump: {result.stderr[:200]}"))
-                return False
-
-            return True
-
-        except FileNotFoundError:
-            logger.warning("mysqldump не найден, используем Django ORM")
-            return False
-        except Exception as e:
-            logger.warning("Ошибка при использовании mysqldump: %s", e)
-            return False
-
-    def _print_mysqldump_command(self, db_config: dict, tables: list[str], output_path: Path):
-        """Выводит команду mysqldump для ручного выполнения.
-
-        Args:
-            db_config: Конфигурация БД из Django settings.
-            tables: Список таблиц для бэкапа.
-            output_path: Путь к выходному файлу.
-        """
-        self.stdout.write("")
-        self.stdout.write(self.style.ERROR("=" * 80))
-        self.stdout.write(
-            self.style.ERROR(
-                "ВНИМАНИЕ: SQL бэкап создан в упрощенном формате или произошла ошибка!"
-            )
-        )
-        self.stdout.write("")
-        self.stdout.write(
-            self.style.WARNING(
-                "Для создания полноценного SQL бэкапа используйте mysqldump вручную:"
-            )
-        )
-        self.stdout.write(self.style.ERROR("=" * 80))
-        self.stdout.write("")
-
-        tables_str = " ".join(tables)
-        host = db_config.get("HOST", "localhost")
-        port = db_config.get("PORT", "3306")
-        user = db_config.get("USER", "root")
-        password = db_config.get("PASSWORD", "")
-        db_name = db_config.get("NAME", "")
-
-        if password:
-            cmd_basic = (
-                f"mysqldump -h {host} -P {port} -u {user} -p'{password}' "
-                f"--routines --triggers --lock-tables=false "
-                f"{db_name} {tables_str} > {output_path}"
-            )
-        else:
-            cmd_basic = (
-                f"mysqldump -h {host} -P {port} -u {user} "
-                f"--routines --triggers --lock-tables=false "
-                f"{db_name} {tables_str} > {output_path}"
-            )
-
-        self.stdout.write(self.style.NOTICE("Команда для выполнения (базовый вариант):"))
-        self.stdout.write("")
-        self.stdout.write(self.style.SUCCESS(f"  {cmd_basic}"))
-        self.stdout.write("")
-
-        if password:
-            cmd_advanced = (
-                f"mysqldump -h {host} -P {port} -u {user} -p'{password}' "
-                f"--single-transaction --routines --triggers "
-                f"{db_name} {tables_str} > {output_path}"
-            )
-        else:
-            cmd_advanced = (
-                f"mysqldump -h {host} -P {port} -u {user} "
-                f"--single-transaction --routines --triggers "
-                f"{db_name} {tables_str} > {output_path}"
-            )
-
-        self.stdout.write(
-            self.style.NOTICE("Вариант с расширенными правами (требует RELOAD/FLUSH_TABLES):")
-        )
-        self.stdout.write("")
-        self.stdout.write(self.style.SUCCESS(f"  {cmd_advanced}"))
-        self.stdout.write("")
-
-        cmd_interactive = (
-            f"mysqldump -h {host} -P {port} -u {user} -p "
-            f"--routines --triggers --lock-tables=false "
-            f"{db_name} {tables_str} > {output_path}"
-        )
-        self.stdout.write(self.style.NOTICE("Вариант с интерактивным вводом пароля (безопаснее):"))
-        self.stdout.write("")
-        self.stdout.write(self.style.SUCCESS(f"  {cmd_interactive}"))
-        self.stdout.write("")
-
-        self.stdout.write(self.style.NOTICE("Примечание: Замените путь к файлу на нужный вам."))
-        self.stdout.write(self.style.NOTICE("Для сжатия добавьте: | gzip > backup.sql.gz"))
-        self.stdout.write("")
-        self.stdout.write(self.style.ERROR("=" * 80))
-        self.stdout.write("")
-
-    def _create_sql_with_django(self, output_file: Path):
-        """Создает упрощенный SQL бэкап через Django ORM.
-
-        Использует JSON дамп и конвертирует в базовые SQL INSERT statements.
-        Это fallback метод, когда mysqldump недоступен.
-
-        Args:
-            output_file: Путь к выходному файлу.
-        """
-        models_to_backup = self._get_models_to_backup()
-
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write("-- SQL backup created via Django ORM (fallback mode)\n")
-            f.write("-- Note: This is a simplified SQL export.\n")
-            f.write("-- For full SQL backup, use mysqldump.\n\n")
-
-            temp_json = output_file.parent / f"temp_json_{output_file.stem}.json"
-            try:
-                with open(temp_json, "w", encoding="utf-8") as json_f:
-                    call_command(
-                        "dumpdata",
-                        *models_to_backup,
-                        "--all",
-                        "--natural-foreign",
-                        "--natural-primary",
-                        "--indent",
-                        "2",
-                        stdout=json_f,
-                    )
-
-                with open(temp_json, "r", encoding="utf-8") as json_f:
-                    data = json.load(json_f)
-
-                f.write(f"-- Total objects: {len(data)}\n")
-                f.write("-- Use JSON backup file for full data restoration\n")
-                f.write("-- SQL format requires mysqldump for proper export\n\n")
-
-            finally:
-                if temp_json.exists():
-                    temp_json.unlink()
-
-    def _get_table_names(self) -> list[str]:
-        """Возвращает список имен таблиц для бэкапа.
-
-        Returns:
-            Список имен таблиц в БД.
-        """
-        models_to_backup = self._get_models_to_backup()
-        tables = []
-
-        for model_str in models_to_backup:
-            try:
-                app_label, model_name = model_str.split(".")
-                from django.apps import apps
-
-                model = apps.get_model(app_label, model_name)
-                if model:
-                    tables.append(model._meta.db_table)
-            except Exception as e:
-                logger.warning("Не удалось получить таблицу для %s: %s", model_str, e)
-
-        return tables
-
-    def _get_models_to_backup(self):
-        """Возвращает список моделей для бэкапа в порядке зависимостей.
-
-        Включает модели из Django auth-системы и monitoring_app.
-        Порядок важен для корректного восстановления данных.
-
-        Returns:
-            list[str]: Список строк вида "app_label.ModelName".
-        """
-        User = get_user_model()
-        user_model_str = User._meta.label
-
-        return [
-            "contenttypes.ContentType",
-            "auth.Permission",
-            "auth.Group",
-            user_model_str,
-            "monitoring_app.PasswordResetToken",
-            "monitoring_app.PasswordResetRequestLog",
-            "monitoring_app.APIKey",
-            "monitoring_app.UserProfile",
-            "monitoring_app.FileCategory",
-            "monitoring_app.ParentDepartment",
-            "monitoring_app.ChildDepartment",
-            "monitoring_app.Position",
-            "monitoring_app.Staff",
-            "monitoring_app.StaffFaceMask",
-            "monitoring_app.AbsentReason",
-            "monitoring_app.RemoteWork",
-            "monitoring_app.StaffAttendance",
-            "monitoring_app.LessonAttendance",
-            "monitoring_app.ClassLocation",
-            "monitoring_app.PublicHoliday",
-            "monitoring_app.PerformanceBonusRule",
+        cutoff = (datetime.now() - timedelta(days=keep_days)).strftime("%Y%m%d")
+        old = [
+            f
+            for f in target.glob("backup_*")
+            if f.name[7:15].isdigit() and f.name[7:15] < cutoff
         ]
-
-    def _cleanup_old_backups(self, backup_dir: Path, keep_days: int):
-        """Удаляет бэкапы старше указанного количества дней.
-
-        Ищет файлы по шаблону backup_*.json* и backup_*.sql*,
-        извлекает дату из имени файла и удаляет старые.
-
-        Args:
-            backup_dir: Директория с бэкапами.
-            keep_days: Количество дней для хранения бэкапов.
-        """
-        from datetime import timedelta
-
-        cutoff = datetime.now() - timedelta(days=keep_days)
-        deleted = 0
-
-        for backup_file in backup_dir.glob("backup_*.*"):
-            try:
-                name_part = backup_file.stem
-                if name_part.endswith(".json") or name_part.endswith(".sql"):
-                    name_part = name_part.replace(".json", "").replace(".sql", "")
-
-                if name_part.startswith("backup_"):
-                    date_str = name_part.replace("backup_", "").split("_")[0]
-                    file_date = datetime.strptime(date_str, "%Y%m%d")
-                    if file_date < cutoff:
-                        backup_file.unlink()
-                        deleted += 1
-            except (ValueError, IndexError):
-                continue
-
-        if deleted > 0:
-            self.stdout.write(f"Удалено старых бэкапов: {deleted}")
+        for f in old:
+            f.unlink()
+        if old:
+            self.stdout.write(f"Удалено старых бэкапов: {len(old)}")
