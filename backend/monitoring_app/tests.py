@@ -3635,7 +3635,7 @@ class BackupDbTaskTest(SimpleTestCase):
         self.assertEqual(
             result,
             {
-                "format": "both",
+                "format": "auto",
                 "compress": True,
                 "output_dir": "DB",
                 "keep_days": 30,
@@ -3643,7 +3643,7 @@ class BackupDbTaskTest(SimpleTestCase):
         )
         mock_call_command.assert_called_once_with(
             "backup_db",
-            format="both",
+            format="auto",
             compress=True,
             output_dir="DB",
             keep_days=30,

@@ -919,9 +919,9 @@ BACKUP_DB_WEEKLY_COMPRESS = os.getenv("BACKUP_DB_WEEKLY_COMPRESS", "1").strip().
     "yes",
     "on",
 )
-BACKUP_DB_WEEKLY_FORMAT = os.getenv("BACKUP_DB_WEEKLY_FORMAT", "both").strip().lower()
-if BACKUP_DB_WEEKLY_FORMAT not in {"json", "sql", "both"}:
-    BACKUP_DB_WEEKLY_FORMAT = "both"
+BACKUP_DB_WEEKLY_FORMAT = os.getenv("BACKUP_DB_WEEKLY_FORMAT", "auto").strip().lower()
+if BACKUP_DB_WEEKLY_FORMAT not in {"auto", "json", "sql", "both"}:
+    BACKUP_DB_WEEKLY_FORMAT = "auto"
 
 
 def build_celery_beat_schedule(debug: bool) -> dict[str, dict[str, object]]:

@@ -384,7 +384,7 @@ def retrain_photo_pad(labels_only: bool = False) -> str:
 
 @shared_task(name="monitoring_app.tasks.backup_db_task")
 def backup_db_task(
-    backup_format: str = "both",
+    backup_format: str = "auto",
     compress: bool = True,
     output_dir: str = "DB",
     keep_days: int = 30,
